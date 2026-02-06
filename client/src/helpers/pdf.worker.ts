@@ -3,12 +3,14 @@ import {
     MM_TO_PX,
     toProxied,
     trimBleedFromBitmap,
+    trimBleedByMm,
 } from "./imageProcessing";
-import { generateBleedCanvasWebGL } from "./webglImageProcessing";
+import { generateBleedCanvasWebGL, processExistingBleedWebGL } from "./webglImageProcessing";
+import { darkenModeToInt } from "../components/CardCanvas/types";
 import { getCardTargetBleed, computeCardLayouts, computeGridDimensions } from "./layout";
 import { getEffectiveBleedMode, getEffectiveExistingBleedMm } from "./imageSpecs";
 import { hasAdvancedOverrides, overridesToRenderParams, renderCardWithOverridesWorker } from "./cardCanvasWorker";
-import { generatePerCardGuide, type GuideStyle } from "./cutGuideUtils";
+import { generatePerCardGuide, executePathCommands, type GuideStyle } from "./cutGuideUtils";
 import { db, type EffectCacheEntry } from "../db";
 import type { CardOption, CardOverrides } from "../../../shared/types";
 import { debugLog } from "./debug";
@@ -210,6 +212,135 @@ function scaleGuideWidthForDPI(screenPx: number, screenPPI = 96, targetDPI: numb
 // MTG card corner radius: 2.5mm
 const CARD_CORNER_RADIUS_MM = 2.5;
 
+// Silhouette registration mark constants (based on Silhouette Studio standard marks)
+const REG_MARK_OFFSET_MM = 10.0076;  // 0.394" from page edge (Silhouette spec)
+const REG_MARK_SQUARE_SIZE_MM = 5;  // Size of the top-left square (3-point)
+const REG_MARK_ARM_LENGTH_MM = 8.382;   // 0.33" length of L-shape arms (Silhouette spec)
+const REG_MARK_LINE_WIDTH_MM = 0.9906; // 0.039" thickness of L-shape lines
+
+/**
+ * Create a reusable L-shape stamp to avoid stroking directly on the huge page canvas
+ * (which causes WebGL context loss in Chrome at high DPIs)
+ */
+function createLShapeStamp(armLengthPx: number, lineWidthPx: number): OffscreenCanvas {
+    // Pad dimensions to account for line width (stroke is centered)
+    // We only need the "Down + Right" L-shape, we'll rotate it for others
+    const w = Math.ceil(armLengthPx + lineWidthPx);
+    const canvas = new OffscreenCanvas(w, w);
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = lineWidthPx;
+    ctx.lineCap = 'square';
+
+    // Draw L-shape (Down + Right)
+    // Origin is at (lineWidth/2, lineWidth/2) to keep entire stroke visible
+    const offset = lineWidthPx / 2;
+
+    ctx.beginPath();
+    // Vertical (Down)
+    ctx.moveTo(offset, offset);
+    ctx.lineTo(offset, offset + armLengthPx);
+    // Horizontal (Right)
+    ctx.moveTo(offset, offset);
+    ctx.lineTo(offset + armLengthPx, offset);
+    ctx.stroke();
+
+    return canvas;
+}
+
+/**
+ * Draw Silhouette registration marks on a canvas using stamps
+ * 3-point:
+ *   - Top-left: solid black square (origin mark)
+ *   - Top-right: L-shape (vertical down, horizontal left)
+ *   - Bottom-left: L-shape (vertical up, horizontal right)
+ * 4-point: L-shapes at all four corners (no square)
+ */
+function drawSilhouetteRegistrationMarks(
+    ctx: OffscreenCanvasRenderingContext2D,
+    pageWidthPx: number,
+    pageHeightPx: number,
+    dpi: number,
+    markCount: '3' | '4',
+    portrait: boolean = false
+): void {
+    const offsetPx = MM_TO_PX(REG_MARK_OFFSET_MM, dpi);
+    const squareSizePx = MM_TO_PX(REG_MARK_SQUARE_SIZE_MM, dpi);
+    const armLengthPx = MM_TO_PX(REG_MARK_ARM_LENGTH_MM, dpi);
+    const lineWidthPx = MM_TO_PX(REG_MARK_LINE_WIDTH_MM, dpi);
+
+    // Create the stamp ONCE
+    const lShapeStamp = createLShapeStamp(armLengthPx, lineWidthPx);
+    const stampOffset = lineWidthPx / 2; // The visual corner of the stamp is at this offset
+
+    ctx.fillStyle = '#000000';
+
+    // Position coordinates
+    // These coords represent the corner/intersection point of the mark
+    const topLeftX = offsetPx;
+    const topLeftY = offsetPx;
+    const topRightX = pageWidthPx - offsetPx;
+    const topRightY = offsetPx;
+    const bottomLeftX = offsetPx;
+    const bottomLeftY = pageHeightPx - offsetPx;
+    const bottomRightX = pageWidthPx - offsetPx;
+    const bottomRightY = pageHeightPx - offsetPx;
+
+    // Helper to draw L-shape Stamp with rotation
+    // The stamp is a "Down + Right" L-shape
+    const drawStamp = (x: number, y: number, rotationDeg: number) => {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rotationDeg * Math.PI / 180);
+        // Draw image offset by the stamp's internal padding so the visual corner is at (0,0) (which is x,y)
+        ctx.drawImage(lShapeStamp, -stampOffset, -stampOffset);
+        ctx.restore();
+    };
+
+    if (portrait) {
+        // Portrait mode: marks rotated for paper loaded in portrait orientation
+        // Square (3-point) at bottom-left
+        if (markCount === '3') {
+            ctx.fillRect(bottomLeftX, bottomLeftY - squareSizePx, squareSizePx, squareSizePx);
+        } else {
+            // 4-point: L-shape at bottom-left (up + right) -> Rotate -90 (or 270)
+            drawStamp(bottomLeftX, bottomLeftY, -90);
+        }
+
+        // Top-left: L-shape (down + right) -> No rotation
+        drawStamp(topLeftX, topLeftY, 0);
+
+        // Bottom-right: L-shape (up + left) -> Rotate 180
+        drawStamp(bottomRightX, bottomRightY, 180);
+
+        // Top-right: L-shape (only for 4-point, down + left) -> Rotate 90
+        if (markCount === '4') {
+            drawStamp(topRightX, topRightY, 90);
+        }
+    } else {
+        // Landscape mode: standard mark positions
+        // Square (3-point) at top-left
+        if (markCount === '3') {
+            ctx.fillRect(topLeftX, topLeftY, squareSizePx, squareSizePx);
+        } else {
+            // 4-point: L-shape at top-left (down + right) -> No rotation
+            drawStamp(topLeftX, topLeftY, 0);
+        }
+
+        // Top-right: L-shape (down + left) -> Rotate 90
+        drawStamp(topRightX, topRightY, 90);
+
+        // Bottom-left: L-shape (up + right) -> Rotate -90 (or 270)
+        drawStamp(bottomLeftX, bottomLeftY, -90);
+
+        // Bottom-right: L-shape (only for 4-point, up + left) -> Rotate 180
+        if (markCount === '4') {
+            drawStamp(bottomRightX, bottomRightY, 180);
+        }
+    }
+}
+
 /**
  * Create a reusable guide overlay canvas that can be stamped onto each card
  * Uses shared cut guide utility for consistent rendering with PixiJS canvas
@@ -251,19 +382,7 @@ function createGuideCanvas(
         ctx.beginPath();
 
         // Execute path commands
-        for (const cmd of commands) {
-            switch (cmd.type) {
-                case 'moveTo':
-                    ctx.moveTo(cmd.x, cmd.y);
-                    break;
-                case 'lineTo':
-                    ctx.lineTo(cmd.x, cmd.y);
-                    break;
-                case 'arc':
-                    ctx.arc(cmd.cx, cmd.cy, cmd.r, cmd.startAngle, cmd.endAngle);
-                    break;
-            }
-        }
+        executePathCommands(ctx, commands);
 
         ctx.stroke();
         ctx.restore();
@@ -299,12 +418,23 @@ self.onmessage = async (event: MessageEvent) => {
             bleedEdgeWidthMm, cardSpacingMm, cardPositionX, cardPositionY, guideColor, guideWidthCssPx, DPI,
             imagesById, API_BASE, darkenMode, cutLineStyle, perCardGuideStyle, guidePlacement,
             cutGuideLengthMm,
+            // Silhouette registration marks
+            registrationMarks,
+            registrationMarksPortrait,
+            // Darken settings (Global)
+            darkenThreshold,
+            darkenContrast,
+            darkenEdgeWidth,
+            darkenAmount,
+            darkenBrightness,
+            darkenAutoDetect,
             // Receive pre-normalized source settings directly (no legacy conversion)
             sourceSettings, withBleedSourceAmount,
             // Right-align incomplete rows (for backs export)
             rightAlignRows,
             // Pre-rendered effect cache (cardUuid -> Blob)
-            effectCacheById
+            effectCacheById,
+            perCardBackOffsets
         } = settings;
 
         const pageWidthPx = pageSizeUnit === "in" ? IN(pageWidth, DPI) : MM_TO_PX(pageWidth, DPI);
@@ -399,6 +529,9 @@ self.onmessage = async (event: MessageEvent) => {
             imageCardHeightPx: number;
             bleedPx: number;
             isBlank: boolean;  // True for cardback_builtin_blank cards (no guides)
+            rotation: number;  // Rotation in degrees
+            offsetX: number;  // Final X offset applied after rotation
+            offsetY: number;  // Final Y offset applied after rotation
         };
 
         // PHASE 1: Prepare cards with LIMITED CONCURRENCY to avoid memory exhaustion
@@ -432,24 +565,62 @@ self.onmessage = async (event: MessageEvent) => {
             const x = slotX + centerOffsetInSlotX;
             const y = slotY + centerOffsetInSlotY;
 
+            const isBackCard = card.imageId?.startsWith('cardback_');
+            let cardRotation = 0;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            if (isBackCard && perCardBackOffsets) {
+                const perCardOffset = perCardBackOffsets[idx];
+                if (perCardOffset) {
+                    offsetX = MM_TO_PX(perCardOffset.x, DPI);
+                    offsetY = MM_TO_PX(perCardOffset.y, DPI);
+                    cardRotation = perCardOffset.rotation;
+                }
+            }
+
             let finalCardCanvas: OffscreenCanvas | ImageBitmap;
             const imageInfo = card.imageId ? imagesById.get(card.imageId) : undefined;
 
-            // Select appropriate blob based on per-card darkenMode override OR global darkenMode setting
+            // Determine effective mode and settings
+            const useGlobalSettings = card.overrides?.darkenUseGlobalSettings ?? true;
             const cardDarkenMode = card.overrides?.darkenMode;
-            const effectiveDarkenMode = cardDarkenMode ?? darkenMode ?? 'none';
+            const effectiveDarkenMode = cardDarkenMode ?? (darkenMode ?? 'none');
+
+            // Resolve darken parameters with fallback to global settings
+            const resolveParam = (cardVal: number | undefined, globalVal: number) =>
+                (card.overrides && !useGlobalSettings) ? (cardVal ?? globalVal) : globalVal;
+
+            const r_darkenAutoDetect = card.overrides && !useGlobalSettings
+                ? (card.overrides.darkenAutoDetect ?? darkenAutoDetect ?? true)
+                : (darkenAutoDetect ?? true);
+
+            // Force contrast/brightness values for Auto Detect modes
+            const isAutoContrast = r_darkenAutoDetect && (effectiveDarkenMode === 'contrast-edges' || effectiveDarkenMode === 'contrast-full');
+
+            const darkenOpts = {
+                darkenThreshold: resolveParam(card.overrides?.darkenThreshold, darkenThreshold ?? 30),
+                darkenContrast: isAutoContrast ? 2.0 : resolveParam(card.overrides?.darkenContrast, darkenContrast ?? 2.0),
+                darkenEdgeWidth: resolveParam(card.overrides?.darkenEdgeWidth, darkenEdgeWidth ?? 0.1),
+                darkenAmount: resolveParam(card.overrides?.darkenAmount, darkenAmount ?? 1.0),
+                darkenBrightness: isAutoContrast ? -50 : resolveParam(card.overrides?.darkenBrightness, darkenBrightness ?? -50),
+                darkenAutoDetect: r_darkenAutoDetect
+            };
+
+            // Select correct cached blob based on darken mode
             let selectedExportBlob: Blob | undefined;
-            if (effectiveDarkenMode === 'none') {
-                selectedExportBlob = imageInfo?.exportBlob;
-            } else if (effectiveDarkenMode === 'darken-all') {
-                selectedExportBlob = imageInfo?.exportBlobDarkenAll ?? imageInfo?.exportBlobDarkened ?? imageInfo?.exportBlob;
-            } else if (effectiveDarkenMode === 'contrast-edges') {
-                selectedExportBlob = imageInfo?.exportBlobContrastEdges ?? imageInfo?.exportBlobDarkened ?? imageInfo?.exportBlob;
-            } else if (effectiveDarkenMode === 'contrast-full') {
-                selectedExportBlob = imageInfo?.exportBlobContrastFull ?? imageInfo?.exportBlobDarkened ?? imageInfo?.exportBlob;
-            } else {
-                // Fallback for unexpected mode values
-                selectedExportBlob = imageInfo?.exportBlob;
+            switch (effectiveDarkenMode) {
+                case 'darken-all':
+                    selectedExportBlob = imageInfo?.exportBlobDarkenAll;
+                    break;
+                case 'contrast-edges':
+                    selectedExportBlob = imageInfo?.exportBlobContrastEdges;
+                    break;
+                case 'contrast-full':
+                    selectedExportBlob = imageInfo?.exportBlobContrastFull;
+                    break;
+                default:
+                    selectedExportBlob = imageInfo?.exportBlob;
             }
 
             // Compute bleed mode and amounts
@@ -457,9 +628,11 @@ self.onmessage = async (event: MessageEvent) => {
             const existingBleedMm = getEffectiveExistingBleedMm(card, { withBleedSourceAmount }) ?? 0;
             const targetBleedMm = bleedEdge ? getCardTargetBleed(card, sourceSettings, bleedEdgeWidthMm) : 0;
 
-            // Use the image's actual bleed width if available
+            // Use the image's actual bleed width from the cached export blob
+            // exportBleedWidth reflects the bleed the image was GENERATED at (e.g., target 1mm),
+            // NOT existingBleedMm (the card's original built-in bleed before trimming, e.g., 3.175mm)
             const imageBleedWidthMm = imageInfo?.exportBleedWidth ?? targetBleedMm;
-            const imageBleedPx = MM_TO_PX(imageBleedWidthMm, DPI);
+            let imageBleedPx = MM_TO_PX(imageBleedWidthMm, DPI);
 
             // Cache is valid if we have the blob at the right DPI
             // For cardbacks (which don't track exportDpi), accept if exportBlob exists
@@ -471,8 +644,15 @@ self.onmessage = async (event: MessageEvent) => {
             const bleedDifferencePx = slotBleedPx - imageBleedPx;
             const centerOffsetX = bleedDifferencePx;
             const centerOffsetY = bleedDifferencePx;
-            const imageCardWidthPx = contentWidthInPx + 2 * imageBleedPx;
-            const imageCardHeightPx = contentHeightInPx + 2 * imageBleedPx;
+            let imageCardWidthPx = contentWidthInPx + 2 * imageBleedPx;
+            let imageCardHeightPx = contentHeightInPx + 2 * imageBleedPx;
+
+            // Debug logging for bleed asymmetry investigation
+            // Log first card and all cards in first row to check for accumulating errors
+            // Cache key for canvas caching (declare here so it's accessible in both paths and after trimming)
+            // INCLUDE DPI IN KEY: Reusing a 900 DPI canvas for 1200 DPI export results in pixelation/upscaling
+            const cacheKey = card.imageId ? `${card.imageId}-${targetBleedMm.toFixed(2)}-${effectiveDarkenMode}-${DPI}` : null;
+            let fromCanvasCache = false; // Track if we retrieved from canvas cache (to avoid re-caching)
 
             if (isCacheValid) {
                 // Fast path: use pre-processed blob directly
@@ -502,12 +682,24 @@ self.onmessage = async (event: MessageEvent) => {
                 }
 
                 finalCardCanvas = bitmap;
+
+                // IMPORTANT: For cached blobs, use ACTUAL bitmap dimensions for bleed calculation
+                // The cached blob might have been created with different bleed settings
+                // so we need to infer the actual bleed from the bitmap size, not from settings
+                const actualImageBleedPx = (bitmap.width - contentWidthInPx) / 2;
+                if (actualImageBleedPx !== imageBleedPx) {
+                    debugLog(`[PDF Worker] Card ${idx}: Cached blob bleed mismatch! Expected ${imageBleedPx}px, got ${actualImageBleedPx}px`);
+                    // Override imageBleedPx with actual value to ensure correct trimming
+                    imageBleedPx = actualImageBleedPx;
+                    imageCardWidthPx = bitmap.width;
+                    imageCardHeightPx = bitmap.height;
+                }
             } else {
-                // Check cache
-                const cacheKey = card.imageId ? `${card.imageId}-${targetBleedMm.toFixed(2)}-${effectiveDarkenMode}` : null;
+                // Check canvas cache
                 if (cacheKey && canvasCache.has(cacheKey)) {
-                    debugLog(`[PDF Worker] Card ${idx}: Using canvas cache`);
-                    finalCardCanvas = canvasCache.get(cacheKey)!;
+                    const cached = canvasCache.get(cacheKey)!;
+                    finalCardCanvas = cached;
+                    fromCanvasCache = true; // Mark that we got it from cache
                 } else {
                     let src = imageInfo?.originalBlob ? URL.createObjectURL(imageInfo.originalBlob) : imageInfo?.sourceUrl;
                     let cleanupTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -572,25 +764,41 @@ self.onmessage = async (event: MessageEvent) => {
 
                             const needsBleedChange = Math.abs(existingBleedMm - targetBleedMm) > 0.01;
 
+
                             if (effectiveMode === 'none') {
                                 if (card.hasBuiltInBleed && existingBleedMm > 0) {
                                     const trimmed = await trimBleedFromBitmap(img);
                                     if (trimmed !== img) { img.close(); img = trimmed; }
                                 }
                                 finalCardCanvas = await generateBleedCanvasWebGL(img, 0, {
-                                    unit: 'mm', dpi: DPI, darkenMode: effectiveDarkenMode,
+                                    unit: 'mm', dpi: DPI, darkenMode: effectiveDarkenMode, ...darkenOpts,
                                 });
-                            } else if (effectiveMode === 'existing' || !needsBleedChange) {
-                                finalCardCanvas = await generateBleedCanvasWebGL(img, existingBleedMm, {
-                                    unit: 'mm', dpi: DPI, darkenMode: effectiveDarkenMode,
-                                });
-                            } else {
-                                if (card.hasBuiltInBleed && existingBleedMm > 0) {
-                                    const trimmed = await trimBleedFromBitmap(img);
-                                    if (trimmed !== img) { img.close(); img = trimmed; }
+                            } else if (effectiveMode === 'existing' || !needsBleedChange || (card.hasBuiltInBleed && existingBleedMm >= targetBleedMm)) {
+                                // Trim to target bleed using shared helper, then process
+                                const trimAmount = existingBleedMm - targetBleedMm;
+                                if (trimAmount > 0.001) {
+                                    const trimmed = await trimBleedByMm(img, trimAmount, existingBleedMm);
+                                    if (trimmed !== img) {
+                                        img.close();
+                                        img = trimmed;
+                                    }
                                 }
+                                // Now image has targetBleedMm of bleed, process it
+                                const result = await processExistingBleedWebGL(img, targetBleedMm, {
+                                    unit: 'mm',
+                                    exportDpi: DPI,
+                                    displayDpi: DPI,
+                                    darkenMode: darkenModeToInt(effectiveDarkenMode as 'none' | 'darken-all' | 'contrast-edges' | 'contrast-full'),
+                                    ...darkenOpts,
+                                });
+                                finalCardCanvas = await createImageBitmap(result.exportBlob);
+                            } else {
+                                // If generating new bleed (e.g. extending existing bleed), pass inputBleed info
+                                // so we don't distort the content. We do NOT trim it anymore.
                                 finalCardCanvas = await generateBleedCanvasWebGL(img, targetBleedMm, {
-                                    unit: 'mm', dpi: DPI, darkenMode: effectiveDarkenMode,
+                                    unit: 'mm', dpi: DPI,
+                                    inputBleed: (card.hasBuiltInBleed && existingBleedMm > 0) ? existingBleedMm : 0,
+                                    darkenMode: effectiveDarkenMode, ...darkenOpts,
                                 });
                             }
 
@@ -612,10 +820,7 @@ self.onmessage = async (event: MessageEvent) => {
                             }
                         }
 
-                        // Cache the result (only cache OffscreenCanvas, not ImageBitmap)
-                        if (cacheKey && finalCardCanvas instanceof OffscreenCanvas) {
-                            canvasCache.set(cacheKey, finalCardCanvas);
-                        }
+                        // DON'T cache here - we cache AFTER trimming to cache the final result
                     } finally {
                         if (cleanupTimeout) clearTimeout(cleanupTimeout);
                         if (src?.startsWith("blob:")) URL.revokeObjectURL(src);
@@ -623,18 +828,72 @@ self.onmessage = async (event: MessageEvent) => {
                 }
             }
 
+            // Pre-trim images to exact target dimensions
+            // This ensures all cards (regardless of source or processing path) have identical dimensions
+            let trimmedCanvas = finalCardCanvas;
+
+            // IMPORTANT: Use actual canvas dimensions, not calculated ones
+            // (cached canvases may have different dimensions than calculated values)
+            let trimmedWidth = finalCardCanvas.width;
+            let trimmedHeight = finalCardCanvas.height;
+
+            // Use the actual card layout dimensions as the target (don't recalculate)
+            // This ensures trimmed canvas matches the layout system's pixel calculations
+            const expectedWidth = cardLayout.cardWidthPx;
+            const expectedHeight = cardLayout.cardHeightPx;
+
+            // Trim if actual dimensions don't match expected (handles both excess bleed AND rounding differences)
+            if (finalCardCanvas.width !== expectedWidth || finalCardCanvas.height !== expectedHeight) {
+                // Use layout dimensions as target
+                trimmedWidth = expectedWidth;
+                trimmedHeight = expectedHeight;
+
+                // Create trimmed canvas
+                const trimCanvas = new OffscreenCanvas(trimmedWidth, trimmedHeight);
+                const trimCtx = trimCanvas.getContext('2d');
+                if (!trimCtx) throw new Error('Failed to get 2d context for trim canvas');
+
+                // Calculate how much to trim from each side (centers the content)
+                // Use actual canvas dimensions, not calculated ones (handles WebGL rounding differences)
+                const actualWidth = finalCardCanvas.width;
+                const actualHeight = finalCardCanvas.height;
+                const trimOffsetX = (actualWidth - trimmedWidth) / 2;
+                const trimOffsetY = (actualHeight - trimmedHeight) / 2;
+
+                // Draw the centered portion of the source image
+                trimCtx.drawImage(
+                    finalCardCanvas,
+                    trimOffsetX, trimOffsetY, trimmedWidth, trimmedHeight,  // source rect
+                    0, 0, trimmedWidth, trimmedHeight  // dest rect
+                );
+
+                trimmedCanvas = trimCanvas;
+            }
+
+            // Cache the TRIMMED result (only cache OffscreenCanvas, not ImageBitmap)
+            // This ensures cached canvases have the correct final dimensions
+            // Skip if we already retrieved this from cache (no need to re-cache)
+            if (cacheKey && trimmedCanvas instanceof OffscreenCanvas && !fromCanvasCache) {
+                canvasCache.set(cacheKey, trimmedCanvas);
+            }
+
             return {
-                canvas: finalCardCanvas,
+                canvas: trimmedCanvas,
                 x,
                 y,
                 cardWidthPx: cardLayout.cardWidthPx,
                 cardHeightPx: cardLayout.cardHeightPx,
-                centerOffsetX,
-                centerOffsetY,
-                imageCardWidthPx,
-                imageCardHeightPx,
+                // If we trimmed, centerOffset should be 0 since the image is now exact size
+                centerOffsetX: trimmedWidth === imageCardWidthPx ? centerOffsetX : 0,
+                centerOffsetY: trimmedHeight === imageCardHeightPx ? centerOffsetY : 0,
+                // Use trimmed dimensions for drawing
+                imageCardWidthPx: trimmedWidth,
+                imageCardHeightPx: trimmedHeight,
                 bleedPx: cardLayout.bleedPx,
                 isBlank: card.imageId === 'cardback_builtin_blank',
+                rotation: cardRotation,
+                offsetX,
+                offsetY,
             };
         }, MAX_CONCURRENT_CARDS);
 
@@ -644,6 +903,20 @@ self.onmessage = async (event: MessageEvent) => {
             // Skip drawing blank cards entirely (leave transparent/page background)
             if (!prepared.isBlank) {
                 ctx.save();
+
+                // Apply final offset (this is applied LAST after all other transforms)
+                if (prepared.offsetX !== 0 || prepared.offsetY !== 0) {
+                    ctx.translate(prepared.offsetX, prepared.offsetY);
+                }
+
+                // Apply rotation if needed
+                if (prepared.rotation !== 0) {
+                    const centerX = prepared.x + prepared.cardWidthPx / 2;
+                    const centerY = prepared.y + prepared.cardHeightPx / 2;
+                    ctx.translate(centerX, centerY);
+                    ctx.rotate(prepared.rotation * Math.PI / 180);
+                    ctx.translate(-centerX, -centerY);
+                }
                 ctx.beginPath();
                 ctx.rect(prepared.x, prepared.y, prepared.cardWidthPx, prepared.cardHeightPx);
                 ctx.clip();
@@ -656,9 +929,26 @@ self.onmessage = async (event: MessageEvent) => {
 
                 // Stamp per-card guide overlay (skip for blank cards)
                 if (perCardGuideCanvas) {
+                    ctx.save();
+
+                    // Apply final offset (this is applied LAST after all other transforms)
+                    if (prepared.offsetX !== 0 || prepared.offsetY !== 0) {
+                        ctx.translate(prepared.offsetX, prepared.offsetY);
+                    }
+
+                    // Apply rotation for guides too
+                    if (prepared.rotation !== 0) {
+                        const centerX = prepared.x + prepared.cardWidthPx / 2;
+                        const centerY = prepared.y + prepared.cardHeightPx / 2;
+                        ctx.translate(centerX, centerY);
+                        ctx.rotate(prepared.rotation * Math.PI / 180);
+                        ctx.translate(-centerX, -centerY);
+                    }
+
                     const guideOffsetX = prepared.bleedPx - bleedPxForGuide;
                     const guideOffsetY = prepared.bleedPx - bleedPxForGuide;
                     ctx.drawImage(perCardGuideCanvas, prepared.x + guideOffsetX, prepared.y + guideOffsetY);
+                    ctx.restore();
                 }
             }
 
@@ -666,7 +956,10 @@ self.onmessage = async (event: MessageEvent) => {
             self.postMessage({ type: 'progress', pageIndex, imagesProcessed });
         }
 
-
+        // Draw Silhouette registration marks if enabled (on top of everything)
+        if (registrationMarks && registrationMarks !== 'none') {
+            drawSilhouetteRegistrationMarks(ctx, pageWidthPx, pageHeightPx, DPI, registrationMarks, registrationMarksPortrait);
+        }
 
         const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.98 });
         if (blob) {

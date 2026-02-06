@@ -5,6 +5,7 @@ import { buildDecklist, downloadDecklist } from "@/helpers/decklistHelper";
 import { downloadMpcXml } from "@/helpers/mpcXmlExport";
 import { useLoadingStore } from "@/store/loading";
 import { useSettingsStore } from "@/store/settings";
+import { useSelectionStore } from "@/store/selection";
 import { useToastStore } from "@/store/toast";
 import { Button } from "flowbite-react";
 import { db } from "../../db";
@@ -19,7 +20,7 @@ type Props = {
   cards: CardOption[]; // Passed from parent to avoid redundant DB query
 };
 
-type ExportMode = 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs';
+type ExportMode = 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs' | 'visible_faces';
 type CopyMode = 'standard' | 'withMpc';
 type DownloadMode = 'standard' | 'withMpc' | 'xml';
 type ImageExportMode = 'zip' | 'individual';
@@ -30,6 +31,7 @@ const EXPORT_MODES: { value: ExportMode; label: string; description: string }[] 
   { value: 'interleaved-custom', label: 'Interleaved (DFC/Custom)', description: 'Interleave only DFCs and custom backs' },
   { value: 'duplex', label: 'Duplex Printing', description: 'All fronts, then all backs (mirrored)' },
   { value: 'backs', label: 'Backs Only', description: 'Just backs (mirrored for duplex)' },
+  { value: 'visible_faces', label: 'Visible Faces', description: 'Prints whichever face is currently visible (follows flips)' },
 ];
 
 const COPY_MODES: { value: CopyMode; label: string; description: string }[] = [
@@ -287,6 +289,7 @@ export function ExportActions({ cards }: Props) {
             // No else - skip cards without real backs
           }
           filenameSuffix = '_interleaved-all';
+          pdfSettings.perCardBackOffsets = {};
           break;
 
         case 'interleaved-custom':
@@ -302,6 +305,26 @@ export function ExportActions({ cards }: Props) {
             }
           }
           filenameSuffix = '_interleaved-custom';
+          pdfSettings.perCardBackOffsets = {};
+          break;
+
+        case 'visible_faces':
+          // Export whichever face is currently visible
+          for (const frontCard of frontCards) {
+            const isFlipped = useSelectionStore.getState().flippedCards.has(frontCard.uuid);
+            if (isFlipped && frontCard.linkedBackId) {
+              const backCard = await db.cards.get(frontCard.linkedBackId);
+              if (backCard) {
+                cardsToExport.push(backCard);
+              } else {
+                cardsToExport.push(frontCard);
+              }
+            } else {
+              cardsToExport.push(frontCard);
+            }
+          }
+          filenameSuffix = '_visible_faces';
+          pdfSettings.perCardBackOffsets = {};
           break;
 
         case 'duplex': {
@@ -382,6 +405,7 @@ export function ExportActions({ cards }: Props) {
           filenameSuffix = '_backs';
           // Pass rightAlignRows for backs export
           pdfSettings.rightAlignRows = true;
+          pdfSettings.perCardBackOffsets = {};
           if (useCustomBackOffset) {
             pdfSettings.cardPositionX = cardBackPositionX;
             pdfSettings.cardPositionY = cardBackPositionY;

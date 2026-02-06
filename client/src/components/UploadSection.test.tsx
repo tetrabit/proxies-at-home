@@ -94,7 +94,7 @@ describe('UploadSection', () => {
         });
 
         it('should toggle upload panel when clicking logo button', () => {
-            render(<UploadSection isCollapsed={true} cardCount={10} />);
+            render(<UploadSection isCollapsed={true} cardCount={10} onToggle={mockToggleUploadPanel} />);
 
             const logoButton = screen.getByAltText('Proxxied Logo').closest('button');
             fireEvent.click(logoButton!);
@@ -103,7 +103,7 @@ describe('UploadSection', () => {
         });
 
         it('should toggle upload panel on double-click of container', () => {
-            const { container } = render(<UploadSection isCollapsed={true} cardCount={10} />);
+            const { container } = render(<UploadSection isCollapsed={true} cardCount={10} onToggle={mockToggleUploadPanel} />);
 
             const collapsedContainer = container.firstChild as HTMLElement;
             fireEvent.doubleClick(collapsedContainer);

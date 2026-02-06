@@ -91,6 +91,8 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
   const guideColor = useSettingsStore((s) => s.guideColor);
   const guidePlacement = useSettingsStore((s) => s.guidePlacement);
   const cutGuideLengthMm = useSettingsStore((s) => s.cutGuideLengthMm);
+  const registrationMarks = useSettingsStore((s) => s.registrationMarks);
+  const registrationMarksPortrait = useSettingsStore((s) => s.registrationMarksPortrait);
 
   // Flipped cards for back image display
   const flippedCards = useSelectionStore((s) => s.flippedCards);
@@ -487,25 +489,44 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
     }
 
     // Single Card Logic
-    const currentIndex = localCardsRef.current.findIndex((c) => c.uuid === active.id);
-    if (currentIndex === -1) return;
+    const oldIndex = localCardsRef.current.findIndex((c) => c.uuid === active.id);
+    const newIndex = localCardsRef.current.findIndex((c) => c.uuid === over.id);
 
-    lastOptimisticOrder.current = localCardsRef.current.map((c) => c.uuid);
+    if (oldIndex === -1 || newIndex === -1) return;
 
-    const prevCard = localCardsRef.current[currentIndex - 1];
-    const nextCard = localCardsRef.current[currentIndex + 1];
+    // Calculate the new layout locally to ensure we have the correct neighbors
+    // regardless of whether the visual state (localCards) has caught up yet
+    const projectedCards = arrayMove(localCardsRef.current, oldIndex, newIndex);
+
+    // Update local state immediately to match projection
+    setLocalCards(projectedCards);
+    lastOptimisticOrder.current = projectedCards.map((c) => c.uuid);
+
+    const prevCard = projectedCards[newIndex - 1];
+    const nextCard = projectedCards[newIndex + 1];
 
     let newOrder: number;
 
     if (!prevCard) {
       newOrder = (nextCard?.order || 0) - 10;
     } else if (!nextCard) {
-      newOrder = prevCard.order + 10;
+      newOrder = (prevCard?.order || 0) + 10;
     } else {
       newOrder = (prevCard.order + nextCard.order) / 2.0;
     }
 
     if (Math.abs(newOrder - (prevCard?.order || 0)) < 0.001 || Math.abs(newOrder - (nextCard?.order || 0)) < 0.001) {
+      // Precision limit reached.
+      // 1. Commit the move first so rebalance accounts for it
+      const dragInfo = dragStartOrderRef.current;
+      if (dragInfo && dragInfo.cardUuid === active.id) {
+        await undoableReorderCards(dragInfo.cardUuid, dragInfo.oldOrder, newOrder);
+      } else {
+        await db.cards.update(active.id as string, { order: newOrder });
+      }
+      dragStartOrderRef.current = null;
+
+      // 2. Then rebalance the whole project
       const projectId = localCardsRef.current[0]?.projectId;
       if (projectId) await rebalanceCardOrders(projectId);
       return;
@@ -513,12 +534,13 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
 
     const dragInfo = dragStartOrderRef.current;
     if (dragInfo && dragInfo.cardUuid === active.id) {
+      // undoableReorderCards performs the DB update
       await undoableReorderCards(dragInfo.cardUuid, dragInfo.oldOrder, newOrder);
+    } else {
+      // Fallback for safety (though dragStart should always fire)
+      await db.cards.update(active.id as string, { order: newOrder });
     }
     dragStartOrderRef.current = null;
-
-    await db.cards.update(active.id as string, { order: newOrder });
-
   }, []);
 
   // Sortable IDs for DndContext - use visibleCards (stable during drag)
@@ -678,6 +700,10 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
           return null;
         }
 
+        // Check if card is using blank cardback - if flipped and back is blank, treat as having image
+        const isFlipped = flippedCards.has(pixiCard.card.uuid);
+        const isBlankBack = isFlipped && pixiCard.backImageId === 'cardback_builtin_blank';
+
         return {
           card: pixiCard.card,
           globalIndex: index,
@@ -685,11 +711,12 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
           screenY: contentY,
           width,
           height,
-          hasImage: renderedCardUuids.has(pixiCard.card.uuid),
+          // Blank cardbacks are intentionally shown as empty (no image), so treat as "has image" to hide spinner
+          hasImage: renderedCardUuids.has(pixiCard.card.uuid) || isBlankBack,
         };
       })
       .filter((layout): layout is CardControlLayout => layout !== null);
-  }, [globalPixiCards, effectiveZoom, scrollTop, containerHeight, renderedCardUuids]);
+  }, [globalPixiCards, effectiveZoom, scrollTop, containerHeight, renderedCardUuids, flippedCards]);
 
   // Render
   return (
@@ -757,6 +784,8 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
                   perCardGuideColor={perCardGuideColorNum}
                   perCardGuidePlacement={guidePlacement}
                   cutGuideLengthMm={cutGuideLengthMm}
+                  registrationMarks={registrationMarks}
+                  registrationMarksPortrait={registrationMarksPortrait}
                   isDarkMode={isDarkMode}
                   onRenderedCardsChange={setRenderedCardUuids}
                   style={{

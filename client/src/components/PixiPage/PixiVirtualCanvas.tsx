@@ -17,6 +17,7 @@ import {
 import { calculateHoloAnimation, type HoloAnimationStyle } from './holoAnimation';
 import { usePageGuides } from './usePageGuides';
 import { usePerCardGuides } from './usePerCardGuides';
+import { useRegistrationMarks } from './useRegistrationMarks';
 import {
     hasActiveAdjustments,
     applyDarkenFilter,
@@ -80,6 +81,9 @@ interface PixiVirtualCanvasProps {
     perCardGuideColor: number; // Hex color for PixiJS (e.g., 0x39FF14)
     perCardGuidePlacement: 'inside' | 'outside' | 'center';
     cutGuideLengthMm: number; // Length of corner guides in mm
+    // Registration marks
+    registrationMarks: 'none' | '3' | '4';
+    registrationMarksPortrait: boolean;
     // Theme
     isDarkMode: boolean;
     // Callback when card textures are loaded (for placeholder hiding)
@@ -115,6 +119,8 @@ function PixiVirtualCanvasInner({
     perCardGuideColor,
     perCardGuidePlacement,
     cutGuideLengthMm,
+    registrationMarks,
+    registrationMarksPortrait,
     isDarkMode,
     onRenderedCardsChange,
     className,
@@ -566,6 +572,16 @@ function PixiVirtualCanvasInner({
         activeId,
     });
 
+    // Registration marks - delegated to hook (use guidesContainer so marks render on top)
+    useRegistrationMarks({
+        isReady,
+        container: guidesContainerRef.current,
+        app: appRef.current,
+        pages,
+        registrationMarks,
+        registrationMarksPortrait,
+    });
+
     // Update card sprites
     useEffect(() => {
         if (!isReady || !cardsContainerRef.current) return;
@@ -849,7 +865,28 @@ function PixiVirtualCanvasInner({
 
         // No cleanup needed - staleness is tracked by counter
         // Include serialized holo params to detect nested override changes
-    }, [cards, isReady, globalDarkenMode, globalDarkenContrast, globalDarkenEdgeWidth, globalDarkenAmount, globalDarkenBrightness, globalDarkenAutoDetect, flippedCards, activeId, recentlyDroppedId, scrollTop, viewportHeight, zoom, createTexture, onRenderedCardsChange, holoAnimationTick, holoSettingsKey, scrollContainerRef]);
+    }, [
+        isReady,
+        cards,
+        isDarkMode,
+        activeId,
+        recentlyDroppedId,
+        scrollTop,
+        viewportHeight,
+        zoom,
+        globalDarkenMode,
+        globalDarkenContrast,
+        globalDarkenEdgeWidth,
+        globalDarkenAmount,
+        globalDarkenBrightness,
+        globalDarkenAutoDetect,
+        flippedCards,
+        createTexture,
+        onRenderedCardsChange,
+        holoAnimationTick,
+        holoSettingsKey,
+        scrollContainerRef
+    ]);
 
     return (
         <canvas
@@ -873,6 +910,7 @@ const SHALLOW_COMPARE_KEYS: (keyof PixiVirtualCanvasProps)[] = [
     'globalDarkenMode', 'flippedCards', 'activeId',
     'guideWidth', 'cutLineStyle', 'perCardGuideStyle',
     'perCardGuideColor', 'perCardGuidePlacement', 'cutGuideLengthMm', 'isDarkMode', 'pages',
+    'registrationMarks', 'registrationMarksPortrait',
 ];
 
 // Card properties that need simple equality check

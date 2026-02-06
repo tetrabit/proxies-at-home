@@ -20,18 +20,20 @@ import {
 
 type Props = {
   isCollapsed?: boolean;
+  onToggle?: () => void;
   cardCount: number;
   mobile?: boolean;
   onUploadComplete?: () => void;
 };
 
-export function UploadSection({ isCollapsed, cardCount, mobile, onUploadComplete }: Props) {
+export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUploadComplete }: Props) {
   const toggleUploadPanel = useSettingsStore((state) => state.toggleUploadPanel);
   const currentProjectId = useProjectStore((state) => state.currentProjectId);
   const addToast = useToastStore((state) => state.addToast);
   const removeToast = useToastStore((state) => state.removeToast);
   const showErrorToast = useToastStore((state) => state.showErrorToast);
   const [isBulkUpgrading, setIsBulkUpgrading] = useState(false);
+  const handleToggle = onToggle ?? toggleUploadPanel;
 
   const handleBulkUpgrade = async () => {
     if (isBulkUpgrading) return;
@@ -77,12 +79,12 @@ export function UploadSection({ isCollapsed, cardCount, mobile, onUploadComplete
     return (
       <div
         className={`h-full flex flex-col bg-gray-100 dark:bg-gray-700 items-center py-4 gap-4 border-r border-gray-200 dark:border-gray-600 ${mobile ? "mobile-scrollbar-hide" : "overflow-y-auto"} select-none`}
-        onDoubleClick={() => toggleUploadPanel()}
+        onDoubleClick={() => handleToggle?.()}
       >
         <AutoTooltip content="Proxxied" placement="right" mobile={mobile}>
           <button
             onClick={() => {
-              toggleUploadPanel();
+              handleToggle?.();
             }}
             className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
           >
