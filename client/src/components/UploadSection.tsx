@@ -1,12 +1,16 @@
+import { useState } from "react";
 import fullLogo from "@/assets/fullLogo.png";
 import { logoSvg } from "@/assets";
 import { useSettingsStore } from "@/store/settings";
+import { useProjectStore } from "@/store/projectStore";
+import { useToastStore } from "@/store/toast";
 import {
   HR,
 } from "flowbite-react";
 import { ExternalLink, Download, MousePointerClick, Move, Copy, Upload, Layers } from "lucide-react";
 import { AutoTooltip } from "./common";
 import { PullToRefresh } from "./PullToRefresh";
+import { bulkUpgradeToMpcAutofill } from "@/helpers/mpcBulkUpgrade";
 import {
   DeckBuilderImporter,
   DecklistUploader,
@@ -23,6 +27,51 @@ type Props = {
 
 export function UploadSection({ isCollapsed, cardCount, mobile, onUploadComplete }: Props) {
   const toggleUploadPanel = useSettingsStore((state) => state.toggleUploadPanel);
+  const currentProjectId = useProjectStore((state) => state.currentProjectId);
+  const addToast = useToastStore((state) => state.addToast);
+  const removeToast = useToastStore((state) => state.removeToast);
+  const showErrorToast = useToastStore((state) => state.showErrorToast);
+  const [isBulkUpgrading, setIsBulkUpgrading] = useState(false);
+
+  const handleBulkUpgrade = async () => {
+    if (isBulkUpgrading) return;
+    setIsBulkUpgrading(true);
+
+    const toastId = addToast({
+      type: "processing",
+      message: "Upgrading to MPC Autofill...",
+      dismissible: true,
+    });
+
+    try {
+      const summary = await bulkUpgradeToMpcAutofill({ projectId: currentProjectId ?? undefined });
+      removeToast(toastId);
+
+      if (summary.totalCards === 0) {
+        const doneId = addToast({
+          type: "error",
+          message: "No cards to upgrade.",
+          dismissible: true,
+        });
+        setTimeout(() => removeToast(doneId), 4000);
+        return;
+      }
+
+      const message = `Bulk MPC upgrade: ${summary.upgraded} upgraded, ${summary.skipped} skipped${summary.errors ? `, ${summary.errors} errors` : ""}.`;
+      const type = summary.upgraded > 0 ? "success" : "error";
+      const doneId = addToast({
+        type,
+        message,
+        dismissible: true,
+      });
+      setTimeout(() => removeToast(doneId), type === "success" ? 5000 : 8000);
+    } catch (error) {
+      removeToast(toastId);
+      showErrorToast("Bulk MPC upgrade failed. Please try again.");
+    } finally {
+      setIsBulkUpgrading(false);
+    }
+  };
 
   if (isCollapsed) {
     return (
@@ -90,6 +139,21 @@ export function UploadSection({ isCollapsed, cardCount, mobile, onUploadComplete
           </div>
 
           <HR className={`my-0  dark:bg-gray-500 ${mobile ? 'landscape:hidden' : ''}`} />
+        </div>
+
+        <div className={`mt-2 ${mobile ? 'landscape:col-span-2' : ''}`}>
+          <h6 className="font-medium dark:text-white mb-2">MPC Autofill Upgrade</h6>
+          <button
+            type="button"
+            onClick={handleBulkUpgrade}
+            disabled={cardCount === 0 || isBulkUpgrading}
+            className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isBulkUpgrading ? "Upgrading..." : "Bulk upgrade to MPC Autofill"}
+          </button>
+          <p className="text-xs text-gray-600 dark:text-white/60 mt-2">
+            Replaces current Scryfall art with the closest MPC Autofill match.
+          </p>
         </div>
 
         {/* Tips - Full width at bottom */}

@@ -3,11 +3,41 @@ import { render, screen, fireEvent } from '@testing-library/react';
 
 // Mock stores and child components
 const mockToggleUploadPanel = vi.fn();
+const mockAddToast = vi.fn(() => "toast-id");
+const mockRemoveToast = vi.fn();
+const mockShowErrorToast = vi.fn();
 
 vi.mock('@/store/settings', () => ({
     useSettingsStore: vi.fn((selector) => {
         const state = { toggleUploadPanel: mockToggleUploadPanel };
         return selector(state);
+    }),
+}));
+
+vi.mock('@/store/projectStore', () => ({
+    useProjectStore: vi.fn((selector) => {
+        const state = { currentProjectId: 'test-project-id' };
+        return selector(state);
+    }),
+}));
+
+vi.mock('@/store/toast', () => ({
+    useToastStore: vi.fn((selector) => {
+        const state = {
+            addToast: mockAddToast,
+            removeToast: mockRemoveToast,
+            showErrorToast: mockShowErrorToast,
+        };
+        return selector(state);
+    }),
+}));
+
+vi.mock('@/helpers/mpcBulkUpgrade', () => ({
+    bulkUpgradeToMpcAutofill: vi.fn().mockResolvedValue({
+        totalCards: 0,
+        upgraded: 0,
+        skipped: 0,
+        errors: 0,
     }),
 }));
 
@@ -164,6 +194,12 @@ describe('UploadSection', () => {
             render(<UploadSection isCollapsed={false} cardCount={10} />);
 
             expect(screen.getByText('Tips:')).toBeDefined();
+        });
+
+        it('should render bulk upgrade button', () => {
+            render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+            expect(screen.getByRole('button', { name: /Bulk upgrade to MPC Autofill/i })).toBeDefined();
         });
 
         it('should render MPC Autofill link', () => {

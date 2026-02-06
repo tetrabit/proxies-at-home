@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/coverage
+**/.cache
+**/.turbo
+.git
+.github
+.vscode
+client/tests/e2e/test-results
+client/tests/e2e/playwright-report
