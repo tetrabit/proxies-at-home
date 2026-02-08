@@ -488,7 +488,8 @@
 
             try {
                 const startTime = Date.now();
-                const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}&limit=20`;
+                // Use page_size for pagination, no limit on total results
+                const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}&page_size=50`;
                 
                 const response = await fetch(url);
                 const data = await response.json();
