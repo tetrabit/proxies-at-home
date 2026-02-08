@@ -311,8 +311,10 @@ router.get("/search", async (req: Request, res: Response) => {
     }
 
     try {
-        // Try microservice first
-        if (await isMicroserviceAvailable()) {
+        // Try microservice first (but skip if sorting is requested, as microservice doesn't support it yet)
+        const hasSortParams = params.order || params.dir;
+        
+        if (!hasSortParams && await isMicroserviceAvailable()) {
             debugLog(`[ScryfallProxy] Using microservice for search: ${processedQ}`);
             const client = getScryfallClient();
             
@@ -340,10 +342,22 @@ router.get("/search", async (req: Request, res: Response) => {
             }
         }
         
-        // Fallback to direct Scryfall API
-        debugLog(`[ScryfallProxy] Microservice unavailable, using direct Scryfall API`);
+        // Fallback to direct Scryfall API (for sorting or when microservice unavailable)
+        if (hasSortParams) {
+            debugLog(`[ScryfallProxy] Using direct Scryfall API for sorted search: ${processedQ}`);
+        } else {
+            debugLog(`[ScryfallProxy] Microservice unavailable, using direct Scryfall API`);
+        }
+        
+        // Scryfall API uses 'limit' not 'page_size', so convert if needed
+        const scryfallParams = { ...params };
+        if (scryfallParams.page_size) {
+            scryfallParams.limit = scryfallParams.page_size;
+            delete scryfallParams.page_size;
+        }
+        
         const data = await rateLimitedRequest(() =>
-            scryfallAxios.get("/cards/search", { params })
+            scryfallAxios.get("/cards/search", { params: scryfallParams })
         );
         storeInCache("search", queryHash, data, CACHE_TTL.search);
         return res.json(data);
