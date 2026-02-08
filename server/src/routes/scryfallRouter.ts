@@ -301,6 +301,7 @@ router.get("/search", async (req: Request, res: Response) => {
     if (req.query.order) params.order = req.query.order as string;
     if (req.query.dir) params.dir = req.query.dir as string;
     if (req.query.page) params.page = req.query.page as string;
+    if (req.query.limit) params.limit = req.query.limit as string;
 
     const queryHash = getCacheKey("search", params);
     const cached = getFromCache("search", queryHash);
@@ -317,6 +318,7 @@ router.get("/search", async (req: Request, res: Response) => {
             // Build search params for microservice
             const searchParams: Record<string, string> = { q: processedQ };
             if (params.page) searchParams.page = params.page;
+            if (params.limit) searchParams.limit = params.limit;
             
             const response = await client.searchCards(searchParams);
             
