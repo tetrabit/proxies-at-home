@@ -583,7 +583,15 @@
                 hasMore = data.has_more || false;
                 totalPages = data.total_pages || 1;
                 
-                const totalResults = data.total || currentResults.length;
+                // Handle Scryfall API response format which doesn't include total_pages
+                const totalResults = data.total || data.total_cards || currentResults.length;
+                
+                // Calculate total pages if not provided (Scryfall API fallback)
+                if (!data.total_pages && data.total_cards) {
+                    const pageSize = 50; // Match our page_size parameter
+                    totalPages = Math.ceil(data.total_cards / pageSize);
+                }
+                
                 updateStatus('', `Found ${totalResults} total cards (${duration}ms)`);
                 document.getElementById('resultCount').textContent = 
                     `${totalResults} card${totalResults !== 1 ? 's' : ''} total`;
@@ -642,13 +650,15 @@
                 `;
             }).join('');
 
-            const paginationHTML = totalPages > 1 ? `
+            // Show pagination if we have multiple pages OR if has_more indicates more results
+            const showPagination = totalPages > 1 || hasMore || currentPage > 1;
+            const paginationHTML = showPagination ? `
                 <div class="pagination">
                     <button onclick="previousPage()" ${currentPage === 1 ? 'disabled' : ''}>
                         ← Previous
                     </button>
                     <span class="pagination-info">
-                        Page ${currentPage} of ${totalPages}
+                        Page ${currentPage}${totalPages > 1 ? ` of ${totalPages}` : ''}
                     </span>
                     <button onclick="nextPage()" ${!hasMore && currentPage >= totalPages ? 'disabled' : ''}>
                         Next →
@@ -660,6 +670,9 @@
                 <div class="card-grid">${gridHTML}</div>
                 ${paginationHTML}
             `;
+            
+            // Debug logging
+            console.log('Pagination state:', { currentPage, totalPages, hasMore, showPagination });
         }
 
         function showCardDetails(index) {
