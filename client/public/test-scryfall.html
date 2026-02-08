@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scryfall Microservice Test Page</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #718096;
+            margin-bottom: 20px;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #5a67d8;
+        }
+
+        button:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+        }
+
+        .examples {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .example-btn {
+            padding: 10px 14px;
+            background: #edf2f7;
+            color: #2d3748;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            text-align: left;
+            transition: all 0.2s;
+        }
+
+        .example-btn:hover {
+            background: #e2e8f0;
+            border-color: #cbd5e0;
+        }
+
+        .example-btn code {
+            display: block;
+            font-family: 'Courier New', monospace;
+            color: #667eea;
+            margin-top: 4px;
+        }
+
+        .info {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status {
+            display: flex;
+            gap: 24px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #48bb78;
+        }
+
+        .status-dot.loading {
+            background: #ed8936;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .status-dot.error {
+            background: #f56565;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .results {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            min-height: 400px;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .card {
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.25);
+        }
+
+        .card img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .card-name {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.9));
+            color: white;
+            padding: 24px 12px 12px;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #718096;
+        }
+
+        .error {
+            background: #fed7d7;
+            color: #c53030;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .error-details {
+            margin-top: 8px;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: #718096;
+        }
+
+        .query-display {
+            background: #f7fafc;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #2d3748;
+            margin-bottom: 16px;
+            border-left: 4px solid #667eea;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 800px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-close {
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            color: #718096;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: #2d3748;
+        }
+
+        .card-details {
+            clear: both;
+        }
+
+        .card-details img {
+            width: 100%;
+            max-width: 400px;
+            margin: 20px auto;
+            display: block;
+            border-radius: 8px;
+        }
+
+        .card-info {
+            margin-top: 20px;
+        }
+
+        .card-info-row {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .card-info-label {
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .card-info-value {
+            color: #2d3748;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 2px solid #e2e8f0;
+        }
+
+        .pagination button {
+            padding: 10px 20px;
+            font-size: 14px;
+        }
+
+        .pagination-info {
+            color: #4a5568;
+            font-size: 14px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🃏 Scryfall Microservice Test Page</h1>
+            <p class="subtitle">Test complex Scryfall queries against the microservice endpoint</p>
+            
+            <div class="search-box">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Enter Scryfall query syntax (e.g., f:commander t:creature c:red)"
+                    value="f:commander otag:typal-human t:creature -t:human"
+                />
+                <button id="searchBtn" onclick="search()">Search</button>
+            </div>
+
+            <div class="examples">
+                <button class="example-btn" onclick="loadExample('f:commander otag:typal-human t:creature -t:human')">
+                    Commander Human Tribal
+                    <code>f:commander otag:typal-human t:creature -t:human</code>
+                </button>
+                <button class="example-btn" onclick="loadExample('c:red t:instant cmc:1')">
+                    Red 1-CMC Instants
+                    <code>c:red t:instant cmc:1</code>
+                </button>
+                <button class="example-btn" onclick="loadExample('t:planeswalker c>=3')">
+                    3+ Color Planeswalkers
+                    <code>t:planeswalker c>=3</code>
+                </button>
+                <button class="example-btn" onclick="loadExample('o:\"draw a card\" t:creature pow>=4')">
+                    Card Draw Creatures (4+ Power)
+                    <code>o:"draw a card" t:creature pow>=4</code>
+                </button>
+                <button class="example-btn" onclick="loadExample('f:standard -c:w -c:u -c:b -c:r -c:g')">
+                    Standard Colorless
+                    <code>f:standard -c:w -c:u -c:b -c:r -c:g</code>
+                </button>
+                <button class="example-btn" onclick="loadExample('year>=2023 r:mythic')">
+                    Recent Mythics (2023+)
+                    <code>year>=2023 r:mythic</code>
+                </button>
+            </div>
+        </div>
+
+        <div class="info">
+            <div class="status">
+                <div class="status-item">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Ready</span>
+                </div>
+                <div class="status-item">
+                    <strong>Endpoint:</strong>
+                    <span id="endpoint">http://localhost:3001/api/scryfall/search</span>
+                </div>
+            </div>
+            <div>
+                <span id="resultCount"></span>
+            </div>
+        </div>
+
+        <div class="results">
+            <div id="errorContainer"></div>
+            <div id="queryDisplay"></div>
+            <div class="results-header">
+                <h2>Results</h2>
+            </div>
+            <div id="resultsContainer">
+                <div class="empty">
+                    <h3>👆 Enter a query above to start searching</h3>
+                    <p>Try one of the example queries or write your own using Scryfall syntax</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="cardModal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <div class="card-details" id="cardDetails"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3001/api/scryfall';
+        let currentResults = [];
+        let currentPage = 1;
+        let totalPages = 1;
+        let hasMore = false;
+        let currentQuery = '';
+
+        function updateStatus(status, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            
+            dot.className = 'status-dot ' + status;
+            statusText.textContent = text;
+        }
+
+        function showError(message, details = null) {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.innerHTML = `
+                <div class="error">
+                    <strong>Error:</strong> ${message}
+                    ${details ? `<div class="error-details">${details}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function clearError() {
+            document.getElementById('errorContainer').innerHTML = '';
+        }
+
+        function loadExample(query) {
+            document.getElementById('searchInput').value = query;
+            search();
+        }
+
+        async function search(page = 1) {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                showError('Please enter a search query');
+                return;
+            }
+
+            clearError();
+            updateStatus('loading', 'Searching...');
+            
+            const resultsContainer = document.getElementById('resultsContainer');
+            resultsContainer.innerHTML = '<div class="loading">🔍 Searching for cards...</div>';
+
+            const queryDisplay = document.getElementById('queryDisplay');
+            queryDisplay.innerHTML = `<strong>Query:</strong> ${query}`;
+
+            const searchBtn = document.getElementById('searchBtn');
+            searchBtn.disabled = true;
+
+            currentQuery = query;
+            currentPage = page;
+
+            try {
+                const startTime = Date.now();
+                const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const duration = Date.now() - startTime;
+
+                if (!response.ok) {
+                    throw new Error(data.details || data.error || 'Search failed');
+                }
+
+                currentResults = data.data || [];
+                hasMore = data.has_more || false;
+                totalPages = data.total_pages || 1;
+                
+                const totalResults = data.total || currentResults.length;
+                updateStatus('', `Found ${totalResults} total cards (${duration}ms)`);
+                document.getElementById('resultCount').textContent = 
+                    `${totalResults} card${totalResults !== 1 ? 's' : ''} total`;
+
+                if (currentResults.length === 0) {
+                    resultsContainer.innerHTML = `
+                        <div class="empty">
+                            <h3>No cards found</h3>
+                            <p>Try adjusting your search query</p>
+                        </div>
+                    `;
+                } else {
+                    displayResults(currentResults);
+                }
+            } catch (error) {
+                updateStatus('error', 'Error');
+                showError(error.message, 'Check that the Proxxied server is running on port 3001');
+                resultsContainer.innerHTML = '';
+                document.getElementById('resultCount').textContent = '';
+            } finally {
+                searchBtn.disabled = false;
+            }
+        }
+
+        function goToPage(page) {
+            if (page < 1 || page > totalPages) return;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            search(page);
+        }
+
+        function nextPage() {
+            if (hasMore || currentPage < totalPages) {
+                goToPage(currentPage + 1);
+            }
+        }
+
+        function previousPage() {
+            if (currentPage > 1) {
+                goToPage(currentPage - 1);
+            }
+        }
+
+        function displayResults(cards) {
+            const resultsContainer = document.getElementById('resultsContainer');
+            
+            const gridHTML = cards.map(card => {
+                const imageUrl = card.image_uris?.normal || 
+                               (card.card_faces && card.card_faces[0]?.image_uris?.normal) ||
+                               'https://via.placeholder.com/200x280?text=No+Image';
+                
+                return `
+                    <div class="card" onclick="showCardDetails(${cards.indexOf(card)})">
+                        <img src="${imageUrl}" alt="${card.name}" loading="lazy" />
+                        <div class="card-name">${card.name}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const paginationHTML = totalPages > 1 ? `
+                <div class="pagination">
+                    <button onclick="previousPage()" ${currentPage === 1 ? 'disabled' : ''}>
+                        ← Previous
+                    </button>
+                    <span class="pagination-info">
+                        Page ${currentPage} of ${totalPages}
+                    </span>
+                    <button onclick="nextPage()" ${!hasMore && currentPage >= totalPages ? 'disabled' : ''}>
+                        Next →
+                    </button>
+                </div>
+            ` : '';
+
+            resultsContainer.innerHTML = `
+                <div class="card-grid">${gridHTML}</div>
+                ${paginationHTML}
+            `;
+        }
+
+        function showCardDetails(index) {
+            const card = currentResults[index];
+            const modal = document.getElementById('cardModal');
+            const details = document.getElementById('cardDetails');
+
+            const imageUrl = card.image_uris?.png || 
+                           (card.card_faces && card.card_faces[0]?.image_uris?.png) ||
+                           'https://via.placeholder.com/400x560?text=No+Image';
+
+            const oracleText = card.oracle_text || 
+                             (card.card_faces && card.card_faces.map(f => f.oracle_text).join('\n---\n')) ||
+                             'N/A';
+
+            details.innerHTML = `
+                <h2>${card.name}</h2>
+                <img src="${imageUrl}" alt="${card.name}" />
+                <div class="card-info">
+                    <div class="card-info-row">
+                        <div class="card-info-label">Type</div>
+                        <div class="card-info-value">${card.type_line || 'N/A'}</div>
+                    </div>
+                    <div class="card-info-row">
+                        <div class="card-info-label">Mana Cost</div>
+                        <div class="card-info-value">${card.mana_cost || 'N/A'}</div>
+                    </div>
+                    <div class="card-info-row">
+                        <div class="card-info-label">Oracle Text</div>
+                        <div class="card-info-value">${oracleText.replace(/\n/g, '<br>')}</div>
+                    </div>
+                    <div class="card-info-row">
+                        <div class="card-info-label">Set</div>
+                        <div class="card-info-value">${card.set_name || card.set} (${card.set?.toUpperCase()})</div>
+                    </div>
+                    <div class="card-info-row">
+                        <div class="card-info-label">Rarity</div>
+                        <div class="card-info-value">${card.rarity || 'N/A'}</div>
+                    </div>
+                    <div class="card-info-row">
+                        <div class="card-info-label">Artist</div>
+                        <div class="card-info-value">${card.artist || 'N/A'}</div>
+                    </div>
+                    ${card.power && card.toughness ? `
+                    <div class="card-info-row">
+                        <div class="card-info-label">P/T</div>
+                        <div class="card-info-value">${card.power}/${card.toughness}</div>
+                    </div>
+                    ` : ''}
+                    ${card.loyalty ? `
+                    <div class="card-info-row">
+                        <div class="card-info-label">Loyalty</div>
+                        <div class="card-info-value">${card.loyalty}</div>
+                    </div>
+                    ` : ''}
+                    <div class="card-info-row">
+                        <div class="card-info-label">Scryfall Link</div>
+                        <div class="card-info-value">
+                            <a href="${card.scryfall_uri}" target="_blank">View on Scryfall</a>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            modal.classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('cardModal').classList.remove('active');
+        }
+
+        // Allow Enter key to search
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                search();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('cardModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeModal();
+            }
+        });
+    </script>
+</body>
+</html>
