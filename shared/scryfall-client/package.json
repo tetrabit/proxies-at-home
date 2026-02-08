@@ -1,0 +1,23 @@
+{
+  "name": "scryfall-cache-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for Scryfall Cache Microservice",
+  "main": "index.ts",
+  "types": "index.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/scryfall-cache-microservice"
+  },
+  "keywords": [
+    "scryfall",
+    "mtg",
+    "magic",
+    "cache",
+    "api-client"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "typescript": ">=4.0.0"
+  }
+}

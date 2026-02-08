@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
     serverUrl: () => ipcRenderer.invoke('get-server-url'),
+    getMicroserviceUrl: () => ipcRenderer.invoke('get-microservice-url'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     getUpdateChannel: () => ipcRenderer.invoke('get-update-channel'),
     setUpdateChannel: (channel: string) => ipcRenderer.invoke('set-update-channel', channel),
