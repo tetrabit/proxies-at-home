@@ -1,6 +1,7 @@
 {
   "name": "scryfall-cache-client",
   "version": "0.1.0",
+  "type": "module",
   "description": "TypeScript client for Scryfall Cache Microservice",
   "main": "index.ts",
   "types": "index.ts",

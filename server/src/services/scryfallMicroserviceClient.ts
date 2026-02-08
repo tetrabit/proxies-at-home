@@ -5,7 +5,7 @@
  * The microservice is bundled with Electron and runs on a configurable port.
  */
 
-import { ScryfallCacheClient } from '../../../shared/scryfall-client/index.js';
+import { ScryfallCacheClient } from '../../../shared/scryfall-client/index.ts';
 
 // Configuration
 const MICROSERVICE_BASE_URL = process.env.SCRYFALL_CACHE_URL || 'http://localhost:8080';

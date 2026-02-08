@@ -21,7 +21,11 @@ export interface ApiClientConfig {
 
 // Simple fetch-based API client
 export class ScryfallCacheClient {
-  constructor(private config: ApiClientConfig) {}
+  private config: ApiClientConfig;
+
+  constructor(config: ApiClientConfig) {
+    this.config = config;
+  }
 
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
     const url = `${this.config.baseUrl}${path}`;
