@@ -106,6 +106,25 @@ The the client and server will be running on:
 - Client: `http://localhost:5173/`
 - Server: `http://localhost:3001/`
 
+## 🧪 Testing the Microservice
+
+A standalone test page is available to verify complex Scryfall query handling:
+
+```bash
+cd test-app
+./start-test.sh
+# Or manually open scryfall-test.html in your browser
+```
+
+**Features:**
+- Visual card grid (Scryfall-like interface)
+- 6 pre-loaded complex query examples
+- Real-time performance metrics
+- Card detail modal viewer
+- Zero build process - just open in browser
+
+See [`test-app/README.md`](test-app/README.md) for detailed usage and query examples.
+
 ## License
 MIT — feel free to use, modify, and contribute.
 
