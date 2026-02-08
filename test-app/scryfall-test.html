@@ -324,6 +324,27 @@
         .card-info-value {
             color: #2d3748;
         }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 2px solid #e2e8f0;
+        }
+
+        .pagination button {
+            padding: 10px 20px;
+            font-size: 14px;
+        }
+
+        .pagination-info {
+            color: #4a5568;
+            font-size: 14px;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -411,6 +432,10 @@
     <script>
         const API_BASE = 'http://localhost:3001/api/scryfall';
         let currentResults = [];
+        let currentPage = 1;
+        let totalPages = 1;
+        let hasMore = false;
+        let currentQuery = '';
 
         function updateStatus(status, text) {
             const dot = document.getElementById('statusDot');
@@ -439,7 +464,7 @@
             search();
         }
 
-        async function search() {
+        async function search(page = 1) {
             const query = document.getElementById('searchInput').value.trim();
             if (!query) {
                 showError('Please enter a search query');
@@ -458,9 +483,12 @@
             const searchBtn = document.getElementById('searchBtn');
             searchBtn.disabled = true;
 
+            currentQuery = query;
+            currentPage = page;
+
             try {
                 const startTime = Date.now();
-                const url = `${API_BASE}/search?q=${encodeURIComponent(query)}`;
+                const url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}`;
                 
                 const response = await fetch(url);
                 const data = await response.json();
@@ -472,10 +500,13 @@
                 }
 
                 currentResults = data.data || [];
+                hasMore = data.has_more || false;
+                totalPages = data.total_pages || 1;
                 
-                updateStatus('', `Found ${currentResults.length} cards (${duration}ms)`);
+                const totalResults = data.total || currentResults.length;
+                updateStatus('', `Found ${totalResults} total cards (${duration}ms)`);
                 document.getElementById('resultCount').textContent = 
-                    `${currentResults.length} card${currentResults.length !== 1 ? 's' : ''}`;
+                    `${totalResults} card${totalResults !== 1 ? 's' : ''} total`;
 
                 if (currentResults.length === 0) {
                     resultsContainer.innerHTML = `
@@ -497,6 +528,24 @@
             }
         }
 
+        function goToPage(page) {
+            if (page < 1 || page > totalPages) return;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            search(page);
+        }
+
+        function nextPage() {
+            if (hasMore || currentPage < totalPages) {
+                goToPage(currentPage + 1);
+            }
+        }
+
+        function previousPage() {
+            if (currentPage > 1) {
+                goToPage(currentPage - 1);
+            }
+        }
+
         function displayResults(cards) {
             const resultsContainer = document.getElementById('resultsContainer');
             
@@ -513,7 +562,24 @@
                 `;
             }).join('');
 
-            resultsContainer.innerHTML = `<div class="card-grid">${gridHTML}</div>`;
+            const paginationHTML = totalPages > 1 ? `
+                <div class="pagination">
+                    <button onclick="previousPage()" ${currentPage === 1 ? 'disabled' : ''}>
+                        ← Previous
+                    </button>
+                    <span class="pagination-info">
+                        Page ${currentPage} of ${totalPages}
+                    </span>
+                    <button onclick="nextPage()" ${!hasMore && currentPage >= totalPages ? 'disabled' : ''}>
+                        Next →
+                    </button>
+                </div>
+            ` : '';
+
+            resultsContainer.innerHTML = `
+                <div class="card-grid">${gridHTML}</div>
+                ${paginationHTML}
+            `;
         }
 
         function showCardDetails(index) {

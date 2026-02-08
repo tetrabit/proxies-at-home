@@ -313,14 +313,23 @@ router.get("/search", async (req: Request, res: Response) => {
         if (await isMicroserviceAvailable()) {
             debugLog(`[ScryfallProxy] Using microservice for search: ${processedQ}`);
             const client = getScryfallClient();
-            const response = await client.searchCards({ q: processedQ });
+            
+            // Build search params for microservice
+            const searchParams: Record<string, string> = { q: processedQ };
+            if (params.page) searchParams.page = params.page;
+            
+            const response = await client.searchCards(searchParams);
             
             if (response.success && response.data) {
-                // Microservice returns paginated data, extract the cards array
+                // Microservice returns paginated data with full metadata
                 const scryfallFormat = {
                     object: "list",
                     has_more: response.data.has_more,
                     data: response.data.data,
+                    page: response.data.page,
+                    page_size: response.data.page_size,
+                    total: response.data.total,
+                    total_pages: response.data.total_pages,
                 };
                 storeInCache("search", queryHash, scryfallFormat, CACHE_TTL.search);
                 return res.json(scryfallFormat);
