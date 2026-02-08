@@ -560,7 +560,9 @@
                 const sortOrder = document.getElementById('sortOrder').value;
                 const sortDir = document.getElementById('sortDir').value;
                 
-                let url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}&page_size=50`;
+                // Add smart default limit: cap at 1000 cards to prevent massive queries
+                // Users can still paginate through all 1000, which covers most use cases
+                let url = `${API_BASE}/search?q=${encodeURIComponent(query)}&page=${page}&page_size=50&limit=1000`;
                 if (sortOrder) {
                     url += `&order=${encodeURIComponent(sortOrder)}`;
                 }
