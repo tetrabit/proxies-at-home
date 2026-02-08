@@ -318,7 +318,7 @@ router.get("/search", async (req: Request, res: Response) => {
             // Build search params for microservice
             const searchParams: Record<string, string> = { q: processedQ };
             if (params.page) searchParams.page = params.page;
-            if (params.limit) searchParams.limit = params.limit;
+            if (params.limit) searchParams.page_size = params.limit; // Microservice uses page_size, not limit
             
             const response = await client.searchCards(searchParams);
             
