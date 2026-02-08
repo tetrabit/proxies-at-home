@@ -344,7 +344,7 @@ router.get("/search", async (req: Request, res: Response) => {
 
 /**
  * GET /api/scryfall/cards/:set/:number
- * Proxies Scryfall /cards/:set/:number
+ * Get card by set and collector number using microservice (with fallback to direct Scryfall API)
  */
 router.get("/cards/:set/:number", async (req: Request, res: Response) => {
     const { set, number } = req.params;
@@ -360,6 +360,22 @@ router.get("/cards/:set/:number", async (req: Request, res: Response) => {
     }
 
     try {
+        // Try microservice first (search by set and number)
+        if (!lang && await isMicroserviceAvailable()) {
+            debugLog(`[ScryfallProxy] Using microservice for card lookup: ${set}/${number}`);
+            const client = getScryfallClient();
+            const searchQuery = `set:${set} number:${number}`;
+            const response = await client.searchCards({ q: searchQuery, page_size: 1 });
+            
+            if (response.success && response.data && response.data.data.length > 0) {
+                const card = response.data.data[0];
+                storeInCache("card", queryHash, card, CACHE_TTL.card);
+                return res.json(card);
+            }
+        }
+        
+        // Fallback to direct Scryfall API (for lang param or if microservice unavailable)
+        debugLog(`[ScryfallProxy] Using direct Scryfall API for card lookup`);
         const url = lang ? `/cards/${set}/${number}/${lang}` : `/cards/${set}/${number}`;
         const data = await rateLimitedRequest(() => scryfallAxios.get(url));
         storeInCache("card", queryHash, data, CACHE_TTL.card);
@@ -397,13 +413,32 @@ router.get("/prints", async (req: Request, res: Response) => {
     }
 
     try {
-        // Fetch all prints using unique:prints mode
-        const allPrints = await getCardsWithImagesForCardInfo(
-            { name },
-            "prints", // Get all prints, not just unique art
-            lang,
-            true // fallback to English if no results in requested language
-        );
+        let allPrints: typeof import("../utils/getCardImagesPaged.js").ScryfallApiCard[] = [];
+        
+        // Try microservice first (for en language)
+        if (lang === "en" && await isMicroserviceAvailable()) {
+            debugLog(`[ScryfallProxy] Using microservice for prints: ${name}`);
+            const client = getScryfallClient();
+            // Search for all prints: exact name match with unique:prints
+            // Note: microservice search doesn't support unique param in query, 
+            // but returns all matching cards which we can deduplicate
+            const response = await client.searchCards({ q: `!"${name}" include:extras` });
+            
+            if (response.success && response.data && response.data.data.length > 0) {
+                allPrints = response.data.data as any[];
+            }
+        }
+        
+        // Fallback to direct Scryfall API or if non-English language requested
+        if (allPrints.length === 0) {
+            debugLog(`[ScryfallProxy] Using direct method for prints (lang=${lang})`);
+            allPrints = await getCardsWithImagesForCardInfo(
+                { name },
+                "prints", // Get all prints, not just unique art
+                lang,
+                true // fallback to English if no results in requested language
+            );
+        }
 
         // Extract prints with full metadata (including faceName for DFCs)
         const prints: Array<{
