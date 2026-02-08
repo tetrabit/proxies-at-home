@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import pkg from 'electron-updater';
 const { autoUpdater } = pkg;
+import { createScryfallMicroservice, MicroserviceManager } from './microservice-manager.js';
 
 // Settings file for persistent electron-specific settings
 function getSettingsPath() {
@@ -52,6 +53,8 @@ process.on('unhandledRejection', (reason) => {
 
 let mainWindow: BrowserWindow | null = null;
 let serverPort = 3001; // Default port, will be updated if server starts successfully
+let microserviceManager: MicroserviceManager | null = null;
+let microservicePort = 8080;
 
 // Auto-updater logging
 autoUpdater.logger = console;
@@ -228,9 +231,21 @@ autoUpdater.on('update-downloaded', (info: unknown) => {
 });
 
 app.whenReady().then(async () => {
+    const isDev = !app.isPackaged;
+
+    // Start Scryfall microservice first
+    try {
+        microserviceManager = createScryfallMicroservice();
+        microservicePort = await microserviceManager.start();
+        console.log('[Electron] Scryfall microservice started on port:', microservicePort);
+    } catch (err: unknown) {
+        console.error('[Electron] Failed to start microservice:', err);
+        const errorMessage = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+        dialog.showErrorBox('Microservice Error', `Failed to start Scryfall microservice:\n${errorMessage}`);
+    }
+
     // Start the Express server inside Electron's process
     // This makes the app standalone (no Node.js required on user machine)
-    const isDev = !app.isPackaged;
 
     // In dev, use relative path from electron/dist/
     // In production, server is in extraResources (resources/server/)
@@ -269,6 +284,7 @@ app.whenReady().then(async () => {
     }
 
     ipcMain.handle('get-server-url', () => `http://localhost:${serverPort}`);
+    ipcMain.handle('get-microservice-url', () => `http://localhost:${microservicePort}`);
     ipcMain.handle('get-app-version', () => app.getVersion());
     ipcMain.handle('get-update-channel', () => autoUpdater.channel || 'latest');
     ipcMain.handle('set-update-channel', (_event, channel: string) => {
@@ -350,4 +366,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', async () => {
+    if (microserviceManager) {
+        await microserviceManager.stop();
+    }
 });
