@@ -27,6 +27,12 @@ vi.mock("axios", () => {
   return { default: mockAxios };
 });
 
+// Mock microservice client - always unavailable in tests
+vi.mock("../services/scryfallMicroserviceClient.js", () => ({
+  getScryfallClient: vi.fn(),
+  isMicroserviceAvailable: vi.fn(() => Promise.resolve(false)),
+}));
+
 // Mock getCardsWithImagesForCardInfo
 vi.mock("../utils/getCardImagesPaged.js", () => ({
   getCardsWithImagesForCardInfo: vi.fn(),
