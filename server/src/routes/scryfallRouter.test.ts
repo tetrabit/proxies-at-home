@@ -25,6 +25,12 @@ vi.mock('axios', () => {
     return { default: mockAxios };
 });
 
+// Mock microservice client (always unavailable in tests, so we test fallback behavior)
+vi.mock('../services/scryfallMicroserviceClient.js', () => ({
+    getScryfallClient: vi.fn(),
+    isMicroserviceAvailable: vi.fn(() => Promise.resolve(false)),
+}));
+
 import { scryfallRouter } from './scryfallRouter.js';
 import axios from 'axios';
 

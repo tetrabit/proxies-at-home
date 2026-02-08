@@ -5,6 +5,7 @@ import { getDatabase } from "../db/db.js";
 import { debugLog } from "../utils/debug.js";
 import { isValidScryfallType, isKnownToken } from "../utils/scryfallCatalog.js";
 import { getCardsWithImagesForCardInfo } from "../utils/getCardImagesPaged.js";
+import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 
 const router = Router();
 
@@ -127,7 +128,7 @@ router.get("/autocomplete", async (req: Request, res: Response) => {
 
 /**
  * GET /api/scryfall/named
- * Proxies Scryfall /cards/named
+ * Get card by name using microservice (with fallback to direct Scryfall API)
  * Supports format=image for direct image redirects
  */
 router.get("/named", async (req: Request, res: Response) => {
@@ -161,6 +162,20 @@ router.get("/named", async (req: Request, res: Response) => {
     }
 
     try {
+        // Try microservice first (it doesn't support set/version params yet, so fallback if needed)
+        if (!set && !version && await isMicroserviceAvailable()) {
+            debugLog(`[ScryfallProxy] Using microservice for named: ${exact || fuzzy}`);
+            const client = getScryfallClient();
+            const response = await client.getCardByName({ exact, fuzzy });
+            
+            if (response.success && response.data) {
+                storeInCache("named", queryHash, response.data, CACHE_TTL.named);
+                return res.json(response.data);
+            }
+        }
+        
+        // Fallback to direct Scryfall API (for set/version params or if microservice unavailable)
+        debugLog(`[ScryfallProxy] Using direct Scryfall API for named query`);
         const data = await rateLimitedRequest(() =>
             scryfallAxios.get("/cards/named", { params })
         );
@@ -260,7 +275,7 @@ function parseTypePrefix(query: string): { query: string; isToken: boolean } {
 
 /**
  * GET /api/scryfall/search
- * Proxies Scryfall /cards/search
+ * Searches for cards using the microservice (with fallback to direct Scryfall API)
  */
 router.get("/search", async (req: Request, res: Response) => {
     const q = req.query.q as string;
@@ -294,6 +309,26 @@ router.get("/search", async (req: Request, res: Response) => {
     }
 
     try {
+        // Try microservice first
+        if (await isMicroserviceAvailable()) {
+            debugLog(`[ScryfallProxy] Using microservice for search: ${processedQ}`);
+            const client = getScryfallClient();
+            const response = await client.searchCards({ q: processedQ });
+            
+            if (response.success && response.data) {
+                // Microservice returns paginated data, extract the cards array
+                const scryfallFormat = {
+                    object: "list",
+                    has_more: response.data.has_more,
+                    data: response.data.data,
+                };
+                storeInCache("search", queryHash, scryfallFormat, CACHE_TTL.search);
+                return res.json(scryfallFormat);
+            }
+        }
+        
+        // Fallback to direct Scryfall API
+        debugLog(`[ScryfallProxy] Microservice unavailable, using direct Scryfall API`);
         const data = await rateLimitedRequest(() =>
             scryfallAxios.get("/cards/search", { params })
         );
