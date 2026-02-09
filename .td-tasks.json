@@ -78,14 +78,16 @@
     {
       "id": 6,
       "title": "Complete scryfall-cache microservice migration (5% remaining)",
-      "status": "todo",
+      "status": "in-progress",
       "priority": "high",
       "description": "Migration is at 95% complete. Remaining work: Migrate final endpoint(s) from server to microservice. Based on current architecture, likely involves /cards/search or other remaining Scryfall API endpoints. Success criteria: 100% migration, all server endpoints using microservice, remove direct Scryfall API calls from server.",
-      "notes": [],
+      "notes": [
+        "[2026-02-09T06:03:42.977Z] Starting final 5% of microservice migration. Focus: migrate remaining endpoints (autocomplete integrated in Task #3, need to verify /cards/:set/:number and /prints). Goal: achieve 100% completion and unlock deployment readiness."
+      ],
       "blockers": [],
       "dependencies": [],
       "createdAt": "2026-02-09T05:59:37.900Z",
-      "updatedAt": "2026-02-09T05:59:37.901Z",
+      "updatedAt": "2026-02-09T06:03:42.977Z",
       "completedAt": null
     },
     {
