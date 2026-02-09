@@ -301,6 +301,47 @@ function exportTasks() {
   console.log(JSON.stringify(data, null, 2));
 }
 
+function showCurrentWork() {
+  const data = loadTasks();
+  const currentTasks = data.tasks.filter(t => t.status === 'in-progress');
+  
+  if (currentTasks.length === 0) {
+    console.log('\n⚠️  No tasks currently in progress.');
+    console.log('\nTo start working on a task, use:');
+    console.log('  td update <task-id> --status in-progress');
+    console.log('\nTo see all available tasks:');
+    console.log('  td list --status todo');
+    return;
+  }
+  
+  console.log('\n🔄 Current Work:\n');
+  currentTasks.forEach(task => {
+    const priorityBadge = {
+      'high': '🔴',
+      'medium': '🟡',
+      'low': '🟢'
+    }[task.priority] || '';
+    
+    console.log(`#${task.id} ${priorityBadge} ${task.title}`);
+    console.log(`   Priority: ${task.priority} | Started: ${new Date(task.updatedAt).toLocaleString()}`);
+    if (task.description) {
+      console.log(`   ${task.description.substring(0, 100)}${task.description.length > 100 ? '...' : ''}`);
+    }
+    if (task.notes && task.notes.length > 0) {
+      const latestNote = task.notes[task.notes.length - 1];
+      const noteText = typeof latestNote === 'string' ? latestNote : latestNote.text;
+      if (noteText) {
+        console.log(`   Latest: ${noteText.substring(0, 80)}${noteText.length > 80 ? '...' : ''}`);
+      }
+    }
+    console.log('');
+  });
+  
+  console.log(`\n📊 Summary: ${currentTasks.length} task${currentTasks.length !== 1 ? 's' : ''} in progress`);
+  console.log('\nTo view details: td show <task-id>');
+  console.log('To complete a task: td update <task-id> --status complete');
+}
+
 // CLI argument parsing
 const args = process.argv.slice(2);
 const command = args[0];
@@ -314,6 +355,7 @@ if (!command) {
   console.log('  td update <task-id> [--status status] [--priority priority] [--notes "text"] [--blocker "text"]');
   console.log('  td link <task-id> <dependency-id>');
   console.log('  td archive <task-id>');
+  console.log('  td current              # Show current work (in-progress tasks)');
   console.log('  td status');
   console.log('  td report [--format text|markdown]');
   console.log('  td export');
@@ -383,6 +425,10 @@ switch (command) {
       process.exit(1);
     }
     archiveTask(archiveId);
+    break;
+    
+  case 'current':
+    showCurrentWork();
     break;
     
   case 'status':
