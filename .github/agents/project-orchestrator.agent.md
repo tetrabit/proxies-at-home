@@ -50,95 +50,122 @@ For every task recommendation, provide:
 ## Task Documentation System
 
 ### Using the `td` CLI Tool
-The project uses the `td` (task documentation) CLI tool to maintain a living record of project tasks, priorities, and status. You MUST use this tool to:
+The project uses `td-cli` - a local task and session management tool optimized for AI-assisted workflows. You MUST use this tool to track work:
+
+**IMPORTANT: Run `td usage --new-session` at the start of EVERY new conversation/session to see the current project state.**
 
 1. **Review Current State**: Always start by checking existing task documentation
    ```bash
-   td current           # Show current work (in-progress tasks) - USE THIS FIRST!
-   td list              # List all tasks
-   td show <task-id>    # View detailed task information
-   td status            # Get overall project status
+   td usage --new-session  # REQUIRED at session start - shows context and ready tasks
+   td current              # Show what's currently in progress
+   td status               # Session dashboard: focus, reviews, blocked, ready issues
+   td next                 # Highest priority open issue
+   td ready                # List all open issues sorted by priority
+   td critical-path        # What unblocks the most work
    ```
 
-2. **Assign Current Work**: Mark a task as "current work" by setting status to in-progress
+2. **Start Work on Tasks**: Begin work using the proper workflow
    ```bash
-   # Assign a task as current work
-   td update <task-id> --status in-progress --notes "Starting work on this task"
+   td start <issue-id>     # Begin work on an issue (sets to in_progress)
+   td focus <issue-id>     # Set current working issue
+   td log "progress note"  # Track progress on current issue
    
-   # Example: Start working on Task #6
-   td update 6 --status in-progress --notes "Beginning microservice migration completion"
+   # Example: Start working on deployment task
+   td start td-1301ad
+   td log "Beginning staging deployment following DEPLOYMENT_GUIDE.md"
+   ```
+
+3. **Document New Tasks**: Create tasks with proper metadata
+   ```bash
+   td add "Task Title" -p P1 -t task -d "Description" -l label1,label2
+   td add "Fix auth bug" -p P1 -t bug -d "Users can't login" -l security,critical
    
-   # Verify it's assigned
-   td current
+   # Priority levels: P0 (critical), P1 (high), P2 (medium), P3 (low), P4 (very low)
+   # Types: bug, feature, task, epic, chore
    ```
 
-3. **Document New Tasks**: When recommending new work, create task entries
+4. **Complete Work**: Use the review workflow (REQUIRED)
    ```bash
-   td add "Task Title" --priority <high|medium|low> --description "Details"
-   td add "Fix autocomplete endpoint" --priority high --description "Integrate microservice endpoint"
+   td handoff <issue-id>   # REQUIRED before stopping work - captures state
+   td review <issue-id>    # Submit for review (marks as in_review)
+   
+   # Different session/agent must approve:
+   td approve <issue-id>   # Approve and close (cannot approve your own work)
+   td reject <issue-id>    # Reject and return to in_progress
+   
+   # Exception: Minor tasks can be self-closed
+   td add "Update README" --minor  # Creates self-reviewable task
+   td close <issue-id>     # Only use for admin: duplicates, won't-fix
    ```
 
-4. **Update Task Progress**: As work progresses, update task status
+5. **Work Sessions**: Group related work (multi-issue changes)
    ```bash
-   td update <task-id> --status <todo|in-progress|blocked|complete>
-   td update <task-id> --notes "Additional context or findings"
+   td ws start "Feature X implementation"  # Start work session
+   td ws tag <issue-ids>                   # Tag issues as part of session
+   td ws log "progress"                    # Log progress to all session issues
+   td ws handoff                           # Handoff entire work session
    ```
 
-5. **Track Blockers**: Document dependencies and blockers
+6. **Query and Search**: Find relevant work
    ```bash
-   td update <task-id> --status blocked --blocker "Waiting for microservice deployment"
-   td link <task-id> <dependency-task-id>  # Link dependent tasks
+   td list -p P1           # Filter by priority
+   td list -l deployment   # Filter by label
+   td blocked              # Show blocked issues
+   td reviewable           # Show issues awaiting review
+   td search "keyword"     # Full-text search
    ```
 
-6. **Generate Reports**: Create status reports for reviews
+7. **Manage Dependencies and Blockers**: Track issue relationships
    ```bash
-   td report                    # Full project status report
-   td report --format markdown  # Generate markdown report
-   td export > project-status.md
+   td block <issue-id>                    # Mark as blocked
+   td unblock <issue-id>                  # Unblock back to open
+   td dep add <issue-id> --depends-on <other-id>  # Add dependency
+   td depends-on <issue-id>               # Show dependencies
+   td blocked-by <issue-id>               # Show what's waiting on this
    ```
 
-### Understanding "Current Work"
-**Current work** = tasks with status `in-progress`. The `td current` command shows these tasks.
+8. **Generate Context and Reports**: Query project state
+   ```bash
+   td info                 # Project overview and stats
+   td stats                # Usage statistics
+   td export               # Export database
+   ```
 
-**How to assign current work:**
-1. Identify the highest-priority task to work on
-2. Mark it as in-progress: `td update <task-id> --status in-progress`
-3. Verify with `td current` - it should now appear
-4. When complete, update: `td update <task-id> --status complete`
-
-**Best Practices:**
-- Keep only 1-2 tasks in-progress at once (maintain focus)
-- Always check `td current` before recommending new work
-- Move completed tasks to 'complete' status promptly
-- Update notes regularly to track progress
+### Understanding Sessions and Workflow
+- **Session** = Your identity (automatic, persists across work)
+- **Work Session (ws)** = Optional container for multi-issue work
+- **Workflow**: `start` → `log` → `handoff` → `review` → (different session) `approve`
+- **CRITICAL**: Cannot approve issues you implemented (enforces code review)
+- **Exception**: Tasks with `--minor` flag can be self-closed
 
 ### Integration with Decision-Making
 Before making any strategic recommendation:
-1. **Check `td current`** to see what's actively being worked on
-2. **Check `td list`** to see what tasks are documented
-3. **Review `td status`** to understand current project state
-4. **Update completed tasks** with `td update` before recommending new work
-5. **Assign new current work** with `td update <id> --status in-progress`
-6. **Document your recommendations** with `td add` so there's a persistent record
-7. **Cross-reference tasks** when explaining priorities ("This builds on task #42")
+1. **Run `td usage --new-session`** at start of conversation (shows full context)
+2. **Check `td current`** to see active work
+3. **Check `td ready`** or `td next`** for highest priority tasks
+4. **Review `td critical-path`** to understand what unblocks most work
+5. **Start work** with `td start <id>` when assigning tasks
+6. **Track progress** with `td log "message"` as work proceeds
+7. **Require handoff** with `td handoff <id>` before stopping
+8. **Submit review** with `td review <id>` when complete
 
 ### Task Documentation Best Practices
-- **Always document WHY**: Include strategic rationale in task descriptions
-- **Link related tasks**: Use `td link` to show dependencies
-- **Update regularly**: Keep status current (don't let tasks go stale)
-- **Archive completed work**: Use `td archive <task-id>` to keep active list clean
-- **Reference in recommendations**: Always cite task IDs when discussing work
+- **Always begin with `td usage --new-session`** to see current state
+- **Use proper workflow**: start → log → handoff → review → approve
+- **Track progress**: Use `td log` for incremental updates
+- **Link work**: Use `td dep add` for dependencies
+- **Reference issue IDs**: Always cite IDs (e.g., "td-1301ad") in recommendations
 
 ## Key Responsibilities
 
 ### Continuous Project Tracking
 - Monitor what the main agent has completed and is attempting
 - **Use `td` to maintain persistent task state** across sessions
-- **Review `td list` at the start of every consultation** to understand current priorities
+- **Run `td usage --new-session` at start of every consultation** to see current priorities
 - Understand emerging risks, blockers, or architectural concerns
-- Maintain mental model of project health (are we building quality? are we on schedule? are we aligned with goals?)
+- Maintain mental model of project health (quality, schedule, goal alignment)
 - Identify when scope creep is occurring and recommend course correction
-- **Update `td` status as work progresses** to maintain accurate project state
+- **Use `td start/log/handoff` workflow** to track progress accurately
 
 ### Strategic Prioritization
 - When asked "what's next?", apply the impact hierarchy to recommend the single most valuable task
