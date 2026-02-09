@@ -155,6 +155,67 @@ npm run electron:build:linux # Linux
 - Checks for updates on launch
 - Two channels: `latest` (auto) and `stable` (manual)
 
+## Security Configuration
+
+### Production Security Hardening
+
+**Security Headers (helmet.js):**
+
+The server includes helmet.js for security headers including:
+- Content Security Policy (CSP) - Prevents XSS attacks
+- HTTP Strict Transport Security (HSTS) - Forces HTTPS
+- X-Frame-Options - Prevents clickjacking
+- X-Content-Type-Options - Prevents MIME sniffing
+
+**CORS Configuration:**
+
+Production requires explicit origin whitelisting via environment variables:
+
+```bash
+# server/.env.production
+ALLOWED_ORIGINS=https://proxxied.netlify.app,https://app.proxxied.com
+NODE_ENV=production
+```
+
+**Development vs. Production:**
+
+- **Development:** Allows all localhost origins automatically
+- **Production:** Only allows origins specified in `ALLOWED_ORIGINS`
+
+**Configuration File:**
+
+Copy `server/.env.production.example` to `server/.env.production` and update:
+
+```bash
+cd server
+cp .env.production.example .env.production
+# Edit .env.production with your production domains
+```
+
+### Health Check Endpoints
+
+**Simple Health Check:**
+```bash
+GET /health
+# Returns: {"status":"ok","uptime":123,"timestamp":"2026-02-09T..."}
+```
+
+**Deep Health Check:**
+```bash
+GET /health/deep
+# Returns: {"status":"ok|degraded","checks":{"database":"ok","microservice":"ok"}}
+```
+
+Use these endpoints for:
+- Load balancer health checks
+- Kubernetes liveness/readiness probes
+- Monitoring system integration
+- Production status dashboards
+
+**Response Codes:**
+- `200` - All systems healthy
+- `503` - Degraded or unavailable (database/microservice issues)
+
 ## Production Checklist
 
 ### Pre-Deployment
@@ -177,9 +238,11 @@ npm run electron:build:linux # Linux
 
 - [ ] SQLite database initialized
 - [ ] Cache TTLs configured (default: 7 days)
-- [ ] Rate limiting configured
+- [ ] Security headers enabled (helmet.js configured)
+- [ ] CORS origins restricted (ALLOWED_ORIGINS set)
+- [ ] Health endpoints responding (`/health` and `/health/deep`)
+- [ ] Rate limiting configured (if needed)
 - [ ] Error logging enabled
-- [ ] CORS configured if needed
 
 ### Microservice
 

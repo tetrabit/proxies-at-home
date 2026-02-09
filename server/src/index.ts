@@ -1,6 +1,7 @@
 import compression from "compression";
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import { fileURLToPath } from "url";
 import { archidektRouter } from "./routes/archidektRouter.js";
 import { moxfieldRouter } from "./routes/moxfieldRouter.js";
@@ -34,8 +35,46 @@ setInterval(() => cleanupExpiredShares(), 60 * 60 * 1000); // Every hour
 export function startServer(port: number = 3001): Promise<number> {
   const app = express();
 
+  // Security headers via helmet.js
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'"],
+      },
+    },
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true,
+    },
+  }));
+
+  // CORS configuration with environment-based origin restriction
+  const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(",")
+    : ["http://localhost:5173", "http://localhost:3000"];
+  
   app.use(cors({
-    origin: (_, cb) => cb(null, true),
+    origin: (origin, cb) => {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return cb(null, true);
+      
+      // Check if origin is in allowed list
+      if (allowedOrigins.includes(origin)) {
+        return cb(null, true);
+      }
+      
+      // In development, allow all localhost origins
+      if (process.env.NODE_ENV !== "production" && origin.includes("localhost")) {
+        return cb(null, true);
+      }
+      
+      cb(new Error("Not allowed by CORS"));
+    },
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     maxAge: 86400,

@@ -137,7 +137,7 @@ export function useScryfallPreview(query: string) {
             // Perform search
             try {
                 setIsLoading(true);
-                const res = await fetch(`${API_BASE}/api/scryfall/search?q=${encodeURIComponent(searchQuery)}`, {
+                const res = await fetch(`${API_BASE}/api/scryfall/search?q=${encodeURIComponent(searchQuery)}&page_size=100`, {
                     signal: controller.signal
                 });
 

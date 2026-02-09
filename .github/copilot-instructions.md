@@ -1,6 +1,16 @@
 # Proxxied Development Guide
 
-Proxxied is an MTG proxy printing tool with three main components: React client, Express server, and Electron wrapper.
+## MANDATORY: Use td for Task Management
+
+Run td usage --new-session at conversation start (or after /clear). This tells you what to work on next.
+
+Sessions are automatic (based on terminal/agent context). Optional:
+- td session "name" to label the current session
+- td session --new to force a new session in the same context
+
+Use td usage -q after first read.
+
+Proxxied is an MTG proxy printing tool with four main components: React client, Express server, Rust microservice (Scryfall cache), and Electron wrapper.
 
 ## Build, Test, and Lint Commands
 
@@ -16,23 +26,27 @@ npm run release:minor        # Minor release (1.0.0 -> 1.1.0)
 npm run release:major        # Major release (1.0.0 -> 2.0.0)
 npm run release:promote      # Promote latest to stable channel
 npm run release:dry          # Test release script without making changes
+npm run test:contract        # Run API contract tests against Scryfall
 ```
 
 ### Client (`cd client`)
 ```bash
 npm run dev                  # Start dev server (http://localhost:5173)
 npm run build                # Production build
+npm run build:prerender      # Build with static prerendering for Netlify
 npm run lint                 # ESLint
 npm test                     # Run all Vitest unit tests
 npm run test:ui              # Vitest UI with coverage
 npm run test:e2e             # Playwright end-to-end tests (all browsers)
 npm run test:e2e:ui          # Playwright UI mode
+npm run preview              # Preview production build locally
 ```
 
 **Single test execution:**
 ```bash
 npx vitest run src/store/cards.test.ts           # Run specific unit test file
 npx playwright test tests/e2e/import.spec.ts     # Run specific e2e test
+npx vitest run --reporter=verbose src/helpers/   # Run all tests in a directory
 ```
 
 ### Server (`cd server`)
@@ -48,20 +62,51 @@ npm run test:ui              # Vitest UI with coverage
 **Single test execution:**
 ```bash
 npx vitest run src/routes/scryfallRouter.test.ts
+npx vitest run --reporter=verbose src/routes/    # Run all router tests
 ```
 
 ## Architecture Overview
 
 ### Multi-Component Stack
-- **Client**: React 19 + TypeScript + Vite + TailwindCSS
+- **Client**: React 19 + TypeScript + Vite + TailwindCSS + Flowbite
 - **Server**: Express + better-sqlite3 (caches Scryfall API responses)
-- **Electron**: Bundles both client + server into desktop app
+- **Microservice**: Rust binary (Scryfall cache, optional, see ADR-001)
+- **Electron**: Bundles client + server + Rust microservice into desktop app
 - **Shared**: Common TypeScript types in `shared/` directory
 
-### Three Deployment Modes
+### Four Deployment Modes
 1. **Web (client only)**: Client deployed to Netlify, makes API calls directly to Scryfall
 2. **Web + Server**: Client proxies API calls to `/api/*` → server handles caching
-3. **Electron Desktop**: Bundles both components with embedded SQLite cache
+3. **Web + Microservice**: Client → Rust microservice (future architecture)
+4. **Electron Desktop**: Bundles all components with embedded SQLite/PostgreSQL cache
+
+### Directory Structure
+```
+proxies-at-home/
+├── client/              # React frontend (Vite + TypeScript)
+│   ├── src/
+│   │   ├── components/  # React components
+│   │   ├── helpers/     # Utilities, APIs, workers
+│   │   ├── pages/       # Route pages (lazy-loaded)
+│   │   ├── store/       # Zustand state management
+│   │   └── db.ts        # Dexie (IndexedDB) schema
+│   ├── tests/e2e/       # Playwright tests
+│   └── public/          # Static assets
+├── server/              # Express backend (Node.js)
+│   ├── src/
+│   │   ├── routes/      # API routes
+│   │   ├── db/          # SQLite database
+│   │   └── index.ts     # Server entry point
+│   └── cardbacks/       # User-uploaded cardbacks
+├── electron/            # Electron wrapper
+│   ├── main.ts          # Electron main process
+│   ├── preload.cts      # Preload script (IPC)
+│   └── microservice-manager.ts  # Manages Rust binary lifecycle
+├── shared/              # Shared TypeScript types
+├── scripts/             # Build & release scripts
+├── docs/                # Architecture Decision Records (ADRs)
+└── test-app/            # Standalone Scryfall query tester
+```
 
 ### Client Architecture
 
@@ -85,6 +130,11 @@ npx vitest run src/routes/scryfallRouter.test.ts
 - `client/src/helpers/imageProcessor.ts` - Canvas-based bleed generation, DPI scaling
 - Generates multiple variants: display (72dpi), export (1200dpi), darkened modes
 - Distance field calculation (JFA) for edge-aware darkening
+- **Web Workers**: Heavy processing runs in workers (see `*.worker.ts` files)
+  - `bleed.webgl.worker.ts` - WebGL-accelerated bleed generation
+  - `effect.worker.ts` - Image effects (darken, contrast)
+  - `pdf.worker.ts` - PDF generation offloaded to worker
+  - `cardCanvasWorker.ts` - Canvas operations in worker thread
 
 **Key Conventions:**
 - Card uniqueness: `uuid` field (generated per-project instance, not card identity)
@@ -116,14 +166,20 @@ npx vitest run src/routes/scryfallRouter.test.ts
 ### Component Patterns
 - **Lazy loading**: Use `lazy()` for pages to split bundles (`App.tsx`)
 - **Modal state**: Managed in Zustand stores, not component state
-- **Drag & Drop**: `@dnd-kit` for card grid reordering
+- **Drag & Drop**: `@dnd-kit` for card grid reordering (sortable, modifiers)
 - **Virtual scrolling**: `@tanstack/react-virtual` for large cardback galleries
+- **Animations**: `@react-spring/web` for smooth transitions
+- **Gestures**: `@use-gesture/react` for pinch-zoom, drag interactions
+- **Icons**: `lucide-react` for consistent icon system
 
 ### Testing Patterns
 - **Vitest**: Unit tests colocated (`*.test.ts` next to implementation)
 - **Mocking**: Use `vi.mock()` to isolate dependencies (see `cards.test.ts`)
 - **IndexedDB**: Tests use `fake-indexeddb` package
 - **Playwright**: E2E tests in `client/tests/e2e/` with retry logic (1-2 retries)
+- **Test Isolation**: Each test should be independent, no shared state
+- **Coverage thresholds**: 80% for lines, branches, functions, statements (client only)
+- **Retry logic**: Vitest retries 5 times for flaky tests (60s timeout for coverage runs)
 
 ### Type Safety
 - **Shared types**: Import from `@/types` or `../../../shared/types` depending on context
@@ -135,6 +191,9 @@ npx vitest run src/routes/scryfallRouter.test.ts
 - **Blob caching**: Multiple DPI variants stored to avoid reprocessing
 - **SQLite indexes**: On frequently queried fields (card name, set code)
 - **Compression**: gzip for JSON responses (except SSE streams)
+- **Web Workers**: Offload heavy processing (image processing, PDF generation)
+- **PWA caching**: Service worker caches assets up to 5MB (see `vite.config.ts`)
+- **LRU cache**: Server uses `lru-cache` for hot data in memory
 
 ### Error Handling
 - **API failures**: axios-retry with exponential backoff
@@ -147,17 +206,25 @@ npx vitest run src/routes/scryfallRouter.test.ts
 - Builds from `client/` directory
 - Static site generation via `react-static-prerender`
 - API proxied to Scryfall (no server caching)
+- Environment: Production build with base URL rewriting
 
 ### Electron Desktop
 - GitHub Actions workflow: `.github/workflows/release.yml`
 - Release channels: `latest` (auto-updates) and `stable` (manual promotion)
 - Platform builds: Windows (NSIS), macOS (DMG/ZIP), Linux (AppImage/deb)
 - Native module handling: `better-sqlite3` requires platform-specific rebuilds
+- **Rust microservice**: Bundled via `scripts/build-microservice.sh` (see ADR-001)
+- **Lifecycle management**: Electron starts/stops Rust binary via `microservice-manager.ts`
 
 ### Version Management
 - Semver with npm scripts: `npm run release:patch/minor/major`
 - Automated changelog generation from commits
 - Two-step release: build → promote to stable
+- Release script: `scripts/release.mjs` handles versioning, tagging, publishing
+
+### CI/CD
+- GitHub Actions handles automated builds and releases
+- Contract tests run against live Scryfall API (`npm run test:contract`)
 
 ## Common Pitfalls
 
@@ -177,9 +244,45 @@ npx vitest run src/routes/scryfallRouter.test.ts
 - **File protocol**: Use `base: './'` in Vite config for relative paths
 - **Native modules**: Rebuild for Electron runtime (`electron-builder` handles this)
 - **Security**: IPC communication via preload scripts only
+- **Microservice binary**: Must be in `extraResources` for bundling
+- **Process lifecycle**: Always clean up child processes (Rust binary) on exit
+- **Platform detection**: Use `process.platform` to locate correct binary
 
-## ESLint Configuration
+## Code Quality & Tooling
+
+### ESLint Configuration
 - Uses TypeScript ESLint with recommended rules
 - React Hooks rules: `rules-of-hooks` (error), `exhaustive-deps` (warn)
 - Unused vars: Warn with `_` prefix ignore pattern
 - Client and server have separate configs (client adds React plugins)
+- Flat config format (ESM): `eslint.config.js`
+
+### Formatting & Linting
+- Prettier configured with `.prettierrc` and `.prettierignore`
+- TailwindCSS v4 with Vite plugin (`@tailwindcss/vite`)
+- PostCSS config at root: `postcss.config.js`
+
+### Development Tools
+- **PowerShell script**: `proxxied.ps1` for Windows users (install, dev, build)
+- **Test app**: Standalone Scryfall query tester in `test-app/` directory
+- **Git hooks**: Custom hooks in `.githooks/` directory
+
+## Important Files & Patterns
+
+### Configuration Files
+- `vite.config.ts` - Vite build config with manual chunking strategy
+- `playwright.config.ts` - E2E test configuration with retry logic
+- `vitest.config.ts` - Unit test configuration (merged with vite config in client)
+- `tsconfig.json` - TypeScript configuration (separate for client/server/electron)
+
+### Documentation
+- `docs/ADR-*.md` - Architecture Decision Records
+- `ARCHITECTURE_SUMMARY.md` - High-level overview
+- `*_COMPLETE.md` - Phase completion summaries
+- `*_PLAN.md` - Migration and optimization plans
+
+### Key Implementation Files
+- `client/src/db.ts` - Dexie schema (5 tables: cards, images, cardbacks, projects, userPreferences)
+- `server/src/db/db.ts` - SQLite schema (4 tables: scryfall_cache, bulk_cards, card_images, shares)
+- `shared/types.ts` - Cross-package type definitions
+- `electron/microservice-manager.ts` - Rust binary lifecycle management
