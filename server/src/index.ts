@@ -53,6 +53,59 @@ export function startServer(port: number = 3001): Promise<number> {
   }));
 
   app.use(express.json({ limit: "1mb" }));
+  
+  // Health check endpoints
+  const startTime = Date.now();
+  
+  // Simple health check
+  app.get("/health", (req, res) => {
+    res.json({
+      status: "ok",
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      timestamp: new Date().toISOString()
+    });
+  });
+  
+  // Deep health check (includes database and microservice)
+  app.get("/health/deep", async (req, res) => {
+    const health: any = {
+      status: "ok",
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      timestamp: new Date().toISOString(),
+      checks: {
+        database: "unknown",
+        microservice: "unknown"
+      }
+    };
+    
+    // Check database
+    try {
+      const { getDatabase } = await import("./db/db.js");
+      const db = getDatabase();
+      db.prepare("SELECT 1").get();
+      health.checks.database = "ok";
+    } catch (error) {
+      health.checks.database = "error";
+      health.status = "degraded";
+    }
+    
+    // Check microservice
+    try {
+      const { isMicroserviceAvailable } = await import("./services/scryfallMicroserviceClient.js");
+      const available = await isMicroserviceAvailable();
+      health.checks.microservice = available ? "ok" : "unavailable";
+      if (!available) {
+        health.status = "degraded"; // Degraded but functional (falls back to Scryfall API)
+      }
+    } catch (error) {
+      health.checks.microservice = "error";
+      health.status = "degraded";
+    }
+    
+    const statusCode = health.status === "ok" ? 200 : 503;
+    res.status(statusCode).json(health);
+  });
+  
   app.use("/api/archidekt", archidektRouter);
   app.use("/api/moxfield", moxfieldRouter);
   app.use("/api/cards/images", imageRouter);
