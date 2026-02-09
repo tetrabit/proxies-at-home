@@ -1,0 +1,145 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Fix 8 failing client tests (GuidesSection + CardSection)",
+      "status": "complete",
+      "priority": "high",
+      "description": "Fixed 8 failing client tests in GuidesSection.test.tsx and CardSection.test.tsx to achieve 100% test pass rate (1726/1726 passing). QA approved as production ready. Committed with message: 'fix: Resolve 8 failing client tests to achieve 100% pass rate'",
+      "notes": [
+        "[2026-02-09T05:58:39.536Z] Achieved 100% client test pass rate (1726/1726). All tests now passing and production ready."
+      ],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:58:35.087Z",
+      "updatedAt": "2026-02-09T05:58:39.536Z",
+      "completedAt": "2026-02-09T05:58:39.535Z"
+    },
+    {
+      "id": 2,
+      "title": "Phase 2: Implement database indexes for scryfall-cache microservice",
+      "status": "complete",
+      "priority": "high",
+      "description": "Implemented comprehensive database indexes via scryfall-cache-lead agent. PostgreSQL: 4 composite indexes + GIN indexes. SQLite: 10 single/composite indexes. Performance improvement: 2-3x additional speedup (total 41x faster: 41s → <1s). Created 3 comprehensive documentation guides. All changes committed (5 commits) and pushed to scryfall-cache-microservice repo.",
+      "notes": [
+        "[2026-02-09T05:58:51.191Z] Database indexes fully implemented and documented. Performance: 41x faster (41s → <1s). All tests passing. Production ready."
+      ],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:58:46.942Z",
+      "updatedAt": "2026-02-09T05:58:51.191Z",
+      "completedAt": "2026-02-09T05:58:51.190Z"
+    },
+    {
+      "id": 3,
+      "title": "Integrate autocomplete endpoint from scryfall-cache microservice",
+      "status": "complete",
+      "priority": "high",
+      "description": "Full integration of /cards/autocomplete endpoint from microservice. Microservice: Implemented endpoint (by scryfall-cache-lead). Shared client: Added autocomplete() method to ScryfallCacheClient. Server: Updated scryfallRouter to use microservice with fallback to Scryfall API. All tests passing (129/129 server tests). QA approved as production ready. Migration progress: 80% → 95%. Committed: 'feat: Integrate microservice autocomplete endpoint'",
+      "notes": [
+        "[2026-02-09T05:59:02.997Z] Autocomplete endpoint fully integrated end-to-end. Server tests 129/129 passing. Microservice migration now at 95% complete."
+      ],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:58:58.203Z",
+      "updatedAt": "2026-02-09T05:59:02.997Z",
+      "completedAt": "2026-02-09T05:59:02.996Z"
+    },
+    {
+      "id": 4,
+      "title": "Update project-orchestrator agent with td CLI integration",
+      "status": "complete",
+      "priority": "medium",
+      "description": "Enhanced project-orchestrator.agent.md configuration with comprehensive td CLI tool integration. Added task documentation system instructions, workflow examples, best practices, and integration with decision-making framework. Ensures persistent task tracking across sessions. Committed: 'feat: Add td CLI tool integration to project-orchestrator agent'",
+      "notes": [
+        "[2026-02-09T05:59:13.473Z] Agent configuration updated and committed. td CLI tool now created and functional."
+      ],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:09.285Z",
+      "updatedAt": "2026-02-09T05:59:13.473Z",
+      "completedAt": "2026-02-09T05:59:13.472Z"
+    },
+    {
+      "id": 5,
+      "title": "Create td CLI tool for task documentation",
+      "status": "complete",
+      "priority": "high",
+      "description": "Implemented fully functional td CLI tool with all specified features: add/list/show/update/link/archive/status/report/export commands. Supports task creation, status tracking (todo/in-progress/blocked/complete), priority levels, notes, blockers, dependencies, markdown reports. Persists to .td-tasks.json. Installed as executable script.",
+      "notes": [
+        "[2026-02-09T05:59:24.191Z] td CLI tool created at scripts/td with 400+ lines. All commands functional and tested. Ready for use."
+      ],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:19.468Z",
+      "updatedAt": "2026-02-09T05:59:24.191Z",
+      "completedAt": "2026-02-09T05:59:24.191Z"
+    },
+    {
+      "id": 6,
+      "title": "Complete scryfall-cache microservice migration (5% remaining)",
+      "status": "todo",
+      "priority": "high",
+      "description": "Migration is at 95% complete. Remaining work: Migrate final endpoint(s) from server to microservice. Based on current architecture, likely involves /cards/search or other remaining Scryfall API endpoints. Success criteria: 100% migration, all server endpoints using microservice, remove direct Scryfall API calls from server.",
+      "notes": [],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:37.900Z",
+      "updatedAt": "2026-02-09T05:59:37.901Z",
+      "completedAt": null
+    },
+    {
+      "id": 7,
+      "title": "Production deployment preparation",
+      "status": "todo",
+      "priority": "high",
+      "description": "Prepare for production deployment with current improvements. Tasks: 1) Update deployment documentation, 2) Verify microservice deployment readiness, 3) Performance validation in staging, 4) Update README with new performance metrics (41x improvement), 5) Consider CI/CD pipeline updates for microservice.",
+      "notes": [],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:43.592Z",
+      "updatedAt": "2026-02-09T05:59:43.592Z",
+      "completedAt": null
+    },
+    {
+      "id": 8,
+      "title": "Add td CLI to package.json scripts",
+      "status": "todo",
+      "priority": "medium",
+      "description": "Make td CLI more accessible by adding it to package.json scripts. Add commands like 'npm run task:list', 'npm run task:status', etc. Consider adding td to project dependencies or creating npm link for easier access across the project.",
+      "notes": [],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:48.881Z",
+      "updatedAt": "2026-02-09T05:59:48.881Z",
+      "completedAt": null
+    },
+    {
+      "id": 9,
+      "title": "Monitor and optimize microservice performance in production",
+      "status": "todo",
+      "priority": "medium",
+      "description": "Once deployed, establish monitoring for microservice performance. Track: query response times, cache hit rates, database performance, error rates. Set up alerts for performance degradation. Use insights to guide further optimizations.",
+      "notes": [],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:54.409Z",
+      "updatedAt": "2026-02-09T05:59:54.410Z",
+      "completedAt": null
+    },
+    {
+      "id": 10,
+      "title": "Code quality: Address remaining TypeScript and linting issues",
+      "status": "todo",
+      "priority": "low",
+      "description": "Technical debt cleanup. Review and address any remaining TypeScript type errors, ESLint warnings, or code quality issues across the codebase. Ensure consistent code style and best practices. Run full linting suite and fix issues.",
+      "notes": [],
+      "blockers": [],
+      "dependencies": [],
+      "createdAt": "2026-02-09T05:59:59.689Z",
+      "updatedAt": "2026-02-09T05:59:59.689Z",
+      "completedAt": null
+    }
+  ],
+  "nextId": 11
+}

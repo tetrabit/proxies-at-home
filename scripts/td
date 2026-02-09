@@ -1,0 +1,403 @@
+#!/usr/bin/env node
+
+/**
+ * td - Task Documentation CLI Tool
+ * Maintains a living record of project tasks, priorities, and status
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const TD_FILE = path.join(__dirname, '..', '.td-tasks.json');
+
+// Initialize task storage
+function loadTasks() {
+  if (!fs.existsSync(TD_FILE)) {
+    return { tasks: [], nextId: 1 };
+  }
+  return JSON.parse(fs.readFileSync(TD_FILE, 'utf8'));
+}
+
+function saveTasks(data) {
+  fs.writeFileSync(TD_FILE, JSON.stringify(data, null, 2));
+}
+
+// Command handlers
+function addTask(title, options = {}) {
+  const data = loadTasks();
+  const task = {
+    id: data.nextId++,
+    title,
+    status: 'todo',
+    priority: options.priority || 'medium',
+    description: options.description || '',
+    notes: [],
+    blockers: [],
+    dependencies: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    completedAt: null
+  };
+  data.tasks.push(task);
+  saveTasks(data);
+  console.log(`✓ Created task #${task.id}: ${title}`);
+  console.log(`  Priority: ${task.priority}`);
+  if (task.description) console.log(`  Description: ${task.description}`);
+  return task.id;
+}
+
+function listTasks(options = {}) {
+  const data = loadTasks();
+  let tasks = data.tasks;
+  
+  if (options.status) {
+    tasks = tasks.filter(t => t.status === options.status);
+  }
+  
+  if (tasks.length === 0) {
+    console.log('No tasks found.');
+    return;
+  }
+  
+  console.log('\n📋 Tasks:\n');
+  tasks.forEach(task => {
+    const statusEmoji = {
+      'todo': '⭕',
+      'in-progress': '🔄',
+      'blocked': '🚫',
+      'complete': '✅'
+    }[task.status] || '❓';
+    
+    const priorityBadge = {
+      'high': '🔴',
+      'medium': '🟡',
+      'low': '🟢'
+    }[task.priority] || '';
+    
+    console.log(`${statusEmoji} #${task.id} ${priorityBadge} ${task.title}`);
+    console.log(`   Status: ${task.status} | Priority: ${task.priority}`);
+    if (task.description) {
+      console.log(`   ${task.description.substring(0, 80)}${task.description.length > 80 ? '...' : ''}`);
+    }
+    console.log('');
+  });
+}
+
+function showTask(taskId) {
+  const data = loadTasks();
+  const task = data.tasks.find(t => t.id === parseInt(taskId));
+  
+  if (!task) {
+    console.error(`Task #${taskId} not found.`);
+    process.exit(1);
+  }
+  
+  const statusEmoji = {
+    'todo': '⭕',
+    'in-progress': '🔄',
+    'blocked': '🚫',
+    'complete': '✅'
+  }[task.status] || '❓';
+  
+  console.log(`\n${statusEmoji} Task #${task.id}: ${task.title}\n`);
+  console.log(`Status: ${task.status}`);
+  console.log(`Priority: ${task.priority}`);
+  console.log(`Created: ${new Date(task.createdAt).toLocaleString()}`);
+  console.log(`Updated: ${new Date(task.updatedAt).toLocaleString()}`);
+  if (task.completedAt) {
+    console.log(`Completed: ${new Date(task.completedAt).toLocaleString()}`);
+  }
+  
+  if (task.description) {
+    console.log(`\nDescription:`);
+    console.log(task.description);
+  }
+  
+  if (task.notes.length > 0) {
+    console.log(`\nNotes:`);
+    task.notes.forEach((note, i) => {
+      console.log(`  ${i + 1}. ${note}`);
+    });
+  }
+  
+  if (task.blockers.length > 0) {
+    console.log(`\nBlockers:`);
+    task.blockers.forEach(blocker => {
+      console.log(`  - ${blocker}`);
+    });
+  }
+  
+  if (task.dependencies.length > 0) {
+    console.log(`\nDependencies:`);
+    task.dependencies.forEach(dep => {
+      console.log(`  - Task #${dep}`);
+    });
+  }
+}
+
+function updateTask(taskId, options = {}) {
+  const data = loadTasks();
+  const task = data.tasks.find(t => t.id === parseInt(taskId));
+  
+  if (!task) {
+    console.error(`Task #${taskId} not found.`);
+    process.exit(1);
+  }
+  
+  if (options.status) {
+    task.status = options.status;
+    if (options.status === 'complete') {
+      task.completedAt = new Date().toISOString();
+    }
+  }
+  
+  if (options.priority) {
+    task.priority = options.priority;
+  }
+  
+  if (options.notes) {
+    task.notes.push(`[${new Date().toISOString()}] ${options.notes}`);
+  }
+  
+  if (options.blocker) {
+    task.blockers.push(options.blocker);
+  }
+  
+  task.updatedAt = new Date().toISOString();
+  saveTasks(data);
+  console.log(`✓ Updated task #${taskId}: ${task.title}`);
+}
+
+function linkTasks(taskId, dependencyId) {
+  const data = loadTasks();
+  const task = data.tasks.find(t => t.id === parseInt(taskId));
+  const dep = data.tasks.find(t => t.id === parseInt(dependencyId));
+  
+  if (!task || !dep) {
+    console.error(`Task not found.`);
+    process.exit(1);
+  }
+  
+  if (!task.dependencies.includes(parseInt(dependencyId))) {
+    task.dependencies.push(parseInt(dependencyId));
+    task.updatedAt = new Date().toISOString();
+    saveTasks(data);
+    console.log(`✓ Linked task #${taskId} → depends on → task #${dependencyId}`);
+  }
+}
+
+function archiveTask(taskId) {
+  const data = loadTasks();
+  const taskIndex = data.tasks.findIndex(t => t.id === parseInt(taskId));
+  
+  if (taskIndex === -1) {
+    console.error(`Task #${taskId} not found.`);
+    process.exit(1);
+  }
+  
+  const task = data.tasks[taskIndex];
+  data.tasks.splice(taskIndex, 1);
+  
+  if (!data.archived) data.archived = [];
+  data.archived.push(task);
+  
+  saveTasks(data);
+  console.log(`✓ Archived task #${taskId}: ${task.title}`);
+}
+
+function showStatus() {
+  const data = loadTasks();
+  const statusCounts = {
+    'todo': 0,
+    'in-progress': 0,
+    'blocked': 0,
+    'complete': 0
+  };
+  
+  data.tasks.forEach(task => {
+    statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
+  });
+  
+  const total = data.tasks.length;
+  
+  console.log('\n📊 Project Status:\n');
+  console.log(`Total Tasks: ${total}`);
+  console.log(`⭕ Todo: ${statusCounts['todo']}`);
+  console.log(`🔄 In Progress: ${statusCounts['in-progress']}`);
+  console.log(`🚫 Blocked: ${statusCounts['blocked']}`);
+  console.log(`✅ Complete: ${statusCounts['complete']}`);
+  
+  if (data.archived) {
+    console.log(`\n📦 Archived: ${data.archived.length}`);
+  }
+  
+  const completion = total > 0 ? Math.round((statusCounts['complete'] / total) * 100) : 0;
+  console.log(`\nCompletion: ${completion}%`);
+}
+
+function generateReport(options = {}) {
+  const data = loadTasks();
+  const format = options.format || 'text';
+  
+  if (format === 'markdown') {
+    console.log('# Project Task Report\n');
+    console.log(`Generated: ${new Date().toLocaleString()}\n`);
+    console.log('## Status Summary\n');
+    
+    const statusCounts = {
+      'todo': 0,
+      'in-progress': 0,
+      'blocked': 0,
+      'complete': 0
+    };
+    
+    data.tasks.forEach(task => {
+      statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
+    });
+    
+    console.log(`- Total Tasks: ${data.tasks.length}`);
+    console.log(`- Todo: ${statusCounts['todo']}`);
+    console.log(`- In Progress: ${statusCounts['in-progress']}`);
+    console.log(`- Blocked: ${statusCounts['blocked']}`);
+    console.log(`- Complete: ${statusCounts['complete']}`);
+    console.log('');
+    
+    ['high', 'medium', 'low'].forEach(priority => {
+      const tasks = data.tasks.filter(t => t.priority === priority && t.status !== 'complete');
+      if (tasks.length > 0) {
+        console.log(`## ${priority.charAt(0).toUpperCase() + priority.slice(1)} Priority\n`);
+        tasks.forEach(task => {
+          const status = task.status === 'blocked' ? ' 🚫 BLOCKED' : 
+                        task.status === 'in-progress' ? ' 🔄 IN PROGRESS' : '';
+          console.log(`### #${task.id}: ${task.title}${status}\n`);
+          if (task.description) {
+            console.log(`${task.description}\n`);
+          }
+          console.log(`**Status:** ${task.status}`);
+          if (task.blockers.length > 0) {
+            console.log(`**Blockers:** ${task.blockers.join(', ')}`);
+          }
+          console.log('');
+        });
+      }
+    });
+    
+    const completed = data.tasks.filter(t => t.status === 'complete');
+    if (completed.length > 0) {
+      console.log('## Completed Tasks\n');
+      completed.forEach(task => {
+        console.log(`- #${task.id}: ${task.title}`);
+      });
+    }
+  } else {
+    showStatus();
+    console.log('\n');
+    listTasks();
+  }
+}
+
+function exportTasks() {
+  const data = loadTasks();
+  console.log(JSON.stringify(data, null, 2));
+}
+
+// CLI argument parsing
+const args = process.argv.slice(2);
+const command = args[0];
+
+if (!command) {
+  console.log('td - Task Documentation CLI');
+  console.log('\nUsage:');
+  console.log('  td add <title> [--priority high|medium|low] [--description "text"]');
+  console.log('  td list [--status todo|in-progress|blocked|complete]');
+  console.log('  td show <task-id>');
+  console.log('  td update <task-id> [--status status] [--priority priority] [--notes "text"] [--blocker "text"]');
+  console.log('  td link <task-id> <dependency-id>');
+  console.log('  td archive <task-id>');
+  console.log('  td status');
+  console.log('  td report [--format text|markdown]');
+  console.log('  td export');
+  process.exit(0);
+}
+
+// Parse options
+function parseOptions(args) {
+  const options = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('--')) {
+      const key = args[i].slice(2);
+      const value = args[i + 1];
+      options[key] = value;
+      i++;
+    }
+  }
+  return options;
+}
+
+switch (command) {
+  case 'add':
+    const title = args[1];
+    if (!title) {
+      console.error('Error: Task title required');
+      process.exit(1);
+    }
+    addTask(title, parseOptions(args.slice(2)));
+    break;
+    
+  case 'list':
+    listTasks(parseOptions(args.slice(1)));
+    break;
+    
+  case 'show':
+    const showId = args[1];
+    if (!showId) {
+      console.error('Error: Task ID required');
+      process.exit(1);
+    }
+    showTask(showId);
+    break;
+    
+  case 'update':
+    const updateId = args[1];
+    if (!updateId) {
+      console.error('Error: Task ID required');
+      process.exit(1);
+    }
+    updateTask(updateId, parseOptions(args.slice(2)));
+    break;
+    
+  case 'link':
+    const linkId = args[1];
+    const depId = args[2];
+    if (!linkId || !depId) {
+      console.error('Error: Both task IDs required');
+      process.exit(1);
+    }
+    linkTasks(linkId, depId);
+    break;
+    
+  case 'archive':
+    const archiveId = args[1];
+    if (!archiveId) {
+      console.error('Error: Task ID required');
+      process.exit(1);
+    }
+    archiveTask(archiveId);
+    break;
+    
+  case 'status':
+    showStatus();
+    break;
+    
+  case 'report':
+    generateReport(parseOptions(args.slice(1)));
+    break;
+    
+  case 'export':
+    exportTasks();
+    break;
+    
+  default:
+    console.error(`Unknown command: ${command}`);
+    process.exit(1);
+}
