@@ -18,6 +18,7 @@ const mockState = vi.hoisted(() => ({
     cardBackPositionX: 0,
     cardBackPositionY: 0,
     dpi: 600,
+    perCardBackOffsets: [],
 }));
 
 const mockSetters = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const mockSetters = vi.hoisted(() => ({
     setCardBackPositionX: vi.fn(),
     setCardBackPositionY: vi.fn(),
     setDpi: vi.fn(),
+    setPerCardBackOffset: vi.fn(),
 }));
 
 vi.mock('@/store/settings', () => ({
@@ -44,6 +46,18 @@ vi.mock('flowbite-react', () => ({
     Label: ({ children }: { children: React.ReactNode }) => <label>{children}</label>,
     Checkbox: ({ id, checked, onChange }: { id: string; checked: boolean; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void }) => (
         <input type="checkbox" id={id} checked={checked} onChange={onChange} data-testid={`checkbox-${id}`} />
+    ),
+    Button: ({ children, onClick, color, size }: { children: React.ReactNode; onClick?: () => void; color?: string; size?: string }) => (
+        <button onClick={onClick} data-color={color} data-size={size}>{children}</button>
+    ),
+    Modal: ({ show, onClose, children }: { show: boolean; onClose: () => void; children: React.ReactNode }) => (
+        show ? <div data-testid="modal" onClick={onClose}>{children}</div> : null
+    ),
+    ModalHeader: ({ children }: { children: React.ReactNode }) => <div data-testid="modal-header">{children}</div>,
+    ModalBody: ({ children }: { children: React.ReactNode }) => <div data-testid="modal-body">{children}</div>,
+    ModalFooter: ({ children }: { children: React.ReactNode }) => <div data-testid="modal-footer">{children}</div>,
+    TextInput: ({ id, value, onChange, placeholder }: { id?: string; value?: string; onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void; placeholder?: string }) => (
+        <input type="text" id={id} value={value} onChange={onChange} placeholder={placeholder} data-testid={id} />
     ),
 }));
 

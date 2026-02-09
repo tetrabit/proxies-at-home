@@ -203,7 +203,9 @@ describe('GuidesSection', () => {
             render(<GuidesSection />);
             expect(screen.getByText('Full Lines')).toBeDefined();
             expect(screen.getByText('Edges Only')).toBeDefined();
-            expect(screen.getByText('None')).toBeDefined();
+            // Use getAllByText since "None" appears twice (in select and button)
+            const noneElements = screen.getAllByText('None');
+            expect(noneElements.length).toBe(2);
         });
 
         it('should call setCutLineStyle when changed', () => {
