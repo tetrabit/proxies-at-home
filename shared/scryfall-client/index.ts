@@ -59,6 +59,11 @@ export class ScryfallCacheClient {
     return this.request<ApiResponse<Card>>(`/cards/${id}`);
   }
 
+  async autocomplete(params: { q: string }) {
+    const query = new URLSearchParams(params as any).toString();
+    return this.request<{ object: string; data: string[] }>(`/cards/autocomplete?${query}`);
+  }
+
   // Utility endpoints
   async getStats() {
     return this.request<ApiResponse<CacheStats>>('/stats');

@@ -113,6 +113,15 @@ router.get("/autocomplete", async (req: Request, res: Response) => {
     }
 
     try {
+        // Try microservice first
+        if (await isMicroserviceAvailable()) {
+            const client = getScryfallClient();
+            const data = await client.autocomplete(params);
+            storeInCache("autocomplete", queryHash, data, CACHE_TTL.autocomplete);
+            return res.json(data);
+        }
+
+        // Fallback to Scryfall API
         const data = await rateLimitedRequest(() =>
             scryfallAxios.get("/cards/autocomplete", { params })
         );
