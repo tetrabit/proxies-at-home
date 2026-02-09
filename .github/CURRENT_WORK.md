@@ -35,7 +35,10 @@ Based on migration assessment, need to verify/migrate:
 ### How to Check Current Work
 
 ```bash
-# Quick view of in-progress tasks
+# Quick view of current work (NEW!)
+./scripts/td current
+
+# Alternative: list all in-progress tasks
 ./scripts/td list --status in-progress
 
 # Detailed view of Task #6
@@ -54,8 +57,9 @@ Based on migration assessment, need to verify/migrate:
 
 ## 📋 Quick Reference
 
+**View current work:** `./scripts/td current` ⭐ **NEW!**  
 **View all tasks:** `./scripts/td list`  
-**View current work:** `./scripts/td list --status in-progress`  
+**View in-progress tasks:** `./scripts/td list --status in-progress`  
 **Update task:** `./scripts/td update <id> --status <status>`  
 **Generate report:** `./scripts/td report`
 
