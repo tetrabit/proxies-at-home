@@ -3,12 +3,15 @@
  * Auto-generated TypeScript types and utilities
  */
 
-export type { paths, components } from './schema';
+import type { paths, components } from './schema.js';
+
+export type { paths, components };
 
 // Helper type extracts
 export type Card = components['schemas']['Card'];
-export type ApiResponse<T> = components['schemas']['ApiResponse_for_Card']; // Generic version
-export type PaginatedResponse<T> = components['schemas']['PaginatedResponse_for_Card'];
+export type CardResponse = components['schemas']['CardResponse'];
+export type CardListResponse = components['schemas']['CardListResponse'];
+export type PaginatedCardData = components['schemas']['PaginatedCardData'];
 export type CacheStats = components['schemas']['CacheStats'];
 export type SearchParams = components['schemas']['SearchParams'];
 export type NamedParams = components['schemas']['NamedParams'];
@@ -47,16 +50,16 @@ export class ScryfallCacheClient {
   // Card endpoints
   async searchCards(params: SearchParams) {
     const query = new URLSearchParams(params as any).toString();
-    return this.request<ApiResponse<PaginatedResponse<Card>>>(`/cards/search?${query}`);
+    return this.request<CardListResponse>(`/cards/search?${query}`);
   }
 
   async getCardByName(params: NamedParams) {
     const query = new URLSearchParams(params as any).toString();
-    return this.request<ApiResponse<Card>>(`/cards/named?${query}`);
+    return this.request<CardResponse>(`/cards/named?${query}`);
   }
 
   async getCard(id: string) {
-    return this.request<ApiResponse<Card>>(`/cards/${id}`);
+    return this.request<CardResponse>(`/cards/${id}`);
   }
 
   async autocomplete(params: { q: string }) {
@@ -66,7 +69,7 @@ export class ScryfallCacheClient {
 
   // Utility endpoints
   async getStats() {
-    return this.request<ApiResponse<CacheStats>>('/stats');
+    return this.request<components['schemas']['StatsResponse']>('/stats');
   }
 
   async health() {

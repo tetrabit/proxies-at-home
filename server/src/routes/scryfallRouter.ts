@@ -328,7 +328,7 @@ router.get("/search", async (req: Request, res: Response) => {
             const client = getScryfallClient();
             
             // Build search params for microservice
-            const searchParams: Record<string, string> = { q: processedQ };
+            const searchParams: any = { q: processedQ };
             if (params.page) searchParams.page = params.page;
             if (params.page_size) searchParams.page_size = params.page_size; // Results per page
             if (params.limit) searchParams.limit = params.limit; // Total results cap
@@ -449,7 +449,7 @@ router.get("/prints", async (req: Request, res: Response) => {
     }
 
     try {
-        let allPrints: typeof import("../utils/getCardImagesPaged.js").ScryfallApiCard[] = [];
+        let allPrints: import("../utils/getCardImagesPaged.js").ScryfallApiCard[] = [];
         
         // Try microservice first (for en language)
         if (lang === "en" && await isMicroserviceAvailable()) {
