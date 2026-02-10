@@ -1,4 +1,5 @@
-import type { CardInfo, ScryfallApiCard } from "./getCardImagesPaged.js";
+import type { CardInfo } from "../../../shared/types.js";
+import type { ScryfallApiCard } from "./getCardImagesPaged.js";
 import { batchFetchCards } from "./getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 import { debugLog } from "./debug.js";
@@ -148,4 +149,3 @@ export async function fetchCardsForTokenLookup(cardInfos: CardInfo[], language: 
 
   return { cards: results, usedMicroservice: true };
 }
-
