@@ -7,7 +7,46 @@ import path from "path";
 import { defineConfig } from "vitest/config";
 import { VitePWA } from "vite-plugin-pwa";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // Vitest runs Vite in "test" mode; disable heavy plugins that can keep file handles open.
+  const isTest = mode === "test" || process.env.VITEST === "true";
+
+  const plugins = [
+    react(),
+    !isTest ? tailwindcss() : null,
+    !isTest ? flowbiteReact() : null,
+    !isTest
+      ? VitePWA({
+          registerType: "autoUpdate",
+          includeAssets: ["favicon.ico", "apple-touch-icon.png", "mask-icon.svg"],
+          manifest: {
+            name: "Proxxied",
+            short_name: "Proxxied",
+            description: "Build your proxies",
+            theme_color: "#ffffff",
+            icons: [
+              {
+                src: "pwa-192x192.png",
+                sizes: "192x192",
+                type: "image/png",
+              },
+              {
+                src: "pwa-512x512.png",
+                sizes: "512x512",
+                type: "image/png",
+              },
+            ],
+          },
+          workbox: {
+            globPatterns: ["**/*.{js,css,html,ico,png,svg}"],
+            // Built-in cardback images are 2-3MB each; allow them to be precached
+            maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB
+          },
+        })
+      : null,
+  ].filter(Boolean);
+
+  return {
   // Use relative paths for Electron (file:// protocol)
   base: './',
   css: {
@@ -26,40 +65,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-    },
   },
-  plugins: [
-    react(),
-    tailwindcss(),
-    flowbiteReact(),
-    VitePWA({
-      registerType: "autoUpdate",
-      includeAssets: ["favicon.ico", "apple-touch-icon.png", "mask-icon.svg"],
-      manifest: {
-        name: "Proxxied",
-        short_name: "Proxxied",
-        description: "Build your proxies",
-        theme_color: "#ffffff",
-        icons: [
-          {
-            src: "pwa-192x192.png",
-            sizes: "192x192",
-            type: "image/png",
-          },
-          {
-            src: "pwa-512x512.png",
-            sizes: "512x512",
-            type: "image/png",
-          },
-        ],
-      },
-      workbox: {
-        globPatterns: ["**/*.{js,css,html,ico,png,svg}"],
-        // Built-in cardback images are 2-3MB each; allow them to be precached
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB
-      },
-    }),
-  ],
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plugins: plugins as any,
   test: {
     globals: true,
     environment: 'jsdom',
@@ -108,4 +117,5 @@ export default defineConfig({
     // vendor-pixi is ~502KB which can't be split further
     chunkSizeWarningLimit: 550,
   },
+  };
 });
