@@ -1,11 +1,12 @@
 /**
  * Scryfall Microservice Client Adapter
- * 
+ *
  * Wraps the scryfall-cache-client for use in server routes.
  * The microservice is bundled with Electron and runs on a configurable port.
  */
 
-import { ScryfallCacheClient } from '../../../shared/scryfall-client/index.js';
+import { ScryfallCacheClient } from '@tetrabit/scryfall-cache-client';
+import { trackMicroserviceCall, metricsCollector } from './microserviceMetrics.js';
 
 // Configuration
 const MICROSERVICE_BASE_URL = process.env.SCRYFALL_CACHE_URL || 'http://localhost:8080';
@@ -32,9 +33,30 @@ export function getScryfallClient(): ScryfallCacheClient {
 export async function isMicroserviceAvailable(): Promise<boolean> {
     try {
         const client = getScryfallClient();
-        await client.health();
+        await trackMicroserviceCall('/health', () => client.health());
         return true;
     } catch {
         return false;
     }
+}
+
+/**
+ * Get performance metrics summary
+ */
+export function getMicroserviceMetrics() {
+    return metricsCollector.getSummary();
+}
+
+/**
+ * Log current performance metrics
+ */
+export function logMicroserviceMetrics() {
+    metricsCollector.logSummary();
+}
+
+/**
+ * Reset performance metrics
+ */
+export function resetMicroserviceMetrics() {
+    metricsCollector.reset();
 }
