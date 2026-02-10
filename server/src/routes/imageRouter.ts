@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
+import { fetchCardsForTokenLookup } from "../utils/tokenLookup.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -395,14 +396,15 @@ imageRouter.post("/tokens", async (req: Request<unknown, unknown, TokensRequestB
   }
 
   try {
-    // Use Collection API for fast batch lookup
+    // Prefer the scryfall-cache-microservice (if configured + healthy), with fallback
+    // to the existing local Proxxied cache + direct Scryfall API.
     const cardInfos = cards.map(c => ({
       name: c.name,
       set: c.set,
       number: c.number,
     }));
 
-    const batchResults = await batchFetchCards(cardInfos, "en");
+    const { cards: lookupResults } = await fetchCardsForTokenLookup(cardInfos, "en");
 
     // Map results back with token_parts
     const results: CardTokenResponse[] = [];
@@ -414,12 +416,12 @@ imageRouter.post("/tokens", async (req: Request<unknown, unknown, TokensRequestB
       // Try set+number first
       if (card.set && card.number) {
         const setNumKey = `${card.set.toLowerCase()}:${card.number}`;
-        found = batchResults.get(setNumKey);
+        found = lookupResults.get(setNumKey);
       }
 
       // Fall back to name lookup
       if (!found) {
-        found = batchResults.get(card.name.toLowerCase());
+        found = lookupResults.get(card.name.toLowerCase());
       }
 
       if (found) {
@@ -677,7 +679,12 @@ function resolveCardbacksDir(): string {
 }
 
 imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
-  const id = req.params.id;
+  const rawId = req.params.id;
+  const id = Array.isArray(rawId) ? rawId[0] : rawId;
+
+  if (!id) {
+    return res.status(400).send("Missing cardback ID");
+  }
   const filename = CARDBACK_MAP[id];
 
   if (!filename) {
