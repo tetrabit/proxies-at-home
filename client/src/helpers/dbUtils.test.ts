@@ -4,6 +4,8 @@ import {
     addCards,
     rebalanceCardOrders,
     moveMultiFaceCardsToEnd,
+    countBasicLandsToRemove,
+    removeBasicLandsFromProject,
 } from './dbUtils';
 
 describe('dbUtils', () => {
@@ -102,6 +104,85 @@ describe('dbUtils', () => {
             const result = await moveMultiFaceCardsToEnd(testProjectId);
             expect(result.multiFaceSlots).toBe(1);
             expect(result.updatedSlots).toBe(0);
+        });
+    });
+
+    describe('removeBasicLandsFromProject', () => {
+        it('should remove basic lands (including snow basics by type_line) and preserve remaining order', async () => {
+            const testProjectId = 'test-project-basics';
+
+            await db.images.bulkAdd([
+                { id: 'img-plains', refCount: 1 },
+                { id: 'img-snow', refCount: 1 },
+                { id: 'img-nonbasic', refCount: 1 },
+            ]);
+
+            await db.cards.bulkAdd([
+                { uuid: 'plains', name: 'Plains', order: 10, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Land — Plains', imageId: 'img-plains' },
+                { uuid: 'nonbasic', name: 'Breeding Pool', order: 20, isUserUpload: false, projectId: testProjectId, type_line: 'Land — Forest Island', imageId: 'img-nonbasic' },
+                { uuid: 'snow', name: 'Snow-Covered Forest', order: 30, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Snow Land — Forest', imageId: 'img-snow' },
+            ]);
+
+            const toRemove = await countBasicLandsToRemove(testProjectId, { includeWastes: true, includeSnowCovered: true });
+            expect(toRemove).toBe(2);
+
+            const result = await removeBasicLandsFromProject(testProjectId, { includeWastes: true, includeSnowCovered: true });
+            expect(result.removedCards).toBe(2);
+            expect(result.removedBasics).toBe(2);
+
+            const remaining = await db.cards.where('projectId').equals(testProjectId).sortBy('order');
+            expect(remaining.map(c => c.uuid)).toEqual(['nonbasic']);
+            expect(remaining[0].order).toBe(20);
+
+            expect(await db.images.get('img-plains')).toBeUndefined();
+            expect(await db.images.get('img-snow')).toBeUndefined();
+            expect(await db.images.get('img-nonbasic')).toBeDefined();
+        });
+
+        it('should respect includeWastes=false', async () => {
+            const testProjectId = 'test-project-wastes';
+
+            await db.images.bulkAdd([
+                { id: 'img-wastes', refCount: 1 },
+                { id: 'img-forest', refCount: 1 },
+            ]);
+
+            await db.cards.bulkAdd([
+                { uuid: 'wastes', name: 'Wastes', order: 10, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Land', imageId: 'img-wastes' },
+                { uuid: 'forest', name: 'Forest', order: 20, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Land — Forest', imageId: 'img-forest' },
+            ]);
+
+            const result = await removeBasicLandsFromProject(testProjectId, { includeWastes: false, includeSnowCovered: true });
+            expect(result.removedBasics).toBe(1);
+
+            const remaining = await db.cards.where('projectId').equals(testProjectId).sortBy('order');
+            expect(remaining.map(c => c.uuid)).toEqual(['wastes']);
+
+            expect(await db.images.get('img-forest')).toBeUndefined();
+            expect(await db.images.get('img-wastes')).toBeDefined();
+        });
+
+        it('should respect includeSnowCovered=false', async () => {
+            const testProjectId = 'test-project-snow';
+
+            await db.images.bulkAdd([
+                { id: 'img-snow-plains', refCount: 1 },
+                { id: 'img-plains', refCount: 1 },
+            ]);
+
+            await db.cards.bulkAdd([
+                { uuid: 'snowp', name: 'Snow-Covered Plains', order: 10, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Snow Land — Plains', imageId: 'img-snow-plains' },
+                { uuid: 'plains', name: 'Plains', order: 20, isUserUpload: false, projectId: testProjectId, type_line: 'Basic Land — Plains', imageId: 'img-plains' },
+            ]);
+
+            const result = await removeBasicLandsFromProject(testProjectId, { includeWastes: true, includeSnowCovered: false });
+            expect(result.removedBasics).toBe(1);
+
+            const remaining = await db.cards.where('projectId').equals(testProjectId).sortBy('order');
+            expect(remaining.map(c => c.uuid)).toEqual(['snowp']);
+
+            expect(await db.images.get('img-plains')).toBeUndefined();
+            expect(await db.images.get('img-snow-plains')).toBeDefined();
         });
     });
     describe('Image Management', () => {

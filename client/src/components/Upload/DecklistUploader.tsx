@@ -1,11 +1,11 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Button, Modal, ModalBody, ModalHeader, Textarea } from "flowbite-react";
+import { Button, Checkbox, Label, Modal, ModalBody, ModalHeader, Textarea, TextInput } from "flowbite-react";
 import { ExternalLink, Search, Sparkles } from "lucide-react";
 import { parseDeckList } from "@/helpers/importParsers";
 import type { ImportIntent } from "@/helpers/importParsers";
-import { addRemoteImage, moveMultiFaceCardsToEnd } from "@/helpers/dbUtils";
+import { addRemoteImage, countBasicLandsToRemove, moveMultiFaceCardsToEnd, removeBasicLandsFromProject } from "@/helpers/dbUtils";
 import { db } from "@/db";
 import { useCardsStore, useSettingsStore, useProjectStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
@@ -40,6 +40,11 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
     const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
     const [showNoTokensModal, setShowNoTokensModal] = useState(false);
     const [isAdvancedSearchOpen, setIsAdvancedSearchOpen] = useState(false);
+    const [showRemoveBasicsModal, setShowRemoveBasicsModal] = useState(false);
+    const [removeBasicsIncludeWastes, setRemoveBasicsIncludeWastes] = useState(true);
+    const [removeBasicsIncludeSnow, setRemoveBasicsIncludeSnow] = useState(true);
+    const [removeBasicsConfirmText, setRemoveBasicsConfirmText] = useState("");
+    const [isRemovingBasics, setIsRemovingBasics] = useState(false);
 
     // Check if we have cards that need tokens but don't have them
     const currentProjectId = useProjectStore((state) => state.currentProjectId);
@@ -51,6 +56,15 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             .toArray();
         return cards.length > 0;
     }, [currentProjectId]);
+
+    const removeBasicsWillRemove = useLiveQuery(async () => {
+        if (!currentProjectId) return 0;
+        if (!showRemoveBasicsModal) return 0;
+        return await countBasicLandsToRemove(currentProjectId, {
+            includeWastes: removeBasicsIncludeWastes,
+            includeSnowCovered: removeBasicsIncludeSnow,
+        });
+    }, [currentProjectId, showRemoveBasicsModal, removeBasicsIncludeWastes, removeBasicsIncludeSnow]);
 
     const handleMoveMultiFaceToEnd = async () => {
         if (!currentProjectId) return;
@@ -72,6 +86,35 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             } else {
                 showErrorToast("Failed to reorder cards.");
             }
+        }
+    };
+
+    const handleConfirmRemoveBasics = async () => {
+        if (!currentProjectId) return;
+        try {
+            setIsRemovingBasics(true);
+
+            const result = await removeBasicLandsFromProject(currentProjectId, {
+                includeWastes: removeBasicsIncludeWastes,
+                includeSnowCovered: removeBasicsIncludeSnow,
+            });
+
+            if (result.removedBasics === 0) {
+                showInfoToast("No basic lands found to remove.");
+                return;
+            }
+
+            showInfoToast(`Removed ${result.removedBasics} basic land${result.removedBasics === 1 ? "" : "s"}.`);
+            setShowRemoveBasicsModal(false);
+            setRemoveBasicsConfirmText("");
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showErrorToast(err.message || "Failed to remove basic lands.");
+            } else {
+                showErrorToast("Failed to remove basic lands.");
+            }
+        } finally {
+            setIsRemovingBasics(false);
         }
     };
 
@@ -278,6 +321,14 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                 >
                     Move Multi-Face Cards To End
                 </Button>
+                <Button
+                    color="failure"
+                    size="lg"
+                    onClick={() => setShowRemoveBasicsModal(true)}
+                    disabled={cardCount === 0}
+                >
+                    Remove All Basic Lands
+                </Button>
             </div>
 
             {/* Advanced Search Modal */}
@@ -310,6 +361,84 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                         >
                             OK
                         </Button>
+                    </div>
+                </ModalBody>
+            </Modal>
+
+            {/* Remove Basic Lands Modal */}
+            <Modal
+                show={showRemoveBasicsModal}
+                onClose={() => {
+                    setShowRemoveBasicsModal(false);
+                    setRemoveBasicsConfirmText("");
+                }}
+                size="lg"
+                dismissible
+            >
+                <ModalHeader>Remove Basic Lands</ModalHeader>
+                <ModalBody>
+                    <div className="space-y-4">
+                        <p className="text-base text-gray-600 dark:text-gray-300">
+                            This will remove basic lands from the saved project card list. This does not edit your decklist text.
+                        </p>
+
+                        <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id="remove-basics-include-wastes"
+                                    checked={removeBasicsIncludeWastes}
+                                    onChange={(e) => setRemoveBasicsIncludeWastes(e.target.checked)}
+                                />
+                                <Label htmlFor="remove-basics-include-wastes">Include Wastes</Label>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id="remove-basics-include-snow"
+                                    checked={removeBasicsIncludeSnow}
+                                    onChange={(e) => setRemoveBasicsIncludeSnow(e.target.checked)}
+                                />
+                                <Label htmlFor="remove-basics-include-snow">Include Snow-Covered basics</Label>
+                            </div>
+                        </div>
+
+                        <div className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                            Will remove: <span className="font-semibold">{removeBasicsWillRemove ?? 0}</span> card{(removeBasicsWillRemove ?? 0) === 1 ? "" : "s"}
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="remove-basics-confirm">Type REMOVE to confirm</Label>
+                            <TextInput
+                                id="remove-basics-confirm"
+                                value={removeBasicsConfirmText}
+                                onChange={(e) => setRemoveBasicsConfirmText(e.target.value)}
+                                placeholder="REMOVE"
+                                autoComplete="off"
+                            />
+                        </div>
+
+                        <div className="flex justify-end gap-3">
+                            <Button
+                                color="gray"
+                                onClick={() => {
+                                    setShowRemoveBasicsModal(false);
+                                    setRemoveBasicsConfirmText("");
+                                }}
+                                disabled={isRemovingBasics}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                color="failure"
+                                onClick={handleConfirmRemoveBasics}
+                                disabled={
+                                    isRemovingBasics ||
+                                    (removeBasicsWillRemove ?? 0) === 0 ||
+                                    removeBasicsConfirmText.trim().toUpperCase() !== "REMOVE"
+                                }
+                            >
+                                Remove
+                            </Button>
+                        </div>
                     </div>
                 </ModalBody>
             </Modal>

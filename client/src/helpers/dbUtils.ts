@@ -388,6 +388,140 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
     };
   });
 }
+
+export type RemoveBasicLandsOptions = {
+  includeWastes: boolean;
+  includeSnowCovered: boolean;
+};
+
+function _isWastesName(name: string | undefined): boolean {
+  return (name || "").trim().toLowerCase() === "wastes";
+}
+
+function _isSnowCoveredBasicName(name: string | undefined): boolean {
+  return (name || "").trim().toLowerCase().startsWith("snow-covered ");
+}
+
+function _isBasicLandTypeLine(typeLine: string | undefined): boolean {
+  // Scryfall examples:
+  // - "Basic Land — Forest"
+  // - "Basic Snow Land — Forest"
+  const tl = (typeLine || "").toLowerCase();
+  return /\bbasic\b/.test(tl) && /\bland\b/.test(tl);
+}
+
+function _isBasicLandNameFallback(name: string | undefined): boolean {
+  // Some cards may lack type_line (e.g., certain manual imports). Keep a safe fallback
+  // for the canonical basic land names.
+  const n = (name || "").trim().toLowerCase();
+  if (!n) return false;
+  if (n === "plains") return true;
+  if (n === "island") return true;
+  if (n === "swamp") return true;
+  if (n === "mountain") return true;
+  if (n === "forest") return true;
+  if (n === "wastes") return true;
+  if (n.startsWith("snow-covered ")) return true;
+  return false;
+}
+
+function _shouldRemoveBasicLand(card: Pick<CardOption, "name" | "type_line">, options: RemoveBasicLandsOptions): boolean {
+  const isBasic = _isBasicLandTypeLine(card.type_line) || _isBasicLandNameFallback(card.name);
+  if (!isBasic) return false;
+
+  if (!options.includeWastes && _isWastesName(card.name)) return false;
+  if (!options.includeSnowCovered && _isSnowCoveredBasicName(card.name)) return false;
+
+  return true;
+}
+
+export async function countBasicLandsToRemove(projectId: string, options: RemoveBasicLandsOptions): Promise<number> {
+  return await db.cards.where("projectId").equals(projectId).filter((c) => _shouldRemoveBasicLand(c, options)).count();
+}
+
+/**
+ * Removes all basic lands from a project's card list, optionally excluding Wastes and/or Snow-Covered basics.
+ * Decrements (and deletes) referenced images as needed. Ordering of remaining cards is preserved.
+ */
+export async function removeBasicLandsFromProject(projectId: string, options: RemoveBasicLandsOptions): Promise<{
+  removedCards: number;
+  removedBasics: number;
+}> {
+  return await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+    const allCards = await db.cards.where("projectId").equals(projectId).toArray();
+    if (allCards.length === 0) return { removedCards: 0, removedBasics: 0 };
+
+    const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
+
+    const toRemove = new Set<string>();
+    for (const c of allCards) {
+      if (_shouldRemoveBasicLand(c, options)) {
+        toRemove.add(c.uuid);
+        if (c.linkedBackId) {
+          toRemove.add(c.linkedBackId);
+        }
+      }
+    }
+
+    if (toRemove.size === 0) return { removedCards: 0, removedBasics: 0 };
+
+    const removedBasics = allCards.filter((c) => toRemove.has(c.uuid) && _shouldRemoveBasicLand(c, options)).length;
+
+    // If a back card is removed but the front remains, clear the front's back link.
+    const frontUpdates: { key: string; changes: Partial<CardOption> }[] = [];
+    for (const uuid of toRemove) {
+      const c = byUuid.get(uuid);
+      if (!c?.linkedFrontId) continue;
+      if (toRemove.has(c.linkedFrontId)) continue;
+      frontUpdates.push({ key: c.linkedFrontId, changes: { linkedBackId: undefined } });
+    }
+    if (frontUpdates.length > 0) {
+      await db.cards.bulkUpdate(frontUpdates);
+    }
+
+    // Decrement image refcounts for any removed cards (skip cardbacks).
+    const imageIdCounts = new Map<string, number>();
+    for (const uuid of toRemove) {
+      const c = byUuid.get(uuid);
+      const imageId = c?.imageId;
+      if (!imageId) continue;
+      if (isCardbackId(imageId)) continue;
+      imageIdCounts.set(imageId, (imageIdCounts.get(imageId) || 0) + 1);
+    }
+
+    // Delete cards.
+    await db.cards.bulkDelete(Array.from(toRemove));
+
+    if (imageIdCounts.size > 0) {
+      const imageIds = Array.from(imageIdCounts.keys());
+      const images = await db.images.bulkGet(imageIds);
+      const imageUpdates: { key: string; changes: { refCount: number } }[] = [];
+      const imagesToDelete: string[] = [];
+
+      for (let i = 0; i < imageIds.length; i++) {
+        const id = imageIds[i];
+        const img = images[i];
+        if (!img) continue;
+        const dec = imageIdCounts.get(id) || 0;
+        const newRefCount = img.refCount - dec;
+        if (newRefCount > 0) {
+          imageUpdates.push({ key: id, changes: { refCount: newRefCount } });
+        } else {
+          imagesToDelete.push(id);
+        }
+      }
+
+      if (imageUpdates.length > 0) {
+        await db.images.bulkUpdate(imageUpdates);
+      }
+      if (imagesToDelete.length > 0) {
+        await db.images.bulkDelete(imagesToDelete);
+      }
+    }
+
+    return { removedCards: toRemove.size, removedBasics };
+  });
+}
 /**
  * Deletes a card from the database and decrements the reference count of its image.
  * If the card has a linkedBackId, the back card will also be deleted (cascade).
