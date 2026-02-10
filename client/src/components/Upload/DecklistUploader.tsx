@@ -5,7 +5,7 @@ import { Button, Modal, ModalBody, ModalHeader, Textarea } from "flowbite-react"
 import { ExternalLink, Search, Sparkles } from "lucide-react";
 import { parseDeckList } from "@/helpers/importParsers";
 import type { ImportIntent } from "@/helpers/importParsers";
-import { addRemoteImage } from "@/helpers/dbUtils";
+import { addRemoteImage, moveMultiFaceCardsToEnd } from "@/helpers/dbUtils";
 import { db } from "@/db";
 import { useCardsStore, useSettingsStore, useProjectStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
@@ -26,7 +26,10 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
 
     const setLoadingTask = useLoadingStore((state) => state.setLoadingTask);
     const preferredArtSource = useSettingsStore((s) => s.preferredArtSource);
+    const setSortBy = useSettingsStore((s) => s.setSortBy);
     const clearAllCardsAndImages = useCardsStore((state) => state.clearAllCardsAndImages);
+    const showInfoToast = useToastStore((s) => s.showInfoToast);
+    const showErrorToast = useToastStore((s) => s.showErrorToast);
     const { processCards, cancel: cancelCardFetch } = useCardImport({
         onComplete: () => {
             setDeckText("");
@@ -48,6 +51,29 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             .toArray();
         return cards.length > 0;
     }, [currentProjectId]);
+
+    const handleMoveMultiFaceToEnd = async () => {
+        if (!currentProjectId) return;
+        try {
+            // Ensure the user sees the effect immediately (manual ordering is what this action edits).
+            setSortBy("manual");
+
+            const result = await moveMultiFaceCardsToEnd(currentProjectId);
+            if (result.multiFaceSlots === 0) {
+                showInfoToast("No multi-face cards found.");
+            } else if (result.updatedSlots === 0) {
+                showInfoToast("Multi-face cards are already at the end.");
+            } else {
+                showInfoToast(`Moved ${result.multiFaceSlots} multi-face card${result.multiFaceSlots === 1 ? "" : "s"} to the end.`);
+            }
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showErrorToast(err.message || "Failed to reorder cards.");
+            } else {
+                showErrorToast("Failed to reorder cards.");
+            }
+        }
+    };
 
     const handleSubmit = async () => {
         const text = deckText.trim();
@@ -243,6 +269,14 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                 >
                     <Sparkles className="w-5 h-5 mr-2" />
                     Add Associated Tokens
+                </Button>
+                <Button
+                    color="gray"
+                    size="lg"
+                    onClick={handleMoveMultiFaceToEnd}
+                    disabled={cardCount === 0}
+                >
+                    Move Multi-Face Cards To End
                 </Button>
             </div>
 

@@ -3,6 +3,7 @@ import { db } from '@/db';
 import {
     addCards,
     rebalanceCardOrders,
+    moveMultiFaceCardsToEnd,
 } from './dbUtils';
 
 describe('dbUtils', () => {
@@ -54,6 +55,54 @@ describe('dbUtils', () => {
         // Removed flawed test: 'should not rebalance if all orders are integers' 
         // because implementation enforces specific regular spacing (10, 20, 30...)
         // so [5, 20] SHOULD be rebalanced to [10, 20].
+    });
+
+    describe('moveMultiFaceCardsToEnd', () => {
+        it('should stable-partition fronts and keep linked backs attached (persisted via order)', async () => {
+            const testProjectId = 'test-project-dfc';
+
+            await db.cards.bulkAdd([
+                // Normal front A
+                { uuid: 'a', name: 'A', order: 10, isUserUpload: false, projectId: testProjectId },
+                // DFC front B + back
+                { uuid: 'b', name: 'B', order: 20, isUserUpload: false, linkedBackId: 'b_back', projectId: testProjectId },
+                { uuid: 'b_back', name: 'B (Back)', order: 20, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId },
+                // Normal front C
+                { uuid: 'c', name: 'C', order: 30, isUserUpload: false, projectId: testProjectId },
+                // DFC front D + back
+                { uuid: 'd', name: 'D', order: 40, isUserUpload: false, linkedBackId: 'd_back', projectId: testProjectId },
+                { uuid: 'd_back', name: 'D (Back)', order: 40, isUserUpload: false, linkedFrontId: 'd', projectId: testProjectId },
+            ]);
+
+            const result = await moveMultiFaceCardsToEnd(testProjectId);
+            expect(result.totalSlots).toBe(4);
+            expect(result.multiFaceSlots).toBe(2);
+            expect(result.updatedSlots).toBeGreaterThan(0);
+
+            const fronts = await db.cards.where('projectId').equals(testProjectId).filter(c => !c.linkedFrontId).sortBy('order');
+            expect(fronts.map(c => c.uuid)).toEqual(['a', 'c', 'b', 'd']);
+            expect(fronts.map(c => c.order)).toEqual([10, 20, 30, 40]);
+
+            const bBack = await db.cards.get('b_back');
+            const dBack = await db.cards.get('d_back');
+            expect(bBack?.order).toBe(30);
+            expect(dBack?.order).toBe(40);
+        });
+
+        it('should no-op (updatedSlots=0) when multi-face cards are already at the end', async () => {
+            const testProjectId = 'test-project-dfc-noop';
+
+            await db.cards.bulkAdd([
+                { uuid: 'a', name: 'A', order: 10, isUserUpload: false, projectId: testProjectId },
+                { uuid: 'c', name: 'C', order: 20, isUserUpload: false, projectId: testProjectId },
+                { uuid: 'b', name: 'B', order: 30, isUserUpload: false, linkedBackId: 'b_back', projectId: testProjectId },
+                { uuid: 'b_back', name: 'B (Back)', order: 30, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId },
+            ]);
+
+            const result = await moveMultiFaceCardsToEnd(testProjectId);
+            expect(result.multiFaceSlots).toBe(1);
+            expect(result.updatedSlots).toBe(0);
+        });
     });
     describe('Image Management', () => {
         it('hashBlob should return a hex string', async () => {
@@ -498,4 +547,3 @@ describe('dbUtils', () => {
         });
     });
 });
-

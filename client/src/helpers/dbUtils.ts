@@ -306,6 +306,88 @@ export async function rebalanceCardOrders(projectId?: string): Promise<void> {
     }
   });
 }
+
+/**
+ * Moves all multi-face cards ("DFCs" in Proxxied terms) to the end of the manual order.
+ *
+ * Implementation detail:
+ * - We treat each front card (no linkedFrontId) as the ordering "slot".
+ * - If a front has a linked back (or is referenced by a back), that slot is considered multi-face.
+ * - When a slot moves, its linked back (if present) is forced to the exact same order value.
+ */
+export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
+  totalSlots: number;
+  multiFaceSlots: number;
+  updatedSlots: number;
+}> {
+  if (!projectId) return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
+
+  return await db.transaction("rw", db.cards, async () => {
+    const allCards = await db.cards.where("projectId").equals(projectId).toArray();
+    if (allCards.length === 0) return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
+
+    const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
+    const fronts = allCards
+      .filter((c) => !c.linkedFrontId)
+      .sort((a, b) => a.order - b.order);
+
+    // Defensive: handle cases where a back exists but the front's linkedBackId is missing.
+    const frontsWithBackRef = new Set(
+      allCards.filter((c) => !!c.linkedFrontId).map((c) => c.linkedFrontId as string)
+    );
+
+    const isMultiFaceFront = (front: CardOption): boolean => {
+      if (front.linkedBackId) return true;
+      if (frontsWithBackRef.has(front.uuid)) return true;
+
+      // Future-proofing: if we ever persist Scryfall multi-face metadata on the card record,
+      // treat any multi-face layout/card_faces as multi-face for this ordering action.
+      const maybeScryfall = front as unknown as { card_faces?: unknown[]; layout?: string };
+      if (Array.isArray(maybeScryfall.card_faces) && maybeScryfall.card_faces.length >= 2) return true;
+      if (typeof maybeScryfall.layout === "string" && maybeScryfall.layout !== "normal") return true;
+
+      return false;
+    };
+
+    const nonMulti: CardOption[] = [];
+    const multi: CardOption[] = [];
+    for (const front of fronts) {
+      (isMultiFaceFront(front) ? multi : nonMulti).push(front);
+    }
+
+    const reorderedFronts = [...nonMulti, ...multi];
+
+    const updates: { key: string; changes: { order: number } }[] = [];
+    let updatedSlots = 0;
+
+    reorderedFronts.forEach((front, index) => {
+      const newOrder = (index + 1) * 10;
+      const needsFrontUpdate = Math.abs(front.order - newOrder) > 0.001;
+      if (needsFrontUpdate) {
+        updates.push({ key: front.uuid, changes: { order: newOrder } });
+      }
+
+      if (front.linkedBackId) {
+        const back = byUuid.get(front.linkedBackId);
+        if (back && Math.abs(back.order - newOrder) > 0.001) {
+          updates.push({ key: back.uuid, changes: { order: newOrder } });
+        }
+      }
+
+      if (needsFrontUpdate) updatedSlots++;
+    });
+
+    if (updates.length > 0) {
+      await db.cards.bulkUpdate(updates);
+    }
+
+    return {
+      totalSlots: fronts.length,
+      multiFaceSlots: multi.length,
+      updatedSlots,
+    };
+  });
+}
 /**
  * Deletes a card from the database and decrements the reference count of its image.
  * If the card has a linkedBackId, the back card will also be deleted (cascade).
