@@ -2,7 +2,18 @@ import type { CardInfo } from "../../../shared/types.js";
 import type { ScryfallApiCard } from "./getCardImagesPaged.js";
 import { batchFetchCards } from "./getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
+import { trackMicroserviceCall } from "../services/microserviceMetrics.js";
 import { debugLog } from "./debug.js";
+
+// Microservice response wrapper types
+interface MicroserviceResponse<T> {
+  success?: boolean;
+  data?: T;
+}
+
+interface CardListData {
+  data?: ScryfallApiCard[];
+}
 
 // Small p-limit implementation to cap microservice concurrency.
 function pLimit(concurrency: number) {
@@ -66,20 +77,20 @@ async function fetchOneViaMicroservice(ci: CardInfo): Promise<ScryfallApiCard | 
 
   if (ci.set && ci.number) {
     const q = `set:${ci.set} number:${ci.number}`;
-    const resp = await client.searchCards({ q, page_size: 1 });
-    const first = (resp as any)?.success ? (resp as any).data?.data?.[0] : undefined;
+    const resp = await trackMicroserviceCall('/search', () => client.searchCards({ q, page_size: 1 })) as MicroserviceResponse<CardListData>;
+    const first = resp?.success ? resp.data?.data?.[0] : undefined;
     return first as ScryfallApiCard | undefined;
   }
 
   // Prefer exact name match; fall back to fuzzy.
-  const exactResp = await client.getCardByName({ exact: ci.name });
-  if ((exactResp as any)?.success && (exactResp as any).data) {
-    return (exactResp as any).data as ScryfallApiCard;
+  const exactResp = await trackMicroserviceCall('/cards/named', () => client.getCardByName({ exact: ci.name })) as MicroserviceResponse<ScryfallApiCard>;
+  if (exactResp?.success && exactResp.data) {
+    return exactResp.data as ScryfallApiCard;
   }
 
-  const fuzzyResp = await client.getCardByName({ fuzzy: ci.name });
-  if ((fuzzyResp as any)?.success && (fuzzyResp as any).data) {
-    return (fuzzyResp as any).data as ScryfallApiCard;
+  const fuzzyResp = await trackMicroserviceCall('/cards/named', () => client.getCardByName({ fuzzy: ci.name })) as MicroserviceResponse<ScryfallApiCard>;
+  if (fuzzyResp?.success && fuzzyResp.data) {
+    return fuzzyResp.data as ScryfallApiCard;
   }
 
   return undefined;

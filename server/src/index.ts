@@ -10,6 +10,8 @@ import { streamRouter } from "./routes/streamRouter.js";
 import { mpcAutofillRouter } from "./routes/mpcAutofillRouter.js";
 import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
+import metricsRouter from "./routes/metricsRouter.js";
+import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
 import { initDatabase } from "./db/db.js";
 import { startImportScheduler } from "./services/importScheduler.js";
 import { initCatalogs } from "./utils/scryfallCatalog.js";
@@ -26,6 +28,13 @@ startImportScheduler();
 // Run share cleanup on startup and schedule hourly
 cleanupExpiredShares();
 setInterval(() => cleanupExpiredShares(), 60 * 60 * 1000); // Every hour
+
+// Log microservice performance metrics every 5 minutes (if SCRYFALL_CACHE_URL is configured)
+if (process.env.SCRYFALL_CACHE_URL) {
+  setInterval(() => {
+    logMicroserviceMetrics();
+  }, 5 * 60 * 1000); // Every 5 minutes
+}
 
 /**
  * Start the Express server on the specified port.
@@ -107,7 +116,15 @@ export function startServer(port: number = 3001): Promise<number> {
   
   // Deep health check (includes database and microservice)
   app.get("/health/deep", async (req, res) => {
-    const health: any = {
+    const health: {
+      status: string;
+      uptime: number;
+      timestamp: string;
+      checks: {
+        database: string;
+        microservice: string;
+      };
+    } = {
       status: "ok",
       uptime: Math.floor((Date.now() - startTime) / 1000),
       timestamp: new Date().toISOString(),
@@ -116,18 +133,18 @@ export function startServer(port: number = 3001): Promise<number> {
         microservice: "unknown"
       }
     };
-    
+
     // Check database
     try {
       const { getDatabase } = await import("./db/db.js");
       const db = getDatabase();
       db.prepare("SELECT 1").get();
       health.checks.database = "ok";
-    } catch (error) {
+    } catch {
       health.checks.database = "error";
       health.status = "degraded";
     }
-    
+
     // Check microservice
     try {
       const { isMicroserviceAvailable } = await import("./services/scryfallMicroserviceClient.js");
@@ -136,7 +153,7 @@ export function startServer(port: number = 3001): Promise<number> {
       if (!available) {
         health.status = "degraded"; // Degraded but functional (falls back to Scryfall API)
       }
-    } catch (error) {
+    } catch {
       health.checks.microservice = "error";
       health.status = "degraded";
     }
@@ -152,6 +169,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/mpcfill", mpcAutofillRouter);
   app.use("/api/scryfall", scryfallRouter);
   app.use("/api/share", shareRouter);
+  app.use("/api/metrics", metricsRouter);
 
   return new Promise((resolve) => {
     const server = app.listen(port, "0.0.0.0", () => {

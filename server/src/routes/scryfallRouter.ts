@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { getDatabase } from "../db/db.js";
 import { debugLog } from "../utils/debug.js";
 import { isValidScryfallType, isKnownToken } from "../utils/scryfallCatalog.js";
-import { getCardsWithImagesForCardInfo } from "../utils/getCardImagesPaged.js";
+import { getCardsWithImagesForCardInfo, type ScryfallApiCard } from "../utils/getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 
 const router = Router();
@@ -326,13 +326,13 @@ router.get("/search", async (req: Request, res: Response) => {
         if (!hasSortParams && await isMicroserviceAvailable()) {
             debugLog(`[ScryfallProxy] Using microservice for search: ${processedQ}`);
             const client = getScryfallClient();
-            
+
             // Build search params for microservice
-            const searchParams: any = { q: processedQ };
-            if (params.page) searchParams.page = params.page;
-            if (params.page_size) searchParams.page_size = params.page_size; // Results per page
-            if (params.limit) searchParams.limit = params.limit; // Total results cap
-            
+            const searchParams: { q: string; page?: number; page_size?: number; limit?: number } = { q: processedQ };
+            if (params.page) searchParams.page = parseInt(params.page, 10);
+            if (params.page_size) searchParams.page_size = parseInt(params.page_size, 10); // Results per page
+            if (params.limit) searchParams.limit = parseInt(params.limit, 10); // Total results cap
+
             const response = await client.searchCards(searchParams);
             
             if (response.success && response.data) {
@@ -383,8 +383,15 @@ router.get("/search", async (req: Request, res: Response) => {
  * Get card by set and collector number using microservice (with fallback to direct Scryfall API)
  */
 router.get("/cards/:set/:number", async (req: Request, res: Response) => {
-    const { set, number } = req.params;
+    const rawSet = req.params.set;
+    const rawNumber = req.params.number;
+    const set = Array.isArray(rawSet) ? rawSet[0] : rawSet;
+    const number = Array.isArray(rawNumber) ? rawNumber[0] : rawNumber;
     const lang = req.query.lang as string | undefined;
+
+    if (!set || !number) {
+        return res.status(400).json({ error: "Missing set or number" });
+    }
 
     const params: Record<string, string> = { set, number };
     if (lang) params.lang = lang;
@@ -459,9 +466,9 @@ router.get("/prints", async (req: Request, res: Response) => {
             // Note: microservice search doesn't support unique param in query, 
             // but returns all matching cards which we can deduplicate
             const response = await client.searchCards({ q: `!"${name}" include:extras` });
-            
+
             if (response.success && response.data && response.data.data.length > 0) {
-                allPrints = response.data.data as any[];
+                allPrints = response.data.data as ScryfallApiCard[];
             }
         }
         

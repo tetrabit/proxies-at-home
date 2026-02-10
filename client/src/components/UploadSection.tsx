@@ -67,7 +67,7 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
         dismissible: true,
       });
       setTimeout(() => removeToast(doneId), type === "success" ? 5000 : 8000);
-    } catch (error) {
+    } catch {
       removeToast(toastId);
       showErrorToast("Bulk MPC upgrade failed. Please try again.");
     } finally {

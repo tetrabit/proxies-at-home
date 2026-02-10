@@ -45,7 +45,7 @@ describe("fetchCardsForTokenLookup", () => {
   it("falls back to batchFetchCards when SCRYFALL_CACHE_URL is not configured", async () => {
     hoisted.mockBatchFetchCards.mockResolvedValueOnce(new Map([["sol ring", { name: "Sol Ring" }]]));
 
-    const res = await fetchCardsForTokenLookup([{ name: "Sol Ring" } as any], "en");
+    const res = await fetchCardsForTokenLookup([{ name: "Sol Ring" } as CardInfo], "en");
     expect(res.usedMicroservice).toBe(false);
     expect(hoisted.mockBatchFetchCards).toHaveBeenCalledTimes(1);
     expect(hoisted.mockIsMicroserviceAvailable).toHaveBeenCalledTimes(0);
@@ -69,8 +69,8 @@ describe("fetchCardsForTokenLookup", () => {
 
     const res = await fetchCardsForTokenLookup(
       [
-        { name: "Sol Ring", set: "cm2", number: "229" } as any,
-        { name: "Karn, Scion of Urza" } as any,
+        { name: "Sol Ring", set: "cm2", number: "229" } as CardInfo,
+        { name: "Karn, Scion of Urza" } as CardInfo,
       ],
       "en"
     );
@@ -108,8 +108,8 @@ describe("fetchCardsForTokenLookup", () => {
 
     const res = await fetchCardsForTokenLookup(
       [
-        { name: "Mystery Card" } as any,
-        { name: "Sol Ring", set: "cm2", number: "229" } as any,
+        { name: "Mystery Card" } as CardInfo,
+        { name: "Sol Ring", set: "cm2", number: "229" } as CardInfo,
       ],
       "en"
     );
