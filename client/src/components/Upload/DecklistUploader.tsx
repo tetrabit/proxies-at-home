@@ -5,7 +5,7 @@ import { Button, Checkbox, Label, Modal, ModalBody, ModalHeader, Textarea } from
 import { ExternalLink, Search, Sparkles } from "lucide-react";
 import { parseDeckList } from "@/helpers/importParsers";
 import type { ImportIntent } from "@/helpers/importParsers";
-import { addRemoteImage, countBasicLandsToRemove, moveMultiFaceCardsToEnd, removeBasicLandsFromProject } from "@/helpers/dbUtils";
+import { addRemoteImage, checkMultiFaceCardsHaveCorrectBack, countBasicLandsToRemove, moveMultiFaceCardsToEnd, removeBasicLandsFromProject } from "@/helpers/dbUtils";
 import { db } from "@/db";
 import { useCardsStore, useSettingsStore, useProjectStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
@@ -44,6 +44,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
     const [removeBasicsIncludeWastes, setRemoveBasicsIncludeWastes] = useState(true);
     const [removeBasicsIncludeSnow, setRemoveBasicsIncludeSnow] = useState(true);
     const [isRemovingBasics, setIsRemovingBasics] = useState(false);
+    const [isCheckingMultiFaceBacks, setIsCheckingMultiFaceBacks] = useState(false);
 
     const currentProjectId = useProjectStore((state) => state.currentProjectId);
 
@@ -76,6 +77,35 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             } else {
                 showErrorToast("Failed to reorder cards.");
             }
+        }
+    };
+
+    const handleCheckMultiFaceBacks = async () => {
+        if (!currentProjectId) return;
+        try {
+            setIsCheckingMultiFaceBacks(true);
+
+            const result = await checkMultiFaceCardsHaveCorrectBack(currentProjectId);
+            if (result.multiFace === 0) {
+                showInfoToast("No multi-face cards detected.");
+                return;
+            }
+            const summary = `Checked=${result.checked}, Fixed=${result.fixed}, Skipped=${result.skipped}, Errors=${result.errors}`;
+            if (result.broken === 0) {
+                showInfoToast(`Checked ${result.multiFace} multi-face card${result.multiFace === 1 ? "" : "s"}: all backs look OK. (${summary})`);
+            } else {
+                showInfoToast(
+                    `Multi-face back check complete: fixed ${result.fixed}/${result.broken} broken card${result.broken === 1 ? "" : "s"}. (${summary})`
+                );
+            }
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                showErrorToast(err.message || "Failed to check multi-face backs.");
+            } else {
+                showErrorToast("Failed to check multi-face backs.");
+            }
+        } finally {
+            setIsCheckingMultiFaceBacks(false);
         }
     };
 
@@ -309,6 +339,14 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                     disabled={cardCount === 0}
                 >
                     Move Multi-Face Cards To End
+                </Button>
+                <Button
+                    color="gray"
+                    size="lg"
+                    onClick={handleCheckMultiFaceBacks}
+                    disabled={cardCount === 0 || isCheckingMultiFaceBacks}
+                >
+                    {isCheckingMultiFaceBacks ? "Checking..." : "Check Multi-Face Cards Have Correct Back"}
                 </Button>
                 <Button
                     color="failure"
