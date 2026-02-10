@@ -4,6 +4,7 @@ import { parseImageIdFromUrl } from "./imageHelper";
 import { isCardbackId } from "./cardbackLibrary";
 import { extractMpcIdentifierFromImageId, getMpcAutofillImageUrl } from "./mpcAutofillApi";
 import { inferSourceFromUrl, getImageSourceSync, isCustomSource } from "./imageSourceUtils";
+import { API_BASE } from "@/constants";
 
 /**
  * Calculates the SHA-256 hash of a file or blob.
@@ -397,6 +398,214 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
       updatedSlots,
     };
   });
+}
+
+type EnrichedCard = {
+  name: string;
+  set?: string;
+  number?: string;
+  layout?: string;
+  card_faces?: Array<{
+    name: string;
+    image_uris?: { large?: string; normal?: string; png?: string };
+  }>;
+};
+
+function _isMultiFaceLayout(layout: string | undefined): boolean {
+  if (!layout) return false;
+  // Match the layouts used by the existing enrichment logic.
+  return ["transform", "modal_dfc", "mdfc", "double_faced_token", "flip", "adventure"].includes(layout);
+}
+
+function _hasBackFaceImage(data: EnrichedCard): boolean {
+  const faces = data.card_faces;
+  if (!faces || faces.length < 2) return false;
+  const back = faces[1];
+  const u = back?.image_uris;
+  return !!(u?.png || u?.large || u?.normal);
+}
+
+function _backNeedsRepair(back: CardOption | undefined): boolean {
+  if (!back) return true;
+  if (!back.imageId) return true;
+  if (back.usesDefaultCardback) return true;
+  if (isCardbackId(back.imageId)) return true;
+  if (back.imageId === "cardback_builtin_blank") return true;
+  return false;
+}
+
+/**
+ * Bandaid fix: Detect multi-face cards (via server enrichment metadata) that currently have
+ * a generic/default back, and repair them by resolving the correct back face art and
+ * (re)creating/(re)linking the back card as needed.
+ */
+export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Promise<{
+  checked: number;
+  multiFace: number;
+  broken: number;
+  fixed: number;
+  skipped: number;
+  errors: number;
+}> {
+  if (!projectId) {
+    return { checked: 0, multiFace: 0, broken: 0, fixed: 0, skipped: 0, errors: 0 };
+  }
+
+  const allCards = await db.cards.where("projectId").equals(projectId).toArray();
+  const fronts = allCards.filter((c) => !c.linkedFrontId && !c.isUserUpload);
+  const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
+  const backByFrontUuid = new Map<string, CardOption>();
+  for (const c of allCards) {
+    if (c.linkedFrontId) backByFrontUuid.set(c.linkedFrontId, c);
+  }
+
+  let multiFace = 0;
+  let broken = 0;
+  let fixed = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  const frontBackLinkFixes = new Map<string, Partial<CardOption>>();
+  const repairs: Array<{ front: CardOption; backName: string; backImageUrl: string }> = [];
+
+  for (let i = 0; i < fronts.length; i += 100) {
+    const batch = fronts.slice(i, i + 100);
+    if (batch.length === 0) continue;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/cards/images/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cards: batch.map((c) => ({ name: c.name, set: c.set, number: c.number })),
+        }),
+      });
+
+      if (!res.ok) {
+        errors++;
+        continue;
+      }
+
+      const enriched = (await res.json()) as Array<EnrichedCard | null>;
+
+      for (let j = 0; j < batch.length; j++) {
+        const front = batch[j];
+        const data = enriched[j];
+        if (!data) continue;
+
+        if (!_isMultiFaceLayout(data.layout) || !_hasBackFaceImage(data)) continue;
+        multiFace++;
+
+        const backByLink = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
+        const backByRef = backByFrontUuid.get(front.uuid);
+        const back = backByRef ?? backByLink;
+
+        if (back && front.linkedBackId !== back.uuid) {
+          const prev = frontBackLinkFixes.get(front.uuid) || {};
+          frontBackLinkFixes.set(front.uuid, { ...prev, linkedBackId: back.uuid });
+        }
+
+        if (!_backNeedsRepair(back)) continue;
+        broken++;
+
+        const faces = data.card_faces || [];
+        const backFace = faces[1];
+        const backName = backFace?.name || `${front.name} (Back)`;
+        const backImageUrl =
+          backFace?.image_uris?.large || backFace?.image_uris?.png || backFace?.image_uris?.normal;
+        if (!backImageUrl) {
+          skipped++;
+          continue;
+        }
+
+        repairs.push({ front, backName, backImageUrl });
+      }
+    } catch {
+      errors++;
+    }
+  }
+
+  // Create/lookup back images (refCount increments here, matching the new card usage).
+  const backImageIdByUrl = await addRemoteImages(
+    repairs.map((r) => ({ imageUrls: [r.backImageUrl], count: 1 })),
+  );
+
+  if (frontBackLinkFixes.size > 0) {
+    const updates = Array.from(frontBackLinkFixes.entries()).map(([key, changes]) => ({ key, changes }));
+    await db.cards.bulkUpdate(updates);
+  }
+
+  if (repairs.length > 0) {
+    await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+      for (const r of repairs) {
+        const backImageId = backImageIdByUrl.get(r.backImageUrl);
+        if (!backImageId) {
+          skipped++;
+          continue;
+        }
+
+        const currentFront = await db.cards.get(r.front.uuid);
+        if (!currentFront) {
+          skipped++;
+          continue;
+        }
+
+        const backByRef = backByFrontUuid.get(r.front.uuid);
+        const backByLink = currentFront.linkedBackId ? await db.cards.get(currentFront.linkedBackId) : undefined;
+        const back =
+          backByRef ??
+          (backByLink && backByLink.linkedFrontId === currentFront.uuid ? backByLink : undefined);
+
+        if (back) {
+          // If swapping away from a custom image, decrement it.
+          if (back.imageId && back.imageId !== backImageId && !isCardbackId(back.imageId)) {
+            await _removeImageRef_transactional(back.imageId);
+          }
+
+          await db.cards.update(back.uuid, {
+            imageId: backImageId,
+            usesDefaultCardback: false,
+            name: r.backName,
+            linkedFrontId: currentFront.uuid,
+            order: currentFront.order,
+            needsEnrichment: false,
+            projectId: currentFront.projectId,
+          });
+
+          if (currentFront.linkedBackId !== back.uuid) {
+            await db.cards.update(currentFront.uuid, { linkedBackId: back.uuid });
+          }
+          fixed++;
+        } else {
+          // Create a new linked back card entry.
+          const backUuid = crypto.randomUUID();
+          const newBack: CardOption = {
+            uuid: backUuid,
+            name: r.backName,
+            order: currentFront.order,
+            isUserUpload: currentFront.isUserUpload,
+            imageId: backImageId,
+            linkedFrontId: currentFront.uuid,
+            needsEnrichment: false,
+            usesDefaultCardback: false,
+            projectId: currentFront.projectId,
+          };
+          await db.cards.add(newBack);
+          await db.cards.update(currentFront.uuid, { linkedBackId: backUuid });
+          fixed++;
+        }
+      }
+    });
+  }
+
+  return {
+    checked: fronts.length,
+    multiFace,
+    broken,
+    fixed,
+    skipped,
+    errors,
+  };
 }
 
 export type RemoveBasicLandsOptions = {

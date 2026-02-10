@@ -4,16 +4,19 @@ import {
     addCards,
     rebalanceCardOrders,
     moveMultiFaceCardsToEnd,
+    checkMultiFaceCardsHaveCorrectBack,
     countBasicLandsToRemove,
     removeBasicLandsFromProject,
 } from './dbUtils';
 
 describe('dbUtils', () => {
+    const originalFetch = global.fetch;
 
     beforeEach(async () => {
         await db.cards.clear();
         await db.images.clear();
         vi.clearAllMocks();
+        global.fetch = originalFetch;
 
         // Mock crypto.subtle.digest
         let uuidCounter = 0;
@@ -122,6 +125,95 @@ describe('dbUtils', () => {
             expect(result.totalSlots).toBe(2);
             expect(result.multiFaceSlots).toBe(0);
             expect(result.updatedSlots).toBe(0);
+        });
+    });
+
+    describe('checkMultiFaceCardsHaveCorrectBack', () => {
+        it('should repair broken multi-face cards (default/cardback back) and fix missing linkedBackId', async () => {
+            const testProjectId = 'test-project-dfc-back-check';
+
+            await db.cards.bulkAdd([
+                // DFC front
+                { uuid: 'dfc_front', name: 'Delver of Secrets', order: 10, isUserUpload: false, projectId: testProjectId, set: 'isd', number: '51', needsEnrichment: false },
+                // Back card exists but is generic/default cardback, and front link is missing
+                { uuid: 'dfc_back', name: 'Insectile Aberration', order: 10, isUserUpload: false, projectId: testProjectId, linkedFrontId: 'dfc_front', imageId: 'cardback_builtin_mtg', usesDefaultCardback: true },
+                // Normal card (should be ignored)
+                { uuid: 'normal', name: 'Sol Ring', order: 20, isUserUpload: false, projectId: testProjectId, set: 'cmm', number: '397', needsEnrichment: false },
+            ]);
+
+            // Mock enrich endpoint response: aligned with batch order.
+            global.fetch = vi.fn(async () => ({
+                ok: true,
+                json: async () => ([
+                    {
+                        name: 'Delver of Secrets // Insectile Aberration',
+                        set: 'isd',
+                        number: '51',
+                        layout: 'transform',
+                        card_faces: [
+                            { name: 'Delver of Secrets', image_uris: { png: 'front.png' } },
+                            { name: 'Insectile Aberration', image_uris: { png: 'back.png' } },
+                        ],
+                    },
+                    {
+                        name: 'Sol Ring',
+                        set: 'cmm',
+                        number: '397',
+                        layout: 'normal',
+                    },
+                ]),
+            })) as unknown as typeof fetch;
+
+            const result = await checkMultiFaceCardsHaveCorrectBack(testProjectId);
+            expect(result.checked).toBe(2); // excludes back cards and user uploads
+            expect(result.multiFace).toBe(1);
+            expect(result.broken).toBe(1);
+            expect(result.fixed).toBe(1);
+            expect(result.skipped).toBe(0);
+
+            const front = await db.cards.get('dfc_front');
+            expect(front?.linkedBackId).toBe('dfc_back');
+            expect(front?.needsEnrichment).toBe(false);
+
+            const back = await db.cards.get('dfc_back');
+            expect(back?.imageId).toBe('back.png');
+            expect(back?.usesDefaultCardback).toBe(false);
+
+            const normal = await db.cards.get('normal');
+            expect(normal?.needsEnrichment).toBe(false);
+        });
+
+        it('should not queue when back already has a non-cardback image', async () => {
+            const testProjectId = 'test-project-dfc-back-ok';
+
+            await db.cards.bulkAdd([
+                { uuid: 'dfc_front', name: 'B', order: 10, isUserUpload: false, projectId: testProjectId, set: 'set', number: '1', linkedBackId: 'dfc_back', needsEnrichment: false },
+                { uuid: 'dfc_back', name: 'B (Back)', order: 10, isUserUpload: false, projectId: testProjectId, linkedFrontId: 'dfc_front', imageId: 'remote-back', usesDefaultCardback: false },
+            ]);
+
+            global.fetch = vi.fn(async () => ({
+                ok: true,
+                json: async () => ([
+                    {
+                        name: 'B // B (Back)',
+                        set: 'set',
+                        number: '1',
+                        layout: 'transform',
+                        card_faces: [
+                            { name: 'B', image_uris: { png: 'front.png' } },
+                            { name: 'B (Back)', image_uris: { png: 'back.png' } },
+                        ],
+                    },
+                ]),
+            })) as unknown as typeof fetch;
+
+            const result = await checkMultiFaceCardsHaveCorrectBack(testProjectId);
+            expect(result.multiFace).toBe(1);
+            expect(result.broken).toBe(0);
+            expect(result.fixed).toBe(0);
+
+            const front = await db.cards.get('dfc_front');
+            expect(front?.needsEnrichment).toBe(false);
         });
     });
 
