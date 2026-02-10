@@ -652,7 +652,7 @@ export class ImportOrchestrator {
      * @param signal - Abort signal
      * @param preloadedCards - Optional pre-fetched cards to avoid redundant DB query
      */
-    static async enrichTokenData(signal?: AbortSignal, preloadedCards?: CardOption[]): Promise<void> {
+    static async enrichTokenData(signal?: AbortSignal, preloadedCards?: CardOption[], forceRefresh?: boolean): Promise<void> {
         const projectId = useProjectStore.getState().currentProjectId;
         if (!projectId) return;
 
@@ -660,12 +660,16 @@ export class ImportOrchestrator {
             .where('projectId').equals(projectId)
             .toArray();
 
-        // Find cards that don't have token_parts yet (likely MPC imports)
-        const cardsNeedingTokenLookup = cards.filter(c =>
-            c.token_parts === undefined &&
-            !c.linkedFrontId && // Skip back cards
-            !c.type_line?.toLowerCase().includes('token') // Skip tokens
-        );
+        // Find cards that need token lookup
+        const cardsNeedingTokenLookup = cards.filter(c => {
+            // Skip back cards and token cards
+            if (c.linkedFrontId || c.type_line?.toLowerCase().includes('token')) {
+                return false;
+            }
+            // If forceRefresh, include ALL non-token/non-back cards
+            // Otherwise, only include cards missing token_parts
+            return forceRefresh || c.token_parts === undefined;
+        });
 
         if (cardsNeedingTokenLookup.length === 0) return;
 
@@ -712,15 +716,17 @@ export class ImportOrchestrator {
     /**
      * Computes missing tokens and imports them.
      * @param options.skipExisting If true, skip tokens already in collection (for auto-import)
+     * @param options.forceRefresh If true, refresh token_parts for ALL cards (for manual full-project scan)
      * @returns The ImportIntents that were processed
      */
     static async importMissingTokens(options: {
         skipExisting?: boolean;
+        forceRefresh?: boolean;
         signal?: AbortSignal;
         onComplete?: () => void;
         onNoTokens?: () => void;
     } = {}): Promise<ImportIntent[]> {
-        const { skipExisting = false, signal, onComplete, onNoTokens } = options;
+        const { skipExisting = false, forceRefresh = false, signal, onComplete, onNoTokens } = options;
 
         const projectId = useProjectStore.getState().currentProjectId;
         if (!projectId) {
@@ -738,7 +744,7 @@ export class ImportOrchestrator {
         }
 
         // Enrich cards that don't have token_parts, passing the already-fetched cards
-        await this.enrichTokenData(signal, cards);
+        await this.enrichTokenData(signal, cards, forceRefresh);
 
         // Re-fetch cards from DB to get updated token_parts after enrichment
         const enrichedCards = await db.cards

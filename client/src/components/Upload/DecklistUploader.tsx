@@ -10,7 +10,7 @@ import { db } from "@/db";
 import { useCardsStore, useSettingsStore, useProjectStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
 import { AdvancedSearch } from "../ArtworkModal";
-import { handleAutoImportTokens } from "@/helpers/tokenImportHelper";
+import { handleManualTokenImport } from "@/helpers/tokenImportHelper";
 import { useToastStore } from "@/store/toast";
 import { useCardImport } from "@/hooks/useCardImport";
 
@@ -45,16 +45,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
     const [removeBasicsIncludeSnow, setRemoveBasicsIncludeSnow] = useState(true);
     const [isRemovingBasics, setIsRemovingBasics] = useState(false);
 
-    // Check if we have cards that need tokens but don't have them
     const currentProjectId = useProjectStore((state) => state.currentProjectId);
-    const hasTokensToFetch = useLiveQuery(async () => {
-        if (!currentProjectId) return false;
-        const cards = await db.cards
-            .where('projectId').equals(currentProjectId)
-            .filter(c => !!c.needs_token)
-            .toArray();
-        return cards.length > 0;
-    }, [currentProjectId]);
 
     const removeBasicsWillRemove = useLiveQuery(async () => {
         if (!currentProjectId) return 0;
@@ -180,8 +171,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
         tokenFetchController.current = new AbortController();
 
         try {
-            await handleAutoImportTokens({
-                force: true,
+            await handleManualTokenImport({
                 silent,
                 signal: tokenFetchController.current.signal,
                 onComplete: () => {
@@ -197,7 +187,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             if (err instanceof Error && err.name !== "AbortError") {
                 useToastStore.getState().showErrorToast(err.message || "Something went wrong while fetching tokens.");
             }
-        } finally {
+        } finally{
             tokenFetchController.current = null;
         }
     };
@@ -307,7 +297,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                     color="purple"
                     size="lg"
                     onClick={() => handleAddTokens()}
-                    disabled={!hasTokensToFetch}
+                    disabled={cardCount === 0 || !currentProjectId}
                 >
                     <Sparkles className="w-5 h-5 mr-2" />
                     Add Associated Tokens
