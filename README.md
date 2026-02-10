@@ -99,6 +99,9 @@ git clone https://github.com/your-username/mtg-proxxied.git
 cd mtg-proxxied
 ```
 
+This project consumes a local TypeScript client in `shared/scryfall-client` via a `file:` dependency.
+No npm registry publishing or `.npmrc` auth is required.
+
 There is a `./client` and `./server` component and they can be run with [`concurrently`](https://www.npmjs.com/package/concurrently) via the `npm run dev` command from the root `./package.json`
 
 ```bash
@@ -129,6 +132,16 @@ Alternatively, with PowerShell
 The the client and server will be running on:
 - Client: `http://localhost:5173/`
 - Server: `http://localhost:3001/`
+
+## Build
+
+To build client + server + Electron TypeScript in parallel:
+
+```bash
+npm run build:parallel
+```
+
+More notes: `docs/BUILD_SPEED.md`.
 
 ## 🧪 Testing the Microservice
 

@@ -3,6 +3,8 @@
         "module": "NodeNext",
         "moduleResolution": "NodeNext",
         "outDir": "./dist",
+        "incremental": true,
+        "tsBuildInfoFile": "./.tsbuildinfo/tsconfig.build.tsbuildinfo",
         "target": "ES2022",
         "strict": true,
         "skipLibCheck": true,

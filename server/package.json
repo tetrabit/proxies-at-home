@@ -7,7 +7,7 @@
     "test": "vitest run --silent",
     "test:ui": "vitest --ui --coverage.enabled=true",
     "dev": "NODE_ENV=development nodemon --exec tsx src/index.ts",
-    "build": "rm -rf dist && mkdir -p cardbacks && tsc -p tsconfig.build.json && cp -r cardbacks dist/server/",
+    "build": "rm -rf dist && node -e \"require('fs').mkdirSync('.tsbuildinfo',{recursive:true})\" && mkdir -p cardbacks && tsc -p tsconfig.build.json && cp -r cardbacks dist/server/",
     "start": "node dist/server/src/index.js",
     "lint": "eslint ."
   },
@@ -16,6 +16,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@tetrabit/scryfall-cache-client": "file:../shared/scryfall-client",
     "axios": "^1.11.0",
     "axios-retry": "^4.5.0",
     "better-sqlite3": "^12.5.0",

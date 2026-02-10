@@ -1,6 +1,7 @@
 server/data/
 server/dist/
 server/coverage/*
+server/.env.production
 client/coverage/*
 coverage/*
 client/playwright-report/
@@ -11,4 +12,9 @@ node_modules
 # Electron
 dist-app/
 electron/dist/
+shared/scryfall-client/dist/
 .todos/
+
+# TypeScript incremental build caches
+server/.tsbuildinfo/
+electron/.tsbuildinfo/
