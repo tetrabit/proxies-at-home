@@ -6,6 +6,11 @@ export interface AutoTokenOptions {
     onComplete?: () => void;
     onNoTokens?: () => void;
     silent?: boolean;
+    /**
+     * If true, bypasses the autoImportTokens setting check.
+     * Use for explicit user-triggered actions.
+     */
+    force?: boolean;
 }
 
 /**
@@ -16,7 +21,7 @@ export async function handleAutoImportTokens(options: AutoTokenOptions = {}) {
     const { silent = false } = options;
 
     // Check global setting - return early if disabled
-    if (!useSettingsStore.getState().autoImportTokens) {
+    if (!options.force && !useSettingsStore.getState().autoImportTokens) {
         return;
     }
 

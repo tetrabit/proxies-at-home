@@ -181,6 +181,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
 
         try {
             await handleAutoImportTokens({
+                force: true,
                 silent,
                 signal: tokenFetchController.current.signal,
                 onComplete: () => {
