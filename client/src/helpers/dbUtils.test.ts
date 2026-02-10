@@ -66,14 +66,14 @@ describe('dbUtils', () => {
             await db.cards.bulkAdd([
                 // Normal front A
                 { uuid: 'a', name: 'A', order: 10, isUserUpload: false, projectId: testProjectId },
-                // DFC front B + back
+                // DFC front B + back (non-cardback imageId)
                 { uuid: 'b', name: 'B', order: 20, isUserUpload: false, linkedBackId: 'b_back', projectId: testProjectId },
-                { uuid: 'b_back', name: 'B (Back)', order: 20, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId },
+                { uuid: 'b_back', name: 'B (Back)', order: 20, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId, imageId: 'remote-back-b' },
                 // Normal front C
                 { uuid: 'c', name: 'C', order: 30, isUserUpload: false, projectId: testProjectId },
-                // DFC front D + back
+                // DFC front D + back (non-cardback imageId)
                 { uuid: 'd', name: 'D', order: 40, isUserUpload: false, linkedBackId: 'd_back', projectId: testProjectId },
-                { uuid: 'd_back', name: 'D (Back)', order: 40, isUserUpload: false, linkedFrontId: 'd', projectId: testProjectId },
+                { uuid: 'd_back', name: 'D (Back)', order: 40, isUserUpload: false, linkedFrontId: 'd', projectId: testProjectId, imageId: 'remote-back-d' },
             ]);
 
             const result = await moveMultiFaceCardsToEnd(testProjectId);
@@ -98,11 +98,29 @@ describe('dbUtils', () => {
                 { uuid: 'a', name: 'A', order: 10, isUserUpload: false, projectId: testProjectId },
                 { uuid: 'c', name: 'C', order: 20, isUserUpload: false, projectId: testProjectId },
                 { uuid: 'b', name: 'B', order: 30, isUserUpload: false, linkedBackId: 'b_back', projectId: testProjectId },
-                { uuid: 'b_back', name: 'B (Back)', order: 30, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId },
+                { uuid: 'b_back', name: 'B (Back)', order: 30, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId, imageId: 'remote-back-b' },
             ]);
 
             const result = await moveMultiFaceCardsToEnd(testProjectId);
             expect(result.multiFaceSlots).toBe(1);
+            expect(result.updatedSlots).toBe(0);
+        });
+
+        it('should ignore generic cardbacks (not treat them as multi-face)', async () => {
+            const testProjectId = 'test-project-cardback-only';
+
+            await db.cards.bulkAdd([
+                // Normal front A + generic cardback
+                { uuid: 'a', name: 'A', order: 10, isUserUpload: false, linkedBackId: 'a_back', projectId: testProjectId },
+                { uuid: 'a_back', name: 'Back', order: 10, isUserUpload: false, linkedFrontId: 'a', projectId: testProjectId, imageId: 'cardback_builtin_mtg', usesDefaultCardback: true },
+                // Normal front B + pinned cardback (still a cardback)
+                { uuid: 'b', name: 'B', order: 20, isUserUpload: false, linkedBackId: 'b_back', projectId: testProjectId },
+                { uuid: 'b_back', name: 'Back', order: 20, isUserUpload: false, linkedFrontId: 'b', projectId: testProjectId, imageId: 'cardback_builtin_proxxied', usesDefaultCardback: false },
+            ]);
+
+            const result = await moveMultiFaceCardsToEnd(testProjectId);
+            expect(result.totalSlots).toBe(2);
+            expect(result.multiFaceSlots).toBe(0);
             expect(result.updatedSlots).toBe(0);
         });
     });

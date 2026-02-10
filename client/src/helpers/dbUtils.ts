@@ -332,21 +332,31 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
       .sort((a, b) => a.order - b.order);
 
     // Defensive: handle cases where a back exists but the front's linkedBackId is missing.
-    const frontsWithBackRef = new Set(
-      allCards.filter((c) => !!c.linkedFrontId).map((c) => c.linkedFrontId as string)
-    );
+    // We want the actual back card record so we can distinguish DFC backs from generic cardbacks.
+    const backByFrontUuid = new Map<string, CardOption>();
+    for (const c of allCards) {
+      if (c.linkedFrontId) {
+        backByFrontUuid.set(c.linkedFrontId, c);
+      }
+    }
 
     const isMultiFaceFront = (front: CardOption): boolean => {
-      if (front.linkedBackId) return true;
-      if (frontsWithBackRef.has(front.uuid)) return true;
+      // In Proxxied, many (or all) cards have a linked back because of the printing cardback.
+      // For this action we only want true multi-face cards (DFCs/MDFCs/etc), not generic cardbacks.
+      const back =
+        (front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined) ??
+        backByFrontUuid.get(front.uuid);
+      if (!back) return false;
 
-      // Future-proofing: if we ever persist Scryfall multi-face metadata on the card record,
-      // treat any multi-face layout/card_faces as multi-face for this ordering action.
-      const maybeScryfall = front as unknown as { card_faces?: unknown[]; layout?: string };
-      if (Array.isArray(maybeScryfall.card_faces) && maybeScryfall.card_faces.length >= 2) return true;
-      if (typeof maybeScryfall.layout === "string" && maybeScryfall.layout !== "normal") return true;
+      // Any back that uses a cardback library ID is NOT considered multi-face for reordering.
+      // This includes default cardbacks and pinned per-card cardbacks.
+      if (back.imageId && isCardbackId(back.imageId)) return false;
 
-      return false;
+      // If there's no back image, treat as not multi-face.
+      if (!back.imageId) return false;
+
+      // Otherwise it's a specific back face (e.g. DFC back art or a custom back image).
+      return true;
     };
 
     const nonMulti: CardOption[] = [];
