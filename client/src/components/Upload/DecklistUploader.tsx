@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Button, Checkbox, Label, Modal, ModalBody, ModalHeader, Textarea, TextInput } from "flowbite-react";
+import { Button, Checkbox, Label, Modal, ModalBody, ModalHeader, Textarea } from "flowbite-react";
 import { ExternalLink, Search, Sparkles } from "lucide-react";
 import { parseDeckList } from "@/helpers/importParsers";
 import type { ImportIntent } from "@/helpers/importParsers";
@@ -43,7 +43,6 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
     const [showRemoveBasicsModal, setShowRemoveBasicsModal] = useState(false);
     const [removeBasicsIncludeWastes, setRemoveBasicsIncludeWastes] = useState(true);
     const [removeBasicsIncludeSnow, setRemoveBasicsIncludeSnow] = useState(true);
-    const [removeBasicsConfirmText, setRemoveBasicsConfirmText] = useState("");
     const [isRemovingBasics, setIsRemovingBasics] = useState(false);
 
     // Check if we have cards that need tokens but don't have them
@@ -106,7 +105,6 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
 
             showInfoToast(`Removed ${result.removedBasics} basic land${result.removedBasics === 1 ? "" : "s"}.`);
             setShowRemoveBasicsModal(false);
-            setRemoveBasicsConfirmText("");
         } catch (err: unknown) {
             if (err instanceof Error) {
                 showErrorToast(err.message || "Failed to remove basic lands.");
@@ -326,6 +324,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                     size="lg"
                     onClick={() => setShowRemoveBasicsModal(true)}
                     disabled={cardCount === 0}
+                    className="bg-red-600 hover:bg-red-700 text-white"
                 >
                     Remove All Basic Lands
                 </Button>
@@ -370,7 +369,6 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                 show={showRemoveBasicsModal}
                 onClose={() => {
                     setShowRemoveBasicsModal(false);
-                    setRemoveBasicsConfirmText("");
                 }}
                 size="lg"
                 dismissible
@@ -405,23 +403,11 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                             Will remove: <span className="font-semibold">{removeBasicsWillRemove ?? 0}</span> card{(removeBasicsWillRemove ?? 0) === 1 ? "" : "s"}
                         </div>
 
-                        <div className="space-y-2">
-                            <Label htmlFor="remove-basics-confirm">Type REMOVE to confirm</Label>
-                            <TextInput
-                                id="remove-basics-confirm"
-                                value={removeBasicsConfirmText}
-                                onChange={(e) => setRemoveBasicsConfirmText(e.target.value)}
-                                placeholder="REMOVE"
-                                autoComplete="off"
-                            />
-                        </div>
-
                         <div className="flex justify-end gap-3">
                             <Button
                                 color="gray"
                                 onClick={() => {
                                     setShowRemoveBasicsModal(false);
-                                    setRemoveBasicsConfirmText("");
                                 }}
                                 disabled={isRemovingBasics}
                             >
@@ -430,10 +416,10 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                             <Button
                                 color="failure"
                                 onClick={handleConfirmRemoveBasics}
+                                className="bg-red-600 hover:bg-red-700 text-white"
                                 disabled={
                                     isRemovingBasics ||
-                                    (removeBasicsWillRemove ?? 0) === 0 ||
-                                    removeBasicsConfirmText.trim().toUpperCase() !== "REMOVE"
+                                    (removeBasicsWillRemove ?? 0) === 0
                                 }
                             >
                                 Remove
