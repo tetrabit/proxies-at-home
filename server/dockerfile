@@ -7,6 +7,14 @@ WORKDIR /app/server
 # better-sqlite3 requires build tools for native module compilation
 RUN apk add --no-cache python3 make g++
 
+# package-lock.json installs @kclipsto/scryfall-cache-client from a local workspace path:
+# file:../shared/scryfall-client (relative to /app/server).
+# Make that path exist before running `npm ci`.
+COPY shared/scryfall-client/package.json /app/shared/scryfall-client/package.json
+COPY shared/scryfall-client/dist /app/shared/scryfall-client/dist
+COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
+COPY shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/schema.d.ts
+
 # Install only server deps
 COPY server/package*.json ./
 RUN npm ci
@@ -34,6 +42,13 @@ ENV NODE_ENV=production
 
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist
+
+# package-lock.json still resolves @kclipsto/scryfall-cache-client via file:../shared/scryfall-client.
+# Provide that workspace package before installing prod deps.
+COPY shared/scryfall-client/package.json /app/shared/scryfall-client/package.json
+COPY shared/scryfall-client/dist /app/shared/scryfall-client/dist
+COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
+COPY shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/schema.d.ts
 
 # Server package.json + lockfile for prod deps
 COPY server/package*.json ./
