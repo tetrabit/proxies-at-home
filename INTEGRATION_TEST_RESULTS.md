@@ -114,3 +114,5 @@ The identified issues (slow complex queries, exact match) are **non-blocking** f
 ```bash
 SCRYFALL_CACHE_URL=http://localhost:8080 npm run test:contract
 ```
+
+**Re-run:** PASS (12/12) on 2026-02-10 against `http://localhost:8080`.
