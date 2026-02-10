@@ -1,0 +1,8 @@
+[alias]
+# Convenience aliases for building the sibling microservice repo from this workspace.
+microservice = ["build", "--manifest-path", "../scryfall-cache-microservice/Cargo.toml"]
+microservice-release = ["build", "--manifest-path", "../scryfall-cache-microservice/Cargo.toml", "--release"]
+
+# Mold integration is kept in a separate config so it can be opt-in and not break builds
+# on machines without `mold`. See `.cargo/mold.toml` and `scripts/build-microservice.sh`.
+

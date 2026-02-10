@@ -1,0 +1,5 @@
+[target.'cfg(target_os = "linux")']
+# Use mold when available. This is applied by `scripts/build-microservice.sh` only when `mold`
+# is installed (or can be disabled with MICROSERVICE_NO_MOLD=1).
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
