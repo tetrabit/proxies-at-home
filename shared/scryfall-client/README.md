@@ -4,12 +4,17 @@ Auto-generated TypeScript client for the Scryfall Cache Microservice.
 
 ## Installation
 
-This is a shared module used internally in the project.
+This package is intended to be consumed locally (it is marked `private` and should not be published).
+
+From a consumer project within this repo:
+```bash
+npm install --save "file:../shared/scryfall-client"
+```
 
 ## Usage
 
 ```typescript
-import { ScryfallCacheClient, Card } from 'scryfall-cache-client';
+import { ScryfallCacheClient, Card } from '@tetrabit/scryfall-cache-client';
 
 const client = new ScryfallCacheClient({
   baseUrl: 'http://localhost:8080',
@@ -33,3 +38,7 @@ console.log(stats.data);
 Run `npm run generate:api-client` to regenerate the client from the latest OpenAPI spec.
 
 The microservice must be running at `http://localhost:8080` (or set `SCRYFALL_CACHE_URL` env var).
+
+## Publishing & Versioning
+
+This package should not be published to any npm registry.

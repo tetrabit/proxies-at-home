@@ -2,18 +2,20 @@
 
 # --- Install deps for the server package
 FROM node:20-alpine AS deps
-WORKDIR /app/server
+WORKDIR /app
 
 # better-sqlite3 requires build tools for native module compilation
 RUN apk add --no-cache python3 make g++
 
-# package-lock.json installs @kclipsto/scryfall-cache-client from a local workspace path:
+# package-lock.json installs @tetrabit/scryfall-cache-client from a local workspace path:
 # file:../shared/scryfall-client (relative to /app/server).
-# Make that path exist before running `npm ci`.
-COPY shared/scryfall-client/package.json /app/shared/scryfall-client/package.json
-COPY shared/scryfall-client/dist /app/shared/scryfall-client/dist
+# Build the workspace package inside the image so docker builds don't depend on
+# prebuilt dist artifacts existing in the worktree.
+COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-COPY shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/schema.d.ts
+RUN npm ci --prefix /app/shared/scryfall-client && npm run build --prefix /app/shared/scryfall-client
+
+WORKDIR /app/server
 
 # Install only server deps
 COPY server/package*.json ./
@@ -32,6 +34,10 @@ COPY server/ ./
 # Copy shared types (referenced by server code)
 COPY shared/ ../shared/
 
+# Ensure the workspace dependency has built dist available during TS compile.
+# npm may link file: dependencies to /app/shared/scryfall-client.
+COPY --from=deps /app/shared/scryfall-client /app/shared/scryfall-client
+
 # This should output to /app/server/dist/server/src/index.js
 RUN npm run build
 
@@ -43,12 +49,9 @@ ENV NODE_ENV=production
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist
 
-# package-lock.json still resolves @kclipsto/scryfall-cache-client via file:../shared/scryfall-client.
-# Provide that workspace package before installing prod deps.
-COPY shared/scryfall-client/package.json /app/shared/scryfall-client/package.json
-COPY shared/scryfall-client/dist /app/shared/scryfall-client/dist
-COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-COPY shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/schema.d.ts
+# package-lock.json still resolves @tetrabit/scryfall-cache-client via file:../shared/scryfall-client.
+# Copy the built workspace package from deps stage before installing prod deps.
+COPY --from=deps /app/shared/scryfall-client /app/shared/scryfall-client
 
 # Server package.json + lockfile for prod deps
 COPY server/package*.json ./
