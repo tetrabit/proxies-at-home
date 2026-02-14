@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
-import { fetchCardsForTokenLookup } from "../utils/tokenLookup.js";
+import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -381,6 +381,8 @@ interface TokenPart {
 
 interface CardTokenResponse {
   name: string;
+  set?: string;
+  number?: string;
   token_parts?: TokenPart[];
 }
 
@@ -425,13 +427,17 @@ imageRouter.post("/tokens", async (req: Request<unknown, unknown, TokensRequestB
       }
 
       if (found) {
-        const tokenParts = extractTokenParts(found);
+        const tokenParts = await resolveLatestTokenParts(extractTokenParts(found), "en");
         results.push({
-          name: found.name || card.name,
+          // Preserve request identity so client can reliably map updates
+          // even when Scryfall normalizes punctuation/spacing in canonical names.
+          name: card.name,
+          set: card.set,
+          number: card.number,
           token_parts: tokenParts, // Return [] if empty
         });
       } else {
-        results.push({ name: card.name });
+        results.push({ name: card.name, set: card.set, number: card.number });
       }
     }
 

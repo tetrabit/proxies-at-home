@@ -17,6 +17,8 @@ export function normalizeCardInfos(
             name: q.name,
             set: q.set,
             number: q.number,
+            scryfallId: q.scryfallId,
+            oracleId: q.oracleId,
             language: (q.language || defaultLanguage || "en").toLowerCase(),
             isToken: q.isToken, // Preserve token flag for type:token search filter
         }));
@@ -29,4 +31,3 @@ export function normalizeCardInfos(
     }
     return [];
 }
-

@@ -114,6 +114,7 @@ export interface ScryfallApiCard {
   id?: string;
   name?: string;
   oracle_id?: string;
+  released_at?: string;
   image_uris?: {
     png?: string;
     large?: string;
@@ -250,7 +251,9 @@ export async function batchFetchCards(
     // For set+number lookups, language doesn't matter (the printing determines the language)
     // For name lookups, use the requested language
     const local =
-      ci.set && ci.number
+      ci.scryfallId
+        ? null
+        : ci.set && ci.number
         ? lookupCardBySetNumber(ci.set, ci.number, lang)
         : lookupCardByName(ci.name, lang);
 
@@ -265,6 +268,9 @@ export async function batchFetchCards(
       if (local.set && local.collector_number) {
         const setNumKey = `${local.set.toLowerCase()}:${local.collector_number}`;
         results.set(setNumKey, local);
+      }
+      if (local.id) {
+        results.set(`id:${local.id}`, local);
       }
 
       // Store by face names for DFCs
@@ -294,8 +300,12 @@ export async function batchFetchCards(
 
   // Split tokens from regular cards - tokens need individual search with type:token filter
   // because the /cards/collection API doesn't support type filters
-  const tokenCards = cardsToFetch.filter((ci) => ci.isToken);
-  const regularCards = cardsToFetch.filter((ci) => !ci.isToken);
+  const tokenCards = cardsToFetch.filter(
+    (ci) => ci.isToken && !ci.scryfallId && !(ci.set && ci.number)
+  );
+  const regularCards = cardsToFetch.filter(
+    (ci) => !ci.isToken || !!ci.scryfallId || !!(ci.set && ci.number)
+  );
 
   // Fetch tokens using batched OR queries (much faster than individual searches)
   // The /cards/collection API doesn't support type filters, so we use search API with OR
@@ -341,10 +351,13 @@ export async function batchFetchCards(
 
             const key = card.name.toLowerCase();
             // Only store if not already in results (first match wins)
-            if (!results.has(key)) {
-              results.set(key, card);
-              insertOrUpdateCard(card);
-            }
+              if (!results.has(key)) {
+                results.set(key, card);
+                if (card.id) {
+                  results.set(`id:${card.id}`, card);
+                }
+                insertOrUpdateCard(card);
+              }
           }
         }
       } catch (err: unknown) {
@@ -371,6 +384,9 @@ export async function batchFetchCards(
                 if (card.name) {
                   results.set(card.name.toLowerCase(), card);
                   results.set(ci.name.toLowerCase(), card);
+                  if (card.id) {
+                    results.set(`id:${card.id}`, card);
+                  }
                   insertOrUpdateCard(card);
                 }
               }
@@ -398,11 +414,13 @@ export async function batchFetchCards(
       const batch = batches[batchIdx];
       await delayScryfallRequest();
 
-      const identifiers = batch.map((ci) => {
-        if (ci.set && ci.number) {
-          return {
-            set: ci.set.toLowerCase(),
-            collector_number: String(ci.number),
+        const identifiers = batch.map((ci) => {
+          if (ci.scryfallId) {
+            return { id: ci.scryfallId };
+          } else if (ci.set && ci.number) {
+            return {
+              set: ci.set.toLowerCase(),
+              collector_number: String(ci.number),
           };
         } else if (ci.set) {
           return { name: ci.name, set: ci.set.toLowerCase() };
@@ -432,10 +450,13 @@ export async function batchFetchCards(
             results.set(key, card);
 
             // Store by set+number if available
-            if (card.set && card.collector_number) {
-              const setNumKey = `${card.set.toLowerCase()}:${card.collector_number}`;
-              results.set(setNumKey, card);
-            }
+              if (card.set && card.collector_number) {
+                const setNumKey = `${card.set.toLowerCase()}:${card.collector_number}`;
+                results.set(setNumKey, card);
+              }
+              if (card.id) {
+                results.set(`id:${card.id}`, card);
+              }
 
             // Store by face names for DFCs
             if (card.card_faces && Array.isArray(card.card_faces)) {
@@ -488,6 +509,9 @@ export async function batchFetchCards(
           const nameKey = response.data.name?.toLowerCase();
           if (nameKey) results.set(nameKey, response.data);
           results.set(key, response.data);
+          if (response.data.id) {
+            results.set(`id:${response.data.id}`, response.data);
+          }
 
           // Cache localized version to DB
           insertOrUpdateCard(response.data);
@@ -516,6 +540,14 @@ export function lookupCardFromBatch(
     `[lookupCardFromBatch] Batch has ${batchResults.size} entries, keys:`,
     Array.from(batchResults.keys()).slice(0, 10)
   );
+
+  if (cardInfo.scryfallId) {
+    const byId = batchResults.get(`id:${cardInfo.scryfallId}`);
+    if (byId) {
+      debugLog(`[lookupCardFromBatch] Found by scryfallId: "${byId.name}"`);
+      return byId;
+    }
+  }
 
   // Try set+number first (most specific)
   if (cardInfo.set && cardInfo.number) {
@@ -575,7 +607,7 @@ export async function getImagesForCardInfo(
   language = "en",
   fallbackToEnglish = true
 ): Promise<string[]> {
-  const { name, set, number } = cardInfo || {};
+  const { name, set, number, scryfallId } = cardInfo || {};
 
   // Helper to build query based on strategy
   const executeStrategy = (queryTemplate: (lang: string) => string) => {
@@ -586,6 +618,30 @@ export async function getImagesForCardInfo(
       fallbackToEnglish
     );
   };
+
+  // 0) Exact Scryfall print id
+  if (scryfallId) {
+    await delayScryfallRequest();
+    try {
+      const byId = await AX.get<ScryfallApiCard>(
+        `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
+      );
+      const idCard = byId.data;
+      const urls: string[] = [];
+      if (idCard.image_uris?.png) {
+        urls.push(idCard.image_uris.png);
+      } else if (Array.isArray(idCard.card_faces)) {
+        for (const face of idCard.card_faces) {
+          if (face?.image_uris?.png) {
+            urls.push(face.image_uris.png);
+          }
+        }
+      }
+      if (urls.length > 0) return urls;
+    } catch {
+      // Fall through to query-based strategies
+    }
+  }
 
   // 1) Exact printing: set + collector number + name
   if (unique === "prints" && set && number) {
@@ -620,10 +676,10 @@ export async function getCardsWithImagesForCardInfo(
   language = "en",
   fallbackToEnglish = true
 ): Promise<ScryfallApiCard[]> {
-  const { name, set, number, isToken } = cardInfo || {};
+  const { name, set, number, isToken, scryfallId } = cardInfo || {};
 
   // Create cache key for request deduplication
-  const cacheKey = `cards:${name}:${set || ""}:${number || ""}:${unique}:${language}:${isToken || false}`;
+  const cacheKey = `cards:${name}:${set || ""}:${number || ""}:${scryfallId || ""}:${unique}:${language}:${isToken || false}`;
 
   return deduplicatedSearch(cacheKey, async () => {
     // Add type:token filter for explicit token searches
@@ -637,6 +693,19 @@ export async function getCardsWithImagesForCardInfo(
         fallbackToEnglish
       );
     };
+
+    // 0) Exact Scryfall print id
+    if (scryfallId) {
+      await delayScryfallRequest();
+      try {
+        const byId = await AX.get<ScryfallApiCard>(
+          `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
+        );
+        if (byId.data) return [byId.data];
+      } catch {
+        // Fall through to query-based strategies
+      }
+    }
 
     // 1) Exact printing - when user specifies set AND number
     // This takes priority regardless of unique parameter
@@ -719,7 +788,7 @@ export async function getCardDataForCardInfo(
   language = "en",
   fallbackToEnglish = true
 ): Promise<ScryfallApiCard | null> {
-  const { name, set, number, isToken } = cardInfo || {};
+  const { name, set, number, isToken, scryfallId } = cardInfo || {};
   if (!name) return null;
 
   // Add type:token filter for explicit token searches
@@ -733,6 +802,19 @@ export async function getCardDataForCardInfo(
       fallbackToEnglish
     );
   };
+
+  // Strategy 0: Exact Scryfall print id
+  if (scryfallId) {
+    await delayScryfallRequest();
+    try {
+      const byId = await AX.get<ScryfallApiCard>(
+        `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
+      );
+      if (byId.data) return byId.data;
+    } catch {
+      // Fall through to query-based strategies
+    }
+  }
 
   // Strategy 1: Exact printing (set, number, name, lang)
   if (set && number) {

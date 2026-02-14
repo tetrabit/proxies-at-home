@@ -64,5 +64,26 @@ describe('cardUtils', () => {
                 isToken: true,
             });
         });
+
+        it('should preserve scryfallId and oracleId for identity-safe lookups', () => {
+            const queries = [
+                {
+                    name: 'Demon',
+                    scryfallId: 'bba307eb-814c-4c87-acdf-b54c87d04f82',
+                    oracleId: 'oracle-demon-1',
+                    isToken: true,
+                },
+            ];
+            const result = normalizeCardInfos(queries, undefined, 'en');
+            expect(result[0]).toEqual({
+                name: 'Demon',
+                set: undefined,
+                number: undefined,
+                scryfallId: 'bba307eb-814c-4c87-acdf-b54c87d04f82',
+                oracleId: 'oracle-demon-1',
+                language: 'en',
+                isToken: true,
+            });
+        });
     });
 });

@@ -135,6 +135,7 @@ export class ImportOrchestrator {
                 number: intent.preloadedData?.number ?? intent.number,
                 scryfall_id: intent.preloadedData?.scryfall_id ?? intent.scryfallId,
                 oracle_id: intent.preloadedData?.oracle_id ?? intent.oracleId,
+                tokenAddedFrom: intent.tokenAddedFrom,
                 lang: intent.preloadedData?.lang ?? 'en',
                 isUserUpload: !!intent.localImageId,
                 imageId: intent.localImageId ?? undefined, // Use local ID if available, else undefined
@@ -383,6 +384,7 @@ export class ImportOrchestrator {
             number: i.number,
             scryfallId: i.scryfallId,
             oracleId: i.oracleId,
+            tokenAddedFrom: i.tokenAddedFrom,
             quantity: i.quantity,
             category: i.category,
             isToken: i.isToken,
@@ -467,6 +469,7 @@ export class ImportOrchestrator {
                 number: data.number ?? intent.number,
                 scryfall_id: data.scryfall_id ?? intent.scryfallId,
                 oracle_id: data.oracle_id ?? intent.oracleId,
+                tokenAddedFrom: intent.tokenAddedFrom,
                 lang: data.lang ?? 'en',
                 isUserUpload: false,
                 imageId: imageId,
@@ -515,6 +518,7 @@ export class ImportOrchestrator {
                 number: intent.number,
                 scryfall_id: intent.scryfallId,
                 oracle_id: intent.oracleId,
+                tokenAddedFrom: intent.tokenAddedFrom,
                 lang: 'en',
                 isUserUpload: false, // MPC art, not custom upload
                 imageId: imageId,
@@ -708,9 +712,19 @@ export class ImportOrchestrator {
                     await db.transaction('rw', db.cards, async () => {
                         for (const data of tokenResult.data) {
                             if (data.token_parts !== undefined) {
-                                const matchingCards = chunk.filter(c =>
-                                    c.name.toLowerCase() === data.name.toLowerCase()
-                                );
+                                const normalizedDataName = data.name.toLowerCase();
+                                const normalizedDataSet = data.set?.toLowerCase();
+                                const normalizedDataNumber = data.number?.toLowerCase();
+                                const matchingCards = chunk.filter((c) => {
+                                    if (normalizedDataSet && normalizedDataNumber) {
+                                        return (
+                                            c.name.toLowerCase() === normalizedDataName &&
+                                            c.set?.toLowerCase() === normalizedDataSet &&
+                                            c.number?.toLowerCase() === normalizedDataNumber
+                                        );
+                                    }
+                                    return c.name.toLowerCase() === normalizedDataName;
+                                });
                                 for (const card of matchingCards) {
                                     await db.cards.update(card.uuid, {
                                         token_parts: data.token_parts,
@@ -761,69 +775,109 @@ export class ImportOrchestrator {
             return [];
         }
 
-        // Enrich cards that don't have token_parts, passing the already-fetched cards
-        await this.enrichTokenData(signal, cards, forceRefresh);
+        // Phase 1: import tokens that are already known so placeholders appear quickly.
+        const immediateTokens = this.buildMissingTokenIntents(cards, { skipExisting });
+        if (immediateTokens.length > 0) {
+            await this.process(immediateTokens, { signal });
+        }
 
-        // Re-fetch cards from DB to get updated token_parts after enrichment
-        const enrichedCards = await db.cards
+        const queuedIdentityKeys = new Set(
+            immediateTokens.map((token) => this.getTokenIdentityKey(token.name, token.scryfallId))
+        );
+
+        // Phase 2: refresh token metadata and import newly discovered tokens.
+        await this.enrichTokenData(signal, cards, forceRefresh);
+        const refreshedCards = await db.cards
             .where('projectId').equals(projectId)
             .toArray();
+        const discoveredTokens = this.buildMissingTokenIntents(refreshedCards, {
+            skipExisting,
+            excludeIdentityKeys: queuedIdentityKeys,
+        });
 
-        // Build a set of existing card names to avoid re-fetching tokens already in collection
-        const existingCardNames = new Set<string>();
+        if (immediateTokens.length === 0 && discoveredTokens.length === 0) {
+            onNoTokens?.();
+            return [];
+        }
+
+        if (discoveredTokens.length > 0) {
+            await this.process(discoveredTokens, { signal });
+        }
+        onComplete?.();
+
+        return [...immediateTokens, ...discoveredTokens];
+    }
+
+    /**
+     * Build token import intents using Scryfall-linked token identity where available.
+     * Dedupes and skip-existing logic are identity-first (token id), with name fallback.
+     */
+    static buildMissingTokenIntents(
+        cards: CardOption[],
+        options: { skipExisting?: boolean; excludeIdentityKeys?: Set<string> } = {}
+    ): ImportIntent[] {
+        const skipExisting = options.skipExisting ?? false;
+        const excludeIdentityKeys = options.excludeIdentityKeys;
+        const existingTokenIds = new Set<string>();
+        const existingNames = new Set<string>();
+
         if (skipExisting) {
-            for (const card of enrichedCards) {
+            for (const card of cards) {
                 if (card.name) {
-                    existingCardNames.add(card.name.toLowerCase());
+                    existingNames.add(card.name.toLowerCase());
+                }
+                if (card.isToken && card.scryfall_id) {
+                    existingTokenIds.add(card.scryfall_id);
                 }
             }
         }
 
-        // Track seen tokens by normalized name only (set+number are preferences, not identity)
-        const seenTokenNames = new Set<string>();
-        const tokensToFetch: ImportIntent[] = [];
+        const tokensByIdentity = new Map<string, ImportIntent>();
 
-        for (const card of enrichedCards) {
+        for (const card of cards) {
             // Skip token cards themselves to avoid chaining into their token_parts
             if (card.type_line?.toLowerCase().includes("token")) continue;
 
-            // Skip cards without token_parts
             if (!card.token_parts || card.token_parts.length === 0) continue;
 
             for (const token of card.token_parts) {
                 if (!token.name) continue;
+                const tokenId = token.id?.trim();
+                const identityKey = this.getTokenIdentityKey(token.name, tokenId);
 
-                // Skip if this token is already in the collection (only for auto-import)
-                if (skipExisting && existingCardNames.has(token.name.toLowerCase())) continue;
+                if (skipExisting) {
+                    if (tokenId && existingTokenIds.has(tokenId)) continue;
+                    if (!tokenId && existingNames.has(token.name.toLowerCase())) continue;
+                }
+                if (excludeIdentityKeys?.has(identityKey)) continue;
 
-                // Normalize and deduplicate by name only (most efficient)
-                const normalizedName = this.normalizeString(token.name);
-                if (seenTokenNames.has(normalizedName)) continue;
-                seenTokenNames.add(normalizedName);
-
+                const sourceName = card.name;
+                const existingIntent = tokensByIdentity.get(identityKey);
+                if (existingIntent) {
+                    if (sourceName) {
+                        const sources = new Set(existingIntent.tokenAddedFrom ?? []);
+                        sources.add(sourceName);
+                        existingIntent.tokenAddedFrom = Array.from(sources);
+                    }
+                    continue;
+                }
                 const { set, number } = this.extractTokenPrintFromUri(token.uri);
-                tokensToFetch.push({
+                tokensByIdentity.set(identityKey, {
                     name: token.name,
                     set,
                     number,
+                    scryfallId: tokenId,
+                    tokenAddedFrom: sourceName ? [sourceName] : undefined,
                     quantity: 1,
                     isToken: true,
                 });
             }
         }
 
-        if (tokensToFetch.length === 0) {
-            onNoTokens?.();
-            return [];
-        }
+        return Array.from(tokensByIdentity.values());
+    }
 
-        // Import the tokens
-        await this.process(tokensToFetch, {
-            signal,
-            onComplete
-        });
-
-        return tokensToFetch;
+    private static getTokenIdentityKey(name: string, tokenId?: string): string {
+        return tokenId ? `id:${tokenId}` : `name:${this.normalizeString(name)}`;
     }
 }
-

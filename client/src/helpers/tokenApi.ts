@@ -10,6 +10,8 @@ type TokenPart = {
 
 type TokenResponseItem = {
     name: string;
+    set?: string;
+    number?: string;
     token_parts?: TokenPart[];
 };
 

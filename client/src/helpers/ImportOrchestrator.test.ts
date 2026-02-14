@@ -314,6 +314,110 @@ describe('ImportOrchestrator', () => {
     });
 
     describe('Token Methods', () => {
+        it('buildMissingTokenIntents prefers token id identity and keeps latest print hint from uri', () => {
+            const cards = [
+                {
+                    uuid: 'front-1',
+                    name: 'Token Maker',
+                    order: 1,
+                    isUserUpload: false,
+                    token_parts: [
+                        { id: 'tok-1', name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' },
+                        { id: 'tok-1', name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' }, // duplicate id
+                        { id: 'tok-2', name: 'Soldier', uri: 'https://api.scryfall.com/cards/tmh3/8' },
+                    ],
+                },
+                {
+                    uuid: 'front-2',
+                    name: 'Another Maker',
+                    order: 2,
+                    isUserUpload: false,
+                    token_parts: [
+                        { id: 'tok-2', name: 'Soldier', uri: 'https://api.scryfall.com/cards/tmh3/8' }, // duplicate across cards
+                    ],
+                },
+            ] as CardOption[];
+
+            const intents = ImportOrchestrator.buildMissingTokenIntents(cards, { skipExisting: false });
+
+            expect(intents).toEqual([
+                expect.objectContaining({
+                    name: 'Treasure',
+                    set: 'tfdn',
+                    number: '42',
+                    scryfallId: 'tok-1',
+                    tokenAddedFrom: ['Token Maker'],
+                    isToken: true,
+                    quantity: 1,
+                }),
+                expect.objectContaining({
+                    name: 'Soldier',
+                    set: 'tmh3',
+                    number: '8',
+                    scryfallId: 'tok-2',
+                    tokenAddedFrom: ['Token Maker', 'Another Maker'],
+                    isToken: true,
+                    quantity: 1,
+                }),
+            ]);
+        });
+
+        it('buildMissingTokenIntents skips existing token ids when skipExisting=true', () => {
+            const cards = [
+                {
+                    uuid: 'existing-token',
+                    name: 'Treasure',
+                    order: 1,
+                    isUserUpload: false,
+                    isToken: true,
+                    scryfall_id: 'tok-1',
+                },
+                {
+                    uuid: 'front-1',
+                    name: 'Token Maker',
+                    order: 2,
+                    isUserUpload: false,
+                    token_parts: [
+                        { id: 'tok-1', name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' },
+                        { id: 'tok-2', name: 'Soldier', uri: 'https://api.scryfall.com/cards/tmh3/8' },
+                    ],
+                },
+            ] as CardOption[];
+
+            const intents = ImportOrchestrator.buildMissingTokenIntents(cards, { skipExisting: true });
+
+            expect(intents).toHaveLength(1);
+            expect(intents[0]).toEqual(
+                expect.objectContaining({
+                    name: 'Soldier',
+                    scryfallId: 'tok-2',
+                    tokenAddedFrom: ['Token Maker'],
+                })
+            );
+        });
+
+        it('buildMissingTokenIntents excludes already queued identities', () => {
+            const cards = [
+                {
+                    uuid: 'front-1',
+                    name: 'Token Maker',
+                    order: 2,
+                    isUserUpload: false,
+                    token_parts: [
+                        { id: 'tok-1', name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' },
+                        { name: 'Food', uri: 'https://api.scryfall.com/cards/tblb/10' },
+                    ],
+                },
+            ] as CardOption[];
+
+            const intents = ImportOrchestrator.buildMissingTokenIntents(cards, {
+                skipExisting: false,
+                excludeIdentityKeys: new Set(['id:tok-1', 'name:food']),
+            });
+
+            expect(intents).toHaveLength(0);
+        });
+
         it('enrichTokenData fetches token parts for cards without them', async () => {
             // This test verifies the method exists and can be called
             // Full integration testing requires DB and API mocks

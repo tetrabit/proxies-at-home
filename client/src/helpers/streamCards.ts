@@ -59,29 +59,40 @@ async function enrichMpcCardsWithTokens(
     const cardsNeedingEnrichment = cards.filter(c => c.token_parts === undefined);
     if (cardsNeedingEnrichment.length === 0) return;
 
-    // Get unique card names for the API call
-    const uniqueNames = [...new Set(cardsNeedingEnrichment.map(c => c.name))];
-    const cardInfos = uniqueNames.map(name => ({ name }));
+    const toLookupKey = (name: string, set?: string, number?: string) =>
+        `${name.toLowerCase()}|${set?.toLowerCase() ?? ''}|${number?.toLowerCase() ?? ''}`;
+
+    // Preserve identity when available so same-name cards don't cross-apply token parts.
+    const uniqueCardInfos = new Map<string, { name: string; set?: string; number?: string }>();
+    for (const card of cardsNeedingEnrichment) {
+        const key = toLookupKey(card.name, card.set, card.number);
+        if (!uniqueCardInfos.has(key)) {
+            uniqueCardInfos.set(key, { name: card.name, set: card.set, number: card.number });
+        }
+    }
 
     // Fetch token data from server
-    const result = await fetchTokenParts(cardInfos, signal);
+    const result = await fetchTokenParts(Array.from(uniqueCardInfos.values()), signal);
     if (!result.success) {
         console.warn('[enrichMpcCardsWithTokens] Failed to fetch token parts:', result.error);
         return;
     }
 
-    // Build a map of name -> token_parts
+    // Build a map of identity -> token_parts (with name-only fallback for legacy responses).
     const tokenMap = new Map<string, typeof result.data[number]['token_parts']>();
     for (const item of result.data) {
         if (item.token_parts !== undefined) {
-            tokenMap.set(item.name.toLowerCase(), item.token_parts);
+            tokenMap.set(toLookupKey(item.name, item.set, item.number), item.token_parts);
+            tokenMap.set(toLookupKey(item.name), item.token_parts);
         }
     }
 
     // Update cards in DB with token_parts
     await db.transaction('rw', db.cards, async () => {
         for (const card of cardsNeedingEnrichment) {
-            const tokenParts = tokenMap.get(card.name.toLowerCase());
+            const tokenParts =
+                tokenMap.get(toLookupKey(card.name, card.set, card.number)) ??
+                tokenMap.get(toLookupKey(card.name));
             if (tokenParts !== undefined) {
                 await db.cards.update(card.uuid, {
                     token_parts: tokenParts,
@@ -161,6 +172,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
             name: instance.name,
             scryfall_id: instance.scryfallId,
             oracle_id: instance.oracleId,
+            tokenAddedFrom: instance.tokenAddedFrom,
             lang: language,
             imageId,
             hasBuiltInBleed: true,
@@ -214,6 +226,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
             name: instance.name,
             scryfall_id: instance.scryfallId,
             oracle_id: instance.oracleId,
+            tokenAddedFrom: instance.tokenAddedFrom,
             lang: language,
             imageId: cardback.id,
             isFlipped: true,
@@ -253,6 +266,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 name: info.name,
                 scryfall_id: instance.scryfallId,
                 oracle_id: instance.oracleId,
+                tokenAddedFrom: instance.tokenAddedFrom,
                 lang: language,
                 imageId: undefined, // Shows loading spinner
                 category: info.category,
@@ -304,6 +318,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                                     name: cardName,
                                     scryfall_id: entry.info.scryfallId,
                                     oracle_id: entry.info.oracleId,
+                                    tokenAddedFrom: entry.info.tokenAddedFrom,
                                     imageId,
                                     hasBuiltInBleed,
                                     needsEnrichment,
@@ -410,6 +425,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         number: query.number,
                         scryfall_id: query.scryfallId,
                         oracle_id: query.oracleId,
+                        tokenAddedFrom: query.tokenAddedFrom,
                         isUserUpload: false,
                         imageId: undefined,
                         lookupError: error || 'Card not found',
@@ -493,6 +509,11 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     isBackFaceImport,
                     projectId,
                 });
+                if (entry?.info.tokenAddedFrom?.length) {
+                    for (const cardToAdd of cardsToAdd) {
+                        cardToAdd.tokenAddedFrom = entry.info.tokenAddedFrom;
+                    }
+                }
 
                 // Fidelity: If a preferred image ID was specified (from Share), use it
                 if (entry?.info.preferredImageId) {
@@ -571,6 +592,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                                     number: cardData.number,
                                     scryfall_id: cardData.scryfall_id,
                                     oracle_id: cardData.oracle_id,
+                                    tokenAddedFrom: cardData.tokenAddedFrom,
                                     lang: cardData.lang,
                                     colors: cardData.colors,
                                     cmc: cardData.cmc,

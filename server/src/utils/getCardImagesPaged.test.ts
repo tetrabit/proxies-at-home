@@ -5,6 +5,8 @@ import {
   getCardDataForCardInfo,
   getScryfallPngImagesForCard,
   getScryfallPngImagesForCardPrints,
+  lookupCardFromBatch,
+  type ScryfallApiCard,
 } from "./getCardImagesPaged";
 
 vi.mock("axios", () => {
@@ -167,6 +169,58 @@ describe("getCardImagesPaged", () => {
       const data = await getCardDataForCardInfo(cardInfo);
 
       expect(data).toBeNull();
+    });
+
+    it("should prefer direct Scryfall id lookup for ambiguous token names", async () => {
+      mockedAxios.get.mockResolvedValue({
+        data: {
+          id: "bba307eb-814c-4c87-acdf-b54c87d04f82",
+          name: "Demon",
+          set: "tdsk",
+          collector_number: "9",
+          image_uris: { png: "unholy_annex_demon_url" },
+          type_line: "Token Creature — Demon",
+          power: "6",
+          toughness: "6",
+        },
+      });
+
+      const cardInfo = {
+        name: "Demon",
+        isToken: true,
+        scryfallId: "bba307eb-814c-4c87-acdf-b54c87d04f82",
+      };
+
+      const data = await getCardDataForCardInfo(cardInfo);
+      expect(data).toEqual(expect.objectContaining({
+        id: "bba307eb-814c-4c87-acdf-b54c87d04f82",
+        set: "tdsk",
+        collector_number: "9",
+      }));
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        "https://api.scryfall.com/cards/bba307eb-814c-4c87-acdf-b54c87d04f82"
+      );
+    });
+  });
+
+  describe("lookupCardFromBatch", () => {
+    it("should resolve by scryfallId before name fallback", () => {
+      const batchResults = new Map<string, ScryfallApiCard>([
+        ["demon", { id: "wrong-token-id", name: "Demon", set: "tfoo", collector_number: "1" }],
+        ["id:bba307eb-814c-4c87-acdf-b54c87d04f82", { id: "bba307eb-814c-4c87-acdf-b54c87d04f82", name: "Demon", set: "tdsk", collector_number: "9" }],
+      ]);
+
+      const found = lookupCardFromBatch(batchResults, {
+        name: "Demon",
+        isToken: true,
+        scryfallId: "bba307eb-814c-4c87-acdf-b54c87d04f82",
+      });
+
+      expect(found).toEqual(expect.objectContaining({
+        id: "bba307eb-814c-4c87-acdf-b54c87d04f82",
+        set: "tdsk",
+        collector_number: "9",
+      }));
     });
   });
 
