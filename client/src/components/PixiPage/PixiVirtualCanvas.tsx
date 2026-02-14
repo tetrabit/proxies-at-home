@@ -80,6 +80,7 @@ interface PixiVirtualCanvasProps {
     perCardGuideStyle: 'corners' | 'rounded-corners' | 'dashed-corners' | 'dashed-rounded-corners' | 'solid-squared-rect' | 'dashed-squared-rect' | 'dashed-rounded-rect' | 'solid-rounded-rect' | 'none';
     perCardGuideColor: number; // Hex color for PixiJS (e.g., 0x39FF14)
     perCardGuidePlacement: 'inside' | 'outside' | 'center';
+    showGuideLinesOnBackCards: boolean;
     cutGuideLengthMm: number; // Length of corner guides in mm
     // Registration marks
     registrationMarks: 'none' | '3' | '4';
@@ -118,6 +119,7 @@ function PixiVirtualCanvasInner({
     perCardGuideStyle,
     perCardGuideColor,
     perCardGuidePlacement,
+    showGuideLinesOnBackCards,
     cutGuideLengthMm,
     registrationMarks,
     registrationMarksPortrait,
@@ -547,14 +549,27 @@ function PixiVirtualCanvasInner({
         }
     }, [isReady, pages, isDarkMode]);
 
+    const guideEligibleCards = showGuideLinesOnBackCards
+        ? cards
+        : cards.filter((c) => {
+            const showingBackFace = flippedCards.has(c.card.uuid) && !!c.backImageId;
+            return !c.card.linkedFrontId && !showingBackFace;
+        });
+
+    const effectiveCutLineStyle = guideEligibleCards.length > 0 ? cutLineStyle : 'none';
+    const effectivePerCardGuideStyle = guideEligibleCards.length > 0 ? perCardGuideStyle : 'none';
+    const effectiveRegistrationMarks = showGuideLinesOnBackCards || guideEligibleCards.length > 0
+        ? registrationMarks
+        : 'none';
+
     // Page-level cut guides - delegated to hook
     usePageGuides({
         isReady,
         container: pageGuidesContainerRef.current,
         app: appRef.current,
         pages,
-        cards,
-        cutLineStyle,
+        cards: guideEligibleCards,
+        cutLineStyle: effectiveCutLineStyle,
         guideWidth,
     });
 
@@ -563,8 +578,8 @@ function PixiVirtualCanvasInner({
         isReady,
         container: guidesContainerRef.current,
         app: appRef.current,
-        cards,
-        guideStyle: perCardGuideStyle,
+        cards: guideEligibleCards,
+        guideStyle: effectivePerCardGuideStyle,
         guideColor: perCardGuideColor,
         guidePlacement: perCardGuidePlacement,
         guideWidth,
@@ -578,7 +593,7 @@ function PixiVirtualCanvasInner({
         container: guidesContainerRef.current,
         app: appRef.current,
         pages,
-        registrationMarks,
+        registrationMarks: effectiveRegistrationMarks,
         registrationMarksPortrait,
     });
 

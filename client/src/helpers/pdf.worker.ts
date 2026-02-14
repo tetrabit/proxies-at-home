@@ -21,6 +21,50 @@ declare const self: DedicatedWorkerGlobalScope;
 // Limit concurrent bitmap creation to avoid memory exhaustion (especially in Firefox)
 const MAX_CONCURRENT_CARDS = 4;
 
+async function fetchBlobWithDiagnostics(url: string): Promise<Blob> {
+    let lastStatus: { status: number; statusText: string; ct: string; bodyPreview: string } | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const res = await fetch(url);
+            if (res.ok) return await res.blob();
+
+            const ct = res.headers.get("content-type") || "unknown";
+            let bodyPreview = "";
+            try {
+                const text = await res.text();
+                bodyPreview = text.slice(0, 300);
+            } catch {
+                // ignore
+            }
+
+            lastStatus = { status: res.status, statusText: res.statusText, ct, bodyPreview };
+
+            // Don't retry 4xx (likely permanent for this export).
+            if (res.status >= 400 && res.status < 500) break;
+        } catch (e) {
+            lastStatus = { status: -1, statusText: (e instanceof Error ? e.message : String(e)), ct: "unknown", bodyPreview: "" };
+        }
+
+        // exponential backoff: 250ms, 500ms, 1000ms
+        const delayMs = 250 * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delayMs));
+    }
+
+    const s = lastStatus ?? { status: -1, statusText: "unknown", ct: "unknown", bodyPreview: "" };
+    throw new Error(
+        `Image fetch failed after retries: HTTP ${s.status} ${s.statusText} (content-type=${s.ct}) url=${url} body=${JSON.stringify(s.bodyPreview)}`,
+    );
+}
+
+async function decodeImageBitmap(blob: Blob, ctxLabel: string): Promise<ImageBitmap> {
+    try {
+        return await createImageBitmap(blob);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`Image decode failed (${ctxLabel}): ${msg} (type=${blob.type || "unknown"} size=${blob.size})`);
+    }
+}
+
 /**
  * Process items with limited concurrency to avoid memory exhaustion.
  * Processes at most `limit` items at a time.
@@ -417,6 +461,7 @@ self.onmessage = async (event: MessageEvent) => {
             pageWidth, pageHeight, pageSizeUnit, columns, rows, bleedEdge,
             bleedEdgeWidthMm, cardSpacingMm, cardPositionX, cardPositionY, guideColor, guideWidthCssPx, DPI,
             imagesById, API_BASE, darkenMode, cutLineStyle, perCardGuideStyle, guidePlacement,
+            showGuideLinesOnBackCards = true,
             cutGuideLengthMm,
             // Silhouette registration marks
             registrationMarks,
@@ -491,9 +536,19 @@ self.onmessage = async (event: MessageEvent) => {
         // Create per-card guide canvas ONCE (guides are same size for all cards since they mark the fixed content boundary)
         // The bleed dimension affects where we DRAW the guide, not the guide shape itself
         const bleedPxForGuide = MM_TO_PX(bleedEdgeWidthMm, DPI);
+        const pageHasGuideEligibleCards = pageCards.some((card: CardOption) => !card.linkedFrontId);
+        const effectivePerCardGuideStyle =
+            showGuideLinesOnBackCards || pageHasGuideEligibleCards
+                ? (perCardGuideStyle ?? 'corners')
+                : 'none';
+        const effectiveCutLineStyle =
+            showGuideLinesOnBackCards || pageHasGuideEligibleCards
+                ? cutLineStyle
+                : 'none';
+
         const perCardGuideCanvas = createGuideCanvas(
             contentWidthInPx, contentHeightInPx, bleedPxForGuide,
-            guideColor, scaledGuideWidth, DPI, perCardGuideStyle ?? 'corners',
+            guideColor, scaledGuideWidth, DPI, effectivePerCardGuideStyle,
             guidePlacement ?? 'outside', cutGuideLengthMm ?? 6.25
         );
 
@@ -505,11 +560,14 @@ self.onmessage = async (event: MessageEvent) => {
             if (card.imageId === 'cardback_builtin_blank') {
                 blankIndices.add(idx);
             }
+            if (!showGuideLinesOnBackCards && card.linkedFrontId) {
+                blankIndices.add(idx);
+            }
         });
         const fullPageGuidesCanvas = createFullPageGuidesCanvas(
             pageWidthPx, pageHeightPx, startX, startY, columns,
             layouts, colWidths, rowHeights, colOffsets, rowOffsets,
-            contentWidthInPx, contentHeightInPx, spacingPx, scaledGuideWidth, cutLineStyle,
+            contentWidthInPx, contentHeightInPx, spacingPx, scaledGuideWidth, effectiveCutLineStyle,
             rightAlignRows, pageCards.length, blankIndices
         );
         if (fullPageGuidesCanvas) {
@@ -529,6 +587,7 @@ self.onmessage = async (event: MessageEvent) => {
             imageCardHeightPx: number;
             bleedPx: number;
             isBlank: boolean;  // True for cardback_builtin_blank cards (no guides)
+            isBackFace: boolean; // True for linked back cards
             rotation: number;  // Rotation in degrees
             offsetX: number;  // Final X offset applied after rotation
             offsetY: number;  // Final Y offset applied after rotation
@@ -637,7 +696,7 @@ self.onmessage = async (event: MessageEvent) => {
             // Cache is valid if we have the blob at the right DPI
             // For cardbacks (which don't track exportDpi), accept if exportBlob exists
             const isCardback = card.imageId?.startsWith('cardback_');
-            const isCacheValid = selectedExportBlob && (isCardback || imageInfo?.exportDpi === DPI);
+            let isCacheValid = !!(selectedExportBlob && (isCardback || imageInfo?.exportDpi === DPI));
 
             // Calculate centering offset if image has different bleed than card's target
             const slotBleedPx = cardLayout.bleedPx;
@@ -655,46 +714,57 @@ self.onmessage = async (event: MessageEvent) => {
             let fromCanvasCache = false; // Track if we retrieved from canvas cache (to avoid re-caching)
 
             if (isCacheValid) {
-                // Fast path: use pre-processed blob directly
-                debugLog(`[PDF Worker] Card ${idx}: Using cached blob, size=${selectedExportBlob!.size}`);
-                let bitmap = await createImageBitmap(selectedExportBlob!);
-                debugLog(`[PDF Worker] Card ${idx}: Created bitmap ${bitmap.width}x${bitmap.height}`);
+                try {
+                    // Fast path: use pre-processed blob directly
+                    debugLog(`[PDF Worker] Card ${idx}: Using cached blob, size=${selectedExportBlob!.size}`);
+                    let bitmap = await decodeImageBitmap(
+                        selectedExportBlob!,
+                        `cached blob card=${idx} imageId=${card.imageId ?? "unknown"}`,
+                    );
+                    debugLog(`[PDF Worker] Card ${idx}: Created bitmap ${bitmap.width}x${bitmap.height}`);
 
-                // If card has advanced overrides (brightness, contrast, etc.), apply them with WebGL
-                if (hasAdvancedOverrides(card.overrides)) {
-                    // Check pre-rendered effect cache first
-                    const cachedEffectBlob = effectCacheById?.get(card.uuid);
-                    if (cachedEffectBlob) {
-                        debugLog(`[PDF Worker] Card ${idx}: Using effect cache`);
-                        bitmap.close();
-                        bitmap = await createImageBitmap(cachedEffectBlob);
-                    } else {
-                        debugLog(`[PDF Worker] Card ${idx}: Applying WebGL overrides`);
-                        const params = overridesToRenderParams(card.overrides!, effectiveDarkenMode as 'none' | 'darken-all' | 'contrast-edges' | 'contrast-full');
-                        const renderedBlob = await renderCardWithOverridesWorker(bitmap, params);
-                        bitmap.close();
-                        bitmap = await createImageBitmap(renderedBlob);
-                        // Cache for future exports (fire-and-forget, don't block export)
-                        if (card.imageId && card.overrides) {
-                            void cacheEffectBlob(card.imageId, card.overrides, renderedBlob, DPI);
+                    // If card has advanced overrides (brightness, contrast, etc.), apply them with WebGL
+                    if (hasAdvancedOverrides(card.overrides)) {
+                        // Check pre-rendered effect cache first
+                        const cachedEffectBlob = effectCacheById?.get(card.uuid);
+                        if (cachedEffectBlob) {
+                            debugLog(`[PDF Worker] Card ${idx}: Using effect cache`);
+                            bitmap.close();
+                            bitmap = await decodeImageBitmap(cachedEffectBlob, `effect cache card=${idx} imageId=${card.imageId ?? "unknown"}`);
+                        } else {
+                            debugLog(`[PDF Worker] Card ${idx}: Applying WebGL overrides`);
+                            const params = overridesToRenderParams(card.overrides!, effectiveDarkenMode as 'none' | 'darken-all' | 'contrast-edges' | 'contrast-full');
+                            const renderedBlob = await renderCardWithOverridesWorker(bitmap, params);
+                            bitmap.close();
+                            bitmap = await decodeImageBitmap(renderedBlob, `webgl overrides card=${idx} imageId=${card.imageId ?? "unknown"}`);
+                            // Cache for future exports (fire-and-forget, don't block export)
+                            if (card.imageId && card.overrides) {
+                                void cacheEffectBlob(card.imageId, card.overrides, renderedBlob, DPI);
+                            }
                         }
                     }
-                }
 
-                finalCardCanvas = bitmap;
+                    finalCardCanvas = bitmap;
 
-                // IMPORTANT: For cached blobs, use ACTUAL bitmap dimensions for bleed calculation
-                // The cached blob might have been created with different bleed settings
-                // so we need to infer the actual bleed from the bitmap size, not from settings
-                const actualImageBleedPx = (bitmap.width - contentWidthInPx) / 2;
-                if (actualImageBleedPx !== imageBleedPx) {
-                    debugLog(`[PDF Worker] Card ${idx}: Cached blob bleed mismatch! Expected ${imageBleedPx}px, got ${actualImageBleedPx}px`);
-                    // Override imageBleedPx with actual value to ensure correct trimming
-                    imageBleedPx = actualImageBleedPx;
-                    imageCardWidthPx = bitmap.width;
-                    imageCardHeightPx = bitmap.height;
+                    // IMPORTANT: For cached blobs, use ACTUAL bitmap dimensions for bleed calculation
+                    // The cached blob might have been created with different bleed settings
+                    // so we need to infer the actual bleed from the bitmap size, not from settings
+                    const actualImageBleedPx = (bitmap.width - contentWidthInPx) / 2;
+                    if (actualImageBleedPx !== imageBleedPx) {
+                        debugLog(`[PDF Worker] Card ${idx}: Cached blob bleed mismatch! Expected ${imageBleedPx}px, got ${actualImageBleedPx}px`);
+                        // Override imageBleedPx with actual value to ensure correct trimming
+                        imageBleedPx = actualImageBleedPx;
+                        imageCardWidthPx = bitmap.width;
+                        imageCardHeightPx = bitmap.height;
+                    }
+                } catch (e) {
+                    // Cached blob may be corrupt; fall back to fetching/generating from source.
+                    debugLog(`[PDF Worker] Card ${idx}: Cached blob path failed; falling back to slow path. ${(e as Error)?.message ?? e}`);
+                    isCacheValid = false;
                 }
-            } else {
+            }
+
+            if (!isCacheValid) {
                 // Check canvas cache
                 if (cacheKey && canvasCache.has(cacheKey)) {
                     const cached = canvasCache.get(cacheKey)!;
@@ -758,9 +828,8 @@ self.onmessage = async (event: MessageEvent) => {
                                 src = getLocalBleedImageUrl(src, API_BASE);
                             }
 
-                            const response = await fetch(src);
-                            const blob = await response.blob();
-                            let img = await createImageBitmap(blob);
+                            const blob = await fetchBlobWithDiagnostics(src);
+                            let img = await decodeImageBitmap(blob, `fetched blob card=${idx} imageId=${card.imageId ?? "unknown"} url=${src}`);
 
                             const needsBleedChange = Math.abs(existingBleedMm - targetBleedMm) > 0.01;
 
@@ -891,6 +960,7 @@ self.onmessage = async (event: MessageEvent) => {
                 imageCardHeightPx: trimmedHeight,
                 bleedPx: cardLayout.bleedPx,
                 isBlank: card.imageId === 'cardback_builtin_blank',
+                isBackFace: !!card.linkedFrontId,
                 rotation: cardRotation,
                 offsetX,
                 offsetY,
@@ -928,7 +998,7 @@ self.onmessage = async (event: MessageEvent) => {
                 }
 
                 // Stamp per-card guide overlay (skip for blank cards)
-                if (perCardGuideCanvas) {
+                if (perCardGuideCanvas && (showGuideLinesOnBackCards || !prepared.isBackFace)) {
                     ctx.save();
 
                     // Apply final offset (this is applied LAST after all other transforms)
@@ -957,7 +1027,7 @@ self.onmessage = async (event: MessageEvent) => {
         }
 
         // Draw Silhouette registration marks if enabled (on top of everything)
-        if (registrationMarks && registrationMarks !== 'none') {
+        if (registrationMarks && registrationMarks !== 'none' && (showGuideLinesOnBackCards || pageHasGuideEligibleCards)) {
             drawSilhouetteRegistrationMarks(ctx, pageWidthPx, pageHeightPx, DPI, registrationMarks, registrationMarksPortrait);
         }
 
@@ -978,4 +1048,3 @@ self.onmessage = async (event: MessageEvent) => {
         }
     }
 };
-

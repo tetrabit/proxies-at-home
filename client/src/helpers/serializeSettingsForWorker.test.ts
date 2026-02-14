@@ -25,6 +25,7 @@ const mockSettingsState = vi.hoisted(() => ({
     cutLineStyle: "edges" as const,
     perCardGuideStyle: "corners" as const,
     guidePlacement: "inside" as const,
+    showGuideLinesOnBackCards: true,
     cutGuideLengthMm: 5,
 }));
 
@@ -99,6 +100,7 @@ describe("serializeSettingsForWorker", () => {
             expect(result.cutLineStyle).toBe("edges");
             expect(result.perCardGuideStyle).toBe("corners");
             expect(result.guidePlacement).toBe("inside");
+            expect(result.showGuideLinesOnBackCards).toBe(true);
             expect(result.cutGuideLengthMm).toBe(5);
         });
 

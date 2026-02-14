@@ -107,6 +107,7 @@ vi.mock("../store", () => {
         guideColor: 'black',
         perCardGuideStyle: 'solid',
         guidePlacement: 'outside',
+        showGuideLinesOnBackCards: true,
         withBleedSourceAmount: 0,
         withBleedTargetMode: 'none',
         withBleedTargetAmount: 0,

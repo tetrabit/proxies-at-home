@@ -88,6 +88,7 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
   const guideWidth = useSettingsStore((s) => s.guideWidth);
   const cutLineStyle = useSettingsStore((s) => s.cutLineStyle);
   const perCardGuideStyle = useSettingsStore((s) => s.perCardGuideStyle);
+  const showGuideLinesOnBackCards = useSettingsStore((s) => s.showGuideLinesOnBackCards);
   const guideColor = useSettingsStore((s) => s.guideColor);
   const guidePlacement = useSettingsStore((s) => s.guidePlacement);
   const cutGuideLengthMm = useSettingsStore((s) => s.cutGuideLengthMm);
@@ -783,6 +784,7 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
                   perCardGuideStyle={perCardGuideStyle}
                   perCardGuideColor={perCardGuideColorNum}
                   perCardGuidePlacement={guidePlacement}
+                  showGuideLinesOnBackCards={showGuideLinesOnBackCards}
                   cutGuideLengthMm={cutGuideLengthMm}
                   registrationMarks={registrationMarks}
                   registrationMarksPortrait={registrationMarksPortrait}
@@ -922,7 +924,7 @@ export function PageView({ cards, allCards, images, mobile, active = true }: Pag
                           </div>
 
                           {/* Cut guides for single card */}
-                          {perCardGuideStyle !== 'none' && guideWidth > 0 && (
+                          {perCardGuideStyle !== 'none' && guideWidth > 0 && (showGuideLinesOnBackCards || !isFlipped || !card.linkedBackId) && (
                             <svg
                               className="absolute pointer-events-none"
                               style={{
