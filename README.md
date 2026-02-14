@@ -27,6 +27,9 @@ The site is hosted at https://proxxied.com
 - **Multi-Page Support** — Automatically paginates when more than 9 cards are selected.
 - **Precise Crop Marks** — 1px crop marks positioned exactly at the cut edge.
 - **High-Resolution Export** — jsPDF-powered, preserving full image quality.
+- **Duplex Modes** —
+  - **Duplex Printing**: all fronts, then all backs (mirrored).
+  - **Duplex (Collated)**: interleaved per sheet (front page 1, back page 1, front page 2, back page 2).
 
 ### Drag & Drop
 

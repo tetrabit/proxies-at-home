@@ -14,13 +14,15 @@ import { useFilteredAndSortedCards } from "@/hooks/useFilteredAndSortedCards";
 import { SplitButton } from "../common";
 import { extractMpcIdentifierFromImageId } from "@/helpers/mpcAutofillApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
+import { buildCollatedDuplexPageOrder } from "@/helpers/duplexCollation";
+import { exportModeUsesPerCardBackOffsets } from "@/helpers/exportMode";
 import type { CardOption } from "../../../../shared/types";
 
 type Props = {
   cards: CardOption[]; // Passed from parent to avoid redundant DB query
 };
 
-type ExportMode = 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs' | 'visible_faces';
+type ExportMode = 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'duplex-collated' | 'backs' | 'visible_faces';
 type CopyMode = 'standard' | 'withMpc';
 type DownloadMode = 'standard' | 'withMpc' | 'xml';
 type ImageExportMode = 'zip' | 'individual';
@@ -30,6 +32,7 @@ const EXPORT_MODES: { value: ExportMode; label: string; description: string }[] 
   { value: 'interleaved-all', label: 'Interleaved (All)', description: 'Each front followed by its back' },
   { value: 'interleaved-custom', label: 'Interleaved (DFC/Custom)', description: 'Interleave only DFCs and custom backs' },
   { value: 'duplex', label: 'Duplex Printing', description: 'All fronts, then all backs (mirrored)' },
+  { value: 'duplex-collated', label: 'Duplex (Collated)', description: 'Interleave pages: front sheet 1, back sheet 1, front sheet 2, back sheet 2' },
   { value: 'backs', label: 'Backs Only', description: 'Just backs (mirrored for duplex)' },
   { value: 'visible_faces', label: 'Visible Faces', description: 'Prints whichever face is currently visible (follows flips)' },
 ];
@@ -255,14 +258,20 @@ export function ExportActions({ cards }: Props) {
     };
     setOnCancel(onCancel);
 
-    try {
-      // Get normalized settings at export time (consistent with display path)
-      const pdfSettings = serializePdfSettingsForWorker();
-      const startTime = performance.now();
+	    try {
+	      // Get normalized settings at export time (consistent with display path)
+	      const pdfSettings = serializePdfSettingsForWorker();
+	      const startTime = performance.now();
 
-      const useCustomBackOffset = useSettingsStore.getState().useCustomBackOffset;
-      const cardBackPositionX = useSettingsStore.getState().cardBackPositionX;
-      const cardBackPositionY = useSettingsStore.getState().cardBackPositionY;
+	      // Only apply per-card back offsets for duplex/back exports.
+	      // Interleaved/visible-face exports should not inherit grid-slot offsets.
+	      if (!exportModeUsesPerCardBackOffsets(exportMode)) {
+	        pdfSettings.perCardBackOffsets = {};
+	      }
+
+	      const useCustomBackOffset = useSettingsStore.getState().useCustomBackOffset;
+	      const cardBackPositionX = useSettingsStore.getState().cardBackPositionX;
+	      const cardBackPositionY = useSettingsStore.getState().cardBackPositionY;
 
       // Determine cards to export based on mode
       let cardsToExport: CardOption[] = [];
@@ -275,7 +284,7 @@ export function ExportActions({ cards }: Props) {
           filenameSuffix = '_fronts';
           break;
 
-        case 'interleaved-all':
+	        case 'interleaved-all':
           // Each front followed by its back (skip blank backs - they don't add value)
           for (const frontCard of frontCards) {
             cardsToExport.push(frontCard);
@@ -287,12 +296,11 @@ export function ExportActions({ cards }: Props) {
               }
             }
             // No else - skip cards without real backs
-          }
-          filenameSuffix = '_interleaved-all';
-          pdfSettings.perCardBackOffsets = {};
-          break;
+	          }
+	          filenameSuffix = '_interleaved-all';
+	          break;
 
-        case 'interleaved-custom':
+	        case 'interleaved-custom':
           // Each front followed by back ONLY for DFC/custom backs (not default cardbacks or blanks)
           for (const frontCard of frontCards) {
             cardsToExport.push(frontCard);
@@ -303,12 +311,11 @@ export function ExportActions({ cards }: Props) {
                 cardsToExport.push(backCard);
               }
             }
-          }
-          filenameSuffix = '_interleaved-custom';
-          pdfSettings.perCardBackOffsets = {};
-          break;
+	          }
+	          filenameSuffix = '_interleaved-custom';
+	          break;
 
-        case 'visible_faces':
+	        case 'visible_faces':
           // Export whichever face is currently visible
           for (const frontCard of frontCards) {
             const isFlipped = useSelectionStore.getState().flippedCards.has(frontCard.uuid);
@@ -322,10 +329,9 @@ export function ExportActions({ cards }: Props) {
             } else {
               cardsToExport.push(frontCard);
             }
-          }
-          filenameSuffix = '_visible_faces';
-          pdfSettings.perCardBackOffsets = {};
-          break;
+	          }
+	          filenameSuffix = '_visible_faces';
+	          break;
 
         case 'duplex': {
           // All fronts, then all backs (mirrored for duplex printing)
@@ -399,13 +405,85 @@ export function ExportActions({ cards }: Props) {
           return; // Skip the normal export path below
         }
 
+        case 'duplex-collated': {
+          // Collated duplex: front page i, back page i, repeated for all pages.
+          // Render fronts/backs once each, then interleave pages during merge (no double-rendering).
+          const backCards = await buildBackCardsForExport();
+
+          const { PDFDocument } = await import('pdf-lib');
+
+          const frontsBuffer = await exportProxyPagesToPdf({
+            cards: frontCards,
+            imagesById,
+            pdfSettings,
+            onProgress: (p) => setProgress(p * 0.45),
+            pagesPerPdf: effectivePagesPerPdf,
+            cancellationPromise,
+            returnBuffer: true,
+          });
+
+          const pdfSettingsForBacks = { ...pdfSettings, rightAlignRows: true };
+          if (useCustomBackOffset) {
+            pdfSettingsForBacks.cardPositionX = cardBackPositionX;
+            pdfSettingsForBacks.cardPositionY = cardBackPositionY;
+          }
+          const backsBuffer = await exportProxyPagesToPdf({
+            cards: backCards,
+            imagesById,
+            pdfSettings: pdfSettingsForBacks,
+            onProgress: (p) => setProgress(45 + p * 0.45),
+            pagesPerPdf: effectivePagesPerPdf,
+            cancellationPromise,
+            returnBuffer: true,
+          });
+
+          setProgress(92);
+          const mergedPdf = await PDFDocument.create();
+
+          const frontsPdf = (frontsBuffer && frontsBuffer.length > 0) ? await PDFDocument.load(frontsBuffer) : null;
+          const backsPdf = (backsBuffer && backsBuffer.length > 0) ? await PDFDocument.load(backsBuffer) : null;
+
+          const frontPages = frontsPdf ? frontsPdf.getPageIndices() : [];
+          const backPages = backsPdf ? backsPdf.getPageIndices() : [];
+
+          const order = buildCollatedDuplexPageOrder(frontPages.length, backPages.length);
+          for (const step of order) {
+            if (step.src === 'front' && frontsPdf) {
+              const [page] = await mergedPdf.copyPages(frontsPdf, [step.index]);
+              mergedPdf.addPage(page);
+            }
+            if (step.src === 'back' && backsPdf) {
+              const [page] = await mergedPdf.copyPages(backsPdf, [step.index]);
+              mergedPdf.addPage(page);
+            }
+          }
+
+          setProgress(95);
+          const mergedPdfFile = await mergedPdf.save();
+
+          const date = new Date().toISOString().slice(0, 10);
+          const filename = `proxxies_${date}_duplex-collated.pdf`;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const blob = new Blob([mergedPdfFile as any], { type: "application/pdf" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+          setProgress(100);
+          return;
+        }
+
         case 'backs':
           // Just backs (mirrored, right-aligned incomplete rows)
           cardsToExport = await buildBackCardsForExport();
           filenameSuffix = '_backs';
           // Pass rightAlignRows for backs export
           pdfSettings.rightAlignRows = true;
-          pdfSettings.perCardBackOffsets = {};
           if (useCustomBackOffset) {
             pdfSettings.cardPositionX = cardBackPositionX;
             pdfSettings.cardPositionY = cardBackPositionY;
