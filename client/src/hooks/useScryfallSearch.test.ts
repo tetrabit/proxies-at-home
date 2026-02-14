@@ -20,30 +20,18 @@ vi.mock('@/helpers/cardInfoHelper', () => ({
     }),
 }));
 
+const { mockSearchCards, mockFetchCardBySetAndNumber } = vi.hoisted(() => ({
+    mockSearchCards: vi.fn(),
+    mockFetchCardBySetAndNumber: vi.fn(),
+}));
+
 vi.mock('@/helpers/scryfallApi', () => ({
-    getImages: vi.fn((card) => {
-        if (card.image_uris?.normal) return [card.image_uris.normal];
-        if (card.card_faces) return card.card_faces.map((f: { image_uris?: { normal?: string } }) => f.image_uris?.normal).filter(Boolean);
-        return [];
-    }),
-    mapResponseToCards: vi.fn((data: { data?: Array<{ name: string; set: string; collector_number: string; lang: string; image_uris?: { normal?: string } }> }) => {
-        if (!data.data || data.data.length === 0) return [];
-        return data.data.map((card) => ({
-            name: card.name,
-            set: card.set,
-            number: card.collector_number,
-            imageUrls: card.image_uris?.normal ? [card.image_uris.normal] : [],
-            lang: card.lang,
-        }));
-    }),
+    searchCards: mockSearchCards,
+    fetchCardBySetAndNumber: mockFetchCardBySetAndNumber,
 }));
 
 vi.mock('@/helpers/debug', () => ({
     debugLog: vi.fn(),
-}));
-
-vi.mock('@/constants', () => ({
-    API_BASE: 'http://localhost:3001',
 }));
 
 vi.mock('@/helpers/scryfallSyntax', () => ({
@@ -56,7 +44,14 @@ vi.mock('@/helpers/scryfallSyntax', () => ({
 describe('useScryfallSearch', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        global.fetch = vi.fn();
+        mockSearchCards.mockResolvedValue([]);
+        mockFetchCardBySetAndNumber.mockResolvedValue({
+            name: 'Sol Ring',
+            set: 'cmd',
+            number: '129',
+            imageUrls: [],
+            lang: 'en',
+        });
     });
 
     describe('initial state', () => {
@@ -77,48 +72,35 @@ describe('useScryfallSearch', () => {
             // Wait for potential debounce
             await new Promise(r => setTimeout(r, 600));
 
-            expect(global.fetch).not.toHaveBeenCalled();
+            expect(mockSearchCards).not.toHaveBeenCalled();
+            expect(mockFetchCardBySetAndNumber).not.toHaveBeenCalled();
         });
     });
 
     describe('search behavior (real timers)', () => {
         it('should debounce and call search API', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve({ data: [] }),
-            });
+            mockSearchCards.mockResolvedValue([]);
 
             renderHook(() => useScryfallSearch('Lightning Bolt'));
 
             // Wait for debounce + API call
             await vi.waitFor(() => {
-                expect(global.fetch).toHaveBeenCalled();
+                expect(mockSearchCards).toHaveBeenCalled();
             }, { timeout: 3000 });
 
-            expect(global.fetch).toHaveBeenCalledWith(
-                expect.stringContaining('/api/scryfall/search?q=Lightning%20Bolt'),
-                expect.anything()
-            );
+            expect(mockSearchCards).toHaveBeenCalledWith('Lightning Bolt', expect.anything());
         });
 
         it('should update cards on successful search', async () => {
-            const mockCards = {
-                data: [
-                    {
-                        name: 'Sol Ring',
-                        set: 'cmd',
-                        set_name: 'Commander',
-                        collector_number: '129',
-                        lang: 'en',
-                        image_uris: { normal: 'https://example.com/sol-ring.jpg' },
-                    },
-                ],
-            };
-
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve(mockCards),
-            });
+            mockSearchCards.mockResolvedValue([
+                {
+                    name: 'Sol Ring',
+                    set: 'cmd',
+                    number: '129',
+                    imageUrls: ['https://example.com/sol-ring.jpg'],
+                    lang: 'en',
+                },
+            ]);
 
             const { result } = renderHook(() => useScryfallSearch('Sol Ring'));
 
@@ -134,27 +116,21 @@ describe('useScryfallSearch', () => {
 
     describe('set and number lookup', () => {
         it('should use card endpoint for set/number queries', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve({
-                    name: 'Sol Ring',
-                    set: 'cmd',
-                    collector_number: '129',
-                    lang: 'en',
-                    image_uris: { normal: 'https://example.com/sol-ring.jpg' },
-                }),
+            mockFetchCardBySetAndNumber.mockResolvedValue({
+                name: 'Sol Ring',
+                set: 'cmd',
+                number: '129',
+                imageUrls: ['https://example.com/sol-ring.jpg'],
+                lang: 'en',
             });
 
             renderHook(() => useScryfallSearch('[CMD-129]'));
 
             await vi.waitFor(() => {
-                expect(global.fetch).toHaveBeenCalled();
+                expect(mockFetchCardBySetAndNumber).toHaveBeenCalled();
             }, { timeout: 3000 });
 
-            expect(global.fetch).toHaveBeenCalledWith(
-                expect.stringContaining('/api/scryfall/cards/cmd/129'),
-                expect.anything()
-            );
+            expect(mockFetchCardBySetAndNumber).toHaveBeenCalledWith('cmd', '129', expect.anything());
         });
     });
 
@@ -165,13 +141,13 @@ describe('useScryfallSearch', () => {
             // Wait for potential debounce
             await new Promise(r => setTimeout(r, 600));
 
-            expect(global.fetch).not.toHaveBeenCalled();
+            expect(mockSearchCards).not.toHaveBeenCalled();
         });
     });
 
     describe('error handling', () => {
         it('should handle API errors gracefully', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
+            mockSearchCards.mockRejectedValue(new Error('Network error'));
 
             const { result } = renderHook(() => useScryfallSearch('Error Test'));
 
@@ -183,9 +159,7 @@ describe('useScryfallSearch', () => {
         });
 
         it('should handle non-ok responses', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: false,
-            });
+            mockSearchCards.mockResolvedValue([]);
 
             const { result } = renderHook(() => useScryfallSearch('Unknown Card'));
 
@@ -199,59 +173,41 @@ describe('useScryfallSearch', () => {
 
     describe('Scryfall syntax passthrough', () => {
         it('should pass through is: syntax unchanged', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve({ data: [] }),
-            });
+            mockSearchCards.mockResolvedValue([]);
 
             renderHook(() => useScryfallSearch('is:mdfc'));
 
             await vi.waitFor(() => {
-                expect(global.fetch).toHaveBeenCalled();
+                expect(mockSearchCards).toHaveBeenCalled();
             }, { timeout: 3000 });
 
             // Should pass through as-is, not wrapped in quotes
-            expect(global.fetch).toHaveBeenCalledWith(
-                expect.stringContaining('/api/scryfall/search?q=is%3Amdfc'),
-                expect.anything()
-            );
+            expect(mockSearchCards).toHaveBeenCalledWith('is:mdfc', expect.anything());
         });
 
         it('should pass through complex syntax like is:legend set:ecc unchanged', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve({ data: [] }),
-            });
+            mockSearchCards.mockResolvedValue([]);
 
             renderHook(() => useScryfallSearch('is:legend set:ecc'));
 
             await vi.waitFor(() => {
-                expect(global.fetch).toHaveBeenCalled();
+                expect(mockSearchCards).toHaveBeenCalled();
             }, { timeout: 3000 });
 
             // Should pass through as-is, NOT become !"is:legend" set:ecc
-            expect(global.fetch).toHaveBeenCalledWith(
-                expect.stringContaining('/api/scryfall/search?q=is%3Alegend%20set%3Aecc'),
-                expect.anything()
-            );
+            expect(mockSearchCards).toHaveBeenCalledWith('is:legend set:ecc', expect.anything());
         });
 
         it('should pass through c: color syntax unchanged', async () => {
-            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve({ data: [] }),
-            });
+            mockSearchCards.mockResolvedValue([]);
 
             renderHook(() => useScryfallSearch('c:r t:creature'));
 
             await vi.waitFor(() => {
-                expect(global.fetch).toHaveBeenCalled();
+                expect(mockSearchCards).toHaveBeenCalled();
             }, { timeout: 3000 });
 
-            expect(global.fetch).toHaveBeenCalledWith(
-                expect.stringContaining('/api/scryfall/search?q=c%3Ar%20t%3Acreature'),
-                expect.anything()
-            );
+            expect(mockSearchCards).toHaveBeenCalledWith('c:r t:creature', expect.anything());
         });
     });
 });

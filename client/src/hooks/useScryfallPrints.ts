@@ -97,7 +97,10 @@ export function useScryfallPrints({
         setIsLoading(true);
         const url = `${API_BASE}/api/scryfall/prints?name=${encodeURIComponent(trimmedName)}&lang=${lang}`;
 
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await fetch(url, {
+          signal: controller.signal,
+          cache: "no-store",
+        });
 
         if (currentNameRef.current !== trimmedName) return;
 

@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { extractCardInfo, hasIncompleteTagSyntax } from "@/helpers/cardInfoHelper";
-import { getImages, mapResponseToCards } from "@/helpers/scryfallApi";
+import { fetchCardBySetAndNumber, searchCards } from "@/helpers/scryfallApi";
 import { containsScryfallSyntax } from "@/helpers/scryfallSyntax";
 import { debugLog } from "@/helpers/debug";
-import { API_BASE } from "@/constants";
 import type { ScryfallCard } from "../../../shared/types";
 
 export interface ScryfallSearchResult {
@@ -129,26 +128,14 @@ export function useScryfallSearch(
 
                 if (set && number) {
                     // Specific card lookup
-                    const res = await fetch(`${API_BASE}/api/scryfall/cards/${set}/${number}`, {
-                        signal: controller.signal
-                    });
-
-                    if (currentQueryRef.current !== query) return;
-
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (!cleanedName || data.name.toLowerCase().includes(cleanedName.toLowerCase())) {
-                            resultCards = [{
-                                name: data.name,
-                                set: data.set,
-                                number: data.collector_number,
-                                imageUrls: getImages(data),
-                                lang: data.lang,
-                                cmc: data.cmc,
-                                type_line: data.type_line,
-                                rarity: data.rarity,
-                            }];
+                    try {
+                        const card = await fetchCardBySetAndNumber(set, number, controller.signal);
+                        if (currentQueryRef.current !== query) return;
+                        if (!cleanedName || card.name.toLowerCase().includes(cleanedName.toLowerCase())) {
+                            resultCards = [card];
                         }
+                    } catch {
+                        resultCards = [];
                     }
                 } else {
                     // Search query
@@ -168,16 +155,13 @@ export function useScryfallSearch(
                         searchQuery = cleanedName || trimmedQuery;
                     }
 
-                    const res = await fetch(`${API_BASE}/api/scryfall/search?q=${encodeURIComponent(searchQuery)}&page_size=100`, {
-                        signal: controller.signal
-                    });
+                    const cards = await searchCards(searchQuery, controller.signal);
 
                     if (currentQueryRef.current !== query) return;
 
-                    if (res.ok) {
-                        const data = await res.json();
-                        debugLog('[ScryfallSearch] Search results:', data.data?.length);
-                        resultCards = mapResponseToCards(data);
+                    if (cards) {
+                        debugLog('[ScryfallSearch] Search results:', cards.length);
+                        resultCards = cards;
 
                         // Dedupe by card name
                         const seen = new Set<string>();

@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { extractCardInfo, hasIncompleteTagSyntax } from "@/helpers/cardInfoHelper";
-import { getImages, mapResponseToCards } from "@/helpers/scryfallApi";
+import { fetchCardBySetAndNumber, searchCards } from "@/helpers/scryfallApi";
 import { debugLog } from "@/helpers/debug";
-import { API_BASE } from "@/constants";
 import type { ScryfallCard } from "../../../shared/types";
 
 
@@ -66,34 +65,21 @@ export function useScryfallPreview(query: string) {
 
                 try {
                     setIsLoading(true);
-                    const res = await fetch(`${API_BASE}/api/scryfall/cards/${set}/${number}`, {
-                        signal: controller.signal
-                    });
+                    try {
+                        const card = await fetchCardBySetAndNumber(set, number, controller.signal);
 
-                    // Check if this is still the current query
-                    if (currentQueryRef.current !== query) return;
+                        // Check if this is still the current query
+                        if (currentQueryRef.current !== query) return;
 
-                    if (res.ok) {
-                        const data = await res.json();
                         // Validate name if provided
-                        if (cleanedName && !data.name.toLowerCase().includes(cleanedName.toLowerCase())) {
+                        if (cleanedName && !card.name.toLowerCase().includes(cleanedName.toLowerCase())) {
                             searchCache.current[cacheKey] = [];
                             setSetVariations([]);
                         } else {
-                            const card: ScryfallCard = {
-                                name: data.name,
-                                set: data.set,
-                                number: data.collector_number,
-                                imageUrls: getImages(data),
-                                lang: data.lang,
-                                cmc: data.cmc,
-                                type_line: data.type_line,
-                                rarity: data.rarity,
-                            };
                             searchCache.current[cacheKey] = [card];
                             setSetVariations([card]);
                         }
-                    } else {
+                    } catch {
                         searchCache.current[cacheKey] = [];
                         setSetVariations([]);
                     }
@@ -137,21 +123,18 @@ export function useScryfallPreview(query: string) {
             // Perform search
             try {
                 setIsLoading(true);
-                const res = await fetch(`${API_BASE}/api/scryfall/search?q=${encodeURIComponent(searchQuery)}&page_size=100`, {
-                    signal: controller.signal
-                });
+                const cards = await searchCards(searchQuery, controller.signal);
 
                 // Check if this is still the current query
                 if (currentQueryRef.current !== query) return;
 
-                if (res.ok) {
-                    const data = await res.json();
-                    debugLog('[AdvancedSearch] Search results:', data.data?.length);
-                    let cards = mapResponseToCards(data);
+                if (cards) {
+                    debugLog('[AdvancedSearch] Search results:', cards.length);
+                    let cardsByRelevance = cards;
 
                     // Dedupe by card name - keep only the first/best version of each card
                     const seen = new Set<string>();
-                    cards = cards.filter(card => {
+                    cardsByRelevance = cardsByRelevance.filter(card => {
                         const key = card.name.toLowerCase();
                         if (seen.has(key)) return false;
                         seen.add(key);
@@ -160,7 +143,7 @@ export function useScryfallPreview(query: string) {
 
                     // Sort by relevance: exact > starts with > word boundary > contains
                     const queryLower = (cleanedName || trimmedQuery).toLowerCase();
-                    cards = cards.sort((a, b) => {
+                    cardsByRelevance = cardsByRelevance.sort((a, b) => {
                         const aName = a.name.toLowerCase();
                         const bName = b.name.toLowerCase();
 
@@ -187,8 +170,8 @@ export function useScryfallPreview(query: string) {
                         return aName.localeCompare(bName);
                     });
 
-                    searchCache.current[cacheKey] = cards;
-                    setSetVariations(cards);
+                    searchCache.current[cacheKey] = cardsByRelevance;
+                    setSetVariations(cardsByRelevance);
                 } else {
                     searchCache.current[cacheKey] = [];
                     setSetVariations([]);

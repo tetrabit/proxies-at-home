@@ -58,9 +58,9 @@ All scripts now output to `clients/typescript/` instead of `shared/scryfall-api-
 ### 3. Made Client Consumable
 
 Added `package.json` to `clients/typescript/`:
-- Package name: `scryfall-cache-client`
+- Package name: `@tetrabit/scryfall-cache-client`
 - Version: `0.1.0`
-- Ready for file reference or npm publish
+- Consumed locally via a `file:` dependency (not published to any registry)
 
 ### 4. Cleaned Up Proxxied
 
@@ -80,14 +80,16 @@ Removed:
 ```json
 {
   "dependencies": {
-    "scryfall-cache-client": "file:../scryfall-cache-microservice/clients/typescript"
+    "@tetrabit/scryfall-cache-client": "file:../shared/scryfall-client"
   }
 }
 ```
 
+No npm registry authentication is required (local `file:` dependency).
+
 **Import and use**:
 ```typescript
-import { ScryfallCacheClient, Card } from 'scryfall-cache-client';
+import { ScryfallCacheClient, Card } from '@tetrabit/scryfall-cache-client';
 
 const client = new ScryfallCacheClient({
   baseUrl: 'http://localhost:8080',
@@ -106,7 +108,8 @@ cd /home/nullvoid/projects/scryfall-cache-microservice
 npm install  # First time only
 npm run generate:api-types
 
-# 3. Consumers pick up changes automatically (file reference)
+# 3. Build the local package so consumers can install it
+# (no registry publish step)
 ```
 
 ---

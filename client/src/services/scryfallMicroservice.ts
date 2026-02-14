@@ -5,7 +5,7 @@
  * It automatically discovers the microservice URL from Electron and provides a ready-to-use client.
  */
 
-import { ScryfallCacheClient } from '../../../shared/scryfall-client/index';
+import { ScryfallCacheClient } from '@tetrabit/scryfall-cache-client';
 
 let clientInstance: ScryfallCacheClient | null = null;
 

@@ -43,6 +43,7 @@ type UpdateEventInfo = UpdateInfo | ProgressInfo | string | null;
 interface Window {
   electronAPI?: {
     serverUrl: () => Promise<string>;
+    getMicroserviceUrl?: () => Promise<string>;
     getAppVersion: () => Promise<string>;
     getUpdateChannel: () => Promise<string>;
     setUpdateChannel: (channel: string) => Promise<boolean>;

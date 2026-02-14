@@ -30,7 +30,7 @@ export class ScryfallCacheClient {
     this.config = config;
   }
 
-  private async request<T>(path: string, options?: RequestInit): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.config.baseUrl}${path}`;
     const response = await fetch(url, {
       ...options,
@@ -48,31 +48,31 @@ export class ScryfallCacheClient {
   }
 
   // Card endpoints
-  async searchCards(params: SearchParams) {
+  async searchCards(params: SearchParams, options?: RequestInit) {
     const query = new URLSearchParams(params as any).toString();
-    return this.request<CardListResponse>(`/cards/search?${query}`);
+    return this.request<CardListResponse>(`/cards/search?${query}`, options);
   }
 
-  async getCardByName(params: NamedParams) {
+  async getCardByName(params: NamedParams, options?: RequestInit) {
     const query = new URLSearchParams(params as any).toString();
-    return this.request<CardResponse>(`/cards/named?${query}`);
+    return this.request<CardResponse>(`/cards/named?${query}`, options);
   }
 
-  async getCard(id: string) {
-    return this.request<CardResponse>(`/cards/${id}`);
+  async getCard(id: string, options?: RequestInit) {
+    return this.request<CardResponse>(`/cards/${id}`, options);
   }
 
-  async autocomplete(params: { q: string }) {
+  async autocomplete(params: { q: string }, options?: RequestInit) {
     const query = new URLSearchParams(params as any).toString();
-    return this.request<{ object: string; data: string[] }>(`/cards/autocomplete?${query}`);
+    return this.request<{ object: string; data: string[] }>(`/cards/autocomplete?${query}`, options);
   }
 
   // Utility endpoints
-  async getStats() {
-    return this.request<components['schemas']['StatsResponse']>('/stats');
+  async getStats(options?: RequestInit) {
+    return this.request<components['schemas']['StatsResponse']>('/stats', options);
   }
 
-  async health() {
-    return this.request<any>('/health');
+  async health(options?: RequestInit) {
+    return this.request<any>('/health', options);
   }
 }

@@ -147,7 +147,8 @@ describe('Scryfall Cache API Contract Tests', () => {
       
       assert.equal(result.status, 400);
       assert.equal(result.data.success, false);
-      assert.equal(typeof result.data.error, 'string');
+      assert.equal(typeof result.data.error, 'object');
+      assert.equal(typeof result.data.error.message, 'string');
     });
   });
 
@@ -178,7 +179,8 @@ describe('Scryfall Cache API Contract Tests', () => {
       const result = await fetchJSON(`${BASE_URL}/cards/named`);
       
       if (!result.data.success) {
-        assert.equal(typeof result.data.error, 'string');
+        assert.equal(typeof result.data.error, 'object');
+        assert.equal(typeof result.data.error.message, 'string');
       }
     });
   });

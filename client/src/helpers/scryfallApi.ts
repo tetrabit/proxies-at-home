@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { API_BASE } from '@/constants';
+import { getScryfallClient } from '@/services/scryfallMicroservice';
 import type { ScryfallCard, PrintInfo } from '../../../shared/types';
+import type { components } from '@tetrabit/scryfall-cache-client';
 
 function translateAxiosError(error: unknown): string {
     if (axios.isCancel(error)) {
@@ -75,6 +77,8 @@ export interface RawScryfallCard {
     }[];
 }
 
+type MicroserviceCard = components['schemas']['Card'];
+
 export function getImages(data: RawScryfallCard): string[] {
     const imageUrls: string[] = [];
 
@@ -92,6 +96,66 @@ export function getImages(data: RawScryfallCard): string[] {
         });
     }
     return imageUrls;
+}
+
+function canUseMicroservice(): boolean {
+    return (
+        typeof window !== 'undefined' &&
+        !!window.electronAPI &&
+        typeof window.electronAPI.getMicroserviceUrl === 'function'
+    );
+}
+
+async function getMicroserviceClientSafe() {
+    if (!canUseMicroservice()) return null;
+    try {
+        return await getScryfallClient();
+    } catch (error) {
+        console.warn('[scryfallApi] Failed to initialize microservice client:', error);
+        return null;
+    }
+}
+
+function normalizeMicroserviceCard(card: MicroserviceCard): RawScryfallCard {
+    const raw = card.raw_json;
+    if (raw && typeof raw === 'object') {
+        const rawCard = raw as Partial<RawScryfallCard>;
+        return {
+            name: rawCard.name ?? card.name,
+            set: rawCard.set ?? card.set_code ?? '',
+            set_name: rawCard.set_name ?? card.set_name ?? undefined,
+            collector_number: rawCard.collector_number ?? card.collector_number ?? '',
+            lang: rawCard.lang ?? 'en',
+            colors: rawCard.colors ?? card.colors ?? undefined,
+            mana_cost: rawCard.mana_cost ?? card.mana_cost ?? undefined,
+            cmc: rawCard.cmc ?? card.cmc ?? undefined,
+            type_line: rawCard.type_line ?? card.type_line ?? undefined,
+            rarity: rawCard.rarity ?? card.rarity ?? undefined,
+            image_uris: rawCard.image_uris ?? (card.image_uris as RawScryfallCard['image_uris'] | undefined),
+            card_faces: rawCard.card_faces ?? (card.card_faces as RawScryfallCard['card_faces'] | undefined),
+            all_parts: rawCard.all_parts ?? undefined,
+        };
+    }
+
+    return {
+        name: card.name,
+        set: card.set_code ?? '',
+        set_name: card.set_name ?? undefined,
+        collector_number: card.collector_number ?? '',
+        lang: 'en',
+        colors: card.colors ?? undefined,
+        mana_cost: card.mana_cost ?? undefined,
+        cmc: card.cmc ?? undefined,
+        type_line: card.type_line ?? undefined,
+        rarity: card.rarity ?? undefined,
+        image_uris: card.image_uris as RawScryfallCard['image_uris'] | undefined,
+        card_faces: card.card_faces as RawScryfallCard['card_faces'] | undefined,
+        all_parts: undefined,
+    };
+}
+
+function mapMicroserviceCardToCard(card: MicroserviceCard): ScryfallCard {
+    return mapScryfallDataToCard(normalizeMicroserviceCard(card));
 }
 
 function mapScryfallDataToCard(data: RawScryfallCard): ScryfallCard {
@@ -219,6 +283,24 @@ export async function fetchCardWithPrints(query: string, exact: boolean = false,
 }
 
 export async function searchCards(query: string, signal?: AbortSignal): Promise<ScryfallCard[]> {
+    const microserviceClient = await getMicroserviceClientSafe();
+    if (microserviceClient) {
+        try {
+            const response = await microserviceClient.searchCards(
+                { q: query, page_size: 100 },
+                { signal }
+            );
+            if (response?.success && response.data) {
+                return response.data.data.map(mapMicroserviceCardToCard);
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                throw error;
+            }
+            console.warn('[scryfallApi] Microservice search failed, falling back to server:', error);
+        }
+    }
+
     const data = await apiCall<{ data: RawScryfallCard[] }>(() => scryfallApi.get('/search', {
         params: { q: query },
         signal,
@@ -227,6 +309,21 @@ export async function searchCards(query: string, signal?: AbortSignal): Promise<
 }
 
 export async function autocomplete(query: string, signal?: AbortSignal): Promise<string[]> {
+    const microserviceClient = await getMicroserviceClientSafe();
+    if (microserviceClient) {
+        try {
+            const response = await microserviceClient.autocomplete({ q: query }, { signal });
+            if (response?.data) {
+                return response.data;
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                throw error;
+            }
+            console.warn('[scryfallApi] Microservice autocomplete failed, falling back to server:', error);
+        }
+    }
+
     const data = await apiCall<{ data: string[] }>(() => scryfallApi.get('/autocomplete', {
         params: { q: query },
         signal,
@@ -235,6 +332,21 @@ export async function autocomplete(query: string, signal?: AbortSignal): Promise
 }
 
 export async function getCardByName(name: string, signal?: AbortSignal): Promise<ScryfallCard> {
+    const microserviceClient = await getMicroserviceClientSafe();
+    if (microserviceClient) {
+        try {
+            const response = await microserviceClient.getCardByName({ exact: name }, { signal });
+            if (response?.success && response.data) {
+                return mapMicroserviceCardToCard(response.data);
+            }
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                throw error;
+            }
+            console.warn('[scryfallApi] Microservice named lookup failed, falling back to server:', error);
+        }
+    }
+
     const data = await apiCall<RawScryfallCard>(() => scryfallApi.get('/named', {
         params: { exact: name },
         signal,

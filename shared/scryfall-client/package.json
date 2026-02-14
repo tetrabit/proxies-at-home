@@ -1,13 +1,25 @@
 {
-  "name": "scryfall-cache-client",
+  "name": "@tetrabit/scryfall-cache-client",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "description": "TypeScript client for Scryfall Cache Microservice",
-  "main": "index.ts",
-  "types": "index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/scryfall-cache-microservice"
+    "url": "https://github.com/kclipsto/proxies-at-home"
   },
   "keywords": [
     "scryfall",
@@ -18,7 +30,10 @@
   ],
   "author": "",
   "license": "MIT",
-  "peerDependencies": {
-    "typescript": ">=4.0.0"
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});\" && tsc -p tsconfig.build.json && node -e \"require('fs').mkdirSync('dist',{recursive:true}); require('fs').copyFileSync('schema.d.ts','dist/schema.d.ts')\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }
