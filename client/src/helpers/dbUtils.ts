@@ -327,9 +327,14 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
     const allCards = await db.cards.where("projectId").equals(projectId).toArray();
     if (allCards.length === 0) return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
 
+    const linkedBackIds = new Set(
+      allCards
+        .map((c) => c.linkedBackId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
     const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
     const fronts = allCards
-      .filter((c) => !c.linkedFrontId)
+      .filter((c) => !c.linkedFrontId && !linkedBackIds.has(c.uuid))
       .sort((a, b) => a.order - b.order);
 
     // Defensive: handle cases where a back exists but the front's linkedBackId is missing.
@@ -369,6 +374,7 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
     const reorderedFronts = [...nonMulti, ...multi];
 
     const updates: { key: string; changes: { order: number } }[] = [];
+    const linkFixes: { key: string; changes: { linkedBackId: string } }[] = [];
     let updatedSlots = 0;
 
     reorderedFronts.forEach((front, index) => {
@@ -378,10 +384,19 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
         updates.push({ key: front.uuid, changes: { order: newOrder } });
       }
 
-      if (front.linkedBackId) {
-        const back = byUuid.get(front.linkedBackId);
-        if (back && Math.abs(back.order - newOrder) > 0.001) {
+      const backByRef = backByFrontUuid.get(front.uuid);
+      const linkedBack = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
+      const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
+        ? linkedBack
+        : undefined;
+      const back = backByRef ?? backByLink;
+
+      if (back) {
+        if (Math.abs(back.order - newOrder) > 0.001) {
           updates.push({ key: back.uuid, changes: { order: newOrder } });
+        }
+        if (front.linkedBackId !== back.uuid) {
+          linkFixes.push({ key: front.uuid, changes: { linkedBackId: back.uuid } });
         }
       }
 
@@ -390,6 +405,9 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
 
     if (updates.length > 0) {
       await db.cards.bulkUpdate(updates);
+    }
+    if (linkFixes.length > 0) {
+      await db.cards.bulkUpdate(linkFixes);
     }
 
     return {
@@ -452,7 +470,12 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
   }
 
   const allCards = await db.cards.where("projectId").equals(projectId).toArray();
-  const fronts = allCards.filter((c) => !c.linkedFrontId && !c.isUserUpload);
+  const linkedBackIds = new Set(
+    allCards
+      .map((c) => c.linkedBackId)
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+  );
+  const fronts = allCards.filter((c) => !c.linkedFrontId && !linkedBackIds.has(c.uuid) && !c.isUserUpload);
   const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
   const backByFrontUuid = new Map<string, CardOption>();
   for (const c of allCards) {
@@ -496,7 +519,10 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         if (!_isMultiFaceLayout(data.layout) || !_hasBackFaceImage(data)) continue;
         multiFace++;
 
-        const backByLink = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
+        const linkedBack = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
+        const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
+          ? linkedBack
+          : undefined;
         const backByRef = backByFrontUuid.get(front.uuid);
         const back = backByRef ?? backByLink;
 
@@ -551,10 +577,11 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         }
 
         const backByRef = backByFrontUuid.get(r.front.uuid);
-        const backByLink = currentFront.linkedBackId ? await db.cards.get(currentFront.linkedBackId) : undefined;
-        const back =
-          backByRef ??
-          (backByLink && backByLink.linkedFrontId === currentFront.uuid ? backByLink : undefined);
+        const linkedBack = currentFront.linkedBackId ? await db.cards.get(currentFront.linkedBackId) : undefined;
+        const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === currentFront.uuid)
+          ? linkedBack
+          : undefined;
+        const back = backByRef ?? backByLink;
 
         if (back) {
           // If swapping away from a custom image, decrement it.
