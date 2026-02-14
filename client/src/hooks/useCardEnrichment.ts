@@ -44,6 +44,8 @@ interface EnrichedCardData {
     name: string;
     set?: string;
     number?: string;
+    oracle_id?: string;
+    scryfall_id?: string;
     colors?: string[];
     mana_cost?: string;
     cmc?: number;
@@ -209,7 +211,7 @@ export function useCardEnrichment() {
 
                         // Cache the new results
                         try {
-                            const entriesToCache: { id: string, name: string, set: string, number: string, data: unknown, cachedAt: number, size: number, cacheVersion: number }[] = [];
+                            const entriesToCache: { id: string, name: string, set: string, number: string, oracle_id?: string, scryfall_id?: string, data: unknown, cachedAt: number, size: number, cacheVersion: number }[] = [];
 
                             validResponses.forEach((data) => {
                                 if (data) {
@@ -221,6 +223,8 @@ export function useCardEnrichment() {
                                         name: data.name,
                                         set: data.set || '',
                                         number: data.number || '',
+                                        oracle_id: data.oracle_id,
+                                        scryfall_id: data.scryfall_id,
                                         data: data as unknown,
                                         cachedAt: Date.now(),
                                         size: size,
@@ -382,6 +386,8 @@ export function useCardEnrichment() {
                                         name: data.name,
                                         set: data.set || card.set,
                                         number: data.number || card.number,
+                                        scryfall_id: data.scryfall_id || card.scryfall_id,
+                                        oracle_id: data.oracle_id || card.oracle_id,
                                         type_line: data.type_line,
                                         mana_cost: data.mana_cost,
                                     }),
@@ -432,6 +438,8 @@ export function useCardEnrichment() {
                                         // Update existing back link
                                         const backChanges: Partial<CardOption> = {
                                             name: back.name,
+                                            scryfall_id: data.scryfall_id || existingBack.scryfall_id,
+                                            oracle_id: data.oracle_id || existingBack.oracle_id,
                                             type_line: back.type_line,
                                             mana_cost: back.mana_cost,
                                             colors: back.colors,
@@ -457,6 +465,8 @@ export function useCardEnrichment() {
                                             colors: back.colors || [],
                                             set: data.set || card.set || "",
                                             number: data.number || card.number || "",
+                                            scryfall_id: data.scryfall_id || card.scryfall_id,
+                                            oracle_id: data.oracle_id || card.oracle_id,
                                             order: card.order,
                                             isUserUpload: false,
                                             linkedFrontId: card.uuid,
