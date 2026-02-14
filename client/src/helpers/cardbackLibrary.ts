@@ -63,6 +63,14 @@ export const BUILTIN_CARDBACKS: CardbackOption[] = [
  */
 let builtinCardbacksEnsured = false;
 
+function isLikelyValidImageBlob(blob: Blob | undefined): boolean {
+    if (!blob) return false;
+    // Some browsers may leave type empty; still allow if size is large enough.
+    const typeOk = !blob.type || blob.type.startsWith("image/");
+    const sizeOk = blob.size > 50_000; // builtin cardbacks are ~MB; HTML error pages are tiny
+    return typeOk && sizeOk;
+}
+
 
 
 /**
@@ -85,9 +93,9 @@ export async function ensureBuiltinCardbacksInDb(): Promise<void> {
         // Check if already in database
         const existing = await db.cardbacks.get(cardback.id);
 
-        // Skip if it exists AND has originalBlob (properly set up for normal cardbacks)
+        // Skip if it exists AND has a valid originalBlob (properly set up for normal cardbacks)
         // OR if it's the blank cardback and already exists (blank has no originalBlob by design)
-        if (existing?.originalBlob) continue;
+        if (isLikelyValidImageBlob(existing?.originalBlob)) continue;
         if (cardback.id === 'cardback_builtin_blank' && existing) continue;
 
         try {
@@ -103,7 +111,15 @@ export async function ensureBuiltinCardbacksInDb(): Promise<void> {
 
             // Fetch the asset and convert to blob
             const response = await fetch(cardback.imageUrl);
+            if (!response.ok) {
+                const text = await response.text().catch(() => "");
+                throw new Error(`Failed to fetch builtin cardback ${cardback.id}: HTTP ${response.status} ${response.statusText} body=${JSON.stringify(text.slice(0, 200))}`);
+            }
             const blob = await response.blob();
+            if (!isLikelyValidImageBlob(blob)) {
+                const text = await blob.text().catch(() => "");
+                throw new Error(`Builtin cardback ${cardback.id} fetched invalid blob type=${blob.type} size=${blob.size} body=${JSON.stringify(text.slice(0, 200))}`);
+            }
 
             // Store in database with originalBlob so it goes through bleed processing
             await db.cardbacks.put({
@@ -230,5 +246,4 @@ export async function getAllCardbacks(): Promise<CardbackOption[]> {
         return a.name.localeCompare(b.name);
     });
 }
-
 
