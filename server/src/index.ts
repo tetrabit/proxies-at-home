@@ -10,6 +10,7 @@ import { streamRouter } from "./routes/streamRouter.js";
 import { mpcAutofillRouter } from "./routes/mpcAutofillRouter.js";
 import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
+import { keystoneRouter } from "./routes/keystoneRouter.js";
 import metricsRouter from "./routes/metricsRouter.js";
 import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
 import { initDatabase } from "./db/db.js";
@@ -169,6 +170,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/mpcfill", mpcAutofillRouter);
   app.use("/api/scryfall", scryfallRouter);
   app.use("/api/share", shareRouter);
+  app.use("/api/keystone", keystoneRouter);
   app.use("/api/metrics", metricsRouter);
 
   return new Promise((resolve) => {

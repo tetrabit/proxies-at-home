@@ -46,6 +46,22 @@ FROM node:20-alpine AS runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
 
+# Optional Keystone (printer-keystone) runtime deps:
+# - We install OpenCV+numpy/etc from apk and PyMuPDF from pip into a venv.
+# - The printer-keystone code itself can be provided via PRINTER_KEYSTONE_REPO (e.g. bind-mount in docker-compose).
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    py3-numpy \
+    py3-pillow \
+    py3-reportlab \
+    py3-typer \
+    py3-opencv \
+  && python3 -m venv --system-site-packages /opt/keystone-venv \
+  && /opt/keystone-venv/bin/pip install --no-cache-dir -U pip \
+  && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF \
+  && true
+
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist
 

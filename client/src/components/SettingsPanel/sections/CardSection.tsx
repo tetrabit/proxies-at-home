@@ -5,7 +5,8 @@ import { useNormalizedInput, usePositionInput } from "@/hooks/useInputHooks";
 import { AutoTooltip } from "@/components/common";
 import { useMemo, useState } from "react";
 import { PerCardOffsetModal } from "@/components/PerCardOffsetModal";
-import { WrenchIcon } from "lucide-react";
+import { WrenchIcon, ScanLine } from "lucide-react";
+import { KeystoneCalibrationModal } from "@/components/KeystoneCalibrationModal";
 
 const INCH_TO_MM = 25.4;
 const CARD_W_IN = 2.5;
@@ -29,6 +30,7 @@ export function CardSection() {
     const useCustomBackOffset = useSettingsStore((state) => state.useCustomBackOffset);
     const cardBackPositionX = useSettingsStore((state) => state.cardBackPositionX);
     const cardBackPositionY = useSettingsStore((state) => state.cardBackPositionY);
+    const keystoneLastTransform = useSettingsStore((state) => state.keystoneLastTransform);
 
     const setCardSpacingMm = useSettingsStore((state) => state.setCardSpacingMm);
     const setCardPositionX = useSettingsStore((state) => state.setCardPositionX);
@@ -36,8 +38,11 @@ export function CardSection() {
     const setUseCustomBackOffset = useSettingsStore((state) => state.setUseCustomBackOffset);
     const setCardBackPositionX = useSettingsStore((state) => state.setCardBackPositionX);
     const setCardBackPositionY = useSettingsStore((state) => state.setCardBackPositionY);
+    const clearPerCardBackOffsets = useSettingsStore((state) => state.clearPerCardBackOffsets);
+    const clearKeystoneLastTransform = useSettingsStore((state) => state.clearKeystoneLastTransform);
 
     const [showPerCardModal, setShowPerCardModal] = useState(false);
+    const [showKeystoneModal, setShowKeystoneModal] = useState(false);
 
     const pageWmm = pageUnit === "mm" ? pageWidth : inToMm(pageWidth);
     const pageHmm = pageUnit === "mm" ? pageHeight : inToMm(pageHeight);
@@ -83,6 +88,17 @@ export function CardSection() {
                         Card Back Alignement Tool
                     </Button>
                     <AutoTooltip content="Adjust position and rotation for each card back individually. Use this to fine-tune alignment for each position in the grid." />
+                </div>
+                <div className="flex items-center gap-2">
+                    <Button
+                        color="blue"
+                        onClick={() => setShowKeystoneModal(true)}
+                        className="flex-1 gap-2"
+                    >
+                        <ScanLine className="h-5 w-5" />
+                        Keystone Calibration (Scan)
+                    </Button>
+                    <AutoTooltip content="Upload front/back scans of a calibration sheet to auto-populate back offsets (translation + rotation) for duplex printing." />
                 </div>
             </div>
 
@@ -138,6 +154,11 @@ export function CardSection() {
                             onBlur={cardPositionXInput.handleBlur}
                             placeholder="-0.0"
                         />
+                        {keystoneLastTransform && (
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                Keystone (back): {keystoneLastTransform.translation_mm.x.toFixed(2)} mm
+                            </div>
+                        )}
                     </div>
                     <div>
                         <div className="flex items-center justify-between">
@@ -153,8 +174,37 @@ export function CardSection() {
                             onBlur={cardPositionYInput.handleBlur}
                             placeholder="-0.0"
                         />
+                        {keystoneLastTransform && (
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                Keystone (back): {keystoneLastTransform.translation_mm.y.toFixed(2)} mm
+                            </div>
+                        )}
                     </div>
                 </div>
+
+                {keystoneLastTransform && (
+                    <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                                <div className="font-semibold">Keystone Rotation (Back)</div>
+                                <div>{keystoneLastTransform.rot_deg.toFixed(3)} deg</div>
+                            </div>
+                            <Button
+                                color="gray"
+                                size="xs"
+                                onClick={() => {
+                                    clearKeystoneLastTransform();
+                                    clearPerCardBackOffsets();
+                                }}
+                            >
+                                Clear Keystone
+                            </Button>
+                        </div>
+                        <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+                            Keystone is applied via per-card back offsets (position-dependent) for duplex/back exports.
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="space-y-3">
@@ -176,6 +226,9 @@ export function CardSection() {
                             <div>
                                 <div className="flex items-center justify-between">
                                     <Label>Back Horizontal</Label>
+                                    {keystoneLastTransform && (
+                                        <AutoTooltip content={`Keystone: ${keystoneLastTransform.translation_mm.x.toFixed(2)} mm`} />
+                                    )}
                                 </div>
                                 <NumberInput
                                     ref={cardBackPositionXInput.inputRef}
@@ -190,6 +243,9 @@ export function CardSection() {
                             <div>
                                 <div className="flex items-center justify-between">
                                     <Label>Back Vertical</Label>
+                                    {keystoneLastTransform && (
+                                        <AutoTooltip content={`Keystone: ${keystoneLastTransform.translation_mm.y.toFixed(2)} mm`} />
+                                    )}
                                 </div>
                                 <NumberInput
                                     ref={cardBackPositionYInput.inputRef}
@@ -210,6 +266,10 @@ export function CardSection() {
             <PerCardOffsetModal
                 isOpen={showPerCardModal}
                 onClose={() => setShowPerCardModal(false)}
+            />
+            <KeystoneCalibrationModal
+                isOpen={showKeystoneModal}
+                onClose={() => setShowKeystoneModal(false)}
             />
         </div>
     );

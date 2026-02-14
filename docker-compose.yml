@@ -3,6 +3,13 @@ services:
     build:
       context: .
       dockerfile: server/dockerfile
+    environment:
+      # Use the venv python that has PyMuPDF installed (and sees apk-installed cv2/numpy via --system-site-packages).
+      - PRINTER_KEYSTONE_PYTHON=/opt/keystone-venv/bin/python
+      # Bind-mounted repo checkout of printer-keystone (see volumes below).
+      - PRINTER_KEYSTONE_REPO=/opt/printer-keystone
+    volumes:
+      - /home/nullvoid/projects/printer-keystone:/opt/printer-keystone:ro
     ports:
       - "3001:3001"
 

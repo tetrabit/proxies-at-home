@@ -18,7 +18,8 @@ const mockState = vi.hoisted(() => ({
     cardBackPositionX: 0,
     cardBackPositionY: 0,
     dpi: 600,
-    perCardBackOffsets: [],
+    perCardBackOffsets: {},
+    keystoneLastTransform: null,
 }));
 
 const mockSetters = vi.hoisted(() => ({
@@ -30,6 +31,8 @@ const mockSetters = vi.hoisted(() => ({
     setCardBackPositionY: vi.fn(),
     setDpi: vi.fn(),
     setPerCardBackOffset: vi.fn(),
+    clearPerCardBackOffsets: vi.fn(),
+    clearKeystoneLastTransform: vi.fn(),
 }));
 
 vi.mock('@/store/settings', () => ({
