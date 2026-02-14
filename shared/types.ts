@@ -89,6 +89,8 @@ export interface CardOption {
   generateBleedMm?: number | undefined; // Custom bleed width when bleedMode is 'generate' (undefined = use global)
   set?: string | undefined;
   number?: string | undefined;
+  scryfall_id?: string | undefined; // Print-specific Scryfall card ID
+  oracle_id?: string | undefined; // Oracle-level ID shared across printings
   lang?: string | undefined;
   colors?: string[];
   mana_cost?: string;
@@ -123,6 +125,8 @@ export interface PrintInfo {
   imageUrl: string;
   set: string;
   number: string;
+  scryfall_id?: string;
+  oracle_id?: string;
   lang?: string;
   rarity?: string;
   faceName?: string; // For DFCs: the specific face name this image belongs to
@@ -134,6 +138,8 @@ export interface ScryfallCard {
   imageUrls: string[];
   set?: string | undefined;
   number?: string | undefined;
+  scryfall_id?: string | undefined;
+  oracle_id?: string | undefined;
   lang?: string | undefined;
   colors?: string[];
   mana_cost?: string;
@@ -156,6 +162,8 @@ export type CardInfo = {
   name: string;
   set?: string | undefined;
   number?: string | undefined;
+  scryfallId?: string | undefined;
+  oracleId?: string | undefined;
   quantity?: number | undefined;
   language?: string | undefined;
   category?: string | undefined; // Archidekt deck category

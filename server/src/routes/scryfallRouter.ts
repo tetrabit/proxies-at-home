@@ -437,18 +437,30 @@ router.get("/cards/:set/:number", async (req: Request, res: Response) => {
  * Used by ArtworkModal for displaying all art versions.
  * 
  * Query params:
- * - name: Card name (required)
+ * - name: Card name (optional when oracle_id is provided)
+ * - oracle_id: Oracle ID (preferred when available)
  * - lang: Language code (optional, default: en)
  */
 router.get("/prints", async (req: Request, res: Response) => {
-    const name = req.query.name as string;
+    const name = (req.query.name as string | undefined)?.trim();
+    const oracleId = (req.query.oracle_id as string | undefined)?.trim();
+    const setCode = (req.query.set as string | undefined)?.trim().toLowerCase();
+    const collectorNumber = (req.query.number as string | undefined)?.trim();
     const lang = (req.query.lang as string) || "en";
 
-    if (!name) {
-        return res.status(400).json({ error: "Missing name parameter" });
+    if (!name && !oracleId && !(setCode && collectorNumber)) {
+        return res.status(400).json({ error: "Missing name, oracle_id, or set+number parameter" });
     }
 
-    const params = { name, lang };
+    const params: Record<string, string> = { lang };
+    if (oracleId) {
+        params.oracle_id = oracleId;
+    } else if (setCode && collectorNumber) {
+        params.set = setCode;
+        params.number = collectorNumber;
+    } else if (name) {
+        params.name = name;
+    }
     const queryHash = getCacheKey("prints", params);
     const cached = getFromCache("prints", queryHash);
     if (cached) {
@@ -460,12 +472,14 @@ router.get("/prints", async (req: Request, res: Response) => {
         
         // Try microservice first (for en language)
         if (lang === "en" && await isMicroserviceAvailable()) {
-            debugLog(`[ScryfallProxy] Using microservice for prints: ${name}`);
+            debugLog(`[ScryfallProxy] Using microservice for prints: ${oracleId || name}`);
             const client = getScryfallClient();
-            // Search for all prints: exact name match with unique:prints
-            // Note: microservice search doesn't support unique param in query, 
-            // but returns all matching cards which we can deduplicate
-            const response = await client.searchCards({ q: `!"${name}" include:extras` });
+            const query = oracleId
+                ? `oracleid:${oracleId} include:extras`
+                : (setCode && collectorNumber)
+                    ? `set:${setCode} number:${collectorNumber} include:extras`
+                    : `!"${name}" include:extras`;
+            const response = await client.searchCards({ q: query });
 
             if (response.success && response.data && response.data.data.length > 0) {
                 allPrints = response.data.data as ScryfallApiCard[];
@@ -475,12 +489,30 @@ router.get("/prints", async (req: Request, res: Response) => {
         // Fallback to direct Scryfall API or if non-English language requested
         if (allPrints.length === 0) {
             debugLog(`[ScryfallProxy] Using direct method for prints (lang=${lang})`);
-            allPrints = await getCardsWithImagesForCardInfo(
-                { name },
-                "prints", // Get all prints, not just unique art
-                lang,
-                true // fallback to English if no results in requested language
-            );
+            if (oracleId) {
+                const q = lang === "en"
+                    ? `oracleid:${oracleId} unique:prints include:extras`
+                    : `oracleid:${oracleId} unique:prints include:extras lang:${lang}`;
+                const data = await rateLimitedRequest(() =>
+                    scryfallAxios.get("/cards/search", { params: { q } })
+                );
+                allPrints = ((data as { data?: ScryfallApiCard[] }).data ?? []) as ScryfallApiCard[];
+            } else if (setCode && collectorNumber) {
+                const q = lang === "en"
+                    ? `set:${setCode} number:${collectorNumber} include:extras`
+                    : `set:${setCode} number:${collectorNumber} include:extras lang:${lang}`;
+                const data = await rateLimitedRequest(() =>
+                    scryfallAxios.get("/cards/search", { params: { q } })
+                );
+                allPrints = ((data as { data?: ScryfallApiCard[] }).data ?? []) as ScryfallApiCard[];
+            } else {
+                allPrints = await getCardsWithImagesForCardInfo(
+                    { name: name || "" },
+                    "prints", // Get all prints, not just unique art
+                    lang,
+                    true // fallback to English if no results in requested language
+                );
+            }
         }
 
         // Extract prints with full metadata (including faceName for DFCs)
@@ -488,9 +520,13 @@ router.get("/prints", async (req: Request, res: Response) => {
             imageUrl: string;
             set: string;
             number: string;
+            scryfall_id?: string;
+            oracle_id?: string;
             rarity?: string;
             faceName?: string;
             lang?: string;
+            isFoilOnly: boolean;
+            hasNonfoil: boolean;
         }> = [];
 
         for (const card of allPrints) {
@@ -500,9 +536,13 @@ router.get("/prints", async (req: Request, res: Response) => {
                     imageUrl: card.image_uris.png,
                     set: card.set ?? "",
                     number: card.collector_number ?? "",
+                    scryfall_id: card.id,
+                    oracle_id: card.oracle_id,
                     rarity: card.rarity,
                     faceName: card.name, // Use card name as faceName for compatibility with DFC filtering
                     lang: card.lang,
+                    isFoilOnly: card.foil === true && card.nonfoil === false,
+                    hasNonfoil: card.nonfoil !== false,
                 });
             } else if (card.card_faces) {
                 // DFC - add each face as a separate print
@@ -512,20 +552,34 @@ router.get("/prints", async (req: Request, res: Response) => {
                             imageUrl: face.image_uris.png,
                             set: card.set ?? "",
                             number: card.collector_number ?? "",
+                            scryfall_id: card.id,
+                            oracle_id: card.oracle_id,
                             rarity: card.rarity,
                             faceName: face.name,
                             lang: card.lang,
+                            isFoilOnly: card.foil === true && card.nonfoil === false,
+                            hasNonfoil: card.nonfoil !== false,
                         });
                     }
                 }
             }
         }
 
+        // Hide foil-only prints when equivalent nonfoil art exists.
+        const imageHasNonfoil = new Map<string, boolean>();
+        for (const print of prints) {
+            if (print.hasNonfoil) imageHasNonfoil.set(print.imageUrl, true);
+        }
+        const filteredPrints = prints
+            .filter((print) => !(print.isFoilOnly && imageHasNonfoil.get(print.imageUrl)))
+            .map(({ isFoilOnly: _isFoilOnly, hasNonfoil: _hasNonfoil, ...print }) => print);
+
         const result = {
-            name,
+            name: name || null,
+            oracle_id: oracleId || allPrints[0]?.oracle_id || null,
             lang,
-            total: prints.length,
-            prints,
+            total: filteredPrints.length,
+            prints: filteredPrints,
         };
 
         storeInCache("prints", queryHash, result, CACHE_TTL.search);

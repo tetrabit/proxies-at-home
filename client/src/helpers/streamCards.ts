@@ -159,6 +159,8 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
         const cardsToAdd = instances.map(instance => createCardOption({
             name: instance.name,
+            scryfall_id: instance.scryfallId,
+            oracle_id: instance.oracleId,
             lang: language,
             imageId,
             hasBuiltInBleed: true,
@@ -210,6 +212,8 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
         const cardsToAdd = instances.map(instance => createCardOption({
             name: instance.name,
+            scryfall_id: instance.scryfallId,
+            oracle_id: instance.oracleId,
             lang: language,
             imageId: cardback.id,
             isFlipped: true,
@@ -247,6 +251,8 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
             // Create placeholder cards with imageId: undefined (triggers loading spinner)
             const placeholderCards = instances.map(instance => createCardOption({
                 name: info.name,
+                scryfall_id: instance.scryfallId,
+                oracle_id: instance.oracleId,
                 lang: language,
                 imageId: undefined, // Shows loading spinner
                 category: info.category,
@@ -292,13 +298,15 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 const { name: cardName, hasBuiltInBleed, needsEnrichment } = parseMpcCardLogic(match.mpcCard);
 
                 // Update all placeholder cards for this key with the MPC image
-                await db.transaction('rw', db.cards, async () => {
-                    for (const uuid of placeholderUuids) {
-                        await db.cards.update(uuid, {
-                            name: cardName,
-                            imageId,
-                            hasBuiltInBleed,
-                            needsEnrichment,
+                        await db.transaction('rw', db.cards, async () => {
+                            for (const uuid of placeholderUuids) {
+                                await db.cards.update(uuid, {
+                                    name: cardName,
+                                    scryfall_id: entry.info.scryfallId,
+                                    oracle_id: entry.info.oracleId,
+                                    imageId,
+                                    hasBuiltInBleed,
+                                    needsEnrichment,
                         });
                     }
                 });
@@ -400,6 +408,8 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         name: query.name,
                         set: query.set,
                         number: query.number,
+                        scryfall_id: query.scryfallId,
+                        oracle_id: query.oracleId,
                         isUserUpload: false,
                         imageId: undefined,
                         lookupError: error || 'Card not found',
@@ -559,6 +569,8 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                                     imageId: cardData.imageId,
                                     set: cardData.set,
                                     number: cardData.number,
+                                    scryfall_id: cardData.scryfall_id,
+                                    oracle_id: cardData.oracle_id,
                                     lang: cardData.lang,
                                     colors: cardData.colors,
                                     cmc: cardData.cmc,

@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
+import axios from "axios";
 
 // Mock dependencies
 vi.mock("../db/db.js", () => ({
@@ -137,5 +138,95 @@ describe("scryfallRouter - /prints", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.prints[0].faceName).toBe("Sol Ring");
+  });
+
+  it("should support oracle_id query when name is unavailable", async () => {
+    const mockPrints = [
+      {
+        id: "print-1",
+        oracle_id: "oracle-123",
+        name: "Sheoldred, Whispering One",
+        set: "mul",
+        collector_number: "76",
+        rarity: "mythic",
+        lang: "en",
+        image_uris: { png: "https://example.com/sheoldred.png" },
+      },
+    ];
+    vi.mocked(axios.get).mockResolvedValue({
+      data: { data: mockPrints },
+    } as unknown as any);
+
+    const res = await request(app).get(
+      "/api/scryfall/prints?oracle_id=oracle-123&lang=en"
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.oracle_id).toBe("oracle-123");
+    expect(res.body.prints[0].scryfall_id).toBe("print-1");
+    expect(res.body.prints[0].oracle_id).toBe("oracle-123");
+  });
+
+  it("filters foil-only prints when nonfoil art exists for same image", async () => {
+    const mockPrints = [
+      {
+        id: "nonfoil-1",
+        name: "Test Card",
+        set: "seta",
+        collector_number: "1",
+        rarity: "rare",
+        lang: "en",
+        nonfoil: true,
+        foil: true,
+        image_uris: { png: "https://example.com/art-a.png" },
+      },
+      {
+        id: "foil-only-duplicate-art",
+        name: "Test Card",
+        set: "setb",
+        collector_number: "2",
+        rarity: "rare",
+        lang: "en",
+        nonfoil: false,
+        foil: true,
+        image_uris: { png: "https://example.com/art-a.png" },
+      },
+      {
+        id: "foil-only-unique-art",
+        name: "Test Card",
+        set: "setc",
+        collector_number: "3",
+        rarity: "rare",
+        lang: "en",
+        nonfoil: false,
+        foil: true,
+        image_uris: { png: "https://example.com/art-b.png" },
+      },
+    ];
+
+    vi.mocked(getCardsWithImagesForCardInfo).mockResolvedValue(
+      mockPrints as unknown as any
+    );
+
+    const res = await request(app).get("/api/scryfall/prints?name=Test Card");
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    const urls = res.body.prints.map((p: { imageUrl: string }) => p.imageUrl);
+    expect(urls).toContain("https://example.com/art-a.png");
+    expect(urls).toContain("https://example.com/art-b.png");
+    expect(
+      res.body.prints.find(
+        (p: { scryfall_id?: string }) =>
+          p.scryfall_id === "foil-only-duplicate-art"
+      )
+    ).toBeUndefined();
+    expect(
+      res.body.prints.find(
+        (p: { scryfall_id?: string }) =>
+          p.scryfall_id === "foil-only-unique-art"
+      )
+    ).toBeDefined();
   });
 });

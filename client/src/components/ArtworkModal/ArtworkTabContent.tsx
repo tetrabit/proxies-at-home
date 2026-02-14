@@ -123,6 +123,8 @@ export function ArtworkTabContent({
     if (!modalCard) return null;
 
     const cardName = selectedFace === 'back' ? tabLabels.back : tabLabels.front;
+    const activeIdentityCard = selectedFace === 'back' ? linkedBackCard : modalCard;
+    const shouldUseIdentityLookup = !previewCardData;
 
     return (
         <div className="flex flex-col flex-1 min-h-0 rounded-b-2xl overflow-hidden">
@@ -200,6 +202,9 @@ export function ArtworkTabContent({
                                 artSource="scryfall"
                                 mode="prints"
                                 query={displayData.name || modalCard.name || ''}
+                                oracleId={shouldUseIdentityLookup ? activeIdentityCard?.oracle_id : undefined}
+                                set={shouldUseIdentityLookup ? activeIdentityCard?.set : undefined}
+                                number={shouldUseIdentityLookup ? activeIdentityCard?.number : undefined}
                                 cardSize={zoomLevel}
                                 selectedArtId={displayData.selectedArtId}
                                 processedDisplayUrl={displayData.processedDisplayUrl}

@@ -2,7 +2,7 @@
 import { fetchMoxfieldDeck, extractMoxfieldDeckId, extractCardsFromDeck as extractMoxfieldCards } from "./moxfieldApi";
 import { fetchArchidektDeck, extractArchidektDeckId, extractCardsFromDeck as extractArchidektCards } from "./archidektApi";
 import { inferCardNameFromFilename, extractDriveId } from "./mpc";
-import type { CardOverrides, TokenPart, ScryfallCard } from "../../../shared/types";
+import type { CardOverrides, TokenPart, ScryfallCard, PrintInfo } from "../../../shared/types";
 
 /**
  * Pre-fetched card data to skip API calls during import.
@@ -12,6 +12,8 @@ export interface PreloadedCardData {
     name?: string;
     set?: string;
     number?: string;
+    scryfall_id?: string;
+    oracle_id?: string;
     lang?: string;
     colors?: string[];
     cmc?: number;
@@ -22,7 +24,7 @@ export interface PreloadedCardData {
     hasBuiltInBleed?: boolean;
     imageUrl?: string;
     imageUrls?: string[];
-    prints?: Array<{ imageUrl: string; set: string; number: string }>;
+    prints?: PrintInfo[];
     // DFC support: face information from Scryfall
     card_faces?: Array<{
         name: string;
@@ -35,6 +37,8 @@ export interface ImportIntent {
     name: string;
     set?: string;
     number?: string;
+    scryfallId?: string;
+    oracleId?: string;
     mpcId?: string; // For known MPC cards (standard or custom)
 
     // Quantity

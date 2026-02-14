@@ -111,6 +111,7 @@ interface ScryfallCardFace {
 }
 
 export interface ScryfallApiCard {
+  id?: string;
   name?: string;
   oracle_id?: string;
   image_uris?: {
@@ -125,6 +126,8 @@ export interface ScryfallApiCard {
   type_line?: string;
   layout?: string;
   rarity?: string;
+  foil?: boolean;
+  nonfoil?: boolean;
   set?: string;
   collector_number?: string;
   lang?: string;

@@ -42,6 +42,8 @@ const scryfallApi = axios.create({
 });
 
 export interface RawScryfallCard {
+    id?: string;
+    oracle_id?: string;
     name: string;
     set: string;
     set_name?: string;
@@ -121,6 +123,8 @@ function normalizeMicroserviceCard(card: MicroserviceCard): RawScryfallCard {
     if (raw && typeof raw === 'object') {
         const rawCard = raw as Partial<RawScryfallCard>;
         return {
+            id: rawCard.id ?? card.id,
+            oracle_id: rawCard.oracle_id ?? card.oracle_id ?? undefined,
             name: rawCard.name ?? card.name,
             set: rawCard.set ?? card.set_code ?? '',
             set_name: rawCard.set_name ?? card.set_name ?? undefined,
@@ -138,6 +142,8 @@ function normalizeMicroserviceCard(card: MicroserviceCard): RawScryfallCard {
     }
 
     return {
+        id: card.id,
+        oracle_id: card.oracle_id ?? undefined,
         name: card.name,
         set: card.set_code ?? '',
         set_name: card.set_name ?? undefined,
@@ -171,6 +177,8 @@ function mapScryfallDataToCard(data: RawScryfallCard): ScryfallCard {
         name: data.name,
         set: data.set,
         number: data.collector_number,
+        scryfall_id: data.id,
+        oracle_id: data.oracle_id,
         imageUrls: getImages(data),
         lang: data.lang,
         colors: data.colors || data.card_faces?.[0]?.colors,
@@ -257,6 +265,8 @@ export async function fetchCardWithPrints(query: string, exact: boolean = false,
                                     imageUrl: data.imageUrls[0],
                                     set: data.set || '',
                                     number: data.number || '',
+                                    scryfall_id: data.scryfall_id,
+                                    oracle_id: data.oracle_id,
                                     rarity: data.rarity,
                                 });
                             }

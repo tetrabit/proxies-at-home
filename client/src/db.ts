@@ -434,6 +434,20 @@ class ProxxiedDexie extends Dexie {
       userPreferences: '&id',
       user_images: '&hash',
     });
+    // Version 19: Add oracle/scryfall identity indexes for cards and metadata cache
+    this.version(19).stores({
+      cards: '&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id',
+      images: '&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth',
+      cardbacks: '&id',
+      settings: '&id',
+      imageCache: '&url, cachedAt',
+      cardMetadataCache: 'id, name, set, number, oracle_id, scryfall_id, cachedAt',
+      effectCache: '&key, cachedAt',
+      mpcSearchCache: '&[query+cardType], cachedAt',
+      projects: '&id, shareId, lastOpenedAt',
+      userPreferences: '&id',
+      user_images: '&hash',
+    });
   }
 }
 
@@ -447,8 +461,10 @@ export interface CachedMetadata {
   name: string;       // Card Name
   set: string;        // Set Code (or empty)
   number: string;     // Collector Number (or empty)
+  oracle_id?: string; // Oracle-level ID shared across printings
+  scryfall_id?: string; // Print-specific Scryfall card ID
   // Data must be an object to hold properties like 'prints' safely
-  data: JsonObject & { prints?: PrintInfo[] };
+  data: JsonObject & { prints?: PrintInfo[]; oracle_id?: string; scryfall_id?: string };
   cachedAt: number;   // Last accessed
   size: number;       // Estimated size in bytes
   cacheVersion?: number;  // Schema version for targeted invalidation

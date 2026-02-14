@@ -133,6 +133,8 @@ export class ImportOrchestrator {
                 name: intent.preloadedData?.name ?? cleanedName,
                 set: intent.preloadedData?.set ?? intent.set,
                 number: intent.preloadedData?.number ?? intent.number,
+                scryfall_id: intent.preloadedData?.scryfall_id ?? intent.scryfallId,
+                oracle_id: intent.preloadedData?.oracle_id ?? intent.oracleId,
                 lang: intent.preloadedData?.lang ?? 'en',
                 isUserUpload: !!intent.localImageId,
                 imageId: intent.localImageId ?? undefined, // Use local ID if available, else undefined
@@ -181,6 +183,8 @@ export class ImportOrchestrator {
                         type_line?: string;
                         rarity?: string;
                         mana_cost?: string;
+                        scryfall_id?: string;
+                        oracle_id?: string;
                         token_parts?: CardOption['token_parts'];
                     } | undefined;
                     let dfcBackInfo: { imageId: string; name: string } | undefined;
@@ -202,6 +206,8 @@ export class ImportOrchestrator {
                                     type_line: scryfallCard.type_line,
                                     rarity: scryfallCard.rarity,
                                     mana_cost: scryfallCard.mana_cost,
+                                    scryfall_id: scryfallCard.scryfall_id,
+                                    oracle_id: scryfallCard.oracle_id,
                                     token_parts: scryfallCard.token_parts,
                                 };
 
@@ -262,6 +268,8 @@ export class ImportOrchestrator {
                                     type_line: scryfallCard.type_line,
                                     rarity: scryfallCard.rarity,
                                     mana_cost: scryfallCard.mana_cost,
+                                    scryfall_id: scryfallCard.scryfall_id,
+                                    oracle_id: scryfallCard.oracle_id,
                                     token_parts: scryfallCard.token_parts,
                                 };
 
@@ -297,6 +305,8 @@ export class ImportOrchestrator {
                                         type_line: scryfallMetadata.type_line,
                                         rarity: scryfallMetadata.rarity,
                                         mana_cost: scryfallMetadata.mana_cost,
+                                        scryfall_id: scryfallMetadata.scryfall_id,
+                                        oracle_id: scryfallMetadata.oracle_id,
                                         token_parts: scryfallMetadata.token_parts,
                                         needs_token: (scryfallMetadata.token_parts?.length ?? 0) > 0,
                                     }),
@@ -371,6 +381,8 @@ export class ImportOrchestrator {
             name: i.name,
             set: i.set,
             number: i.number,
+            scryfallId: i.scryfallId,
+            oracleId: i.oracleId,
             quantity: i.quantity,
             category: i.category,
             isToken: i.isToken,
@@ -453,6 +465,8 @@ export class ImportOrchestrator {
                 name: data.name ?? intent.name,
                 set: data.set ?? intent.set,
                 number: data.number ?? intent.number,
+                scryfall_id: data.scryfall_id ?? intent.scryfallId,
+                oracle_id: data.oracle_id ?? intent.oracleId,
                 lang: data.lang ?? 'en',
                 isUserUpload: false,
                 imageId: imageId,
@@ -499,6 +513,8 @@ export class ImportOrchestrator {
                 name: intent.name,
                 set: intent.set,
                 number: intent.number,
+                scryfall_id: intent.scryfallId,
+                oracle_id: intent.oracleId,
                 lang: 'en',
                 isUserUpload: false, // MPC art, not custom upload
                 imageId: imageId,
@@ -527,6 +543,8 @@ export class ImportOrchestrator {
                 if (scryfallCard) {
                     // Enrich metadata
                     baseCard.needsEnrichment = false; // Successfully enriched
+                    baseCard.scryfall_id = scryfallCard.scryfall_id;
+                    baseCard.oracle_id = scryfallCard.oracle_id;
                     baseCard.colors = scryfallCard.colors;
                     baseCard.cmc = scryfallCard.cmc;
                     baseCard.type_line = scryfallCard.type_line;
@@ -808,5 +826,4 @@ export class ImportOrchestrator {
         return tokensToFetch;
     }
 }
-
 

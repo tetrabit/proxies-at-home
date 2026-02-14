@@ -67,6 +67,8 @@ export async function convertScryfallToCardOptions(
             name: card.name,
             set: card.set,
             number: card.number,
+            scryfall_id: card.scryfall_id,
+            oracle_id: card.oracle_id,
             lang: card.lang,
             isUserUpload: false,
             imageId: mainImageId,
