@@ -23,6 +23,7 @@ type Props = {
 export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props) {
     const [deckText, setDeckText] = useState("");
     const tokenFetchController = useRef<AbortController | null>(null);
+    const tokenToastIdRef = useRef<string | null>(null);
 
     const setLoadingTask = useLoadingStore((state) => state.setLoadingTask);
     const preferredArtSource = useSettingsStore((s) => s.preferredArtSource);
@@ -30,6 +31,8 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
     const clearAllCardsAndImages = useCardsStore((state) => state.clearAllCardsAndImages);
     const showInfoToast = useToastStore((s) => s.showInfoToast);
     const showErrorToast = useToastStore((s) => s.showErrorToast);
+    const addToast = useToastStore((s) => s.addToast);
+    const removeToast = useToastStore((s) => s.removeToast);
     const { processCards, cancel: cancelCardFetch } = useCardImport({
         onComplete: () => {
             setDeckText("");
@@ -198,7 +201,18 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
         if (tokenFetchController.current) {
             tokenFetchController.current.abort();
         }
+        if (tokenToastIdRef.current) {
+            removeToast(tokenToastIdRef.current);
+            tokenToastIdRef.current = null;
+        }
         tokenFetchController.current = new AbortController();
+        if (!silent) {
+            tokenToastIdRef.current = addToast({
+                type: "processing",
+                message: "Adding associated tokens...",
+                dismissible: true,
+            });
+        }
 
         try {
             await handleManualTokenImport({
@@ -218,6 +232,10 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                 useToastStore.getState().showErrorToast(err.message || "Something went wrong while fetching tokens.");
             }
         } finally{
+            if (tokenToastIdRef.current) {
+                removeToast(tokenToastIdRef.current);
+                tokenToastIdRef.current = null;
+            }
             tokenFetchController.current = null;
         }
     };

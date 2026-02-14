@@ -94,6 +94,10 @@ const CardControl = memo(function CardControl({
     };
 
     const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const tokenAddedFromTooltip =
+        card.isToken && card.tokenAddedFrom && card.tokenAddedFrom.length > 0
+            ? `Added from: ${card.tokenAddedFrom.join(", ")}`
+            : undefined;
 
     const handleCardClick = useCallback((e: React.MouseEvent) => {
         // Shift+click for range selection
@@ -272,6 +276,12 @@ const CardControl = memo(function CardControl({
                     >
                         <RefreshCw className={`${mobile ? 'w-5 h-5' : 'w-3.5 h-3.5'}`} />
                     </div>
+
+                    {tokenAddedFromTooltip && (
+                        <div className="absolute left-1/2 bottom-1 -translate-x-1/2 max-w-[calc(100%-8px)] px-2 py-1 text-[10px] leading-tight text-white bg-gray-900/90 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none whitespace-nowrap overflow-hidden text-ellipsis">
+                            {tokenAddedFromTooltip}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

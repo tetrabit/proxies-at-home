@@ -1,9 +1,11 @@
 import type { CardInfo } from "../../../shared/types.js";
+import type { TokenPart } from "../../../shared/types.js";
 import type { ScryfallApiCard } from "./getCardImagesPaged.js";
-import { batchFetchCards } from "./getCardImagesPaged.js";
+import { batchFetchCards, getCardDataForCardInfo, getCardsWithImagesForCardInfo } from "./getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 import { trackMicroserviceCall } from "../services/microserviceMetrics.js";
 import { debugLog } from "./debug.js";
+import axios from "axios";
 
 // Microservice response wrapper types
 interface MicroserviceResponse<T> {
@@ -13,6 +15,136 @@ interface MicroserviceResponse<T> {
 
 interface CardListData {
   data?: ScryfallApiCard[];
+}
+
+interface ParsedTokenUri {
+  id?: string;
+  set?: string;
+  number?: string;
+}
+
+const tokenIdLookupAxios = axios.create({
+  headers: { "User-Agent": "Proxxied/1.0 (token-lookup)" },
+  timeout: 10_000,
+});
+
+let lastTokenIdLookupAt = 0;
+
+function parseTokenUri(uri?: string): ParsedTokenUri {
+  if (!uri) return {};
+  try {
+    const parsed = new URL(uri);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const cardsIdx = parts.findIndex((p) => p === "cards");
+    if (cardsIdx < 0) return {};
+    const first = parts[cardsIdx + 1];
+    const second = parts[cardsIdx + 2];
+    if (!first) return {};
+    if (!second) return { id: first };
+    return { set: first.toLowerCase(), number: second };
+  } catch {
+    return {};
+  }
+}
+
+async function delayTokenIdLookup(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastTokenIdLookupAt;
+  if (elapsed < 100) {
+    await new Promise((resolve) => setTimeout(resolve, 100 - elapsed));
+  }
+  lastTokenIdLookupAt = Date.now();
+}
+
+async function fetchCardByScryfallId(id: string): Promise<ScryfallApiCard | undefined> {
+  if (!id) return undefined;
+  await delayTokenIdLookup();
+  try {
+    const response = await tokenIdLookupAxios.get<ScryfallApiCard>(
+      `https://api.scryfall.com/cards/${encodeURIComponent(id)}`
+    );
+    return response.data;
+  } catch {
+    return undefined;
+  }
+}
+
+function sortByMostRecentPrint(a: ScryfallApiCard, b: ScryfallApiCard): number {
+  const aTime = Date.parse(a.released_at ?? "") || 0;
+  const bTime = Date.parse(b.released_at ?? "") || 0;
+  if (aTime !== bTime) return bTime - aTime;
+
+  const setCompare = String(b.set ?? "").localeCompare(String(a.set ?? ""));
+  if (setCompare !== 0) return setCompare;
+
+  return String(b.collector_number ?? "").localeCompare(String(a.collector_number ?? ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function toResolvedTokenPart(card: ScryfallApiCard, fallback: TokenPart): TokenPart {
+  const uri =
+    card.set && card.collector_number
+      ? `https://api.scryfall.com/cards/${card.set}/${card.collector_number}`
+      : fallback.uri;
+
+  const resolved: TokenPart = {
+    id: card.id ?? fallback.id,
+    name: card.name ?? fallback.name,
+    ...(uri ? { uri } : {}),
+  };
+  const typeLine = card.type_line ?? fallback.type_line;
+  if (typeLine) {
+    resolved.type_line = typeLine;
+  }
+  return resolved;
+}
+
+async function resolveLinkedTokenCard(token: TokenPart, language: string): Promise<ScryfallApiCard | undefined> {
+  if (token.id) {
+    const byId = await fetchCardByScryfallId(token.id);
+    if (byId) return byId;
+  }
+
+  const parsedUri = parseTokenUri(token.uri);
+  if (parsedUri.id && parsedUri.id !== token.id) {
+    const byUriId = await fetchCardByScryfallId(parsedUri.id);
+    if (byUriId) return byUriId;
+  }
+
+  if (token.name && parsedUri.set && parsedUri.number) {
+    const exactPrint = await getCardDataForCardInfo(
+      { name: token.name, set: parsedUri.set, number: parsedUri.number, isToken: true },
+      language,
+      true
+    );
+    if (exactPrint) return exactPrint;
+  }
+
+  if (!token.name) return undefined;
+  return (await getCardDataForCardInfo({ name: token.name, isToken: true }, language, true)) ?? undefined;
+}
+
+async function resolveMostRecentTokenPrint(linkedToken: ScryfallApiCard, language: string): Promise<ScryfallApiCard> {
+  if (!linkedToken.oracle_id || !linkedToken.name) {
+    return linkedToken;
+  }
+
+  const candidates = await getCardsWithImagesForCardInfo(
+    { name: linkedToken.name, isToken: true },
+    "prints",
+    language,
+    true
+  );
+
+  const oracleMatches = candidates.filter((card) => card.oracle_id === linkedToken.oracle_id);
+  if (oracleMatches.length === 0) {
+    return linkedToken;
+  }
+
+  oracleMatches.sort(sortByMostRecentPrint);
+  return oracleMatches[0] ?? linkedToken;
 }
 
 // Small p-limit implementation to cap microservice concurrency.
@@ -159,4 +291,41 @@ export async function fetchCardsForTokenLookup(cardInfos: CardInfo[], language: 
   }
 
   return { cards: results, usedMicroservice: true };
+}
+
+/**
+ * Resolve token parts to the newest print while preserving Scryfall-linked token identity.
+ *
+ * Rules:
+ * 1) Resolve linked token identity from token part id/uri (exact print when possible).
+ * 2) Expand by linked token oracle_id and pick most recent print.
+ * 3) Fallback to original token part when lookup data is unavailable.
+ */
+export async function resolveLatestTokenParts(
+  tokenParts: TokenPart[] | undefined,
+  language: string = "en"
+): Promise<TokenPart[]> {
+  if (!tokenParts || tokenParts.length === 0) return [];
+
+  const seenSourceKeys = new Set<string>();
+  const seenResolvedKeys = new Set<string>();
+  const resolved: TokenPart[] = [];
+
+  for (const token of tokenParts) {
+    if (!token.name) continue;
+    const sourceKey = token.id ? `id:${token.id}` : `name:${token.name.toLowerCase()}`;
+    if (seenSourceKeys.has(sourceKey)) continue;
+    seenSourceKeys.add(sourceKey);
+
+    const linkedToken = await resolveLinkedTokenCard(token, language);
+    const latestToken = linkedToken ? await resolveMostRecentTokenPrint(linkedToken, language) : undefined;
+    const nextToken = latestToken ? toResolvedTokenPart(latestToken, token) : token;
+    const identityKey = nextToken.id ? `id:${nextToken.id}` : `name:${nextToken.name.toLowerCase()}`;
+
+    if (seenResolvedKeys.has(identityKey)) continue;
+    seenResolvedKeys.add(identityKey);
+    resolved.push(nextToken);
+  }
+
+  return resolved;
 }

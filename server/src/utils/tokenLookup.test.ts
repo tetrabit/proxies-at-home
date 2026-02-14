@@ -1,16 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { CardInfo, TokenPart } from "../../../shared/types.js";
 
 // Note: vi.mock() is hoisted, so any referenced values must be created via vi.hoisted().
 const hoisted = vi.hoisted(() => {
   const mockClient = {
     searchCards: vi.fn(),
     getCardByName: vi.fn(),
+    getCard: vi.fn(),
   };
   return {
     mockClient,
     mockIsMicroserviceAvailable: vi.fn(),
     mockGetScryfallClient: vi.fn(() => mockClient),
     mockBatchFetchCards: vi.fn(),
+    mockGetCardDataForCardInfo: vi.fn(),
+    mockGetCardsWithImagesForCardInfo: vi.fn(),
+    mockAxiosGet: vi.fn(),
+  };
+});
+
+vi.mock("axios", () => {
+  const create = vi.fn(() => ({
+    get: hoisted.mockAxiosGet,
+  }));
+  return {
+    create,
+    default: { create },
   };
 });
 
@@ -21,13 +36,15 @@ vi.mock("../services/scryfallMicroserviceClient.js", () => ({
 
 vi.mock("./getCardImagesPaged.js", () => ({
   batchFetchCards: hoisted.mockBatchFetchCards,
+  getCardDataForCardInfo: hoisted.mockGetCardDataForCardInfo,
+  getCardsWithImagesForCardInfo: hoisted.mockGetCardsWithImagesForCardInfo,
 }));
 
 vi.mock("./debug.js", () => ({
   debugLog: vi.fn(),
 }));
 
-import { fetchCardsForTokenLookup } from "./tokenLookup.js";
+import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "./tokenLookup.js";
 
 describe("fetchCardsForTokenLookup", () => {
   const env = { ...process.env };
@@ -120,5 +137,100 @@ describe("fetchCardsForTokenLookup", () => {
     expect(hoisted.mockBatchFetchCards.mock.calls[0]?.[0]?.length).toBe(1);
     expect(res.cards.get("sol ring")?.name).toBe("Sol Ring");
     expect(res.cards.get("mystery card")?.name).toBe("Mystery Card");
+  });
+});
+
+describe("resolveLatestTokenParts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves linked token id and selects newest print for its oracle_id", async () => {
+    hoisted.mockAxiosGet.mockResolvedValueOnce({
+      data: {
+        id: "token-old",
+        name: "Treasure",
+        oracle_id: "oracle-token",
+        set: "tneo",
+        collector_number: "21",
+        released_at: "2022-01-01",
+      },
+    });
+
+    hoisted.mockGetCardsWithImagesForCardInfo.mockResolvedValueOnce([
+      {
+        id: "token-new",
+        name: "Treasure",
+        oracle_id: "oracle-token",
+        set: "tfdn",
+        collector_number: "42",
+        released_at: "2025-09-01",
+      },
+      {
+        id: "token-old",
+        name: "Treasure",
+        oracle_id: "oracle-token",
+        set: "tneo",
+        collector_number: "21",
+        released_at: "2022-01-01",
+      },
+      {
+        id: "token-other",
+        name: "Treasure",
+        oracle_id: "other-oracle",
+        set: "tm21",
+        collector_number: "99",
+        released_at: "2026-01-01",
+      },
+    ]);
+
+    const input: TokenPart[] = [
+      { id: "token-old", name: "Treasure", uri: "https://api.scryfall.com/cards/token-old" },
+    ];
+    const result = await resolveLatestTokenParts(input, "en");
+
+    expect(result).toEqual([
+      {
+        id: "token-new",
+        name: "Treasure",
+        uri: "https://api.scryfall.com/cards/tfdn/42",
+      },
+    ]);
+  });
+
+  it("falls back to name lookup when id lookup fails and dedupes by token identity", async () => {
+    hoisted.mockAxiosGet.mockResolvedValueOnce({ data: null });
+    hoisted.mockGetCardDataForCardInfo.mockResolvedValueOnce({
+      id: "soldier-id",
+      name: "Soldier",
+      oracle_id: "oracle-soldier",
+      set: "tznr",
+      collector_number: "1",
+      released_at: "2020-09-25",
+    });
+    hoisted.mockGetCardsWithImagesForCardInfo.mockResolvedValueOnce([
+      {
+        id: "soldier-latest",
+        name: "Soldier",
+        oracle_id: "oracle-soldier",
+        set: "tmh3",
+        collector_number: "8",
+        released_at: "2024-06-14",
+      },
+    ]);
+
+    const input: TokenPart[] = [
+      { name: "Soldier" },
+      { name: "Soldier" },
+    ];
+    const result = await resolveLatestTokenParts(input, "en");
+
+    expect(result).toEqual([
+      {
+        id: "soldier-latest",
+        name: "Soldier",
+        uri: "https://api.scryfall.com/cards/tmh3/8",
+      },
+    ]);
   });
 });

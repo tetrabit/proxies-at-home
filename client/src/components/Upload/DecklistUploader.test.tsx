@@ -154,12 +154,14 @@ vi.mock('../common', () => ({
 }));
 
 import { DecklistUploader } from './DecklistUploader';
+import { useToastStore } from '@/store/toast';
 
 // --- Tests ---
 
 describe('DecklistUploader', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        useToastStore.getState().clearToasts();
         hoistedMocks.state.autoImportTokens = true;
         hoistedMocks.state.preferredArtSource = 'scryfall';
         hoistedMocks.cards.toArray.mockResolvedValue([]);
@@ -245,6 +247,32 @@ describe('DecklistUploader', () => {
             expect(hoistedMocks.importMissingTokens).toHaveBeenCalledWith(expect.objectContaining({
                 skipExisting: true, // Auto-import uses skipExisting: true (silent mode)
             }));
+        });
+    });
+
+    it('shows token progress toast immediately when Add Associated Tokens is clicked', async () => {
+        let resolveImport: (() => void) | null = null;
+        hoistedMocks.importMissingTokens.mockImplementation(
+            () => new Promise<void>((resolve) => {
+                resolveImport = resolve;
+            })
+        );
+
+        render(<DecklistUploader cardCount={1} />);
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+
+        await waitFor(() => {
+            expect(
+                useToastStore.getState().toasts.some((t) => t.message === 'Adding associated tokens...')
+            ).toBe(true);
+        });
+
+        resolveImport?.();
+
+        await waitFor(() => {
+            expect(
+                useToastStore.getState().toasts.some((t) => t.message === 'Adding associated tokens...')
+            ).toBe(false);
         });
     });
 });

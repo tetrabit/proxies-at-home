@@ -117,6 +117,7 @@ export interface CardOption {
   token_parts?: TokenPart[]; // Associated tokens this card can create
   needs_token?: boolean; // True if this card has associated tokens
   isToken?: boolean; // True if this card IS a token (for filtering)
+  tokenAddedFrom?: string[]; // For token cards: source card names that caused token import
   // Project scope
   projectId?: string;
 }
@@ -169,6 +170,7 @@ export type CardInfo = {
   category?: string | undefined; // Archidekt deck category
   mpcIdentifier?: string | undefined; // MPC Autofill identifier for exact art matching
   isToken?: boolean | undefined; // True if this is explicitly a token card (e.g., from t: prefix)
+  tokenAddedFrom?: string[] | undefined; // Source card names for token provenance tooltip
   overrides?: CardOverrides | undefined; // Per-card editor settings (for share import)
   // Custom DFC support for stream processing
   linkedBackImageId?: string | undefined;

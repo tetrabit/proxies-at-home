@@ -46,6 +46,7 @@ export interface ImportIntent {
 
     // Context / Config
     isToken: boolean;
+    tokenAddedFrom?: string[]; // Source card names for associated-token provenance
 
     // For Custom/XML: The ID of the specific image to use as the back face.
     linkedBackImageId?: string;

@@ -63,6 +63,10 @@ export const CardView = memo(function CardView({
   const toggleFlip = useSelectionStore((state) => state.toggleFlip);
 
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const tokenAddedFromTooltip =
+    card.isToken && card.tokenAddedFrom && card.tokenAddedFrom.length > 0
+      ? `Added from: ${card.tokenAddedFrom.join(", ")}`
+      : undefined;
 
   const handleCardClick = (e: React.MouseEvent) => {
     if (isOverlay) return;
@@ -186,6 +190,12 @@ export const CardView = memo(function CardView({
               }}
             >
               <RefreshCw className="w-3.5 h-3.5" />
+            </div>
+          )}
+
+          {!isOverlay && tokenAddedFromTooltip && (
+            <div className="absolute left-1/2 bottom-1 -translate-x-1/2 max-w-[calc(100%-8px)] px-2 py-1 text-[10px] leading-tight text-white bg-gray-900/90 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none whitespace-nowrap overflow-hidden text-ellipsis">
+              {tokenAddedFromTooltip}
             </div>
           )}
         </div>

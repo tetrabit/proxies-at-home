@@ -82,6 +82,31 @@ describe('SortableCard', () => {
             expect(container.firstChild).not.toBeNull();
         });
 
+        it('should render added-from hover overlay for token cards with provenance', () => {
+            const tokenCard = {
+                ...mockCard,
+                isToken: true,
+                tokenAddedFrom: ['Prosperous Innkeeper'],
+            };
+
+            const { container } = render(<SortableCard {...defaultProps} card={tokenCard as never} />);
+            const cardElement = container.querySelector('[data-dnd-sortable-item="test-uuid"]');
+            expect(cardElement?.getAttribute('title')).toBeNull();
+            expect(screen.getByText('Added from: Prosperous Innkeeper')).toBeDefined();
+        });
+
+        it('should keep control titles unchanged for token cards', () => {
+            const tokenCard = {
+                ...mockCard,
+                isToken: true,
+                tokenAddedFrom: ['Prosperous Innkeeper'],
+            };
+
+            render(<SortableCard {...defaultProps} card={tokenCard as never} />);
+            expect(screen.getByTitle('Select card')).toBeDefined();
+            expect(screen.getByTestId('flip-button').getAttribute('title')).toBe('Show back');
+        });
+
         it('should render drag handle on desktop', () => {
             render(<SortableCard {...defaultProps} mobile={false} />);
             expect(screen.getByTitle('Drag')).toBeDefined();
