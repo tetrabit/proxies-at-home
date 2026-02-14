@@ -6,6 +6,12 @@ export type LayoutPreset = "A4" | "A3" | "Letter" | "Tabloid" | "Legal" | "ArchA
 export type PageOrientation = "portrait" | "landscape";
 export type DarkenMode = 'none' | 'darken-all' | 'contrast-edges' | 'contrast-full';
 
+export type KeystoneLastTransform = {
+  rot_deg: number;
+  translation_mm: { x: number; y: number };
+  appliedAt: number; // epoch ms
+};
+
 export type Store = {
   pageSizeUnit: "mm" | "in";
   pageOrientation: PageOrientation;
@@ -77,8 +83,13 @@ export type Store = {
   setCardBackPositionY: (mm: number) => void;
   // Per-card back offset settings (indexed by grid position)
   perCardBackOffsets: Record<number, { x: number; y: number; rotation: number }>;
+  setPerCardBackOffsets: (offsets: Record<number, { x: number; y: number; rotation: number }>) => void;
   setPerCardBackOffset: (index: number, offset: { x: number; y: number; rotation: number }) => void;
   clearPerCardBackOffsets: () => void;
+  // Keystone calibration (most recently applied analysis result)
+  keystoneLastTransform: KeystoneLastTransform | null;
+  setKeystoneLastTransform: (value: KeystoneLastTransform | null) => void;
+  clearKeystoneLastTransform: () => void;
   dpi: number;
   setDpi: (value: number) => void;
   cutLineStyle: 'none' | 'edges' | 'full';
@@ -87,6 +98,8 @@ export type Store = {
   setPerCardGuideStyle: (value: 'corners' | 'rounded-corners' | 'dashed-corners' | 'dashed-rounded-corners' | 'solid-squared-rect' | 'dashed-squared-rect' | 'dashed-rounded-rect' | 'solid-rounded-rect' | 'none') => void;
   guidePlacement: 'inside' | 'outside' | 'center';
   setGuidePlacement: (value: 'inside' | 'outside' | 'center') => void;
+  showGuideLinesOnBackCards: boolean;
+  setShowGuideLinesOnBackCards: (value: boolean) => void;
   cutGuideLengthMm: number;
   setCutGuideLengthMm: (value: number) => void;
   // Silhouette Cameo registration marks for print & cut
@@ -121,8 +134,8 @@ export type Store = {
   setShowProcessingToasts: (value: boolean) => void;
   defaultCardbackId: string;
   setDefaultCardbackId: (id: string) => void;
-  exportMode: 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs' | 'visible_faces';
-  setExportMode: (value: 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs' | 'visible_faces') => void;
+  exportMode: 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'duplex-collated' | 'backs' | 'visible_faces';
+  setExportMode: (value: 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'duplex-collated' | 'backs' | 'visible_faces') => void;
 
   // Auto-import tokens
   autoImportTokens: boolean;
@@ -177,11 +190,13 @@ const defaultPageSettings = {
   cardBackPositionX: 0,
   cardBackPositionY: 0,
   perCardBackOffsets: {} as Record<number, { x: number; y: number; rotation: number }>,
+  keystoneLastTransform: null as KeystoneLastTransform | null,
   zoom: 1,
   dpi: 900,
   cutLineStyle: "full" as "full" | "edges" | "none",
   perCardGuideStyle: "corners" as "corners" | "rounded-corners" | "solid-rounded-rect" | "dashed-rounded-rect" | "solid-squared-rect" | "dashed-squared-rect" | "none",
   guidePlacement: "outside" as "inside" | "outside",
+  showGuideLinesOnBackCards: true,
   cutGuideLengthMm: 6.25,
   registrationMarks: 'none' as 'none' | '3' | '4',
   registrationMarksPortrait: false,
@@ -199,7 +214,7 @@ const defaultPageSettings = {
   decklistSortAlpha: false,
   showProcessingToasts: true,
   defaultCardbackId: "cardback_builtin_mtg",  // Default to MTG cardback
-  exportMode: "fronts" as 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'backs',
+  exportMode: "fronts" as 'fronts' | 'interleaved-all' | 'interleaved-custom' | 'duplex' | 'duplex-collated' | 'backs',
 
   autoImportTokens: false,
   mpcFuzzySearch: true, // Default to fuzzy search enabled
@@ -406,6 +421,10 @@ export const useSettingsStore = create<Store>()((set) => ({
     recordSettingChange("cardBackPositionY", state.cardBackPositionY);
     return { cardBackPositionY: mm };
   }),
+  setPerCardBackOffsets: (offsets) => set((state) => {
+    recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
+    return { perCardBackOffsets: offsets };
+  }),
   setPerCardBackOffset: (index, offset) => set((state) => {
     recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
     return {
@@ -418,6 +437,14 @@ export const useSettingsStore = create<Store>()((set) => ({
   clearPerCardBackOffsets: () => set((state) => {
     recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
     return { perCardBackOffsets: {} };
+  }),
+  setKeystoneLastTransform: (value) => set((state) => {
+    recordSettingChange("keystoneLastTransform", state.keystoneLastTransform);
+    return { keystoneLastTransform: value };
+  }),
+  clearKeystoneLastTransform: () => set((state) => {
+    recordSettingChange("keystoneLastTransform", state.keystoneLastTransform);
+    return { keystoneLastTransform: null };
   }),
   setDpi: (dpi) => set((state) => {
     recordSettingChange("dpi", state.dpi);
@@ -434,6 +461,10 @@ export const useSettingsStore = create<Store>()((set) => ({
   setGuidePlacement: (value) => set((state) => {
     recordSettingChange("guidePlacement", state.guidePlacement);
     return { guidePlacement: value };
+  }),
+  setShowGuideLinesOnBackCards: (value) => set((state) => {
+    recordSettingChange("showGuideLinesOnBackCards", state.showGuideLinesOnBackCards);
+    return { showGuideLinesOnBackCards: value };
   }),
   setCutGuideLengthMm: (value) => set((state) => {
     recordSettingChange("cutGuideLengthMm", state.cutGuideLengthMm);
@@ -543,6 +574,7 @@ export const useSettingsStore = create<Store>()((set) => ({
       cutLineStyle: currentState.cutLineStyle,
       perCardGuideStyle: currentState.perCardGuideStyle,
       guidePlacement: currentState.guidePlacement,
+      showGuideLinesOnBackCards: currentState.showGuideLinesOnBackCards,
       cutGuideLengthMm: currentState.cutGuideLengthMm,
       registrationMarks: currentState.registrationMarks,
       registrationMarksPortrait: currentState.registrationMarksPortrait,

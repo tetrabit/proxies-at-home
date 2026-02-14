@@ -9,6 +9,7 @@ const mockState = vi.hoisted(() => ({
     cutLineStyle: 'full' as 'full' | 'edges' | 'none',
     perCardGuideStyle: 'corners' as string,
     guidePlacement: 'outside' as 'outside' | 'center' | 'inside',
+    showGuideLinesOnBackCards: true,
     cutGuideLengthMm: 6.25,
     bleedEdge: true,
     bleedEdgeWidth: 3,
@@ -21,6 +22,7 @@ const mockSetters = vi.hoisted(() => ({
     setCutLineStyle: vi.fn(),
     setPerCardGuideStyle: vi.fn(),
     setGuidePlacement: vi.fn(),
+    setShowGuideLinesOnBackCards: vi.fn(),
     setCutGuideLengthMm: vi.fn(),
 }));
 
@@ -121,6 +123,11 @@ describe('GuidesSection', () => {
             expect(screen.getByText('Page Cut Guides')).toBeDefined();
             expect(screen.getByTestId('cutLineStyle')).toBeDefined();
         });
+
+        it('should render back card guide toggle', () => {
+            render(<GuidesSection />);
+            expect(screen.getByLabelText('Show guide lines on back cards')).toBeDefined();
+        });
     });
 
     describe('placement buttons', () => {
@@ -213,6 +220,14 @@ describe('GuidesSection', () => {
             const select = screen.getByTestId('cutLineStyle');
             fireEvent.change(select, { target: { value: 'edges' } });
             expect(mockSetters.setCutLineStyle).toHaveBeenCalledWith('edges');
+        });
+    });
+
+    describe('back card guide toggle', () => {
+        it('should call setShowGuideLinesOnBackCards when toggled', () => {
+            render(<GuidesSection />);
+            fireEvent.click(screen.getByLabelText('Show guide lines on back cards'));
+            expect(mockSetters.setShowGuideLinesOnBackCards).toHaveBeenCalledWith(false);
         });
     });
 

@@ -23,10 +23,13 @@ export type UndoableSettingKey =
     | "useCustomBackOffset"
     | "cardBackPositionX"
     | "cardBackPositionY"
+    | "perCardBackOffsets"
+    | "keystoneLastTransform"
     | "dpi"
     | "cutLineStyle"
     | "perCardGuideStyle"
     | "guidePlacement"
+    | "showGuideLinesOnBackCards"
     | "globalLanguage"
     | "sortBy"
     | "sortOrder"
@@ -66,10 +69,13 @@ const settingDescriptions: Record<UndoableSettingKey, string> = {
     useCustomBackOffset: "separate back offset",
     cardBackPositionX: "back card position X",
     cardBackPositionY: "back card position Y",
+    perCardBackOffsets: "per-card back offsets",
+    keystoneLastTransform: "keystone calibration",
     dpi: "DPI",
     cutLineStyle: "cut line style",
     perCardGuideStyle: "per-card guide style",
     guidePlacement: "guide placement",
+    showGuideLinesOnBackCards: "back card guide lines",
     globalLanguage: "language",
     sortBy: "sort by",
     sortOrder: "sort order",
@@ -179,4 +185,3 @@ export function recordSettingChange(
 /**
  * Creates undoable setter wrappers for use in React components.
  */
-

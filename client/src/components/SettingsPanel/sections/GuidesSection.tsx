@@ -18,6 +18,8 @@ export function GuidesSection() {
     const setPerCardGuideStyle = useSettingsStore((state) => state.setPerCardGuideStyle);
     const guidePlacement = useSettingsStore((state) => state.guidePlacement);
     const setGuidePlacement = useSettingsStore((state) => state.setGuidePlacement);
+    const showGuideLinesOnBackCards = useSettingsStore((state) => state.showGuideLinesOnBackCards);
+    const setShowGuideLinesOnBackCards = useSettingsStore((state) => state.setShowGuideLinesOnBackCards);
     const cutGuideLengthMm = useSettingsStore((state) => state.cutGuideLengthMm);
     const setCutGuideLengthMm = useSettingsStore((state) => state.setCutGuideLengthMm);
     const registrationMarks = useSettingsStore((state) => state.registrationMarks);
@@ -410,6 +412,19 @@ export function GuidesSection() {
                     <option value="edges">Edges Only</option>
                     <option value="none">None</option>
                 </Select>
+            </div>
+
+            <div>
+                <label htmlFor="showGuideLinesOnBackCards" className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <input
+                        id="showGuideLinesOnBackCards"
+                        type="checkbox"
+                        checked={showGuideLinesOnBackCards}
+                        onChange={(e) => setShowGuideLinesOnBackCards(e.target.checked)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    />
+                    Show guide lines on back cards
+                </label>
             </div>
 
             {/* Silhouette Registration Marks */}

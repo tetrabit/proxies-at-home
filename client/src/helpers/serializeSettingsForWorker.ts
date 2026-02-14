@@ -61,6 +61,7 @@ export interface WorkerPdfSettings extends WorkerBleedSettings {
     cutLineStyle: 'none' | 'edges' | 'full';
     perCardGuideStyle: 'corners' | 'rounded-corners' | 'dashed-corners' | 'dashed-rounded-corners' | 'solid-rounded-rect' | 'dashed-rounded-rect' | 'solid-squared-rect' | 'dashed-squared-rect' | 'none';
     guidePlacement: 'inside' | 'outside' | 'center';
+    showGuideLinesOnBackCards: boolean;
     cutGuideLengthMm: number;
 
     // Silhouette registration marks
@@ -138,6 +139,7 @@ export function serializePdfSettingsForWorker(): WorkerPdfSettings {
         cutLineStyle: state.cutLineStyle,
         perCardGuideStyle: state.perCardGuideStyle,
         guidePlacement: state.guidePlacement,
+        showGuideLinesOnBackCards: state.showGuideLinesOnBackCards,
         cutGuideLengthMm: state.cutGuideLengthMm,
         registrationMarks: state.registrationMarks,
         registrationMarksPortrait: state.registrationMarksPortrait,

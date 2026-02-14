@@ -42,6 +42,7 @@ describe("useSettingsStore", () => {
             filterTypes: [],
             filterCategories: [],
             filterMatchType: "partial",
+            showGuideLinesOnBackCards: true,
         });
     });
 
@@ -388,6 +389,12 @@ describe("useSettingsStore", () => {
             const { setGuidePlacement } = useSettingsStore.getState();
             setGuidePlacement("inside");
             expect(useSettingsStore.getState().guidePlacement).toBe("inside");
+        });
+
+        it("setShowGuideLinesOnBackCards should update setting", () => {
+            const { setShowGuideLinesOnBackCards } = useSettingsStore.getState();
+            setShowGuideLinesOnBackCards(false);
+            expect(useSettingsStore.getState().showGuideLinesOnBackCards).toBe(false);
         });
     });
 
