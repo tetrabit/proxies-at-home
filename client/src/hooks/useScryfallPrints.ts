@@ -17,6 +17,9 @@ export interface ScryfallPrintsResult {
 
 export interface UseScryfallPrintsOptions {
   name: string;
+  oracleId?: string;
+  set?: string;
+  number?: string;
   lang?: string;
   enabled?: boolean;
   initialPrints?: PrintInfo[];
@@ -32,6 +35,9 @@ export interface UseScryfallPrintsOptions {
  */
 export function useScryfallPrints({
   name,
+  oracleId,
+  set,
+  number,
   lang = "en",
   enabled = true,
   initialPrints,
@@ -44,22 +50,33 @@ export function useScryfallPrints({
 
   // Refs for request management
   const abortControllerRef = useRef<AbortController | null>(null);
-  const currentNameRef = useRef<string>("");
+  const currentRequestKeyRef = useRef<string>("");
 
   // Fetch effect
   useEffect(() => {
-    // Don't fetch if disabled or empty name
-    if (!enabled || !name || !name.trim()) {
+    const trimmedName = name?.trim() ?? "";
+    const normalizedOracleId = oracleId?.trim();
+    const normalizedSet = set?.trim().toLowerCase();
+    const normalizedNumber = number?.trim();
+    const hasName = trimmedName.length > 0;
+    const hasSetAndNumber = !!normalizedSet && !!normalizedNumber;
+
+    // Don't fetch if disabled or no usable lookup identity
+    if (!enabled || (!normalizedOracleId && !hasSetAndNumber && !hasName)) {
       return;
     }
 
-    const trimmedName = name.trim();
+    const requestKey = normalizedOracleId
+      ? `oracle:${normalizedOracleId}|lang:${lang}`
+      : hasSetAndNumber
+        ? `print:${normalizedSet}|${normalizedNumber}|name:${trimmedName}|lang:${lang}`
+        : `name:${trimmedName}|lang:${lang}`;
 
-    // Skip if same name requested
-    if (currentNameRef.current === trimmedName && hasSearched) return;
+    // Skip if same lookup requested
+    if (currentRequestKeyRef.current === requestKey && hasSearched) return;
 
     const performFetch = async () => {
-      currentNameRef.current = trimmedName;
+      currentRequestKeyRef.current = requestKey;
 
       // Abort any in-flight request
       if (abortControllerRef.current) {
@@ -73,20 +90,41 @@ export function useScryfallPrints({
       try {
         // 1. Check Local DB (Metatadata Cache)
         // We verify 'hasFullPrints' to ensure we have the complete list
-        const cached = await db.cardMetadataCache
-          .where("name")
-          .equals(trimmedName)
-          .first();
+        let cached =
+          normalizedOracleId
+            ? await db.cardMetadataCache
+              .where("oracle_id")
+              .equals(normalizedOracleId)
+              .first()
+            : undefined;
+
+        if (!cached && hasSetAndNumber) {
+          cached = await db.cardMetadataCache
+            .where("set")
+            .equals(normalizedSet)
+            .and((item) =>
+              item.number === normalizedNumber &&
+              (!hasName || item.name === trimmedName)
+            )
+            .first();
+        }
+
+        if (!cached && hasName) {
+          cached = await db.cardMetadataCache
+            .where("name")
+            .equals(trimmedName)
+            .first();
+        }
 
         if (
           cached &&
           cached.hasFullPrints &&
-          cached.data?.prints &&
-          Array.isArray(cached.data.prints)
+          Array.isArray(cached.data?.prints) &&
+          cached.data.prints.length > 0
         ) {
           // Cache Hit!
-          debugLog("[ScryfallPrints] Local cache HIT for:", trimmedName);
-          if (currentNameRef.current === trimmedName) {
+          debugLog("[ScryfallPrints] Local cache HIT for:", requestKey);
+          if (currentRequestKeyRef.current === requestKey) {
             setPrints(cached.data.prints);
             setHasSearched(true);
             return; // Done, no network needed
@@ -95,38 +133,95 @@ export function useScryfallPrints({
 
         // 2. Network Fetch (Cache Miss)
         setIsLoading(true);
-        const url = `${API_BASE}/api/scryfall/prints?name=${encodeURIComponent(trimmedName)}&lang=${lang}`;
+        const params = new URLSearchParams({ lang });
+        if (normalizedOracleId) {
+          params.set("oracle_id", normalizedOracleId);
+        } else if (hasSetAndNumber) {
+          params.set("set", normalizedSet);
+          params.set("number", normalizedNumber);
+          if (hasName) params.set("name", trimmedName);
+        } else {
+          params.set("name", trimmedName);
+        }
+        const url = `${API_BASE}/api/scryfall/prints?${params.toString()}`;
 
         const response = await fetch(url, {
           signal: controller.signal,
           cache: "no-store",
         });
 
-        if (currentNameRef.current !== trimmedName) return;
+        if (currentRequestKeyRef.current !== requestKey) return;
 
         if (response.ok) {
           const data = await response.json();
           debugLog("[ScryfallPrints] Fetched prints:", data.total);
 
-          const resultPrints: PrintInfo[] = data.prints || [];
+          let resultPrints: PrintInfo[] = data.prints || [];
+          const resolvedOracleId =
+            (
+              typeof data.oracle_id === "string"
+                ? data.oracle_id.trim()
+                : undefined
+            ) ||
+            resultPrints.find((p) => typeof p.oracle_id === "string")?.oracle_id;
+
+          // Two-phase lookup: when we opened with print identity (set+number),
+          // follow up with oracle_id to load full alternative arts.
+          if (!normalizedOracleId && hasSetAndNumber && resolvedOracleId) {
+            const oracleParams = new URLSearchParams({
+              lang,
+              oracle_id: resolvedOracleId,
+            });
+            const oracleUrl = `${API_BASE}/api/scryfall/prints?${oracleParams.toString()}`;
+            const oracleResponse = await fetch(oracleUrl, {
+              signal: controller.signal,
+              cache: "no-store",
+            });
+
+            if (currentRequestKeyRef.current !== requestKey) return;
+
+            if (oracleResponse.ok) {
+              const oracleData = await oracleResponse.json();
+              const oraclePrints: PrintInfo[] = oracleData.prints || [];
+              if (oraclePrints.length > 0) {
+                resultPrints = oraclePrints;
+              }
+            }
+          }
 
           // 3. Update Local DB
-          // Update ALL matching records for this card name to include the prints
-          // This ensures future lookups find it
-          await db.cardMetadataCache
-            .where("name")
-            .equals(trimmedName)
-            .modify((entry) => {
-              entry.hasFullPrints = true;
-              // Merge prints into data object
-              if (typeof entry.data === "object" && entry.data !== null) {
-                // We know it's an object, safe to spread and assign
-                entry.data = { ...entry.data, prints: resultPrints };
-              } else {
-                // Fallback: entry.data was somehow not an object (primitive), overwrite it
-                entry.data = { prints: resultPrints };
-              }
-            });
+          const updateEntries = (entry: {
+            hasFullPrints?: boolean;
+            data: unknown;
+          }) => {
+            entry.hasFullPrints = true;
+            if (typeof entry.data === "object" && entry.data !== null) {
+              entry.data = { ...(entry.data as Record<string, unknown>), prints: resultPrints };
+            } else {
+              entry.data = { prints: resultPrints };
+            }
+          };
+
+          if (normalizedOracleId) {
+            await db.cardMetadataCache
+              .where("oracle_id")
+              .equals(normalizedOracleId)
+              .modify(updateEntries);
+          } else if (hasSetAndNumber) {
+            await db.cardMetadataCache
+              .where("set")
+              .equals(normalizedSet)
+              .and((entry) =>
+                entry.number === normalizedNumber &&
+                (!hasName || entry.name === trimmedName)
+              )
+              .modify(updateEntries);
+          } else if (hasName) {
+            await db.cardMetadataCache
+              .where("name")
+              .equals(trimmedName)
+              .modify(updateEntries);
+          }
 
           setPrints(resultPrints);
           setHasSearched(true);
@@ -145,7 +240,7 @@ export function useScryfallPrints({
           setHasSearched(true);
         }
       } finally {
-        if (currentNameRef.current === trimmedName) {
+        if (currentRequestKeyRef.current === requestKey) {
           setIsLoading(false);
         }
       }
@@ -160,7 +255,7 @@ export function useScryfallPrints({
         abortControllerRef.current.abort();
       }
     };
-  }, [name, lang, enabled, hasSearched, initialPrints]);
+  }, [name, oracleId, set, number, lang, enabled, hasSearched, initialPrints]);
 
   return {
     prints,

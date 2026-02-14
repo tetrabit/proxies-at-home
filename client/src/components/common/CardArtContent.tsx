@@ -107,6 +107,10 @@ export interface CardArtContentProps {
     cardTypeLine?: string;
     /** Initial prints to prevent re-fetching if already available */
     initialPrints?: PrintInfo[];
+    /** Identity hints for oracle-first print lookup */
+    oracleId?: string;
+    set?: string;
+    number?: string;
 }
 
 /**
@@ -131,6 +135,9 @@ export function CardArtContent({
     isActive,
     cardTypeLine,
     initialPrints,
+    oracleId,
+    set,
+    number,
 }: CardArtContentProps) {
     // Helper to strip query params for URL comparison (Scryfall URLs have timestamps)
     const stripQuery = useCallback((url?: string) => url?.split('?')[0], []);
@@ -142,6 +149,9 @@ export function CardArtContent({
     });
     const scryfallPrintsData = useScryfallPrints({
         name: query,
+        oracleId,
+        set,
+        number,
         enabled: artSource === 'scryfall' && mode === 'prints' && !initialPrints,
         initialPrints,
     });
@@ -177,6 +187,9 @@ export function CardArtContent({
     // even if "Dinosaur" (from Dinosaur // Treasure) appears first in the list.
     const faceNames = useMemo(() => {
         if (uniqueFaces.length <= 1) return uniqueFaces;
+        // In prints mode with an explicit face selected, preserve source order so
+        // front/back semantics remain stable.
+        if (mode === 'prints' && selectedFace) return uniqueFaces;
 
         const sorted = [...uniqueFaces].sort((a, b) => {
             const aMatches = a.toLowerCase() === query.toLowerCase();
@@ -187,7 +200,7 @@ export function CardArtContent({
         });
 
         return sorted;
-    }, [uniqueFaces, query]);
+    }, [uniqueFaces, query, mode, selectedFace]);
 
     // Use shared stable sort logic for both sources
 
