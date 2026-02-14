@@ -209,7 +209,6 @@ proxies-at-home/
 - Environment: Production build with base URL rewriting
 
 ### Electron Desktop
-- GitHub Actions workflow: `.github/workflows/release.yml`
 - Release channels: `latest` (auto-updates) and `stable` (manual promotion)
 - Platform builds: Windows (NSIS), macOS (DMG/ZIP), Linux (AppImage/deb)
 - Native module handling: `better-sqlite3` requires platform-specific rebuilds
@@ -223,7 +222,8 @@ proxies-at-home/
 - Release script: `scripts/release.mjs` handles versioning, tagging, publishing
 
 ### CI/CD
-- GitHub Actions handles automated builds and releases
+- Do not add or use GitHub Actions workflows for this project.
+- If automation is needed, use self-hosted tooling and document it in `docs/DEPLOYMENT_GUIDE.md`.
 - Contract tests run against live Scryfall API (`npm run test:contract`)
 
 ## Common Pitfalls

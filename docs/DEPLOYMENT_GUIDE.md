@@ -338,44 +338,10 @@ curl http://localhost:3001/health
 3. Test connection with `psql` or similar
 4. Check SSL requirements
 
-## CI/CD Pipeline
+## CI/CD Policy
 
-### GitHub Actions Workflow
-
-```yaml
-name: Deploy Production
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-      - run: npm install
-      - run: npm test
-
-  deploy-client:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to Netlify
-        uses: netlify/actions/cli@master
-        with:
-          args: deploy --prod
-
-  deploy-microservice:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build Rust binary
-        run: cargo build --release
-      - name: Deploy to production
-        # Your deployment steps
-```
+- Do not use GitHub Actions for builds, tests, or deployments.
+- If automation is needed, prefer self-hosted runners or manual scripts and document the approach here.
 
 ## Rollback Strategy
 

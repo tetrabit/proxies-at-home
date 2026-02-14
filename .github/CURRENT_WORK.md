@@ -36,20 +36,20 @@ Based on migration assessment, need to verify/migrate:
 
 ```bash
 # Quick view of current work (NEW!)
-./scripts/td current
+td current
 
 # Alternative: list all in-progress tasks
-./scripts/td list --status in-progress
+td list --status in-progress
 
 # Detailed view of Task #6
-./scripts/td show 6
+td show 6
 
 # Overall project status
-./scripts/td status
+td status
 ```
 
 ### Next Steps After Completion
-1. Mark Task #6 complete: `./scripts/td update 6 --status complete --notes "100% migration achieved"`
+1. Mark Task #6 complete: `td update 6 --status complete --notes "100% migration achieved"`
 2. Reassess priorities with project-orchestrator agent
 3. Likely next: Task #7 (Production deployment preparation)
 
@@ -57,11 +57,11 @@ Based on migration assessment, need to verify/migrate:
 
 ## 📋 Quick Reference
 
-**View current work:** `./scripts/td current` ⭐ **NEW!**  
-**View all tasks:** `./scripts/td list`  
-**View in-progress tasks:** `./scripts/td list --status in-progress`  
-**Update task:** `./scripts/td update <id> --status <status>`  
-**Generate report:** `./scripts/td report`
+**View current work:** `td current` ⭐ **NEW!**  
+**View all tasks:** `td list`  
+**View in-progress tasks:** `td list --status in-progress`  
+**Update task:** `td update <id> --status <status>`  
+**Generate report:** `td report`
 
 **Ask for guidance:** Consult the project-orchestrator agent when:
 - Task is blocked

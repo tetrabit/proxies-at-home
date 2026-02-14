@@ -1,12 +1,15 @@
 # td current - Current Work Management Guide
 
-**Last Updated:** 2026-02-09
+**Last Updated:** 2026-02-10
+**Migration:** Now using global `td` command (marcus/td) instead of local `./scripts/td`
+
+> **Note:** This project has migrated from a local custom td script to the global [marcus/td](https://github.com/marcus/td) CLI tool designed for AI-assisted development with structured handoffs and session isolation.
 
 ## Quick Start
 
 ```bash
 # See what you should be working on RIGHT NOW
-./scripts/td current
+td current
 ```
 
 ## What is "Current Work"?
@@ -21,36 +24,36 @@ These are the tasks actively being worked on. The `td current` command filters t
 
 ```bash
 # Assign a task as current work
-./scripts/td update <task-id> --status in-progress --notes "Starting work on this"
+td update <task-id> --status in-progress --notes "Starting work on this"
 
 # Example
-./scripts/td update 6 --status in-progress --notes "Beginning microservice migration"
+td update 6 --status in-progress --notes "Beginning microservice migration"
 
 # Verify it worked
-./scripts/td current
+td current
 ```
 
 ### Complete Current Work
 
 ```bash
 # Mark task complete
-./scripts/td update <task-id> --status complete --notes "Finished successfully"
+td update <task-id> --status complete --notes "Finished successfully"
 
 # Verify it's removed from current work
-./scripts/td current
+td current
 ```
 
 ### Switch Tasks (Pivot)
 
 ```bash
 # Put old task back to todo
-./scripts/td update <old-id> --status todo
+td update <old-id> --status todo
 
 # Start new task
-./scripts/td update <new-id> --status in-progress --notes "Pivoting to this task"
+td update <new-id> --status in-progress --notes "Pivoting to this task"
 
 # Verify
-./scripts/td current
+td current
 ```
 
 ## Best Practices
@@ -72,25 +75,25 @@ These are the tasks actively being worked on. The `td current` command filters t
 
 ```bash
 # Show current work (primary command)
-./scripts/td current
+td current
 
 # Show all in-progress tasks with more detail
-./scripts/td list --status in-progress
+td list --status in-progress
 
 # Show details of a specific task
-./scripts/td show <task-id>
+td show <task-id>
 
 # Add notes to current work
-./scripts/td update <task-id> --notes "Progress update"
+td update <task-id> --notes "Progress update"
 
 # Check overall project status
-./scripts/td status
+td status
 
 # See all available tasks
-./scripts/td list
+td list
 
 # See only todo tasks (candidates for next work)
-./scripts/td list --status todo
+td list --status todo
 ```
 
 ## Example Workflow
@@ -98,47 +101,47 @@ These are the tasks actively being worked on. The `td current` command filters t
 ### Morning Startup
 ```bash
 # 1. Check what you should be working on
-./scripts/td current
+td current
 
 # 2. If nothing is in-progress, check todos
-./scripts/td list --status todo
+td list --status todo
 
 # 3. Pick highest priority and assign
-./scripts/td update 7 --status in-progress --notes "Starting deployment prep"
+td update 7 --status in-progress --notes "Starting deployment prep"
 
 # 4. Verify
-./scripts/td current
+td current
 ```
 
 ### During Work
 ```bash
 # Update progress periodically
-./scripts/td update 7 --notes "Completed step 1 of 3"
+td update 7 --notes "Completed step 1 of 3"
 
 # Check overall status
-./scripts/td status
+td status
 ```
 
 ### When Task is Done
 ```bash
 # 1. Mark complete
-./scripts/td update 7 --status complete --notes "Successfully deployed"
+td update 7 --status complete --notes "Successfully deployed"
 
 # 2. Verify it's removed
-./scripts/td current
+td current
 
 # 3. Check what's next
-./scripts/td list --status todo
+td list --status todo
 ```
 
 ### When Blocked
 ```bash
 # Mark as blocked
-./scripts/td update 7 --status blocked --blocker "Waiting for microservice deployment"
+td update 7 --status blocked --blocker "Waiting for microservice deployment"
 
 # Find something else to work on
-./scripts/td list --status todo
-./scripts/td update 8 --status in-progress
+td list --status todo
+td update 8 --status in-progress
 ```
 
 ## For Project Orchestrator Agent
@@ -154,16 +157,16 @@ The project-orchestrator agent has been configured to:
 ### Agent Commands
 ```bash
 # Agent checks current work
-./scripts/td current
+td current
 
 # Agent assigns new current work
-./scripts/td update <id> --status in-progress --notes "Assigned by orchestrator: [reason]"
+td update <id> --status in-progress --notes "Assigned by orchestrator: [reason]"
 
 # Agent verifies assignment
-./scripts/td current
+td current
 
 # Agent checks project health
-./scripts/td status
+td status
 ```
 
 ## Troubleshooting
@@ -188,9 +191,9 @@ Check the task status: `td show <id>`
 ## Reference
 
 **Command:** `td current`  
-**Purpose:** Show current work (in-progress tasks)  
-**Added:** 2026-02-09  
-**Location:** `scripts/td`  
+**Purpose:** Show current work (in-progress tasks)
+**Added:** 2026-02-09
+**Type:** Global CLI tool (marcus/td)
 **Related:** `.github/CURRENT_WORK.md`, `.github/agents/project-orchestrator.agent.md`
 
 ---

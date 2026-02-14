@@ -231,6 +231,20 @@ npm run electron:build
 - [ ] Automatic restart after crash
 - [ ] Database persists across restarts
 
+### Cross-Platform Build Testing (2026-02-10)
+
+- **Linux (Ubuntu)**: `npm run electron:build` initially failed because `scripts/build-microservice.sh` expects the microservice repo at `../scryfall-cache-microservice`. After adding a symlink to `/home/nullvoid/projects/scryfall-cache-microservice`, server TypeScript errors were fixed and `npx electron-builder --linux` completed. Artifacts: `dist-app/Proxxied-Setup-0.0.0.AppImage` and `dist-app/Proxxied-Setup-0.0.0.deb`. The microservice binary is now included at `dist-app/linux-unpacked/resources/microservices/scryfall-cache` after updating the `extraResources` path.
+- **Windows**: Not run from Linux host. Requires Windows runner and signing setup.
+- **macOS**: Not runnable from Linux host; requires macOS build runner.
+
+**Blocking issues**:
+- Document or parameterize the required sibling checkout path for the microservice repo.
+
+**Automation policy**:
+- Do not use GitHub Actions for builds or releases.
+- Run Windows/macOS builds on native hosts (manual or self-hosted automation).
+- `scripts/build-microservice.sh` supports `MICROSERVICE_DIR`, `MICROSERVICE_FEATURES`, `MICROSERVICE_NO_DEFAULT_FEATURES`, `MICROSERVICE_PROFILE` (`release|dev|debug`), `MICROSERVICE_JOBS`, `MICROSERVICE_CLEAN`, `MICROSERVICE_NO_MOLD`, and `MICROSERVICE_INCREMENTAL`.
+
 ---
 
 ## Performance Metrics
