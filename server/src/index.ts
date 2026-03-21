@@ -32,9 +32,12 @@ setInterval(() => cleanupExpiredShares(), 60 * 60 * 1000); // Every hour
 
 // Log microservice performance metrics every 5 minutes (if SCRYFALL_CACHE_URL is configured)
 if (process.env.SCRYFALL_CACHE_URL) {
-  setInterval(() => {
-    logMicroserviceMetrics();
-  }, 5 * 60 * 1000); // Every 5 minutes
+  setInterval(
+    () => {
+      logMicroserviceMetrics();
+    },
+    5 * 60 * 1000
+  ); // Every 5 minutes
 }
 
 /**
@@ -46,77 +49,95 @@ export function startServer(port: number = 3001): Promise<number> {
   const app = express();
 
   // Security headers via helmet.js
-  app.use(helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'"],
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'"],
+        },
       },
-    },
-    hsts: {
-      maxAge: 31536000, // 1 year
-      includeSubDomains: true,
-      preload: true,
-    },
-  }));
+      hsts: {
+        maxAge: 31536000, // 1 year
+        includeSubDomains: true,
+        preload: true,
+      },
+    })
+  );
 
   // CORS configuration with environment-based origin restriction
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(",")
     : ["http://localhost:5173", "http://localhost:3000"];
-  
-  app.use(cors({
-    origin: (origin, cb) => {
-      // Allow requests with no origin (mobile apps, curl, etc.)
-      if (!origin) return cb(null, true);
-      
-      // Check if origin is in allowed list
-      if (allowedOrigins.includes(origin)) {
-        return cb(null, true);
-      }
-      
-      // In development, allow all localhost origins
-      if (process.env.NODE_ENV !== "production" && origin.includes("localhost")) {
-        return cb(null, true);
-      }
-      
-      cb(new Error("Not allowed by CORS"));
-    },
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    maxAge: 86400,
-  }));
+
+  app.use(
+    cors({
+      origin: (origin, cb) => {
+        // Allow requests with no origin (mobile apps, curl, etc.)
+        if (!origin) return cb(null, true);
+
+        // Check if origin is in allowed list
+        if (allowedOrigins.includes(origin)) {
+          return cb(null, true);
+        }
+
+        try {
+          const { hostname } = new URL(origin);
+
+          if (
+            hostname === "localhost" ||
+            hostname === "127.0.0.1" ||
+            hostname === "::1"
+          ) {
+            return cb(null, true);
+          }
+        } catch {}
+
+        cb(new Error("Not allowed by CORS"));
+      },
+      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+      maxAge: 86400,
+    })
+  );
 
   // Enable gzip compression for JSON responses (skip SSE which needs real-time streaming)
-  app.use(compression({
-    filter: (req, res) => {
-      // Don't compress SSE responses - they need real-time streaming
-      if (res.getHeader('Content-Type')?.toString().includes('text/event-stream')) {
-        return false;
-      }
-      return compression.filter(req, res);
-    },
-  }));
+  app.use(
+    compression({
+      filter: (req, res) => {
+        // Don't compress SSE responses - they need real-time streaming
+        if (
+          res
+            .getHeader("Content-Type")
+            ?.toString()
+            .includes("text/event-stream")
+        ) {
+          return false;
+        }
+        return compression.filter(req, res);
+      },
+    })
+  );
 
   app.use(express.json({ limit: "1mb" }));
-  
+
   // Health check endpoints
   const startTime = Date.now();
-  
+
   // Simple health check
-  app.get("/health", (req, res) => {
+  app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
       uptime: Math.floor((Date.now() - startTime) / 1000),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
-  
+
   // Deep health check (includes database and microservice)
-  app.get("/health/deep", async (req, res) => {
+  app.get("/health/deep", async (_req, res) => {
     const health: {
       status: string;
       uptime: number;
@@ -131,8 +152,8 @@ export function startServer(port: number = 3001): Promise<number> {
       timestamp: new Date().toISOString(),
       checks: {
         database: "unknown",
-        microservice: "unknown"
-      }
+        microservice: "unknown",
+      },
     };
 
     // Check database
@@ -148,7 +169,8 @@ export function startServer(port: number = 3001): Promise<number> {
 
     // Check microservice
     try {
-      const { isMicroserviceAvailable } = await import("./services/scryfallMicroserviceClient.js");
+      const { isMicroserviceAvailable } =
+        await import("./services/scryfallMicroserviceClient.js");
       const available = await isMicroserviceAvailable();
       health.checks.microservice = available ? "ok" : "unavailable";
       if (!available) {
@@ -158,11 +180,11 @@ export function startServer(port: number = 3001): Promise<number> {
       health.checks.microservice = "error";
       health.status = "degraded";
     }
-    
+
     const statusCode = health.status === "ok" ? 200 : 503;
     res.status(statusCode).json(health);
   });
-  
+
   app.use("/api/archidekt", archidektRouter);
   app.use("/api/moxfield", moxfieldRouter);
   app.use("/api/cards/images", imageRouter);
