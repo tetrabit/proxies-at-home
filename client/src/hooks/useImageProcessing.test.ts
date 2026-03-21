@@ -20,27 +20,31 @@ vi.mock("../helpers/imageProcessor");
 
 vi.mock("../store", () => ({
   useSettingsStore: Object.assign(
-    vi.fn((selector) => selector({
-      dpi: 300,
-      darkenMode: 'none',
-      hasHydrated: true,
-    })),
+    vi.fn((selector) =>
+      selector({
+        dpi: 300,
+        darkenMode: "none",
+        hasHydrated: true,
+      })
+    ),
     {
       persist: {
         hasHydrated: vi.fn().mockReturnValue(true),
-        onFinishHydration: vi.fn().mockReturnValue(() => { }),
+        onFinishHydration: vi.fn().mockReturnValue(() => {}),
       },
       getState: vi.fn().mockReturnValue({
         dpi: 300,
-        darkenMode: 'none',
+        darkenMode: "none",
         bleedEdgeWidth: 1, // Default matching default props in tests
-        unit: 'mm',
+        unit: "mm",
       }),
     }
   ),
-  useProjectStore: vi.fn((selector) => selector({
-    currentProjectId: 'test-project-id',
-  })),
+  useProjectStore: vi.fn((selector) =>
+    selector({
+      currentProjectId: "test-project-id",
+    })
+  ),
 }));
 
 describe("useImageProcessing", () => {
@@ -98,18 +102,19 @@ describe("useImageProcessing", () => {
   });
 
   it("should call imageProcessor.process for an unprocessed image", async () => {
-    (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+    (db.images.get as Mock).mockResolvedValue({
+      sourceUrl: "http://example.com/img.png",
+    });
     mockProcess.mockResolvedValue({
-      displayBlob: new Blob(['processed']),
+      displayBlob: new Blob(["processed"]),
       displayDpi: 300,
       displayBleedWidth: 1,
-      exportBlob: new Blob(['processed_export']),
+      exportBlob: new Blob(["processed_export"]),
       exportDpi: 600,
       exportBleedWidth: 1,
-      displayBlobDarkened: new Blob(['processed_darkened']),
-      exportBlobDarkened: new Blob(['processed_export_darkened']),
+      displayBlobDarkened: new Blob(["processed_darkened"]),
+      exportBlobDarkened: new Blob(["processed_export_darkened"]),
     });
-
 
     const { result } = renderHook(() =>
       useImageProcessing({
@@ -128,7 +133,9 @@ describe("useImageProcessing", () => {
   });
 
   it("should handle image processing failure", async () => {
-    (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+    (db.images.get as Mock).mockResolvedValue({
+      sourceUrl: "http://example.com/img.png",
+    });
     mockProcess.mockRejectedValue(new Error("Processing failed"));
 
     const { result } = renderHook(() =>
@@ -150,25 +157,27 @@ describe("useImageProcessing", () => {
 
   it("reprocessSelectedImages should process multiple cards", async () => {
     const cards = [
-      { ...card, uuid: '1', imageId: 'img1' },
-      { ...card, uuid: '2', imageId: 'img2' }
+      { ...card, uuid: "1", imageId: "img1" },
+      { ...card, uuid: "2", imageId: "img2" },
     ];
 
     (db.images.get as Mock).mockImplementation((id) => {
-      if (id === 'img1') return Promise.resolve({ sourceUrl: 'https://example.com/url1' });
-      if (id === 'img2') return Promise.resolve({ sourceUrl: 'https://example.com/url2' });
+      if (id === "img1")
+        return Promise.resolve({ sourceUrl: "https://example.com/url1" });
+      if (id === "img2")
+        return Promise.resolve({ sourceUrl: "https://example.com/url2" });
       return Promise.resolve(undefined);
     });
 
     mockProcess.mockResolvedValue({
-      displayBlob: new Blob(['processed']),
+      displayBlob: new Blob(["processed"]),
       displayDpi: 300,
       displayBleedWidth: 1,
-      exportBlob: new Blob(['processed_export']),
+      exportBlob: new Blob(["processed_export"]),
       exportDpi: 600,
       exportBleedWidth: 1,
-      displayBlobDarkened: new Blob(['processed_darkened']),
-      exportBlobDarkened: new Blob(['processed_export_darkened']),
+      displayBlobDarkened: new Blob(["processed_darkened"]),
+      exportBlobDarkened: new Blob(["processed_export_darkened"]),
     });
 
     const { result } = renderHook(() =>
@@ -188,20 +197,20 @@ describe("useImageProcessing", () => {
   });
 
   it("should use originalBlob if available", async () => {
-    const blob = new Blob(['test'], { type: 'image/png' });
+    const blob = new Blob(["test"], { type: "image/png" });
     (db.images.get as Mock).mockResolvedValue({ originalBlob: blob });
     global.URL.createObjectURL = vi.fn(() => "blob:test");
     global.URL.revokeObjectURL = vi.fn();
 
     mockProcess.mockResolvedValue({
-      displayBlob: new Blob(['processed']),
+      displayBlob: new Blob(["processed"]),
       displayDpi: 300,
       displayBleedWidth: 1,
-      exportBlob: new Blob(['processed_export']),
+      exportBlob: new Blob(["processed_export"]),
       exportDpi: 600,
       exportBleedWidth: 1,
-      displayBlobDarkened: new Blob(['processed_darkened']),
-      exportBlobDarkened: new Blob(['processed_export_darkened']),
+      displayBlobDarkened: new Blob(["processed_darkened"]),
+      exportBlobDarkened: new Blob(["processed_export_darkened"]),
     });
 
     const { result } = renderHook(() =>
@@ -225,7 +234,9 @@ describe("useImageProcessing", () => {
   });
 
   it("should handle process returning error object", async () => {
-    (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+    (db.images.get as Mock).mockResolvedValue({
+      sourceUrl: "http://example.com/img.png",
+    });
     mockProcess.mockResolvedValue({ error: "Processing failed gracefully" });
 
     const { result } = renderHook(() =>
@@ -246,8 +257,10 @@ describe("useImageProcessing", () => {
   });
 
   it("reprocessSelectedImages should handle errors", async () => {
-    const cards = [{ ...card, uuid: '1', imageId: 'img1' }];
-    (db.images.get as Mock).mockResolvedValue({ sourceUrl: 'https://example.com/url1' });
+    const cards = [{ ...card, uuid: "1", imageId: "img1" }];
+    (db.images.get as Mock).mockResolvedValue({
+      sourceUrl: "https://example.com/url1",
+    });
     mockProcess.mockResolvedValue({ error: "Processing failed" });
 
     const { result } = renderHook(() =>
@@ -266,15 +279,69 @@ describe("useImageProcessing", () => {
     expect(db.images.put).not.toHaveBeenCalled();
   });
 
+  it("reprocessSelectedImages should submit large reprocess jobs in batches", async () => {
+    const cards = Array.from({ length: 30 }, (_, i) => ({
+      ...card,
+      uuid: `card-${i}`,
+      imageId: `img-${i}`,
+    }));
+
+    (db.images.get as Mock).mockImplementation((id) =>
+      Promise.resolve({ sourceUrl: `https://example.com/${id}.png` })
+    );
+
+    let active = 0;
+    let maxActive = 0;
+    mockProcess.mockImplementation(() => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          active--;
+          resolve({
+            displayBlob: new Blob(["processed"]),
+            displayDpi: 300,
+            displayBleedWidth: 1,
+            exportBlob: new Blob(["processed_export"]),
+            exportDpi: 600,
+            exportBleedWidth: 1,
+            displayBlobDarkened: new Blob(["processed_darkened"]),
+            exportBlobDarkened: new Blob(["processed_export_darkened"]),
+          });
+        }, 10);
+      });
+    });
+
+    const { result } = renderHook(() =>
+      useImageProcessing({
+        unit: "mm",
+        bleedEdgeWidth: 1,
+        imageProcessor: mockImageProcessor,
+      })
+    );
+
+    await act(async () => {
+      await result.current.reprocessSelectedImages(cards, 2);
+    });
+
+    expect(mockProcess).toHaveBeenCalledTimes(30);
+    expect(maxActive).toBeLessThanOrEqual(24);
+  });
+
   describe("in-flight deduplication", () => {
     it("should NOT call process twice for same imageId requested concurrently", async () => {
-      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+      (db.images.get as Mock).mockResolvedValue({
+        sourceUrl: "http://example.com/img.png",
+      });
 
       // Make process take some time to complete
       let resolveProcess: (value: unknown) => void;
-      mockProcess.mockReturnValue(new Promise(resolve => {
-        resolveProcess = resolve;
-      }));
+      mockProcess.mockReturnValue(
+        new Promise((resolve) => {
+          resolveProcess = resolve;
+        })
+      );
 
       const { result } = renderHook(() =>
         useImageProcessing({
@@ -292,8 +359,12 @@ describe("useImageProcessing", () => {
       let promise2Complete = false;
 
       await act(async () => {
-        result.current.ensureProcessed(card1).then(() => { promise1Complete = true; });
-        result.current.ensureProcessed(card2).then(() => { promise2Complete = true; });
+        result.current.ensureProcessed(card1).then(() => {
+          promise1Complete = true;
+        });
+        result.current.ensureProcessed(card2).then(() => {
+          promise2Complete = true;
+        });
       });
 
       // Should only call process ONCE even though two cards requested the same image
@@ -302,17 +373,17 @@ describe("useImageProcessing", () => {
       // Now resolve the process
       await act(async () => {
         resolveProcess!({
-          displayBlob: new Blob(['test']),
+          displayBlob: new Blob(["test"]),
           displayDpi: 300,
           displayBleedWidth: 1,
-          exportBlob: new Blob(['test']),
+          exportBlob: new Blob(["test"]),
           exportDpi: 600,
           exportBleedWidth: 1,
-          displayBlobDarkened: new Blob(['test']),
-          exportBlobDarkened: new Blob(['test']),
+          displayBlobDarkened: new Blob(["test"]),
+          exportBlobDarkened: new Blob(["test"]),
         });
         // Wait for promises to settle
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
       // Both cards should complete
@@ -322,16 +393,18 @@ describe("useImageProcessing", () => {
 
     it("should skip processing for already-processed imageIds in same session", async () => {
       // First call: image needs processing
-      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+      (db.images.get as Mock).mockResolvedValue({
+        sourceUrl: "http://example.com/img.png",
+      });
       mockProcess.mockResolvedValue({
-        displayBlob: new Blob(['test']),
+        displayBlob: new Blob(["test"]),
         displayDpi: 300,
         displayBleedWidth: 1,
-        exportBlob: new Blob(['test']),
+        exportBlob: new Blob(["test"]),
         exportDpi: 600,
         exportBleedWidth: 1,
-        displayBlobDarkened: new Blob(['test']),
-        exportBlobDarkened: new Blob(['test']),
+        displayBlobDarkened: new Blob(["test"]),
+        exportBlobDarkened: new Blob(["test"]),
       });
 
       const { result } = renderHook(() =>
@@ -353,7 +426,7 @@ describe("useImageProcessing", () => {
       // Mock should return generatedHasBuiltInBleed to indicate settings are not invalidated
       (db.images.get as Mock).mockResolvedValue({
         sourceUrl: "http://example.com/img.png",
-        generatedHasBuiltInBleed: false,  // Settings not invalidated
+        generatedHasBuiltInBleed: false, // Settings not invalidated
       });
       const card2 = { ...card, uuid: "different-uuid", imageId: "image123" };
 
@@ -392,12 +465,16 @@ describe("useImageProcessing", () => {
     });
 
     it("should return 'loading' while processing", async () => {
-      (db.images.get as Mock).mockResolvedValue({ sourceUrl: "http://example.com/img.png" });
+      (db.images.get as Mock).mockResolvedValue({
+        sourceUrl: "http://example.com/img.png",
+      });
 
       let resolveProcess: (value: unknown) => void;
-      mockProcess.mockReturnValue(new Promise(resolve => {
-        resolveProcess = resolve;
-      }));
+      mockProcess.mockReturnValue(
+        new Promise((resolve) => {
+          resolveProcess = resolve;
+        })
+      );
 
       const { result } = renderHook(() =>
         useImageProcessing({
@@ -414,7 +491,7 @@ describe("useImageProcessing", () => {
 
       // Give time for state update
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
       // Should be loading
@@ -423,16 +500,16 @@ describe("useImageProcessing", () => {
       // Complete processing
       await act(async () => {
         resolveProcess!({
-          displayBlob: new Blob(['test']),
+          displayBlob: new Blob(["test"]),
           displayDpi: 300,
           displayBleedWidth: 1,
-          exportBlob: new Blob(['test']),
+          exportBlob: new Blob(["test"]),
           exportDpi: 600,
           exportBleedWidth: 1,
-          displayBlobDarkened: new Blob(['test']),
-          exportBlobDarkened: new Blob(['test']),
+          displayBlobDarkened: new Blob(["test"]),
+          exportBlobDarkened: new Blob(["test"]),
         });
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
       // Should be idle after completion
@@ -440,4 +517,3 @@ describe("useImageProcessing", () => {
     });
   });
 });
-
