@@ -8,7 +8,12 @@ import { spawn } from "child_process";
 export const keystoneRouter = express.Router();
 
 type KeystoneRunner =
-  | { kind: "bin"; cmd: string; cwd?: string; extraEnv?: Record<string, string> }
+  | {
+      kind: "bin";
+      cmd: string;
+      cwd?: string;
+      extraEnv?: Record<string, string>;
+    }
   | { kind: "python"; python: string; repoDir?: string };
 
 function fileExists(p: string) {
@@ -24,7 +29,11 @@ function detectDefaultPrinterKeystoneRepo(): string | null {
   const home = process.env.HOME || process.env.USERPROFILE;
   if (!home) return null;
   const candidate = path.join(home, "projects", "printer-keystone");
-  if (fileExists(candidate) && fileExists(path.join(candidate, "printer_keystone"))) return candidate;
+  if (
+    fileExists(candidate) &&
+    fileExists(path.join(candidate, "printer_keystone"))
+  )
+    return candidate;
   return null;
 }
 
@@ -39,7 +48,12 @@ function resolveRunners(): KeystoneRunner[] {
   out.push({ kind: "bin", cmd: "printer-keystone" });
 
   // 3) Python module execution, optionally with a repo checkout on disk.
-  const repoDir = process.env.PRINTER_KEYSTONE_REPO || detectDefaultPrinterKeystoneRepo();
+  const configuredRepoDir = process.env.PRINTER_KEYSTONE_REPO;
+  const repoDir =
+    configuredRepoDir &&
+    fileExists(path.join(configuredRepoDir, "printer_keystone"))
+      ? configuredRepoDir
+      : detectDefaultPrinterKeystoneRepo();
   const pythonCandidates = [
     process.env.PRINTER_KEYSTONE_PYTHON,
     "python3",
@@ -55,7 +69,7 @@ function resolveRunners(): KeystoneRunner[] {
 function runProcess(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {}
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   return new Promise((resolve, reject) => {
@@ -88,7 +102,9 @@ function runProcess(
   });
 }
 
-async function runPrinterKeystone(args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function runPrinterKeystone(
+  args: string[]
+): Promise<{ stdout: string; stderr: string }> {
   const runners = resolveRunners();
   if (!runners.length) {
     throw new Error("Keystone analyzer not configured.");
@@ -101,9 +117,15 @@ async function runPrinterKeystone(args: string[]): Promise<{ stdout: string; std
         if (runner.cmd !== "printer-keystone" && !fileExists(runner.cmd)) {
           throw new Error(`PRINTER_KEYSTONE_BIN does not exist: ${runner.cmd}`);
         }
-        const res = await runProcess(runner.cmd, args, { cwd: runner.cwd, env: runner.extraEnv, timeoutMs: 120_000 });
+        const res = await runProcess(runner.cmd, args, {
+          cwd: runner.cwd,
+          env: runner.extraEnv,
+          timeoutMs: 120_000,
+        });
         if (res.code !== 0) {
-          throw new Error(`printer-keystone failed (code=${res.code}): ${res.stderr || res.stdout}`.trim());
+          throw new Error(
+            `printer-keystone failed (code=${res.code}): ${res.stderr || res.stdout}`.trim()
+          );
         }
         return { stdout: res.stdout, stderr: res.stderr };
       }
@@ -111,13 +133,23 @@ async function runPrinterKeystone(args: string[]): Promise<{ stdout: string; std
       // Python module. If repoDir exists, add to PYTHONPATH so we can run without installing.
       const env: Record<string, string> = {};
       if (runner.repoDir) {
-        env.PYTHONPATH = runner.repoDir + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : "");
+        env.PYTHONPATH =
+          runner.repoDir +
+          (process.env.PYTHONPATH
+            ? path.delimiter + process.env.PYTHONPATH
+            : "");
       }
 
       const pyArgs = ["-m", "printer_keystone.cli", ...args];
-      const res = await runProcess(runner.python, pyArgs, { cwd: runner.repoDir, env, timeoutMs: 120_000 });
+      const res = await runProcess(runner.python, pyArgs, {
+        cwd: runner.repoDir,
+        env,
+        timeoutMs: 120_000,
+      });
       if (res.code !== 0) {
-        throw new Error(`printer-keystone failed (code=${res.code}): ${res.stderr || res.stdout}`.trim());
+        throw new Error(
+          `printer-keystone failed (code=${res.code}): ${res.stderr || res.stdout}`.trim()
+        );
       }
       return { stdout: res.stdout, stderr: res.stderr };
     } catch (e: unknown) {
@@ -139,7 +171,7 @@ async function runPrinterKeystone(args: string[]): Promise<{ stdout: string; std
 
   const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
   throw new Error(
-    `Keystone analyzer unavailable. Install printer-keystone (python/opencv) or set PRINTER_KEYSTONE_BIN/PRINTER_KEYSTONE_REPO. Last error: ${msg}`,
+    `Keystone analyzer unavailable. Install printer-keystone (python/opencv) or set PRINTER_KEYSTONE_BIN/PRINTER_KEYSTONE_REPO. Last error: ${msg}`
   );
 }
 
@@ -151,8 +183,20 @@ function safeNumber(v: unknown, field: string): number {
 
 type KeystoneAnalyzeResult = {
   back_shift_mm: { x: number; y: number };
-  front: { translation_mm: { x: number; y: number }; rot_deg: number; scale: number; coord_fix?: string; markers?: number[] };
-  back: { translation_mm: { x: number; y: number }; rot_deg: number; scale: number; coord_fix?: string; markers?: number[] };
+  front: {
+    translation_mm: { x: number; y: number };
+    rot_deg: number;
+    scale: number;
+    coord_fix?: string;
+    markers?: number[];
+  };
+  back: {
+    translation_mm: { x: number; y: number };
+    rot_deg: number;
+    scale: number;
+    coord_fix?: string;
+    markers?: number[];
+  };
   extra: {
     rot_deg: number;
     scale: number;
@@ -171,7 +215,9 @@ function parseMarkersList(s: string): number[] {
     .filter((n) => Number.isFinite(n));
 }
 
-export function parsePrinterKeystoneAnalyzeStdout(stdout: string): KeystoneAnalyzeResult {
+export function parsePrinterKeystoneAnalyzeStdout(
+  stdout: string
+): KeystoneAnalyzeResult {
   const rx = {
     backShiftX: /back_shift_x_mm:\s*([-+]?(\d+(\.\d*)?|\.\d+))/i,
     backShiftY: /back_shift_y_mm:\s*([-+]?(\d+(\.\d*)?|\.\d+))/i,
@@ -183,7 +229,9 @@ export function parsePrinterKeystoneAnalyzeStdout(stdout: string): KeystoneAnaly
   const mX = stdout.match(rx.backShiftX);
   const mY = stdout.match(rx.backShiftY);
   if (!mX || !mY) {
-    throw new Error("Failed to parse printer-keystone output (missing back_shift_x_mm/back_shift_y_mm).");
+    throw new Error(
+      "Failed to parse printer-keystone output (missing back_shift_x_mm/back_shift_y_mm)."
+    );
   }
 
   const sides: Record<"front" | "back", KeystoneAnalyzeResult["front"]> = {
@@ -199,7 +247,13 @@ export function parsePrinterKeystoneAnalyzeStdout(stdout: string): KeystoneAnaly
     const scale = Number(m[5]);
     const coordFix = m[6];
     const markers = parseMarkersList(m[7] || "");
-    if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(rot) || !Number.isFinite(scale)) continue;
+    if (
+      !Number.isFinite(tx) ||
+      !Number.isFinite(ty) ||
+      !Number.isFinite(rot) ||
+      !Number.isFinite(scale)
+    )
+      continue;
     sides[sideName] = {
       translation_mm: { x: tx, y: ty },
       rot_deg: rot,
@@ -254,7 +308,10 @@ const upload = multer({
 
 function writeTempFile(buf: Buffer, originalName: string): string {
   const ext = path.extname(originalName || "").slice(0, 10) || ".bin";
-  const p = path.join(os.tmpdir(), `proxxied-keystone-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`);
+  const p = path.join(
+    os.tmpdir(),
+    `proxxied-keystone-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`
+  );
   fs.writeFileSync(p, buf);
   return p;
 }
@@ -277,7 +334,7 @@ keystoneRouter.get("/calibration", async (req: Request, res: Response) => {
 
   const outPath = path.join(
     os.tmpdir(),
-    `proxxied-keystone-calibration-${paper}-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`,
+    `proxxied-keystone-calibration-${paper}-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`
   );
   try {
     await runPrinterKeystone(["generate", "--paper", paper, "--out", outPath]);
@@ -306,29 +363,38 @@ keystoneRouter.post(
     { name: "back", maxCount: 1 },
   ]),
   async (req: Request, res: Response) => {
-    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const files = req.files as
+      | Record<string, Express.Multer.File[]>
+      | undefined;
     const front = files?.front?.[0];
     const back = files?.back?.[0];
     if (!front || !back) {
-      return res.status(400).json({ error: "Missing files. Provide front and back." });
+      return res
+        .status(400)
+        .json({ error: "Missing files. Provide front and back." });
     }
 
     const paper = String(req.body.paper || "letter").toLowerCase();
     const dpi = safeNumber(req.body.dpi ?? 300, "dpi");
     const frontPage = safeNumber(req.body.frontPage ?? 1, "frontPage");
     const backPage = safeNumber(req.body.backPage ?? 1, "backPage");
-    const borderInsetMm = req.body.borderInsetMm !== undefined && req.body.borderInsetMm !== ""
-      ? safeNumber(req.body.borderInsetMm, "borderInsetMm")
-      : null;
+    const borderInsetMm =
+      req.body.borderInsetMm !== undefined && req.body.borderInsetMm !== ""
+        ? safeNumber(req.body.borderInsetMm, "borderInsetMm")
+        : null;
 
     if (!["letter", "a4"].includes(paper)) {
-      return res.status(400).json({ error: "Invalid paper. Use letter or a4." });
+      return res
+        .status(400)
+        .json({ error: "Invalid paper. Use letter or a4." });
     }
     if (dpi < 72 || dpi > 1200) {
       return res.status(400).json({ error: "Invalid dpi. Use 72..1200." });
     }
     if (frontPage < 1 || backPage < 1) {
-      return res.status(400).json({ error: "Invalid page number (must be >= 1)." });
+      return res
+        .status(400)
+        .json({ error: "Invalid page number (must be >= 1)." });
     }
 
     let frontPath: string | null = null;
@@ -367,5 +433,5 @@ keystoneRouter.post(
       unlinkQuiet(frontPath);
       unlinkQuiet(backPath);
     }
-  },
+  }
 );
