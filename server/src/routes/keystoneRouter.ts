@@ -302,7 +302,7 @@ export function parsePrinterKeystoneAnalyzeStdout(
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 30 * 1024 * 1024, // 30MB per file
+    fileSize: 100 * 1024 * 1024,
   },
 });
 
