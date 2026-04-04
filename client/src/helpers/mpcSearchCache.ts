@@ -40,8 +40,10 @@ export async function getCachedMpcSearch(
         await db.mpcSearchCache.update([normalizedQuery, cardType], { cachedAt: now });
 
         // Parse card names in case of stale cache entries with unparsed names
+        // Ensure rawName is preserved (or set from name for pre-rawName cache entries)
         const cards = (entry.cards as MpcAutofillCard[]).map((card) => ({
             ...card,
+            rawName: card.rawName || card.name,
             name: parseMpcCardName(card.name, card.name),
         }));
         return cards;

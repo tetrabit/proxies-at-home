@@ -9,6 +9,7 @@ import { parseMpcCardName } from "./mpcUtils";
 export interface MpcAutofillCard {
     identifier: string;
     name: string;
+    rawName: string;       // Original name from API before parseMpcCardName (preserves [SET] {CN})
     smallThumbnailUrl: string;
     mediumThumbnailUrl: string;
     dpi: number;
@@ -71,6 +72,7 @@ export async function searchMpcAutofill(
         // Parse card names to extract base names (strips { } and ( ) suffixes)
         const cards = (data.cards || []).map((card) => ({
             ...card,
+            rawName: card.name,
             name: parseMpcCardName(card.name, card.name),
         }));
 
@@ -145,6 +147,7 @@ export async function batchSearchMpcAutofill(
         for (const [query, rawCards] of Object.entries(data.results || {})) {
             const parsedCards = rawCards.map((card) => ({
                 ...card,
+                rawName: card.name,
                 name: parseMpcCardName(card.name, card.name),
             }));
             results[query] = parsedCards;

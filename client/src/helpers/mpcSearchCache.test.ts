@@ -27,6 +27,7 @@ function createMockMpcCard(overrides: Partial<MpcAutofillCard> = {}): MpcAutofil
     return {
         identifier: "test-id",
         name: "Test Card",
+        rawName: "Test Card",
         dpi: 800,
         extension: "png",
         smallThumbnailUrl: "https://example.com/small.png",
