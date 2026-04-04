@@ -5,6 +5,8 @@ import { useShareUrl } from "@/hooks/useShareUrl";
 
 import { db } from "@/db";
 import { useProjectStore, useUserPreferencesStore } from "@/store";
+import { useToastStore } from "@/store/toast";
+import { autoRestore } from "@/helpers/autoRestore";
 
 const ProxyBuilderPage = lazy(() => import("@/pages/ProxyBuilderPage"));
 
@@ -31,6 +33,28 @@ function App() {
       if (isCancelled || useProjectStore.getState().currentProjectId) return;
 
       const { projects } = useProjectStore.getState();
+
+      // 2a. Auto-restore: if IndexedDB is empty, try to recover from server backups
+      if (projects.length === 0) {
+        const result = await autoRestore();
+        if (result && result.restoredCount > 0) {
+          // Reload projects after restore
+          await useProjectStore.getState().loadProjects();
+          const { projects: restored } = useProjectStore.getState();
+
+          if (restored.length > 0 && !isCancelled) {
+            // Show success toast
+            const names = result.projectNames.join(', ');
+            useToastStore.getState().showInfoToast(
+              `Restored ${result.restoredCount} project${result.restoredCount > 1 ? 's' : ''} from server: ${names}`
+            );
+
+            // Switch to the most recently updated project
+            await useProjectStore.getState().switchProject(restored[0].id);
+            return; // Done — skip default project creation
+          }
+        }
+      }
 
       // 2. Ensure userPreferences record exists
       let userPrefs = await db.userPreferences.get('default');
