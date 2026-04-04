@@ -14,6 +14,29 @@ export type BulkMpcUpgradeSummary = {
   errors: number;
 };
 
+export type BulkUpgradeProgress = {
+  /** Current batch number (1-indexed) */
+  currentBatch: number;
+  /** Total number of batches */
+  totalBatches: number;
+  /** Unique images processed so far */
+  processedImages: number;
+  /** Total unique images to process */
+  totalImages: number;
+  /** Running summary */
+  summary: BulkMpcUpgradeSummary;
+};
+
+export type BulkUpgradeOptions = {
+  projectId?: string;
+  /** Number of unique images to process per batch (default: 9, matching a 3x3 page) */
+  batchSize?: number;
+  /** Called after each batch completes */
+  onProgress?: (progress: BulkUpgradeProgress) => void;
+  /** AbortSignal to cancel the upgrade */
+  signal?: AbortSignal;
+};
+
 // ── Visual matching constants ────────────────────────────────────────────
 const SSIM_SIZE = 128;          // Up from 64 — more detail for visual comparison
 const SSIM_CHANNELS = 3;       // RGB instead of grayscale
@@ -206,8 +229,117 @@ function filterByExactName(cards: MpcAutofillCard[], cardName: string): MpcAutof
 
 // ── Main bulk upgrade ────────────────────────────────────────────────────
 
-export async function bulkUpgradeToMpcAutofill(options: { projectId?: string } = {}): Promise<BulkMpcUpgradeSummary> {
-  const { projectId } = options;
+/**
+ * Process a single image group: search MPC, find best match, apply upgrade.
+ * Returns the number of cards upgraded, skipped, or errored.
+ */
+async function processImageGroup(
+  imageId: string,
+  group: CardOption[],
+  imageById: Map<string, { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined>,
+  channelCache: Map<string, Float32Array[]>,
+): Promise<{ upgraded: number; skipped: number; errors: number }> {
+  const result = { upgraded: 0, skipped: 0, errors: 0 };
+
+  const imageRecord = imageById.get(imageId);
+  const source = imageRecord?.source ?? inferImageSource(imageId);
+  if (source !== "scryfall") {
+    console.debug(`[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`);
+    result.skipped = group.length;
+    return result;
+  }
+
+  const representative = group[0];
+  const cardType = representative.isToken ? "TOKEN" : "CARD";
+  const results = await searchMpcAutofill(representative.name, cardType, true);
+  const exactMatches = results ? filterByExactName(results, representative.name) : [];
+  if (!results || results.length === 0 || exactMatches.length === 0) {
+    console.debug(`[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`);
+    result.skipped = group.length;
+    return result;
+  }
+
+  // ── Layer 1: Set + Collector Number match ──
+  let bestCard: MpcAutofillCard | null = null;
+  const setCodeMatch = findBySetCollector(
+    exactMatches,
+    representative.set,
+    representative.number
+  );
+
+  if (setCodeMatch) {
+    bestCard = setCodeMatch;
+  }
+
+  // ── Layer 2: Color SSIM visual match (fallback) ──
+  if (!bestCard) {
+    const imageUrl = imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId;
+    const baseChannels = await computeImageChannels(imageUrl, channelCache);
+    if (!baseChannels) {
+      result.skipped = group.length;
+      return result;
+    }
+
+    const candidates = exactMatches.slice(0, MAX_CANDIDATES);
+    const best = await pickClosestMpcMatch(baseChannels, candidates, channelCache);
+    if (!best || best.confidence < MIN_CONFIDENCE) {
+      result.skipped = group.length;
+      return result;
+    }
+    bestCard = best.card;
+  }
+
+  // ── Apply the upgrade ──
+  const imageUrlMpc = getMpcAutofillImageUrl(bestCard.identifier);
+  const newImageId = await addRemoteImage([imageUrlMpc], group.length);
+  if (!newImageId) {
+    result.skipped = group.length;
+    return result;
+  }
+
+  try {
+    await db.transaction("rw", db.cards, db.images, async () => {
+      await db.cards.bulkUpdate(
+        group.map((card) => ({
+          key: card.uuid,
+          changes: {
+            imageId: newImageId,
+            isUserUpload: false,
+            hasBuiltInBleed: true,
+            lookupError: undefined,
+            enrichmentRetryCount: undefined,
+            enrichmentNextRetryAt: undefined,
+          },
+        }))
+      );
+
+      if (imageId !== newImageId) {
+        const oldImage = await db.images.get(imageId);
+        if (oldImage) {
+          const newRefCount = oldImage.refCount - group.length;
+          if (newRefCount > 0) {
+            await db.images.update(imageId, { refCount: newRefCount });
+          } else {
+            await db.images.delete(imageId);
+          }
+        }
+      }
+    });
+
+    result.upgraded = group.length;
+  } catch (error) {
+    console.warn("[MPC Bulk Upgrade] Failed to apply upgrade:", representative.name, error);
+    result.errors = group.length;
+  }
+
+  return result;
+}
+
+/** Default batch size: 9 unique images per batch (one 3×3 page worth of cards) */
+const DEFAULT_BATCH_SIZE = 9;
+
+export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {}): Promise<BulkMpcUpgradeSummary> {
+  const { projectId, batchSize = DEFAULT_BATCH_SIZE, onProgress, signal } = options;
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
@@ -239,98 +371,43 @@ export async function bulkUpgradeToMpcAutofill(options: { projectId?: string } =
     imageById.set(id, images[idx]);
   });
 
+  // Split image groups into batches
+  const allEntries = Array.from(cardsByImageId.entries());
+  const totalImages = allEntries.length;
+  const totalBatches = Math.ceil(totalImages / batchSize);
   const channelCache = new Map<string, Float32Array[]>();
 
-  for (const [imageId, group] of cardsByImageId.entries()) {
-    const imageRecord = imageById.get(imageId);
-    const source = imageRecord?.source ?? inferImageSource(imageId);
-    if (source !== "scryfall") {
-      console.debug(`[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`);
-      summary.skipped += group.length;
-      continue;
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    // Check for cancellation
+    if (signal?.aborted) {
+      break;
     }
 
-    const representative = group[0];
-    const cardType = representative.isToken ? "TOKEN" : "CARD";
-    const results = await searchMpcAutofill(representative.name, cardType, true);
-    const exactMatches = results ? filterByExactName(results, representative.name) : [];
-    if (!results || results.length === 0 || exactMatches.length === 0) {
-      console.debug(`[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`);
-      summary.skipped += group.length;
-      continue;
+    const batchStart = batchIdx * batchSize;
+    const batchEnd = Math.min(batchStart + batchSize, totalImages);
+    const batch = allEntries.slice(batchStart, batchEnd);
+
+    for (const [imageId, group] of batch) {
+      if (signal?.aborted) break;
+
+      const result = await processImageGroup(imageId, group, imageById, channelCache);
+      summary.upgraded += result.upgraded;
+      summary.skipped += result.skipped;
+      summary.errors += result.errors;
     }
 
-    // ── Layer 1: Set + Collector Number match ──
-    let bestCard: MpcAutofillCard | null = null;
-    const setCodeMatch = findBySetCollector(
-      exactMatches,
-      representative.set,
-      representative.number
-    );
+    // Report progress after each batch
+    onProgress?.({
+      currentBatch: batchIdx + 1,
+      totalBatches,
+      processedImages: batchEnd,
+      totalImages,
+      summary: { ...summary },
+    });
 
-    if (setCodeMatch) {
-      bestCard = setCodeMatch;
-    }
-
-    // ── Layer 2: Color SSIM visual match (fallback) ──
-    if (!bestCard) {
-      const imageUrl = imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId;
-      const baseChannels = await computeImageChannels(imageUrl, channelCache);
-      if (!baseChannels) {
-        summary.skipped += group.length;
-        continue;
-      }
-
-      const candidates = exactMatches.slice(0, MAX_CANDIDATES);
-      const best = await pickClosestMpcMatch(baseChannels, candidates, channelCache);
-      if (!best || best.confidence < MIN_CONFIDENCE) {
-        summary.skipped += group.length;
-        continue;
-      }
-      bestCard = best.card;
-    }
-
-    // ── Apply the upgrade ──
-    const imageUrlMpc = getMpcAutofillImageUrl(bestCard.identifier);
-    const newImageId = await addRemoteImage([imageUrlMpc], group.length);
-    if (!newImageId) {
-      summary.skipped += group.length;
-      continue;
-    }
-
-    try {
-      await db.transaction("rw", db.cards, db.images, async () => {
-        await db.cards.bulkUpdate(
-          group.map((card) => ({
-            key: card.uuid,
-            changes: {
-              imageId: newImageId,
-              isUserUpload: false,
-              hasBuiltInBleed: true,
-              lookupError: undefined,
-              enrichmentRetryCount: undefined,
-              enrichmentNextRetryAt: undefined,
-            },
-          }))
-        );
-
-        if (imageId !== newImageId) {
-          const oldImage = await db.images.get(imageId);
-          if (oldImage) {
-            const newRefCount = oldImage.refCount - group.length;
-            if (newRefCount > 0) {
-              await db.images.update(imageId, { refCount: newRefCount });
-            } else {
-              await db.images.delete(imageId);
-            }
-          }
-        }
-      });
-
-      summary.upgraded += group.length;
-    } catch (error) {
-      console.warn("[MPC Bulk Upgrade] Failed to apply upgrade:", representative.name, error);
-      summary.errors += group.length;
+    // Yield to the event loop between batches so the UI can update
+    if (batchIdx < totalBatches - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 

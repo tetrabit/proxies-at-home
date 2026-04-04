@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import fullLogo from "@/assets/fullLogo.png";
 import { logoSvg } from "@/assets";
 import { useSettingsStore } from "@/store/settings";
@@ -11,6 +11,7 @@ import { ExternalLink, Download, MousePointerClick, Move, Copy, Upload, Layers }
 import { AutoTooltip } from "./common";
 import { PullToRefresh } from "./PullToRefresh";
 import { bulkUpgradeToMpcAutofill } from "@/helpers/mpcBulkUpgrade";
+import type { BulkUpgradeProgress } from "@/helpers/mpcBulkUpgrade";
 import {
   DeckBuilderImporter,
   DecklistUploader,
@@ -30,14 +31,22 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
   const toggleUploadPanel = useSettingsStore((state) => state.toggleUploadPanel);
   const currentProjectId = useProjectStore((state) => state.currentProjectId);
   const addToast = useToastStore((state) => state.addToast);
+  const updateToast = useToastStore((state) => state.updateToast);
   const removeToast = useToastStore((state) => state.removeToast);
   const showErrorToast = useToastStore((state) => state.showErrorToast);
   const [isBulkUpgrading, setIsBulkUpgrading] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const handleToggle = onToggle ?? toggleUploadPanel;
 
   const handleBulkUpgrade = async () => {
-    if (isBulkUpgrading) return;
+    if (isBulkUpgrading) {
+      // Cancel in-progress upgrade
+      abortControllerRef.current?.abort();
+      return;
+    }
     setIsBulkUpgrading(true);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     const toastId = addToast({
       type: "processing",
@@ -46,8 +55,27 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
     });
 
     try {
-      const summary = await bulkUpgradeToMpcAutofill({ projectId: currentProjectId ?? undefined });
+      const summary = await bulkUpgradeToMpcAutofill({
+        projectId: currentProjectId ?? undefined,
+        signal: abortController.signal,
+        onProgress: (progress: BulkUpgradeProgress) => {
+          const { currentBatch, totalBatches, summary: s } = progress;
+          updateToast(toastId, {
+            message: `MPC Upgrade: batch ${currentBatch}/${totalBatches} — ${s.upgraded} upgraded, ${s.skipped} skipped${s.errors ? `, ${s.errors} errors` : ""}`,
+          });
+        },
+      });
       removeToast(toastId);
+
+      if (abortController.signal.aborted) {
+        const cancelId = addToast({
+          type: "error",
+          message: `MPC upgrade cancelled. ${summary.upgraded} upgraded, ${summary.skipped} skipped before stopping.`,
+          dismissible: true,
+        });
+        setTimeout(() => removeToast(cancelId), 6000);
+        return;
+      }
 
       if (summary.totalCards === 0) {
         const doneId = addToast({
@@ -71,6 +99,7 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
       removeToast(toastId);
       showErrorToast("Bulk MPC upgrade failed. Please try again.");
     } finally {
+      abortControllerRef.current = null;
       setIsBulkUpgrading(false);
     }
   };
@@ -148,10 +177,14 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
           <button
             type="button"
             onClick={handleBulkUpgrade}
-            disabled={cardCount === 0 || isBulkUpgrading}
-            className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={cardCount === 0 && !isBulkUpgrading}
+            className={`w-full rounded-md px-3 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              isBulkUpgrading
+                ? "bg-red-600 hover:bg-red-700"
+                : "bg-blue-600 hover:bg-blue-700"
+            }`}
           >
-            {isBulkUpgrading ? "Upgrading..." : "Bulk upgrade to MPC Autofill"}
+            {isBulkUpgrading ? "Cancel upgrade" : "Bulk upgrade to MPC Autofill"}
           </button>
           <p className="text-xs text-gray-600 dark:text-white/60 mt-2">
             Replaces current Scryfall art with the closest MPC Autofill match.

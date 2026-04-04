@@ -11,6 +11,7 @@ interface Toast {
 type ToastStore = {
     toasts: Toast[];
     addToast: (toast: Omit<Toast, "id">) => string;
+    updateToast: (id: string, updates: Partial<Omit<Toast, "id">>) => void;
     removeToast: (id: string) => void;
     clearToasts: () => void;
     showProcessingToast: () => void;
@@ -32,6 +33,14 @@ export const useToastStore = create<ToastStore>((set, get) => ({
             toasts: [...state.toasts, { ...toast, id }],
         }));
         return id;
+    },
+
+    updateToast: (id, updates) => {
+        set((state) => ({
+            toasts: state.toasts.map((t) =>
+                t.id === id ? { ...t, ...updates } : t
+            ),
+        }));
     },
 
     removeToast: (id) => {
