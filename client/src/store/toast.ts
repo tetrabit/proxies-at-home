@@ -60,19 +60,23 @@ export const useToastStore = create<ToastStore>((set, get) => ({
         if (!useSettingsStore.getState().showProcessingToasts) return;
 
         const { toasts, addToast } = get();
-        // Only add if not already showing a processing toast
-        if (!toasts.some((t) => t.type === "processing")) {
-            addToast({
-                type: "processing",
-                message: "Processing images...",
-                dismissible: true,
-            });
+        // Only add if not already showing the generic processing toast
+        if (!toasts.some((t) => t.id === "processing-generic")) {
+            set((state) => ({
+                toasts: [...state.toasts, {
+                    id: "processing-generic",
+                    type: "processing" as const,
+                    message: "Processing images...",
+                    dismissible: true,
+                }],
+            }));
         }
     },
 
     hideProcessingToast: () => {
+        // Only remove the generic processing toast — not MPC upgrade or other progress toasts
         set((state) => ({
-            toasts: state.toasts.filter((t) => t.type !== "processing"),
+            toasts: state.toasts.filter((t) => t.id !== "processing-generic"),
         }));
     },
 

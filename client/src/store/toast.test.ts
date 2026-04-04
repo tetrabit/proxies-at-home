@@ -145,16 +145,23 @@ describe("useToastStore", () => {
     });
 
     describe("hideProcessingToast", () => {
-        it("should remove processing toasts", () => {
-            const { addToast, hideProcessingToast } = useToastStore.getState();
-            addToast({ type: "processing", message: "Processing...", dismissible: true });
+        it("should remove only the generic processing toast", () => {
+            const { showProcessingToast, hideProcessingToast, addToast } = useToastStore.getState();
+            // Create the generic processing toast via showProcessingToast
+            showProcessingToast();
+            // Also add a custom processing toast (e.g., MPC upgrade with progress)
+            addToast({ type: "processing", message: "MPC Upgrade (5/100)...", dismissible: true });
             addToast({ type: "metadata", message: "Other toast", dismissible: true });
+
+            expect(useToastStore.getState().toasts.length).toBe(3);
 
             hideProcessingToast();
 
             const toasts = useToastStore.getState().toasts;
-            expect(toasts.length).toBe(1);
-            expect(toasts[0].type).toBe("metadata");
+            // Should remove only the generic toast, keep the custom processing and metadata toasts
+            expect(toasts.length).toBe(2);
+            expect(toasts[0].message).toBe("MPC Upgrade (5/100)...");
+            expect(toasts[1].type).toBe("metadata");
         });
     });
 
