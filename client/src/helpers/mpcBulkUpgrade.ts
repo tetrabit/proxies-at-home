@@ -339,7 +339,14 @@ export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {})
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
 
-  const cardsWithImages = cards.filter((card) => card.imageId);
+  const cardsWithImages = cards.filter((card) => {
+    if (!card.imageId) return false;
+    // Skip cards using the default cardback (generic MTG back)
+    if (card.usesDefaultCardback) return false;
+    // Skip cards whose imageId is a cardback library entry (e.g. cardback_builtin_blank)
+    if (card.imageId.startsWith("cardback_")) return false;
+    return true;
+  });
   // Sort by page order so upgrades visibly progress top-left → bottom-right
   cardsWithImages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const summary: BulkMpcUpgradeSummary = {
