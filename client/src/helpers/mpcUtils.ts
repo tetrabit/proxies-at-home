@@ -40,16 +40,23 @@ export interface MpcSetCollector {
  *
  * Returns null if neither set code nor collector number can be extracted.
  */
+// Known non-set bracket tags (quality, language) — hoisted for performance
+const NON_SET_TAGS = new Set(["foil", "hd", "en", "jp", "de", "fr", "it", "es", "pt", "ko", "ru", "zhs", "zht"]);
+
 export function parseMpcSetCollector(mpcName: string): MpcSetCollector | null {
     if (!mpcName) return null;
 
     // Extract set code from square brackets: [OTC], [STA], [CMR], [LEA], [PF24], [FCA]
     // Must be 2-5 uppercase alphanumeric chars (set codes), not tags like [foil], [hd]
-    const setMatch = mpcName.match(/\[([A-Z0-9]{2,5})\]/i);
-    const rawSet = setMatch?.[1];
-    // Filter out known non-set tags (case-insensitive)
-    const NON_SET_TAGS = new Set(["foil", "hd", "en", "jp", "de", "fr", "it", "es", "pt", "ko", "ru", "zhs", "zht"]);
-    const set = rawSet && !NON_SET_TAGS.has(rawSet.toLowerCase()) ? rawSet.toUpperCase() : undefined;
+    // Iterate ALL bracket groups to find the first valid set code (non-set tags may appear first)
+    const bracketMatches = Array.from(mpcName.matchAll(/\[([A-Z0-9]{2,5})\]/gi));
+    let set: string | undefined;
+    for (const m of bracketMatches) {
+        if (!NON_SET_TAGS.has(m[1].toLowerCase())) {
+            set = m[1].toUpperCase();
+            break;
+        }
+    }
 
     // Extract collector number from curly braces: {267}, {15}, {395}
     // Must be numeric (possibly with letter suffix like "267a")

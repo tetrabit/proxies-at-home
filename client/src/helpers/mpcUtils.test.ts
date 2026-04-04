@@ -133,5 +133,20 @@ describe("mpcUtils", () => {
       const result = parseMpcSetCollector("Counterspell [FCA] {4}");
       expect(result).toEqual({ set: "FCA", collectorNumber: "4" });
     });
+
+    it("skips non-set tag before real set: [hd] [STA] {15}", () => {
+      const result = parseMpcSetCollector("Counterspell [hd] [STA] {15}");
+      expect(result).toEqual({ set: "STA", collectorNumber: "15" });
+    });
+
+    it("skips multiple non-set tags before real set: [foil] [hd] [CMR] {395}", () => {
+      const result = parseMpcSetCollector("Sol Ring [foil] [hd] [CMR] {395}");
+      expect(result).toEqual({ set: "CMR", collectorNumber: "395" });
+    });
+
+    it("returns only collector number when all brackets are non-set tags: [foil] {267}", () => {
+      const result = parseMpcSetCollector("Sol Ring [foil] {267}");
+      expect(result).toEqual({ set: "", collectorNumber: "267" });
+    });
   });
 });

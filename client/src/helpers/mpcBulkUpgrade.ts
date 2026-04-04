@@ -194,7 +194,10 @@ async function pickClosestMpcMatch(
   let bestScore = -1;
 
   for (const candidate of candidates) {
-    const thumbUrl = candidate.mediumThumbnailUrl || candidate.smallThumbnailUrl;
+    if (!candidate.identifier) continue;
+    // Use our MPC image proxy (which fetches from img.mpcautofill.com CDN)
+    // instead of Google Drive thumbnail URLs which require auth/cookies
+    const thumbUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
     if (!thumbUrl) continue;
 
     const candidateChannels = await computeImageChannels(thumbUrl, channelCache);
