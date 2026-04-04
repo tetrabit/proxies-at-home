@@ -12,6 +12,8 @@ services:
       - PRINTER_KEYSTONE_REPO=/opt/printer-keystone
     ports:
       - "3001:3001"
+    volumes:
+      - server-data:/app/server/data
 
   client:
     build:
@@ -21,3 +23,7 @@ services:
       - server
     ports:
       - "5173:80"
+
+volumes:
+  server-data:
+    driver: local

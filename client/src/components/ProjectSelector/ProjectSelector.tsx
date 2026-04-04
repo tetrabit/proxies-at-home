@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Plus, Check, Trash2, Edit2, Share2, RefreshCw, AlertCircle } from "lucide-react";
+import { Plus, Check, Trash2, Edit2, Share2, RefreshCw, AlertCircle, Download, Upload, RotateCcw } from "lucide-react";
 import { useProjectStore, useSettingsStore } from "@/store";
 import { SelectDropdown } from "@/components/common";
 import { Button, TextInput, Label, Modal, ModalHeader, ModalBody, ModalFooter } from "flowbite-react";
@@ -11,6 +11,7 @@ import { useToastStore } from "@/store/toast";
 import { useShallow } from "zustand/react/shallow";
 import { useShareSync } from "@/hooks/useShareSync";
 import { debugLog } from "@/helpers/debug";
+import { exportProject, downloadBackup, pickBackupFile, importProject, listServerBackups, fetchServerBackup, type BackupMeta } from "@/helpers/projectBackup";
 
 export function ProjectSelector() {
     const projects = useProjectStore((state) => state.projects);
@@ -32,6 +33,11 @@ export function ProjectSelector() {
 
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [projectToDelete, setProjectToDelete] = useState<{ id: string; name: string } | null>(null);
+
+    const [isRestoreModalOpen, setIsRestoreModalOpen] = useState(false);
+    const [serverBackups, setServerBackups] = useState<BackupMeta[]>([]);
+    const [isLoadingBackups, setIsLoadingBackups] = useState(false);
+    const [isRestoringBackup, setIsRestoringBackup] = useState(false);
 
     const currentProject = projects.find((p) => p.id === currentProjectId);
 
@@ -206,6 +212,73 @@ export function ProjectSelector() {
         }
     }, [settings, currentProjectId]);
 
+    // --- Export ---
+    const handleExportProject = useCallback(async () => {
+        if (!currentProjectId) return;
+        try {
+            const backup = await exportProject(currentProjectId);
+            downloadBackup(backup);
+            useToastStore.getState().showSuccessToast(
+                `Exported "${currentProject?.name}" (${backup.cards.filter(c => !c.linkedFrontId).length} cards)`
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Export failed';
+            useToastStore.getState().showErrorToast(message);
+        }
+    }, [currentProjectId, currentProject?.name]);
+
+    // --- Import ---
+    const handleImportProject = useCallback(async () => {
+        try {
+            const backup = pickBackupFile();
+            const result = await backup;
+            if (!result) return; // User cancelled
+
+            const cardCount = result.cards.filter(c => !c.linkedFrontId).length;
+            const newId = await importProject(result);
+            await switchProject(newId);
+            useToastStore.getState().showSuccessToast(
+                `Imported "${result.project.name}" (${cardCount} cards)`
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Import failed';
+            useToastStore.getState().showErrorToast(message);
+        }
+    }, [switchProject]);
+
+    // --- Restore from Server Backup ---
+    const handleOpenRestoreModal = useCallback(async () => {
+        setIsRestoreModalOpen(true);
+        setIsLoadingBackups(true);
+        try {
+            const backups = await listServerBackups();
+            setServerBackups(backups);
+        } catch {
+            useToastStore.getState().showErrorToast('Failed to fetch server backups');
+            setServerBackups([]);
+        } finally {
+            setIsLoadingBackups(false);
+        }
+    }, []);
+
+    const handleRestoreBackup = useCallback(async (backup: BackupMeta) => {
+        setIsRestoringBackup(true);
+        try {
+            const fullBackup = await fetchServerBackup(backup.projectId);
+            const newId = await importProject(fullBackup, backup.projectName);
+            await switchProject(newId);
+            useToastStore.getState().showSuccessToast(
+                `Restored "${backup.projectName}" (${backup.cardCount} cards)`
+            );
+            setIsRestoreModalOpen(false);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : 'Restore failed';
+            useToastStore.getState().showErrorToast(message);
+        } finally {
+            setIsRestoringBackup(false);
+        }
+    }, [switchProject]);
+
     // Auto-sync shared projects
     const { syncStatus } = useShareSync();
 
@@ -281,6 +354,42 @@ export function ProjectSelector() {
                         >
                             <Plus className="w-4 h-4" />
                             Create New Project...
+                        </button>
+
+                        <div className="h-px bg-gray-200 dark:bg-gray-600 my-1" />
+
+                        <button
+                            onClick={() => {
+                                handleExportProject();
+                                setIsDropdownOpen(false);
+                            }}
+                            disabled={!currentProjectId}
+                            className="flex items-center gap-2 px-2 py-2 rounded-md hover:bg-green-50 text-green-600 dark:text-green-400 dark:hover:bg-green-900/20 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            <Download className="w-4 h-4" />
+                            Export Project (JSON)
+                        </button>
+
+                        <button
+                            onClick={() => {
+                                handleImportProject();
+                                setIsDropdownOpen(false);
+                            }}
+                            className="flex items-center gap-2 px-2 py-2 rounded-md hover:bg-green-50 text-green-600 dark:text-green-400 dark:hover:bg-green-900/20 text-sm font-medium transition-colors"
+                        >
+                            <Upload className="w-4 h-4" />
+                            Import Project (JSON)...
+                        </button>
+
+                        <button
+                            onClick={() => {
+                                handleOpenRestoreModal();
+                                setIsDropdownOpen(false);
+                            }}
+                            className="flex items-center gap-2 px-2 py-2 rounded-md hover:bg-amber-50 text-amber-600 dark:text-amber-400 dark:hover:bg-amber-900/20 text-sm font-medium transition-colors"
+                        >
+                            <RotateCcw className="w-4 h-4" />
+                            Restore from Server Backup...
                         </button>
                     </div>
                 </SelectDropdown>
@@ -437,6 +546,67 @@ export function ProjectSelector() {
                 </div>,
                 document.body
             )}
+
+            {/* Restore from Server Backup Modal */}
+            <Modal
+                show={isRestoreModalOpen}
+                onClose={() => setIsRestoreModalOpen(false)}
+                size="lg"
+            >
+                <ModalHeader>Restore from Server Backup</ModalHeader>
+                <ModalBody>
+                    {isLoadingBackups ? (
+                        <div className="flex items-center justify-center py-8">
+                            <RefreshCw className="w-5 h-5 animate-spin text-gray-400 mr-2" />
+                            <span className="text-gray-500 dark:text-gray-400">Loading backups...</span>
+                        </div>
+                    ) : serverBackups.length === 0 ? (
+                        <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                            <p>No server backups found.</p>
+                            <p className="text-sm mt-2">Backups are created automatically as you work.</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-2 max-h-80 overflow-y-auto">
+                            {serverBackups.map((backup) => (
+                                <div
+                                    key={backup.projectId}
+                                    className="flex items-center justify-between p-3 rounded-lg border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                                >
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-medium text-gray-900 dark:text-white truncate">
+                                            {backup.projectName}
+                                        </div>
+                                        <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                            {backup.cardCount} cards
+                                            {" · "}
+                                            {(backup.sizeBytes / 1024).toFixed(0)} KB
+                                            {" · "}
+                                            Last saved {new Date(backup.updatedAt).toLocaleString()}
+                                        </div>
+                                    </div>
+                                    <Button
+                                        size="xs"
+                                        color="blue"
+                                        disabled={isRestoringBackup}
+                                        onClick={() => handleRestoreBackup(backup)}
+                                    >
+                                        {isRestoringBackup ? (
+                                            <RefreshCw className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                            "Restore"
+                                        )}
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </ModalBody>
+                <ModalFooter>
+                    <Button color="gray" onClick={() => setIsRestoreModalOpen(false)}>
+                        Close
+                    </Button>
+                </ModalFooter>
+            </Modal>
         </>
     );
 }

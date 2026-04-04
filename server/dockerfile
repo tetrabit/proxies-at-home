@@ -79,5 +79,6 @@ COPY server/package*.json ./
 RUN npm ci --omit=dev
 
 # Koyeb will set PORT; make sure your code uses process.env.PORT
+RUN mkdir -p /app/server/data
 EXPOSE 3001
 CMD ["node", "dist/server/src/index.js"]

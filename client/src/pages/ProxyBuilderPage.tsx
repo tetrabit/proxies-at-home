@@ -12,6 +12,7 @@ import { UploadSection } from "../components/UploadSection";
 import { useImageProcessing } from "../hooks/useImageProcessing";
 import { useProcessingMonitor } from "../hooks/useProcessingMonitor";
 import { useCardEnrichment } from "../hooks/useCardEnrichment";
+import { useAutoBackup } from "../hooks/useAutoBackup";
 import {
   useSettingsStore,
   useProjectStore,
@@ -392,6 +393,7 @@ export default function ProxyBuilderPage() {
 
   // Background enrichment for MPC imports (keep hook for enrichment logic)
   useCardEnrichment();
+  useAutoBackup();
 
   useEffect(() => {
     if (!allCards) return;

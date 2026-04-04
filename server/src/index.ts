@@ -10,6 +10,7 @@ import { streamRouter } from "./routes/streamRouter.js";
 import { mpcAutofillRouter } from "./routes/mpcAutofillRouter.js";
 import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
+import { backupRouter } from "./routes/backupRouter.js";
 import { keystoneRouter } from "./routes/keystoneRouter.js";
 import metricsRouter from "./routes/metricsRouter.js";
 import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
@@ -122,7 +123,7 @@ export function startServer(port: number = 3001): Promise<number> {
     })
   );
 
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "10mb" }));
 
   // Health check endpoints
   const startTime = Date.now();
@@ -192,6 +193,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/mpcfill", mpcAutofillRouter);
   app.use("/api/scryfall", scryfallRouter);
   app.use("/api/share", shareRouter);
+  app.use("/api/backup", backupRouter);
   app.use("/api/keystone", keystoneRouter);
   app.use("/api/metrics", metricsRouter);
 

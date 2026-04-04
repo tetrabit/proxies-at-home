@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const DB_PATH = path.join(__dirname, '..', '..', 'data', 'proxxied-cards.db');
 
 // Current schema version - increment when adding migrations
-const CURRENT_DB_VERSION = 5;
+const CURRENT_DB_VERSION = 6;
 
 // Migration definitions - each entry upgrades from (version-1) to (version)
 // Add new migrations to the end of this array
@@ -109,6 +109,20 @@ const migrations: Migration[] = [
         expires_at INTEGER NOT NULL    -- Updated on each access (rolling 30-day TTL)
       );`,
       'CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares(expires_at);',
+    ],
+  },
+  {
+    version: 6,
+    description: 'Add backups table for automatic project backup',
+    up: [
+      `CREATE TABLE IF NOT EXISTS backups (
+        project_id TEXT PRIMARY KEY,     -- Client-side project UUID
+        project_name TEXT NOT NULL,      -- Human-readable name
+        data BLOB NOT NULL,              -- gzipped ProjectBackup JSON
+        card_count INTEGER DEFAULT 0,    -- For quick display without decompressing
+        updated_at INTEGER NOT NULL,     -- Last backup timestamp
+        created_at INTEGER NOT NULL      -- First backup timestamp
+      );`,
     ],
   },
 ];
@@ -247,6 +261,15 @@ export function initDatabase(): Database.Database {
       data BLOB NOT NULL,
       created_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS backups (
+      project_id TEXT PRIMARY KEY,
+      project_name TEXT NOT NULL,
+      data BLOB NOT NULL,
+      card_count INTEGER DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
     );
   `);
 
