@@ -340,6 +340,8 @@ export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {})
     : await db.cards.toArray();
 
   const cardsWithImages = cards.filter((card) => card.imageId);
+  // Sort by page order so upgrades visibly progress top-left → bottom-right
+  cardsWithImages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const summary: BulkMpcUpgradeSummary = {
     totalCards: cardsWithImages.length,
     upgraded: 0,
