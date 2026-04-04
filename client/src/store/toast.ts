@@ -6,6 +6,8 @@ interface Toast {
     type: "processing" | "metadata" | "success" | "copy" | "error";
     message: string;
     dismissible: boolean;
+    /** Optional progress (0-1) for progress bar display */
+    progress?: number;
 }
 
 type ToastStore = {

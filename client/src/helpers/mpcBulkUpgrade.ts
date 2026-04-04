@@ -15,23 +15,21 @@ export type BulkMpcUpgradeSummary = {
 };
 
 export type BulkUpgradeProgress = {
-  /** Current batch number (1-indexed) */
-  currentBatch: number;
-  /** Total number of batches */
-  totalBatches: number;
-  /** Unique images processed so far */
+  /** Unique images processed so far (1-indexed) */
   processedImages: number;
   /** Total unique images to process */
   totalImages: number;
+  /** 0-1 fraction complete */
+  fraction: number;
+  /** Name of the card currently being processed */
+  currentCardName: string;
   /** Running summary */
   summary: BulkMpcUpgradeSummary;
 };
 
 export type BulkUpgradeOptions = {
   projectId?: string;
-  /** Number of unique images to process per batch (default: 9, matching a 3x3 page) */
-  batchSize?: number;
-  /** Called after each batch completes */
+  /** Called after each unique image is processed */
   onProgress?: (progress: BulkUpgradeProgress) => void;
   /** AbortSignal to cancel the upgrade */
   signal?: AbortSignal;
@@ -335,11 +333,8 @@ async function processImageGroup(
   return result;
 }
 
-/** Default batch size: 9 unique images per batch (one 3×3 page worth of cards) */
-const DEFAULT_BATCH_SIZE = 9;
-
 export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {}): Promise<BulkMpcUpgradeSummary> {
-  const { projectId, batchSize = DEFAULT_BATCH_SIZE, onProgress, signal } = options;
+  const { projectId, onProgress, signal } = options;
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
@@ -371,45 +366,42 @@ export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {})
     imageById.set(id, images[idx]);
   });
 
-  // Split image groups into batches
   const allEntries = Array.from(cardsByImageId.entries());
   const totalImages = allEntries.length;
-  const totalBatches = Math.ceil(totalImages / batchSize);
   const channelCache = new Map<string, Float32Array[]>();
 
-  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
-    // Check for cancellation
-    if (signal?.aborted) {
-      break;
-    }
+  for (let i = 0; i < totalImages; i++) {
+    if (signal?.aborted) break;
 
-    const batchStart = batchIdx * batchSize;
-    const batchEnd = Math.min(batchStart + batchSize, totalImages);
-    const batch = allEntries.slice(batchStart, batchEnd);
+    const [imageId, group] = allEntries[i];
+    const cardName = group[0].name;
 
-    for (const [imageId, group] of batch) {
-      if (signal?.aborted) break;
-
-      const result = await processImageGroup(imageId, group, imageById, channelCache);
-      summary.upgraded += result.upgraded;
-      summary.skipped += result.skipped;
-      summary.errors += result.errors;
-    }
-
-    // Report progress after each batch
+    // Report progress BEFORE processing so the user sees which card is being worked on
     onProgress?.({
-      currentBatch: batchIdx + 1,
-      totalBatches,
-      processedImages: batchEnd,
+      processedImages: i,
       totalImages,
+      fraction: i / totalImages,
+      currentCardName: cardName,
       summary: { ...summary },
     });
 
-    // Yield to the event loop between batches so the UI can update
-    if (batchIdx < totalBatches - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    // Yield to the event loop so React can re-render the progress bar
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const result = await processImageGroup(imageId, group, imageById, channelCache);
+    summary.upgraded += result.upgraded;
+    summary.skipped += result.skipped;
+    summary.errors += result.errors;
   }
+
+  // Final progress (100%)
+  onProgress?.({
+    processedImages: totalImages,
+    totalImages,
+    fraction: 1,
+    currentCardName: "",
+    summary: { ...summary },
+  });
 
   return summary;
 }

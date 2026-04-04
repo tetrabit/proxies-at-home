@@ -59,9 +59,12 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
         projectId: currentProjectId ?? undefined,
         signal: abortController.signal,
         onProgress: (progress: BulkUpgradeProgress) => {
-          const { currentBatch, totalBatches, summary: s } = progress;
+          const { processedImages, totalImages, fraction, currentCardName, summary: s } = progress;
+          const pct = Math.round(fraction * 100);
+          const cardLabel = currentCardName ? ` — ${currentCardName}` : "";
           updateToast(toastId, {
-            message: `MPC Upgrade: batch ${currentBatch}/${totalBatches} — ${s.upgraded} upgraded, ${s.skipped} skipped${s.errors ? `, ${s.errors} errors` : ""}`,
+            message: `MPC Upgrade (${processedImages}/${totalImages}, ${pct}%)${cardLabel} · ${s.upgraded}↑ ${s.skipped}→${s.errors ? ` ${s.errors}✗` : ""}`,
+            progress: fraction,
           });
         },
       });
