@@ -245,15 +245,17 @@ export async function bulkUpgradeToMpcAutofill(options: { projectId?: string } =
     const imageRecord = imageById.get(imageId);
     const source = imageRecord?.source ?? inferImageSource(imageId);
     if (source !== "scryfall") {
+      console.debug(`[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`);
       summary.skipped += group.length;
       continue;
     }
 
     const representative = group[0];
-    const cardType = representative.isToken ? "TOKEN" : "***";
+    const cardType = representative.isToken ? "TOKEN" : "CARD";
     const results = await searchMpcAutofill(representative.name, cardType, true);
     const exactMatches = results ? filterByExactName(results, representative.name) : [];
     if (!results || results.length === 0 || exactMatches.length === 0) {
+      console.debug(`[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`);
       summary.skipped += group.length;
       continue;
     }
