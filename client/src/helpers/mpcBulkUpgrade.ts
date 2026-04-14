@@ -11,6 +11,7 @@ import { loadImage } from "./imageProcessing";
 import { toProxied } from "./imageHelper";
 import {
   filterByExactName,
+  type HashDistanceFn,
   selectBestCandidate,
   type VisualCompareFn,
 } from "./mpcBulkUpgradeMatcher";
@@ -47,6 +48,8 @@ export type BulkUpgradeOptions = {
 const SSIM_SIZE = 128; // Up from 64 — more detail for visual comparison
 const SSIM_CHANNELS = 3; // RGB instead of grayscale
 const MAX_CANDIDATES = 25;
+const HASH_ROWS = 8;
+const HASH_COLUMNS = 9;
 
 // ── Layer 2: Color-aware SSIM visual matching ────────────────────────────
 
@@ -208,6 +211,103 @@ function createVisualCompare(
   };
 }
 
+function computePerceptualHash(channels: Float32Array[]): bigint {
+  const [red, green, blue] = channels;
+  const cellWidth = SSIM_SIZE / HASH_COLUMNS;
+  const cellHeight = SSIM_SIZE / HASH_ROWS;
+  const sampled = new Array<number>(HASH_COLUMNS * HASH_ROWS).fill(0);
+
+  for (let row = 0; row < HASH_ROWS; row += 1) {
+    const startY = Math.floor(row * cellHeight);
+    const endY = Math.max(startY + 1, Math.floor((row + 1) * cellHeight));
+
+    for (let column = 0; column < HASH_COLUMNS; column += 1) {
+      const startX = Math.floor(column * cellWidth);
+      const endX = Math.max(startX + 1, Math.floor((column + 1) * cellWidth));
+      let total = 0;
+      let count = 0;
+
+      for (let y = startY; y < endY; y += 1) {
+        for (let x = startX; x < endX; x += 1) {
+          const index = y * SSIM_SIZE + x;
+          total +=
+            0.2126 * red[index] + 0.7152 * green[index] + 0.0722 * blue[index];
+          count += 1;
+        }
+      }
+
+      sampled[row * HASH_COLUMNS + column] = count === 0 ? 0 : total / count;
+    }
+  }
+
+  let hash = 0n;
+  for (let row = 0; row < HASH_ROWS; row += 1) {
+    for (let column = 0; column < HASH_COLUMNS - 1; column += 1) {
+      const left = sampled[row * HASH_COLUMNS + column];
+      const right = sampled[row * HASH_COLUMNS + column + 1];
+      hash = (hash << 1n) | (left > right ? 1n : 0n);
+    }
+  }
+
+  return hash;
+}
+
+function computeHammingDistance(left: bigint, right: bigint): number {
+  let distance = 0;
+  let value = left ^ right;
+
+  while (value > 0n) {
+    distance += Number(value & 1n);
+    value >>= 1n;
+  }
+
+  return distance;
+}
+
+async function getOrComputeImageHash(
+  imageUrl: string,
+  channelCache: Map<string, Float32Array[]>,
+  hashCache: Map<string, bigint>
+): Promise<bigint | null> {
+  const cachedHash = hashCache.get(imageUrl);
+  if (cachedHash !== undefined) {
+    return cachedHash;
+  }
+
+  const channels = await computeImageChannels(imageUrl, channelCache);
+  if (!channels) return null;
+
+  const hash = computePerceptualHash(channels);
+  hashCache.set(imageUrl, hash);
+  return hash;
+}
+
+function createHashDistance(
+  channelCache: Map<string, Float32Array[]>,
+  hashCache: Map<string, bigint>
+): HashDistanceFn {
+  return async (sourceImageUrl, candidate) => {
+    const sourceHash = await getOrComputeImageHash(
+      sourceImageUrl,
+      channelCache,
+      hashCache
+    );
+    if (sourceHash === null) return null;
+
+    const thumbnailUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
+    if (!thumbnailUrl) return null;
+
+    const candidateHash = await getOrComputeImageHash(
+      thumbnailUrl,
+      channelCache,
+      hashCache
+    );
+    if (candidateHash === null) return null;
+
+    return computeHammingDistance(sourceHash, candidateHash);
+  };
+}
+
 // ── Main bulk upgrade ────────────────────────────────────────────────────
 
 /**
@@ -221,7 +321,8 @@ async function processImageGroup(
     string,
     { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined
   >,
-  channelCache: Map<string, Float32Array[]>
+  channelCache: Map<string, Float32Array[]>,
+  hashCache: Map<string, bigint>
 ): Promise<{ upgraded: number; skipped: number; errors: number }> {
   const result = { upgraded: 0, skipped: 0, errors: 0 };
 
@@ -255,6 +356,7 @@ async function processImageGroup(
     collectorNumber: representative.number,
     sourceImageUrl:
       imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId,
+    hashDistance: createHashDistance(channelCache, hashCache),
     visualCompare: createVisualCompare(channelCache),
   });
 
@@ -362,6 +464,7 @@ export async function bulkUpgradeToMpcAutofill(
   const allEntries = Array.from(cardsByImageId.entries());
   const totalImages = allEntries.length;
   const channelCache = new Map<string, Float32Array[]>();
+  const hashCache = new Map<string, bigint>();
 
   for (let i = 0; i < totalImages; i++) {
     if (signal?.aborted) break;
@@ -385,7 +488,8 @@ export async function bulkUpgradeToMpcAutofill(
       imageId,
       group,
       imageById,
-      channelCache
+      channelCache,
+      hashCache
     );
     summary.upgraded += result.upgraded;
     summary.skipped += result.skipped;

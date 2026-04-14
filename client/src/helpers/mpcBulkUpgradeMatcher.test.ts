@@ -4,6 +4,7 @@ import {
   filterByExactName,
   normalizeName,
   selectBestCandidate,
+  type HashDistanceFn,
   type VisualCompareFn,
 } from "./mpcBulkUpgradeMatcher";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
@@ -171,6 +172,64 @@ describe("mpcBulkUpgradeMatcher", () => {
       if (result?.status === "matched") {
         expect(result.card.identifier).toBe("b");
       }
+    });
+
+    it("prefilters candidates with perceptual hash distance before visual scoring", async () => {
+      const hashDistance: HashDistanceFn = vi.fn(async (_source, candidate) =>
+        candidate.identifier === "a" ? 3 : 14
+      );
+      const visualCompare: VisualCompareFn = vi.fn(async () => 0.96);
+
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a", rawName: "Sol Ring [C21] {267}" }),
+          makeCard({ identifier: "b", rawName: "Sol Ring [C21] {267}" }),
+        ],
+        set: "C21",
+        collectorNumber: "267",
+        sourceImageUrl: "https://scryfall.test/card.png",
+        hashDistance,
+        visualCompare,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "matched",
+          reason: "set_collector_visual",
+          confidence: 0.96,
+        })
+      );
+      expect(hashDistance).toHaveBeenCalledTimes(2);
+      expect(visualCompare).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to the full bucket when hash distances are unavailable", async () => {
+      const hashDistance: HashDistanceFn = vi.fn(async () => null);
+      const visualCompare: VisualCompareFn = vi.fn(
+        async (_source, candidate) =>
+          candidate.identifier === "b" ? 0.95 : 0.8
+      );
+
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a", rawName: "Sol Ring [C21] {267}" }),
+          makeCard({ identifier: "b", rawName: "Sol Ring [C21] {267}" }),
+        ],
+        set: "C21",
+        collectorNumber: "267",
+        sourceImageUrl: "https://scryfall.test/card.png",
+        hashDistance,
+        visualCompare,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "matched",
+          reason: "set_collector_visual",
+          confidence: 0.95,
+        })
+      );
+      expect(visualCompare).toHaveBeenCalledTimes(2);
     });
   });
 });

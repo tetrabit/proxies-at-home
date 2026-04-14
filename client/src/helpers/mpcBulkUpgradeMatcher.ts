@@ -44,17 +44,26 @@ export type VisualCompareFn = (
   signal?: AbortSignal
 ) => Promise<number | null>;
 
+export type HashDistanceFn = (
+  sourceImageUrl: string,
+  candidate: MpcAutofillCard,
+  signal?: AbortSignal
+) => Promise<number | null>;
+
 export interface MatcherInput {
   candidates: MpcAutofillCard[];
   set?: string;
   collectorNumber?: string;
   sourceImageUrl?: string;
   signal?: AbortSignal;
+  hashDistance?: HashDistanceFn;
   visualCompare?: VisualCompareFn;
 }
 
 const MIN_VISUAL_CONFIDENCE = 0.7;
 const MIN_VISUAL_MARGIN = 0.03;
+const MAX_HASH_DISTANCE = 10;
+const HASH_DISTANCE_MARGIN = 2;
 
 type BucketPrefix = "set_collector" | "set" | "name";
 
@@ -145,6 +154,7 @@ async function resolveWithinBucket(
   prefix: BucketPrefix,
   sourceImageUrl?: string,
   signal?: AbortSignal,
+  hashDistance?: HashDistanceFn,
   visualCompare?: VisualCompareFn
 ): Promise<MatchResult> {
   if (bucket.length === 1) {
@@ -158,8 +168,15 @@ async function resolveWithinBucket(
     );
   }
 
+  const comparisonBucket = await prefilterCandidatesByHash(
+    bucket,
+    sourceImageUrl,
+    signal,
+    hashDistance
+  );
+
   const scored = await Promise.all(
-    bucket.map(async (candidate) => ({
+    comparisonBucket.map(async (candidate) => ({
       candidate,
       score: await visualCompare(sourceImageUrl, candidate, signal),
     }))
@@ -174,7 +191,7 @@ async function resolveWithinBucket(
 
   if (usableScores.length === 0) {
     return buildAmbiguousResult(
-      bucket,
+      comparisonBucket,
       `${prefix}_visual_unavailable` as AmbiguousReason
     );
   }
@@ -183,7 +200,7 @@ async function resolveWithinBucket(
 
   if (best.score < MIN_VISUAL_CONFIDENCE) {
     return buildAmbiguousResult(
-      bucket,
+      comparisonBucket,
       `${prefix}_visual_low_confidence` as AmbiguousReason,
       best.score,
       runnerUp?.score
@@ -192,7 +209,7 @@ async function resolveWithinBucket(
 
   if (runnerUp && best.score - runnerUp.score < MIN_VISUAL_MARGIN) {
     return buildAmbiguousResult(
-      bucket,
+      comparisonBucket,
       `${prefix}_visual_tie` as AmbiguousReason,
       best.score,
       runnerUp.score
@@ -215,6 +232,7 @@ export async function selectBestCandidate(
     collectorNumber,
     sourceImageUrl,
     signal,
+    hashDistance,
     visualCompare,
   } = input;
 
@@ -231,6 +249,7 @@ export async function selectBestCandidate(
       "set_collector",
       sourceImageUrl,
       signal,
+      hashDistance,
       visualCompare
     );
   }
@@ -243,6 +262,7 @@ export async function selectBestCandidate(
         "set",
         sourceImageUrl,
         signal,
+        hashDistance,
         visualCompare
       );
     }
@@ -253,6 +273,47 @@ export async function selectBestCandidate(
     "name",
     sourceImageUrl,
     signal,
+    hashDistance,
     visualCompare
   );
+}
+
+async function prefilterCandidatesByHash(
+  bucket: MpcAutofillCard[],
+  sourceImageUrl: string,
+  signal?: AbortSignal,
+  hashDistance?: HashDistanceFn
+): Promise<MpcAutofillCard[]> {
+  if (!hashDistance) {
+    return bucket;
+  }
+
+  const scored = await Promise.all(
+    bucket.map(async (candidate) => ({
+      candidate,
+      distance: await hashDistance(sourceImageUrl, candidate, signal),
+    }))
+  );
+
+  const usableDistances = scored
+    .filter(
+      (entry): entry is { candidate: MpcAutofillCard; distance: number } =>
+        entry.distance !== null
+    )
+    .sort((a, b) => a.distance - b.distance);
+
+  if (usableDistances.length === 0) {
+    return bucket;
+  }
+
+  const bestDistance = usableDistances[0].distance;
+  const maxDistance = Math.min(
+    bestDistance + HASH_DISTANCE_MARGIN,
+    MAX_HASH_DISTANCE
+  );
+  const narrowedBucket = usableDistances
+    .filter((entry) => entry.distance <= maxDistance)
+    .map((entry) => entry.candidate);
+
+  return narrowedBucket.length > 0 ? narrowedBucket : bucket;
 }
