@@ -1,11 +1,19 @@
 import { db } from "@/db";
 import type { CardOption } from "@/types";
 import { inferImageSource } from "./imageSourceUtils";
-import { searchMpcAutofill, getMpcAutofillImageUrl, type MpcAutofillCard } from "./mpcAutofillApi";
+import {
+  searchMpcAutofill,
+  getMpcAutofillImageUrl,
+  type MpcAutofillCard,
+} from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
 import { loadImage } from "./imageProcessing";
 import { toProxied } from "./imageHelper";
-import { parseMpcCardName, parseMpcSetCollector } from "./mpcUtils";
+import {
+  filterByExactName,
+  selectBestCandidate,
+  type VisualCompareFn,
+} from "./mpcBulkUpgradeMatcher";
 
 export type BulkMpcUpgradeSummary = {
   totalCards: number;
@@ -36,52 +44,9 @@ export type BulkUpgradeOptions = {
 };
 
 // ── Visual matching constants ────────────────────────────────────────────
-const SSIM_SIZE = 128;          // Up from 64 — more detail for visual comparison
-const SSIM_CHANNELS = 3;       // RGB instead of grayscale
+const SSIM_SIZE = 128; // Up from 64 — more detail for visual comparison
+const SSIM_CHANNELS = 3; // RGB instead of grayscale
 const MAX_CANDIDATES = 25;
-const MIN_CONFIDENCE = 0.7;
-
-// ── Layer 1: Set code + collector number matching ────────────────────────
-
-/**
- * Try to find an MPC card that matches the Scryfall card's set + collector number.
- * This is the most reliable matching method — exact printing identification.
- *
- * When multiple candidates match set+CN, prefer the highest DPI version.
- */
-function findBySetCollector(
-  candidates: MpcAutofillCard[],
-  set?: string,
-  collectorNumber?: string
-): MpcAutofillCard | null {
-  if (!set && !collectorNumber) return null;
-
-  const normalizedSet = set?.toUpperCase() ?? "";
-  const normalizedCN = collectorNumber ?? "";
-
-  const matches = candidates.filter((card) => {
-    const parsed = parseMpcSetCollector(card.rawName || card.name);
-    if (!parsed) return false;
-
-    // Both set and CN available → require both to match
-    if (normalizedSet && normalizedCN) {
-      return parsed.set === normalizedSet && parsed.collectorNumber === normalizedCN;
-    }
-    // Only set available → match set (weak, but better than nothing)
-    if (normalizedSet && parsed.set) {
-      return parsed.set === normalizedSet;
-    }
-    // Only CN available → match CN (even weaker, skip — too ambiguous)
-    return false;
-  });
-
-  if (matches.length === 0) return null;
-
-  // Prefer highest DPI among matches
-  matches.sort((a, b) => (b.dpi || 0) - (a.dpi || 0));
-  return matches[0];
-}
-
 
 // ── Layer 2: Color-aware SSIM visual matching ────────────────────────────
 
@@ -200,7 +165,10 @@ async function pickClosestMpcMatch(
     const thumbUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
     if (!thumbUrl) continue;
 
-    const candidateChannels = await computeImageChannels(thumbUrl, channelCache);
+    const candidateChannels = await computeImageChannels(
+      thumbUrl,
+      channelCache
+    );
     if (!candidateChannels) continue;
 
     const score = computeColorSsim(baseChannels, candidateChannels);
@@ -215,18 +183,30 @@ async function pickClosestMpcMatch(
   return { card: best, confidence: bestScore };
 }
 
-
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function normalizeName(value: string): string {
-  return value.trim().toLowerCase();
-}
+function createVisualCompare(
+  channelCache: Map<string, Float32Array[]>
+): VisualCompareFn {
+  return async (sourceImageUrl, candidate) => {
+    const baseChannels = await computeImageChannels(
+      sourceImageUrl,
+      channelCache
+    );
+    if (!baseChannels) return null;
 
-function filterByExactName(cards: MpcAutofillCard[], cardName: string): MpcAutofillCard[] {
-  const normalized = normalizeName(cardName);
-  return cards.filter((card) => normalizeName(parseMpcCardName(card.name, card.name)) === normalized);
-}
+    const thumbnailUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
+    if (!thumbnailUrl) return null;
 
+    const candidateChannels = await computeImageChannels(
+      thumbnailUrl,
+      channelCache
+    );
+    if (!candidateChannels) return null;
+
+    return computeColorSsim(baseChannels, candidateChannels);
+  };
+}
 
 // ── Main bulk upgrade ────────────────────────────────────────────────────
 
@@ -237,15 +217,20 @@ function filterByExactName(cards: MpcAutofillCard[], cardName: string): MpcAutof
 async function processImageGroup(
   imageId: string,
   group: CardOption[],
-  imageById: Map<string, { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined>,
-  channelCache: Map<string, Float32Array[]>,
+  imageById: Map<
+    string,
+    { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined
+  >,
+  channelCache: Map<string, Float32Array[]>
 ): Promise<{ upgraded: number; skipped: number; errors: number }> {
   const result = { upgraded: 0, skipped: 0, errors: 0 };
 
   const imageRecord = imageById.get(imageId);
   const source = imageRecord?.source ?? inferImageSource(imageId);
   if (source !== "scryfall") {
-    console.debug(`[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`);
+    console.debug(
+      `[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`
+    );
     result.skipped = group.length;
     return result;
   }
@@ -253,42 +238,32 @@ async function processImageGroup(
   const representative = group[0];
   const cardType = representative.isToken ? "TOKEN" : "CARD";
   const results = await searchMpcAutofill(representative.name, cardType, true);
-  const exactMatches = results ? filterByExactName(results, representative.name) : [];
+  const exactMatches = results
+    ? filterByExactName(results, representative.name)
+    : [];
   if (!results || results.length === 0 || exactMatches.length === 0) {
-    console.debug(`[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`);
+    console.debug(
+      `[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`
+    );
     result.skipped = group.length;
     return result;
   }
 
-  // ── Layer 1: Set + Collector Number match ──
-  let bestCard: MpcAutofillCard | null = null;
-  const setCodeMatch = findBySetCollector(
-    exactMatches,
-    representative.set,
-    representative.number
-  );
+  const bestCandidate = await selectBestCandidate({
+    candidates: exactMatches.slice(0, MAX_CANDIDATES),
+    set: representative.set,
+    collectorNumber: representative.number,
+    sourceImageUrl:
+      imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId,
+    visualCompare: createVisualCompare(channelCache),
+  });
 
-  if (setCodeMatch) {
-    bestCard = setCodeMatch;
+  if (!bestCandidate || bestCandidate.status !== "matched") {
+    result.skipped = group.length;
+    return result;
   }
 
-  // ── Layer 2: Color SSIM visual match (fallback) ──
-  if (!bestCard) {
-    const imageUrl = imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId;
-    const baseChannels = await computeImageChannels(imageUrl, channelCache);
-    if (!baseChannels) {
-      result.skipped = group.length;
-      return result;
-    }
-
-    const candidates = exactMatches.slice(0, MAX_CANDIDATES);
-    const best = await pickClosestMpcMatch(baseChannels, candidates, channelCache);
-    if (!best || best.confidence < MIN_CONFIDENCE) {
-      result.skipped = group.length;
-      return result;
-    }
-    bestCard = best.card;
-  }
+  const bestCard = bestCandidate.card;
 
   // ── Apply the upgrade ──
   const imageUrlMpc = getMpcAutofillImageUrl(bestCard.identifier);
@@ -329,14 +304,20 @@ async function processImageGroup(
 
     result.upgraded = group.length;
   } catch (error) {
-    console.warn("[MPC Bulk Upgrade] Failed to apply upgrade:", representative.name, error);
+    console.warn(
+      "[MPC Bulk Upgrade] Failed to apply upgrade:",
+      representative.name,
+      error
+    );
     result.errors = group.length;
   }
 
   return result;
 }
 
-export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {}): Promise<BulkMpcUpgradeSummary> {
+export async function bulkUpgradeToMpcAutofill(
+  options: BulkUpgradeOptions = {}
+): Promise<BulkMpcUpgradeSummary> {
   const { projectId, onProgress, signal } = options;
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
@@ -400,7 +381,12 @@ export async function bulkUpgradeToMpcAutofill(options: BulkUpgradeOptions = {})
     // Yield to the event loop so React can re-render the progress bar
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const result = await processImageGroup(imageId, group, imageById, channelCache);
+    const result = await processImageGroup(
+      imageId,
+      group,
+      imageById,
+      channelCache
+    );
     summary.upgraded += result.upgraded;
     summary.skipped += result.skipped;
     summary.errors += result.errors;
