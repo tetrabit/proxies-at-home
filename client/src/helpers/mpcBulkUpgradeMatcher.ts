@@ -3,10 +3,13 @@ import { parseMpcCardName, parseMpcSetCollector } from "./mpcUtils";
 
 export type MatchReason =
   | "set_collector_only"
+  | "set_collector_art_crop"
   | "set_collector_visual"
   | "set_only"
+  | "set_art_crop"
   | "set_visual"
   | "name_only"
+  | "name_art_crop"
   | "name_visual";
 
 export type AmbiguousReason =
@@ -50,16 +53,25 @@ export type HashDistanceFn = (
   signal?: AbortSignal
 ) => Promise<number | null>;
 
+export type ArtCropCompareFn = (
+  sourceImageUrl: string,
+  candidate: MpcAutofillCard,
+  signal?: AbortSignal
+) => Promise<number | null>;
+
 export interface MatcherInput {
   candidates: MpcAutofillCard[];
   set?: string;
   collectorNumber?: string;
   sourceImageUrl?: string;
   signal?: AbortSignal;
+  artCropCompare?: ArtCropCompareFn;
   hashDistance?: HashDistanceFn;
   visualCompare?: VisualCompareFn;
 }
 
+const MIN_ART_CROP_CONFIDENCE = 0.75;
+const MIN_ART_CROP_MARGIN = 0.05;
 const MIN_VISUAL_CONFIDENCE = 0.7;
 const MIN_VISUAL_MARGIN = 0.03;
 const MAX_HASH_DISTANCE = 10;
@@ -154,6 +166,7 @@ async function resolveWithinBucket(
   prefix: BucketPrefix,
   sourceImageUrl?: string,
   signal?: AbortSignal,
+  artCropCompare?: ArtCropCompareFn,
   hashDistance?: HashDistanceFn,
   visualCompare?: VisualCompareFn
 ): Promise<MatchResult> {
@@ -161,7 +174,44 @@ async function resolveWithinBucket(
     return buildMatchedResult(bucket[0], `${prefix}_only` as MatchReason, 1);
   }
 
-  if (!sourceImageUrl || !visualCompare) {
+  if (!sourceImageUrl || (!artCropCompare && !visualCompare)) {
+    return buildAmbiguousResult(
+      bucket,
+      `${prefix}_ambiguous` as AmbiguousReason
+    );
+  }
+
+  if (artCropCompare) {
+    const artCropScored = await Promise.all(
+      bucket.map(async (candidate) => ({
+        candidate,
+        score: await artCropCompare(sourceImageUrl, candidate, signal),
+      }))
+    );
+
+    const usableArtCropScores = artCropScored
+      .filter(
+        (entry): entry is { candidate: MpcAutofillCard; score: number } =>
+          entry.score !== null
+      )
+      .sort((a, b) => b.score - a.score);
+
+    const [bestArtCrop, runnerUpArtCrop] = usableArtCropScores;
+    if (
+      bestArtCrop &&
+      bestArtCrop.score >= MIN_ART_CROP_CONFIDENCE &&
+      (!runnerUpArtCrop ||
+        bestArtCrop.score - runnerUpArtCrop.score >= MIN_ART_CROP_MARGIN)
+    ) {
+      return buildMatchedResult(
+        bestArtCrop.candidate,
+        `${prefix}_art_crop` as MatchReason,
+        bestArtCrop.score
+      );
+    }
+  }
+
+  if (!visualCompare) {
     return buildAmbiguousResult(
       bucket,
       `${prefix}_ambiguous` as AmbiguousReason
@@ -232,6 +282,7 @@ export async function selectBestCandidate(
     collectorNumber,
     sourceImageUrl,
     signal,
+    artCropCompare,
     hashDistance,
     visualCompare,
   } = input;
@@ -249,6 +300,7 @@ export async function selectBestCandidate(
       "set_collector",
       sourceImageUrl,
       signal,
+      artCropCompare,
       hashDistance,
       visualCompare
     );
@@ -262,6 +314,7 @@ export async function selectBestCandidate(
         "set",
         sourceImageUrl,
         signal,
+        artCropCompare,
         hashDistance,
         visualCompare
       );
@@ -273,6 +326,7 @@ export async function selectBestCandidate(
     "name",
     sourceImageUrl,
     signal,
+    artCropCompare,
     hashDistance,
     visualCompare
   );

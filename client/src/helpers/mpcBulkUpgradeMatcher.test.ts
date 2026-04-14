@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  type ArtCropCompareFn,
   filterByExactName,
   normalizeName,
   selectBestCandidate,
@@ -165,6 +166,67 @@ describe("mpcBulkUpgradeMatcher", () => {
           reason: "set_collector_visual_unavailable",
         })
       );
+    });
+
+    it("returns an art-crop match before the full-card visual layer", async () => {
+      const artCropCompare: ArtCropCompareFn = vi.fn(
+        async (_source: string, candidate: MpcAutofillCard) =>
+          candidate.identifier === "b" ? 0.9 : 0.6
+      );
+      const visualCompare: VisualCompareFn = vi.fn(async () => 0.99);
+
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a", rawName: "Sol Ring [C21] {267}" }),
+          makeCard({ identifier: "b", rawName: "Sol Ring [C21] {267}" }),
+        ],
+        set: "C21",
+        collectorNumber: "267",
+        sourceImageUrl: "https://cards.scryfall.io/png/front/1/2/123.png",
+        artCropCompare,
+        visualCompare,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "matched",
+          reason: "set_collector_art_crop",
+          confidence: 0.9,
+        })
+      );
+      expect(visualCompare).not.toHaveBeenCalled();
+    });
+
+    it("falls through to the full-card layer when art-crop scoring is inconclusive", async () => {
+      const artCropCompare: ArtCropCompareFn = vi.fn(
+        async (_source: string, candidate: MpcAutofillCard) =>
+          candidate.identifier === "b" ? 0.78 : 0.75
+      );
+      const visualCompare: VisualCompareFn = vi.fn(
+        async (_source: string, candidate: MpcAutofillCard) =>
+          candidate.identifier === "a" ? 0.97 : 0.8
+      );
+
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a", rawName: "Sol Ring [C21] {267}" }),
+          makeCard({ identifier: "b", rawName: "Sol Ring [C21] {267}" }),
+        ],
+        set: "C21",
+        collectorNumber: "267",
+        sourceImageUrl: "https://cards.scryfall.io/png/front/1/2/123.png",
+        artCropCompare,
+        visualCompare,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "matched",
+          reason: "set_collector_visual",
+          confidence: 0.97,
+        })
+      );
+      expect(visualCompare).toHaveBeenCalled();
     });
 
     it("returns a matched result when visual scoring is decisive", async () => {
