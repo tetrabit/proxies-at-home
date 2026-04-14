@@ -14,9 +14,14 @@ const mockDbImages = vi.hoisted(() => ({
   delete: vi.fn(),
 }));
 
+const mockDbSettings = vi.hoisted(() => ({
+  put: vi.fn(),
+}));
+
 const mockDb = vi.hoisted(() => ({
   cards: mockDbCards,
   images: mockDbImages,
+  settings: mockDbSettings,
   transaction: vi.fn(),
 }));
 
@@ -102,8 +107,15 @@ describe("bulkUpgradeToMpcAutofill", () => {
         _mode: string,
         _cards: unknown,
         _images: unknown,
-        callback: () => Promise<void>
-      ) => callback()
+        _settingsOrCallback: unknown,
+        maybeCallback?: () => Promise<void>
+      ) => {
+        const callback =
+          typeof maybeCallback === "function"
+            ? maybeCallback
+            : (_settingsOrCallback as () => Promise<void>);
+        return callback();
+      }
     );
   });
 
@@ -158,7 +170,67 @@ describe("bulkUpgradeToMpcAutofill", () => {
       skipped: 1,
       errors: 0,
     });
+    expect(mockDbSettings.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: expect.stringContaining("mpc-bulk-upgrade-diagnostic:proj-1:"),
+        value: expect.objectContaining({
+          status: "ambiguous",
+          reason: "set_collector_visual_tie",
+          candidateCount: 2,
+        }),
+      })
+    );
     expect(mockAddRemoteImage).not.toHaveBeenCalled();
     expect(mockDbCards.bulkUpdate).not.toHaveBeenCalled();
+  });
+
+  it("persists matched diagnostics when an upgrade succeeds", async () => {
+    const card = makeCardOption({
+      uuid: "card-2",
+      set: "C21",
+      number: "267",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+
+    const mpcCard = {
+      identifier: "match-1",
+      name: "Sol Ring",
+      rawName: "Sol Ring [C21] {267}",
+      smallThumbnailUrl: "",
+      mediumThumbnailUrl: "",
+      dpi: 600,
+      tags: [],
+      sourceName: "test",
+      source: "test",
+      extension: "png",
+      size: 1000,
+    };
+
+    mockSearchMpcAutofill.mockResolvedValue([mpcCard]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 1,
+      skipped: 0,
+      errors: 0,
+    });
+    expect(mockDbSettings.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: expect.stringContaining("mpc-bulk-upgrade-diagnostic:proj-1:"),
+        value: expect.objectContaining({
+          status: "matched",
+          reason: "set_collector_only",
+          matchedIdentifier: "match-1",
+        }),
+      })
+    );
   });
 });

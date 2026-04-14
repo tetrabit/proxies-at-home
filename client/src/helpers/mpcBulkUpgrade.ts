@@ -45,6 +45,22 @@ export type BulkUpgradeOptions = {
   signal?: AbortSignal;
 };
 
+export type BulkUpgradeDiagnostic = {
+  projectId?: string;
+  imageId: string;
+  cardName: string;
+  cardUuids: string[];
+  set?: string;
+  collectorNumber?: string;
+  status: "matched" | "ambiguous" | "skipped" | "error";
+  reason: string;
+  candidateCount: number;
+  matchedIdentifier?: string;
+  confidence?: number;
+  runnerUpConfidence?: number;
+  createdAt: number;
+};
+
 // ── Visual matching constants ────────────────────────────────────────────
 const SSIM_SIZE = 128; // Up from 64 — more detail for visual comparison
 const SSIM_CHANNELS = 3; // RGB instead of grayscale
@@ -53,6 +69,7 @@ const HASH_ROWS = 8;
 const HASH_COLUMNS = 9;
 const STRUCTURE_WEIGHT = 0.8;
 const COLOR_PROFILE_WEIGHT = 0.2;
+const BULK_UPGRADE_DIAGNOSTIC_PREFIX = "mpc-bulk-upgrade-diagnostic";
 
 // ── Layer 2: Color-aware SSIM visual matching ────────────────────────────
 
@@ -310,6 +327,55 @@ function createHashDistance(
   };
 }
 
+function buildDiagnostic(
+  group: CardOption[],
+  imageId: string,
+  status: BulkUpgradeDiagnostic["status"],
+  reason: string,
+  candidateCount: number,
+  details: Partial<
+    Pick<
+      BulkUpgradeDiagnostic,
+      "matchedIdentifier" | "confidence" | "runnerUpConfidence"
+    >
+  > = {}
+): BulkUpgradeDiagnostic {
+  const representative = group[0];
+
+  return {
+    projectId: representative.projectId,
+    imageId,
+    cardName: representative.name,
+    cardUuids: group.map((card) => card.uuid),
+    set: representative.set,
+    collectorNumber: representative.number,
+    status,
+    reason,
+    candidateCount,
+    matchedIdentifier: details.matchedIdentifier,
+    confidence: details.confidence,
+    runnerUpConfidence: details.runnerUpConfidence,
+    createdAt: Date.now(),
+  };
+}
+
+async function persistDiagnostic(
+  diagnostic: BulkUpgradeDiagnostic
+): Promise<void> {
+  const projectSegment = diagnostic.projectId ?? "global";
+  const key = [
+    BULK_UPGRADE_DIAGNOSTIC_PREFIX,
+    projectSegment,
+    diagnostic.createdAt,
+    diagnostic.imageId,
+  ].join(":");
+
+  await db.settings.put({
+    id: key,
+    value: diagnostic,
+  });
+}
+
 // ── Main bulk upgrade ────────────────────────────────────────────────────
 
 /**
@@ -335,6 +401,9 @@ async function processImageGroup(
     console.debug(
       `[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`
     );
+    await persistDiagnostic(
+      buildDiagnostic(group, imageId, "skipped", "source_not_scryfall", 0)
+    );
     result.skipped = group.length;
     return result;
   }
@@ -348,6 +417,15 @@ async function processImageGroup(
   if (!results || results.length === 0 || exactMatches.length === 0) {
     console.debug(
       `[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`
+    );
+    await persistDiagnostic(
+      buildDiagnostic(
+        group,
+        imageId,
+        "skipped",
+        "no_exact_name_match",
+        exactMatches.length
+      )
     );
     result.skipped = group.length;
     return result;
@@ -364,6 +442,21 @@ async function processImageGroup(
   });
 
   if (!bestCandidate || bestCandidate.status !== "matched") {
+    await persistDiagnostic(
+      buildDiagnostic(
+        group,
+        imageId,
+        bestCandidate ? "ambiguous" : "skipped",
+        bestCandidate ? bestCandidate.reason : "no_candidate_selected",
+        exactMatches.length,
+        bestCandidate?.status === "ambiguous"
+          ? {
+              confidence: bestCandidate.bestConfidence,
+              runnerUpConfidence: bestCandidate.runnerUpConfidence,
+            }
+          : {}
+      )
+    );
     result.skipped = group.length;
     return result;
   }
@@ -374,12 +467,25 @@ async function processImageGroup(
   const imageUrlMpc = getMpcAutofillImageUrl(bestCard.identifier);
   const newImageId = await addRemoteImage([imageUrlMpc], group.length);
   if (!newImageId) {
+    await persistDiagnostic(
+      buildDiagnostic(
+        group,
+        imageId,
+        "error",
+        "image_store_failed",
+        exactMatches.length,
+        {
+          matchedIdentifier: bestCard.identifier,
+          confidence: bestCandidate.confidence,
+        }
+      )
+    );
     result.skipped = group.length;
     return result;
   }
 
   try {
-    await db.transaction("rw", db.cards, db.images, async () => {
+    await db.transaction("rw", db.cards, db.images, db.settings, async () => {
       await db.cards.bulkUpdate(
         group.map((card) => ({
           key: card.uuid,
@@ -405,6 +511,19 @@ async function processImageGroup(
           }
         }
       }
+      await persistDiagnostic(
+        buildDiagnostic(
+          group,
+          imageId,
+          "matched",
+          bestCandidate.reason,
+          exactMatches.length,
+          {
+            matchedIdentifier: bestCard.identifier,
+            confidence: bestCandidate.confidence,
+          }
+        )
+      );
     });
 
     result.upgraded = group.length;
@@ -413,6 +532,19 @@ async function processImageGroup(
       "[MPC Bulk Upgrade] Failed to apply upgrade:",
       representative.name,
       error
+    );
+    await persistDiagnostic(
+      buildDiagnostic(
+        group,
+        imageId,
+        "error",
+        "apply_upgrade_failed",
+        exactMatches.length,
+        {
+          matchedIdentifier: bestCard.identifier,
+          confidence: bestCandidate.confidence,
+        }
+      )
     );
     result.errors = group.length;
   }
