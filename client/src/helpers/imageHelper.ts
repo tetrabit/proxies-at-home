@@ -30,7 +30,9 @@ export function pngToNormal(pngUrl: string) {
   try {
     const u = new URL(pngUrl);
     if (u.hostname.endsWith("scryfall.io")) {
-      u.pathname = u.pathname.replace("/png/", "/normal/").replace(/\.png$/i, ".jpg");
+      u.pathname = u.pathname
+        .replace("/png/", "/normal/")
+        .replace(/\.png$/i, ".jpg");
     }
     return u.toString();
   } catch {
@@ -38,7 +40,28 @@ export function pngToNormal(pngUrl: string) {
   }
 }
 
-export async function fetchWithRetry(url: string, retries = 3, baseDelay = 250): Promise<Response> {
+export function toArtCrop(imageUrl: string): string | null {
+  try {
+    const url = new URL(imageUrl);
+    if (!url.hostname.endsWith("scryfall.io")) {
+      return null;
+    }
+
+    url.pathname = url.pathname
+      .replace(/\/(png|large|normal|small|border_crop)\//, "/art_crop/")
+      .replace(/\.png$/i, ".jpg");
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchWithRetry(
+  url: string,
+  retries = 3,
+  baseDelay = 250
+): Promise<Response> {
   return fetchWithRetryBase(url, retries, baseDelay);
 }
 
