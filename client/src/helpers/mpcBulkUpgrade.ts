@@ -1,14 +1,15 @@
 import { db } from "@/db";
 import type { CardOption } from "@/types";
 import { inferImageSource } from "./imageSourceUtils";
-import {
-  searchMpcAutofill,
-  getMpcAutofillImageUrl,
-  type MpcAutofillCard,
-} from "./mpcAutofillApi";
+import { searchMpcAutofill, getMpcAutofillImageUrl } from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
 import { loadImage } from "./imageProcessing";
 import { toProxied } from "./imageHelper";
+import {
+  computeColorProfile,
+  computeColorProfileSimilarity,
+  type ColorProfile,
+} from "./mpcColorScoring";
 import {
   filterByExactName,
   type HashDistanceFn,
@@ -50,6 +51,8 @@ const SSIM_CHANNELS = 3; // RGB instead of grayscale
 const MAX_CANDIDATES = 25;
 const HASH_ROWS = 8;
 const HASH_COLUMNS = 9;
+const STRUCTURE_WEIGHT = 0.8;
+const COLOR_PROFILE_WEIGHT = 0.2;
 
 // ── Layer 2: Color-aware SSIM visual matching ────────────────────────────
 
@@ -150,46 +153,11 @@ function computeColorSsim(a: Float32Array[], b: Float32Array[]): number {
   return total / SSIM_CHANNELS;
 }
 
-/**
- * Pick the MPC card visually closest to the source image using color SSIM.
- */
-async function pickClosestMpcMatch(
-  baseChannels: Float32Array[],
-  candidates: MpcAutofillCard[],
-  channelCache: Map<string, Float32Array[]>
-): Promise<{ card: MpcAutofillCard; confidence: number } | null> {
-  let best: MpcAutofillCard | null = null;
-  let bestScore = -1;
-
-  for (const candidate of candidates) {
-    if (!candidate.identifier) continue;
-    // Use our MPC image proxy (which fetches from img.mpcautofill.com CDN)
-    // instead of Google Drive thumbnail URLs which require auth/cookies
-    const thumbUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
-    if (!thumbUrl) continue;
-
-    const candidateChannels = await computeImageChannels(
-      thumbUrl,
-      channelCache
-    );
-    if (!candidateChannels) continue;
-
-    const score = computeColorSsim(baseChannels, candidateChannels);
-    if (score > bestScore) {
-      bestScore = score;
-      best = candidate;
-    }
-  }
-
-  if (!best || bestScore < 0) return null;
-
-  return { card: best, confidence: bestScore };
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function createVisualCompare(
-  channelCache: Map<string, Float32Array[]>
+  channelCache: Map<string, Float32Array[]>,
+  colorProfileCache: Map<string, ColorProfile>
 ): VisualCompareFn {
   return async (sourceImageUrl, candidate) => {
     const baseChannels = await computeImageChannels(
@@ -197,6 +165,11 @@ function createVisualCompare(
       channelCache
     );
     if (!baseChannels) return null;
+    const baseProfile = getOrComputeColorProfile(
+      sourceImageUrl,
+      baseChannels,
+      colorProfileCache
+    );
 
     const thumbnailUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
     if (!thumbnailUrl) return null;
@@ -206,9 +179,38 @@ function createVisualCompare(
       channelCache
     );
     if (!candidateChannels) return null;
+    const candidateProfile = getOrComputeColorProfile(
+      thumbnailUrl,
+      candidateChannels,
+      colorProfileCache
+    );
 
-    return computeColorSsim(baseChannels, candidateChannels);
+    const structuralScore = computeColorSsim(baseChannels, candidateChannels);
+    const colorProfileScore = computeColorProfileSimilarity(
+      baseProfile,
+      candidateProfile
+    );
+
+    return (
+      structuralScore * STRUCTURE_WEIGHT +
+      colorProfileScore * COLOR_PROFILE_WEIGHT
+    );
   };
+}
+
+function getOrComputeColorProfile(
+  imageUrl: string,
+  channels: Float32Array[],
+  colorProfileCache: Map<string, ColorProfile>
+): ColorProfile {
+  const cachedProfile = colorProfileCache.get(imageUrl);
+  if (cachedProfile) {
+    return cachedProfile;
+  }
+
+  const profile = computeColorProfile(channels);
+  colorProfileCache.set(imageUrl, profile);
+  return profile;
 }
 
 function computePerceptualHash(channels: Float32Array[]): bigint {
@@ -322,7 +324,8 @@ async function processImageGroup(
     { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined
   >,
   channelCache: Map<string, Float32Array[]>,
-  hashCache: Map<string, bigint>
+  hashCache: Map<string, bigint>,
+  colorProfileCache: Map<string, ColorProfile>
 ): Promise<{ upgraded: number; skipped: number; errors: number }> {
   const result = { upgraded: 0, skipped: 0, errors: 0 };
 
@@ -357,7 +360,7 @@ async function processImageGroup(
     sourceImageUrl:
       imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId,
     hashDistance: createHashDistance(channelCache, hashCache),
-    visualCompare: createVisualCompare(channelCache),
+    visualCompare: createVisualCompare(channelCache, colorProfileCache),
   });
 
   if (!bestCandidate || bestCandidate.status !== "matched") {
@@ -421,7 +424,7 @@ export async function bulkUpgradeToMpcAutofill(
   options: BulkUpgradeOptions = {}
 ): Promise<BulkMpcUpgradeSummary> {
   const { projectId, onProgress, signal } = options;
-  const cards = projectId
+  const cards: CardOption[] = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
 
@@ -465,6 +468,7 @@ export async function bulkUpgradeToMpcAutofill(
   const totalImages = allEntries.length;
   const channelCache = new Map<string, Float32Array[]>();
   const hashCache = new Map<string, bigint>();
+  const colorProfileCache = new Map<string, ColorProfile>();
 
   for (let i = 0; i < totalImages; i++) {
     if (signal?.aborted) break;
@@ -489,7 +493,8 @@ export async function bulkUpgradeToMpcAutofill(
       group,
       imageById,
       channelCache,
-      hashCache
+      hashCache,
+      colorProfileCache
     );
     summary.upgraded += result.upgraded;
     summary.skipped += result.skipped;
