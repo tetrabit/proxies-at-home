@@ -167,6 +167,9 @@ describe("bulkUpgradeToMpcAutofill", () => {
     expect(result).toEqual({
       totalCards: 1,
       upgraded: 0,
+      autoMatched: 0,
+      ambiguous: 1,
+      noMatch: 0,
       skipped: 1,
       errors: 0,
     });
@@ -219,6 +222,9 @@ describe("bulkUpgradeToMpcAutofill", () => {
     expect(result).toEqual({
       totalCards: 1,
       upgraded: 1,
+      autoMatched: 1,
+      ambiguous: 0,
+      noMatch: 0,
       skipped: 0,
       errors: 0,
     });

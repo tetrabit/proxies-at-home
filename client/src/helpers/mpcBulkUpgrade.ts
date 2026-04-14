@@ -20,6 +20,9 @@ import {
 export type BulkMpcUpgradeSummary = {
   totalCards: number;
   upgraded: number;
+  autoMatched: number;
+  ambiguous: number;
+  noMatch: number;
   skipped: number;
   errors: number;
 };
@@ -392,8 +395,22 @@ async function processImageGroup(
   channelCache: Map<string, Float32Array[]>,
   hashCache: Map<string, bigint>,
   colorProfileCache: Map<string, ColorProfile>
-): Promise<{ upgraded: number; skipped: number; errors: number }> {
-  const result = { upgraded: 0, skipped: 0, errors: 0 };
+): Promise<{
+  upgraded: number;
+  autoMatched: number;
+  ambiguous: number;
+  noMatch: number;
+  skipped: number;
+  errors: number;
+}> {
+  const result = {
+    upgraded: 0,
+    autoMatched: 0,
+    ambiguous: 0,
+    noMatch: 0,
+    skipped: 0,
+    errors: 0,
+  };
 
   const imageRecord = imageById.get(imageId);
   const source = imageRecord?.source ?? inferImageSource(imageId);
@@ -427,6 +444,7 @@ async function processImageGroup(
         exactMatches.length
       )
     );
+    result.noMatch = group.length;
     result.skipped = group.length;
     return result;
   }
@@ -457,6 +475,11 @@ async function processImageGroup(
           : {}
       )
     );
+    if (bestCandidate?.status === "ambiguous") {
+      result.ambiguous = group.length;
+    } else {
+      result.noMatch = group.length;
+    }
     result.skipped = group.length;
     return result;
   }
@@ -527,6 +550,7 @@ async function processImageGroup(
     });
 
     result.upgraded = group.length;
+    result.autoMatched = group.length;
   } catch (error) {
     console.warn(
       "[MPC Bulk Upgrade] Failed to apply upgrade:",
@@ -573,6 +597,9 @@ export async function bulkUpgradeToMpcAutofill(
   const summary: BulkMpcUpgradeSummary = {
     totalCards: cardsWithImages.length,
     upgraded: 0,
+    autoMatched: 0,
+    ambiguous: 0,
+    noMatch: 0,
     skipped: 0,
     errors: 0,
   };
@@ -629,6 +656,9 @@ export async function bulkUpgradeToMpcAutofill(
       colorProfileCache
     );
     summary.upgraded += result.upgraded;
+    summary.autoMatched += result.autoMatched;
+    summary.ambiguous += result.ambiguous;
+    summary.noMatch += result.noMatch;
     summary.skipped += result.skipped;
     summary.errors += result.errors;
   }

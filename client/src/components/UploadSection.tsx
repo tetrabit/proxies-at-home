@@ -4,19 +4,30 @@ import { logoSvg } from "@/assets";
 import { useSettingsStore } from "@/store/settings";
 import { useProjectStore } from "@/store/projectStore";
 import { useToastStore } from "@/store/toast";
+import { HR } from "flowbite-react";
 import {
-  HR,
-} from "flowbite-react";
-import { ExternalLink, Download, MousePointerClick, Move, Copy, Upload, Layers } from "lucide-react";
+  ExternalLink,
+  Download,
+  MousePointerClick,
+  Move,
+  Copy,
+  Upload,
+  Layers,
+} from "lucide-react";
 import { AutoTooltip } from "./common";
 import { PullToRefresh } from "./PullToRefresh";
 import { bulkUpgradeToMpcAutofill } from "@/helpers/mpcBulkUpgrade";
 import type { BulkUpgradeProgress } from "@/helpers/mpcBulkUpgrade";
 import {
+  formatBulkUpgradeCancelledMessage,
+  formatBulkUpgradeProgressMessage,
+  formatBulkUpgradeResultMessage,
+} from "@/helpers/mpcBulkUpgradeMessages";
+import {
   DeckBuilderImporter,
   DecklistUploader,
   FileUploader,
-  MpcImportSection
+  MpcImportSection,
 } from "./Upload";
 
 type Props = {
@@ -27,8 +38,16 @@ type Props = {
   onUploadComplete?: () => void;
 };
 
-export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUploadComplete }: Props) {
-  const toggleUploadPanel = useSettingsStore((state) => state.toggleUploadPanel);
+export function UploadSection({
+  isCollapsed,
+  onToggle,
+  cardCount,
+  mobile,
+  onUploadComplete,
+}: Props) {
+  const toggleUploadPanel = useSettingsStore(
+    (state) => state.toggleUploadPanel
+  );
   const currentProjectId = useProjectStore((state) => state.currentProjectId);
   const addToast = useToastStore((state) => state.addToast);
   const updateToast = useToastStore((state) => state.updateToast);
@@ -59,12 +78,9 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
         projectId: currentProjectId ?? undefined,
         signal: abortController.signal,
         onProgress: (progress: BulkUpgradeProgress) => {
-          const { processedImages, totalImages, fraction, currentCardName, summary: s } = progress;
-          const pct = Math.round(fraction * 100);
-          const cardLabel = currentCardName ? ` — ${currentCardName}` : "";
           updateToast(toastId, {
-            message: `MPC Upgrade (${processedImages}/${totalImages}, ${pct}%)${cardLabel} · ${s.upgraded}↑ ${s.skipped}→${s.errors ? ` ${s.errors}✗` : ""}`,
-            progress: fraction,
+            message: formatBulkUpgradeProgressMessage(progress),
+            progress: progress.fraction,
           });
         },
       });
@@ -73,7 +89,7 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
       if (abortController.signal.aborted) {
         const cancelId = addToast({
           type: "error",
-          message: `MPC upgrade cancelled. ${summary.upgraded} upgraded, ${summary.skipped} skipped before stopping.`,
+          message: formatBulkUpgradeCancelledMessage(summary),
           dismissible: true,
         });
         setTimeout(() => removeToast(cancelId), 6000);
@@ -90,8 +106,8 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
         return;
       }
 
-      const message = `Bulk MPC upgrade: ${summary.upgraded} upgraded, ${summary.skipped} skipped${summary.errors ? `, ${summary.errors} errors` : ""}.`;
-      const type = summary.upgraded > 0 ? "success" : "error";
+      const message = formatBulkUpgradeResultMessage(summary);
+      const type = summary.autoMatched > 0 ? "success" : "error";
       const doneId = addToast({
         type,
         message,
@@ -128,55 +144,101 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
   }
 
   return (
-    <div className={`w-full h-full dark:bg-gray-700 bg-gray-100 flex flex-col border-r border-gray-200 dark:border-gray-600 select-none`}>
+    <div
+      className={`w-full h-full dark:bg-gray-700 bg-gray-100 flex flex-col border-r border-gray-200 dark:border-gray-600 select-none`}
+    >
       {!mobile && (
         <div>
           <img src={fullLogo} alt="Proxxied Logo" className="w-full" />
         </div>
       )}
 
-      <PullToRefresh className={`flex-1 flex flex-col overflow-y-auto gap-6 px-4 pb-4 pt-4 ${mobile ? "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" : ""}`}>
+      <PullToRefresh
+        className={`flex-1 flex flex-col overflow-y-auto gap-6 px-4 pb-4 pt-4 ${mobile ? "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" : ""}`}
+      >
         {mobile && (
-          <div className={`flex justify-center mb-2 ${mobile ? 'landscape:hidden' : ''}`}>
-            <img src={fullLogo} alt="Proxxied Logo" className="w-[80%] landscape:w-auto landscape:h-12" />
+          <div
+            className={`flex justify-center mb-2 ${mobile ? "landscape:hidden" : ""}`}
+          >
+            <img
+              src={fullLogo}
+              alt="Proxxied Logo"
+              className="w-[80%] landscape:w-auto landscape:h-12"
+            />
           </div>
         )}
-        <div className={`flex flex-col ${mobile ? 'landscape:grid landscape:grid-cols-2 landscape:gap-6 landscape:h-full landscape:grid-rows-[1fr_auto]' : ''} gap-4`}>
-          <div className={`flex flex-col gap-4 ${mobile ? 'landscape:gap-2 landscape:h-full landscape:justify-between' : ''}`}>
-            <div className={`flex flex-col gap-4 ${mobile ? 'landscape:gap-2' : ''}`}>
+        <div
+          className={`flex flex-col ${mobile ? "landscape:grid landscape:grid-cols-2 landscape:gap-6 landscape:h-full landscape:grid-rows-[1fr_auto]" : ""} gap-4`}
+        >
+          <div
+            className={`flex flex-col gap-4 ${mobile ? "landscape:gap-2 landscape:h-full landscape:justify-between" : ""}`}
+          >
+            <div
+              className={`flex flex-col gap-4 ${mobile ? "landscape:gap-2" : ""}`}
+            >
               {/* Logo for Landscape */}
-              <div className={`hidden ${mobile ? 'landscape:flex' : ''} justify-center mb-2`}>
-                <img src={fullLogo} alt="Proxxied Logo" className={`w-[80%] ${mobile ? 'landscape:w-[50%]' : ''} h-auto`} />
+              <div
+                className={`hidden ${mobile ? "landscape:flex" : ""} justify-center mb-2`}
+              >
+                <img
+                  src={fullLogo}
+                  alt="Proxxied Logo"
+                  className={`w-[80%] ${mobile ? "landscape:w-[50%]" : ""} h-auto`}
+                />
               </div>
 
               {/* File Uploaders */}
-              <FileUploader mobile={mobile} onUploadComplete={onUploadComplete} />
-              <MpcImportSection mobile={mobile} onUploadComplete={onUploadComplete} />
+              <FileUploader
+                mobile={mobile}
+                onUploadComplete={onUploadComplete}
+              />
+              <MpcImportSection
+                mobile={mobile}
+                onUploadComplete={onUploadComplete}
+              />
 
               {/* Deck Builder Importer - in landscape, show here below MPC */}
-              <div className={`hidden ${mobile ? 'landscape:block' : ''}`}>
-                <DeckBuilderImporter mobile={mobile} onUploadComplete={onUploadComplete} />
+              <div className={`hidden ${mobile ? "landscape:block" : ""}`}>
+                <DeckBuilderImporter
+                  mobile={mobile}
+                  onUploadComplete={onUploadComplete}
+                />
               </div>
             </div>
           </div>
 
-          <HR className={`my-0 dark:bg-gray-500 ${mobile ? 'landscape:hidden' : ''}`} />
+          <HR
+            className={`my-0 dark:bg-gray-500 ${mobile ? "landscape:hidden" : ""}`}
+          />
 
           {/* Decklist Uploader */}
-          <DecklistUploader mobile={mobile} cardCount={cardCount} onUploadComplete={onUploadComplete} />
+          <DecklistUploader
+            mobile={mobile}
+            cardCount={cardCount}
+            onUploadComplete={onUploadComplete}
+          />
 
-          <HR className={`my-0 dark:bg-gray-500 ${mobile ? 'landscape:hidden' : ''}`} />
+          <HR
+            className={`my-0 dark:bg-gray-500 ${mobile ? "landscape:hidden" : ""}`}
+          />
 
           {/* Deck Builder Importer - in portrait, show here */}
-          <div className={`${mobile ? 'landscape:hidden' : ''}`}>
-            <DeckBuilderImporter mobile={mobile} onUploadComplete={onUploadComplete} />
+          <div className={`${mobile ? "landscape:hidden" : ""}`}>
+            <DeckBuilderImporter
+              mobile={mobile}
+              onUploadComplete={onUploadComplete}
+            />
           </div>
 
-          <HR className={`my-0  dark:bg-gray-500 ${mobile ? 'landscape:hidden' : ''}`} />
+          <HR
+            className={`my-0  dark:bg-gray-500 ${mobile ? "landscape:hidden" : ""}`}
+          />
         </div>
 
-        <div className={`mt-2 ${mobile ? 'landscape:col-span-2' : ''}`}>
-          <h6 className="font-medium dark:text-white mb-2">MPC Autofill Upgrade</h6>
+        <div className={`mt-2 ${mobile ? "landscape:col-span-2" : ""}`}>
+          <h6 className="font-medium dark:text-white mb-2">
+            MPC Autofill Upgrade
+          </h6>
           <button
             type="button"
             onClick={handleBulkUpgrade}
@@ -187,7 +249,9 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
                 : "bg-blue-600 hover:bg-blue-700"
             }`}
           >
-            {isBulkUpgrading ? "Cancel upgrade" : "Bulk upgrade to MPC Autofill"}
+            {isBulkUpgrading
+              ? "Cancel upgrade"
+              : "Bulk upgrade to MPC Autofill"}
           </button>
           <p className="text-xs text-gray-600 dark:text-white/60 mt-2">
             Replaces current Scryfall art with the closest MPC Autofill match.
@@ -196,10 +260,12 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
 
         {/* Tips - Full width at bottom */}
         {/* ... (Tips section remains same but reduced indent/complexity here) ... */}
-        <div className={`mt-4 ${mobile ? 'landscape:col-span-2' : ''} pb-4`}>
+        <div className={`mt-4 ${mobile ? "landscape:col-span-2" : ""} pb-4`}>
           <h6 className="font-medium dark:text-white mb-2">Tips:</h6>
 
-          <div className={`text-sm dark:text-white/60 flex flex-col gap-2 ${mobile ? 'landscape:grid landscape:grid-cols-2' : ''}`}>
+          <div
+            className={`text-sm dark:text-white/60 flex flex-col gap-2 ${mobile ? "landscape:grid landscape:grid-cols-2" : ""}`}
+          >
             <div className="flex items-center gap-2 bg-gray-300 dark:bg-gray-600 p-2 rounded-md h-full">
               <Download className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
               <span>
@@ -221,15 +287,25 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
             </div>
             <div className="flex items-center gap-2 bg-gray-300 dark:bg-gray-600 p-2 rounded-md h-full">
               <Move className="w-4 h-4 shrink-0 text-green-600 dark:text-green-400" />
-              <span>To move a card - {mobile ? "long press and drag" : "drag from the box at the top right"}</span>
+              <span>
+                To move a card -{" "}
+                {mobile
+                  ? "long press and drag"
+                  : "drag from the box at the top right"}
+              </span>
             </div>
             <div className="flex items-center gap-2 bg-gray-300 dark:bg-gray-600 p-2 rounded-md h-full">
               <Copy className="w-4 h-4 shrink-0 text-red-600 dark:text-red-400" />
-              <span>To duplicate or delete a card - {mobile ? "double tap" : "right click"} it</span>
+              <span>
+                To duplicate or delete a card -{" "}
+                {mobile ? "double tap" : "right click"} it
+              </span>
             </div>
             <div className="flex items-center gap-2 bg-gray-300 dark:bg-gray-600 p-2 rounded-md h-full">
               <Upload className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
-              <span>You can upload images from mtgcardsmith, custom designs, etc.</span>
+              <span>
+                You can upload images from mtgcardsmith, custom designs, etc.
+              </span>
             </div>
             <div className="flex items-center gap-2 bg-gray-300 dark:bg-gray-600 p-2 rounded-md h-full">
               <Layers className="w-4 h-4 shrink-0 text-orange-600 dark:text-orange-400" />
@@ -242,8 +318,8 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
                   className="underline hover:text-orange-600 dark:hover:text-orange-400"
                 >
                   Archidekt
-                </a>
-                {" "}or{" "}
+                </a>{" "}
+                or{" "}
                 <a
                   href="https://moxfield.com"
                   target="_blank"
@@ -251,13 +327,12 @@ export function UploadSection({ isCollapsed, onToggle, cardCount, mobile, onUplo
                   className="underline hover:text-purple-600 dark:hover:text-purple-400"
                 >
                   Moxfield
-                </a>
-                {" "}to filter by deck categories
+                </a>{" "}
+                to filter by deck categories
               </span>
             </div>
           </div>
         </div>
-
       </PullToRefresh>
     </div>
   );
