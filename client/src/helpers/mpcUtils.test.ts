@@ -30,11 +30,24 @@ describe("mpcUtils", () => {
     it("returns empty string when no fallback and empty input", () => {
       expect(parseMpcCardName("")).toBe("");
     });
+
+    it("strips trailing language or quality tags before metadata", () => {
+      expect(parseMpcCardName("Sol Ring_EN [C21] {267}")).toBe("Sol Ring");
+      expect(parseMpcCardName("Counterspell-hd [STA] {15}")).toBe(
+        "Counterspell"
+      );
+    });
+
+    it("normalizes multiline MPC names before parsing", () => {
+      expect(parseMpcCardName("Sol Ring\n[C21] {267}")).toBe("Sol Ring");
+    });
   });
 
   describe("parseMpcSetCollector", () => {
     it("extracts set and collector number: [OTC] {267}", () => {
-      const result = parseMpcSetCollector("Sol Ring (Kekai Kotaki) [OTC] {267}");
+      const result = parseMpcSetCollector(
+        "Sol Ring (Kekai Kotaki) [OTC] {267}"
+      );
       expect(result).toEqual({ set: "OTC", collectorNumber: "267" });
     });
 
@@ -44,7 +57,9 @@ describe("mpcUtils", () => {
     });
 
     it("extracts set and collector number when parenthetical follows: [CMR] {395} (artist)", () => {
-      const result = parseMpcSetCollector("Counterspell [CMR] {395} (Zack Stella)");
+      const result = parseMpcSetCollector(
+        "Counterspell [CMR] {395} (Zack Stella)"
+      );
       expect(result).toEqual({ set: "CMR", collectorNumber: "395" });
     });
 
@@ -59,7 +74,9 @@ describe("mpcUtils", () => {
     });
 
     it("extracts from names with parenthetical before brackets", () => {
-      const result = parseMpcSetCollector("Counterspell (Mystical Archive) [STA] {15}");
+      const result = parseMpcSetCollector(
+        "Counterspell (Mystical Archive) [STA] {15}"
+      );
       expect(result).toEqual({ set: "STA", collectorNumber: "15" });
     });
 
@@ -147,6 +164,21 @@ describe("mpcUtils", () => {
     it("returns only collector number when all brackets are non-set tags: [foil] {267}", () => {
       const result = parseMpcSetCollector("Sol Ring [foil] {267}");
       expect(result).toEqual({ set: "", collectorNumber: "267" });
+    });
+
+    it("prefers the bracket closest to the collector number when multiple valid set-like tags exist", () => {
+      const result = parseMpcSetCollector("Counterspell [ALT] [STA] {15}");
+      expect(result).toEqual({ set: "STA", collectorNumber: "15" });
+    });
+
+    it("accepts collector numbers with hyphenated suffixes", () => {
+      const result = parseMpcSetCollector("Card Name [SLD] {123-456}");
+      expect(result).toEqual({ set: "SLD", collectorNumber: "123-456" });
+    });
+
+    it("normalizes multiline MPC names before extracting set and collector number", () => {
+      const result = parseMpcSetCollector("Sol Ring\n[CMR] {395}");
+      expect(result).toEqual({ set: "CMR", collectorNumber: "395" });
     });
   });
 });
