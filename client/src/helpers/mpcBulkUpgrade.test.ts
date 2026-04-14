@@ -52,6 +52,10 @@ vi.mock("./imageProcessing", () => ({
 
 vi.mock("./imageHelper", () => ({
   toProxied: (url: string) => url,
+  toArtCrop: (url: string) =>
+    url.includes("cards.scryfall.io")
+      ? url.replace("/png/", "/art_crop/").replace(/\.png(\?|$)/, ".jpg$1")
+      : null,
 }));
 
 import { bulkUpgradeToMpcAutofill } from "./mpcBulkUpgrade";
@@ -237,6 +241,65 @@ describe("bulkUpgradeToMpcAutofill", () => {
           matchedIdentifier: "match-1",
         }),
       })
+    );
+  });
+
+  it("tries a Scryfall art-crop source before falling back to the full-card comparison", async () => {
+    const card = makeCardOption({
+      uuid: "card-2b",
+      set: "C21",
+      number: "267",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([
+      {
+        source: "scryfall",
+        sourceUrl:
+          "https://cards.scryfall.io/png/front/1/2/12345678-1234-1234-1234-123456789abc.png?version",
+      },
+    ]);
+
+    mockSearchMpcAutofill.mockResolvedValue([
+      {
+        identifier: "a",
+        name: "Sol Ring",
+        rawName: "Sol Ring [C21] {267}",
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        dpi: 300,
+        tags: [],
+        sourceName: "test",
+        source: "test",
+        extension: "png",
+        size: 1000,
+      },
+      {
+        identifier: "b",
+        name: "Sol Ring",
+        rawName: "Sol Ring [C21] {267}",
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        dpi: 600,
+        tags: [],
+        sourceName: "test",
+        source: "test",
+        extension: "png",
+        size: 1000,
+      },
+    ]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string, size?: string) =>
+        size === "small"
+          ? `https://mpc.test/${identifier}-small`
+          : `https://mpc.test/${identifier}`
+    );
+
+    await bulkUpgradeToMpcAutofill();
+
+    expect(mockLoadImage).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/art_crop/front/1/2/12345678-1234-1234-1234-123456789abc.jpg?version"
+      )
     );
   });
 

@@ -4,13 +4,14 @@ import { inferImageSource } from "./imageSourceUtils";
 import { searchMpcAutofill, getMpcAutofillImageUrl } from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
 import { loadImage } from "./imageProcessing";
-import { toProxied } from "./imageHelper";
+import { toArtCrop, toProxied } from "./imageHelper";
 import {
   computeColorProfile,
   computeColorProfileSimilarity,
   type ColorProfile,
 } from "./mpcColorScoring";
 import {
+  type ArtCropCompareFn,
   filterByExactName,
   type HashDistanceFn,
   selectBestCandidate,
@@ -72,7 +73,20 @@ const HASH_ROWS = 8;
 const HASH_COLUMNS = 9;
 const STRUCTURE_WEIGHT = 0.8;
 const COLOR_PROFILE_WEIGHT = 0.2;
+const ART_CROP_CANDIDATE_CROP = {
+  top: 0.14,
+  right: 0.08,
+  bottom: 0.25,
+  left: 0.08,
+} as const;
 const BULK_UPGRADE_DIAGNOSTIC_PREFIX = "mpc-bulk-upgrade-diagnostic";
+
+type CropSpec = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
 
 // ── Layer 2: Color-aware SSIM visual matching ────────────────────────────
 
@@ -82,10 +96,14 @@ const BULK_UPGRADE_DIAGNOSTIC_PREFIX = "mpc-bulk-upgrade-diagnostic";
  */
 async function computeImageChannels(
   url: string,
-  cache: Map<string, Float32Array[]>
+  cache: Map<string, Float32Array[]>,
+  cropSpec?: CropSpec
 ): Promise<Float32Array[] | null> {
   if (!url) return null;
-  const cached = cache.get(url);
+  const cacheKey = cropSpec
+    ? `${url}|crop:${cropSpec.top}:${cropSpec.right}:${cropSpec.bottom}:${cropSpec.left}`
+    : url;
+  const cached = cache.get(cacheKey);
   if (cached) return cached;
 
   try {
@@ -99,7 +117,32 @@ async function computeImageChannels(
       return null;
     }
 
-    ctx.drawImage(bitmap, 0, 0, SSIM_SIZE, SSIM_SIZE);
+    const cropX = cropSpec ? Math.floor(bitmap.width * cropSpec.left) : 0;
+    const cropY = cropSpec ? Math.floor(bitmap.height * cropSpec.top) : 0;
+    const cropWidth = cropSpec
+      ? Math.max(
+          1,
+          bitmap.width - cropX - Math.floor(bitmap.width * cropSpec.right)
+        )
+      : bitmap.width;
+    const cropHeight = cropSpec
+      ? Math.max(
+          1,
+          bitmap.height - cropY - Math.floor(bitmap.height * cropSpec.bottom)
+        )
+      : bitmap.height;
+
+    ctx.drawImage(
+      bitmap,
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight,
+      0,
+      0,
+      SSIM_SIZE,
+      SSIM_SIZE
+    );
     bitmap.close();
 
     const data = ctx.getImageData(0, 0, SSIM_SIZE, SSIM_SIZE).data;
@@ -113,12 +156,42 @@ async function computeImageChannels(
       channels.push(values);
     }
 
-    cache.set(url, channels);
+    cache.set(cacheKey, channels);
     return channels;
   } catch (error) {
     console.warn("[MPC Bulk Upgrade] Failed to read image:", url, error);
     return null;
   }
+}
+
+function computeCombinedVisualScore(
+  baseChannels: Float32Array[],
+  baseCacheKey: string,
+  candidateChannels: Float32Array[],
+  candidateCacheKey: string,
+  colorProfileCache: Map<string, ColorProfile>
+): number {
+  const baseProfile = getOrComputeColorProfile(
+    baseCacheKey,
+    baseChannels,
+    colorProfileCache
+  );
+  const candidateProfile = getOrComputeColorProfile(
+    candidateCacheKey,
+    candidateChannels,
+    colorProfileCache
+  );
+
+  const structuralScore = computeColorSsim(baseChannels, candidateChannels);
+  const colorProfileScore = computeColorProfileSimilarity(
+    baseProfile,
+    candidateProfile
+  );
+
+  return (
+    structuralScore * STRUCTURE_WEIGHT +
+    colorProfileScore * COLOR_PROFILE_WEIGHT
+  );
 }
 
 /**
@@ -185,11 +258,6 @@ function createVisualCompare(
       channelCache
     );
     if (!baseChannels) return null;
-    const baseProfile = getOrComputeColorProfile(
-      sourceImageUrl,
-      baseChannels,
-      colorProfileCache
-    );
 
     const thumbnailUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
     if (!thumbnailUrl) return null;
@@ -199,21 +267,43 @@ function createVisualCompare(
       channelCache
     );
     if (!candidateChannels) return null;
-    const candidateProfile = getOrComputeColorProfile(
-      thumbnailUrl,
+    return computeCombinedVisualScore(
+      baseChannels,
+      sourceImageUrl,
       candidateChannels,
+      thumbnailUrl,
       colorProfileCache
     );
+  };
+}
 
-    const structuralScore = computeColorSsim(baseChannels, candidateChannels);
-    const colorProfileScore = computeColorProfileSimilarity(
-      baseProfile,
-      candidateProfile
+function createArtCropCompare(
+  channelCache: Map<string, Float32Array[]>,
+  colorProfileCache: Map<string, ColorProfile>
+): ArtCropCompareFn {
+  return async (sourceImageUrl, candidate) => {
+    const artCropUrl = toArtCrop(sourceImageUrl);
+    if (!artCropUrl) return null;
+
+    const sourceChannels = await computeImageChannels(artCropUrl, channelCache);
+    if (!sourceChannels) return null;
+
+    const thumbnailUrl = getMpcAutofillImageUrl(candidate.identifier, "small");
+    if (!thumbnailUrl) return null;
+
+    const candidateChannels = await computeImageChannels(
+      thumbnailUrl,
+      channelCache,
+      ART_CROP_CANDIDATE_CROP
     );
+    if (!candidateChannels) return null;
 
-    return (
-      structuralScore * STRUCTURE_WEIGHT +
-      colorProfileScore * COLOR_PROFILE_WEIGHT
+    return computeCombinedVisualScore(
+      sourceChannels,
+      artCropUrl,
+      candidateChannels,
+      `${thumbnailUrl}|art-crop-candidate`,
+      colorProfileCache
     );
   };
 }
@@ -455,6 +545,7 @@ async function processImageGroup(
     collectorNumber: representative.number,
     sourceImageUrl:
       imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || imageId,
+    artCropCompare: createArtCropCompare(channelCache, colorProfileCache),
     hashDistance: createHashDistance(channelCache, hashCache),
     visualCompare: createVisualCompare(channelCache, colorProfileCache),
   });
