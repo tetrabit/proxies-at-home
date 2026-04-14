@@ -13,7 +13,6 @@ function makeCard(
   overrides: Partial<MpcAutofillCard> & Pick<MpcAutofillCard, "identifier">
 ): MpcAutofillCard {
   return {
-    identifier: overrides.identifier,
     name: "Sol Ring",
     rawName: "Sol Ring",
     smallThumbnailUrl: "",
@@ -25,6 +24,7 @@ function makeCard(
     extension: "png",
     size: 1000,
     ...overrides,
+    identifier: overrides.identifier,
   };
 }
 
@@ -95,7 +95,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
     it("returns an ambiguous result when visual scores are too close", async () => {
       const visualCompare: VisualCompareFn = vi.fn(
-        async (_source, candidate) =>
+        async (_source: string, candidate: MpcAutofillCard) =>
           candidate.identifier === "a" ? 0.91 : 0.89
       );
 
@@ -122,7 +122,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
     it("returns an ambiguous result when visual confidence is too low", async () => {
       const visualCompare: VisualCompareFn = vi.fn(
-        async (_source, candidate) =>
+        async (_source: string, candidate: MpcAutofillCard) =>
           candidate.identifier === "a" ? 0.69 : 0.55
       );
 
@@ -145,9 +145,31 @@ describe("mpcBulkUpgradeMatcher", () => {
       );
     });
 
+    it("returns an ambiguous result when visual comparison is unavailable", async () => {
+      const visualCompare: VisualCompareFn = vi.fn(async () => null);
+
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a", rawName: "Sol Ring [C21] {267}" }),
+          makeCard({ identifier: "b", rawName: "Sol Ring [C21] {267}" }),
+        ],
+        set: "C21",
+        collectorNumber: "267",
+        sourceImageUrl: "https://scryfall.test/card.png",
+        visualCompare,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "ambiguous",
+          reason: "set_collector_visual_unavailable",
+        })
+      );
+    });
+
     it("returns a matched result when visual scoring is decisive", async () => {
       const visualCompare: VisualCompareFn = vi.fn(
-        async (_source, candidate) =>
+        async (_source: string, candidate: MpcAutofillCard) =>
           candidate.identifier === "b" ? 0.96 : 0.81
       );
 
@@ -175,8 +197,9 @@ describe("mpcBulkUpgradeMatcher", () => {
     });
 
     it("prefilters candidates with perceptual hash distance before visual scoring", async () => {
-      const hashDistance: HashDistanceFn = vi.fn(async (_source, candidate) =>
-        candidate.identifier === "a" ? 3 : 14
+      const hashDistance: HashDistanceFn = vi.fn(
+        async (_source: string, candidate: MpcAutofillCard) =>
+          candidate.identifier === "a" ? 3 : 14
       );
       const visualCompare: VisualCompareFn = vi.fn(async () => 0.96);
 
@@ -206,7 +229,7 @@ describe("mpcBulkUpgradeMatcher", () => {
     it("falls back to the full bucket when hash distances are unavailable", async () => {
       const hashDistance: HashDistanceFn = vi.fn(async () => null);
       const visualCompare: VisualCompareFn = vi.fn(
-        async (_source, candidate) =>
+        async (_source: string, candidate: MpcAutofillCard) =>
           candidate.identifier === "b" ? 0.95 : 0.8
       );
 
@@ -230,6 +253,22 @@ describe("mpcBulkUpgradeMatcher", () => {
         })
       );
       expect(visualCompare).toHaveBeenCalledTimes(2);
+    });
+
+    it("returns a name-only ambiguity when there are multiple matches without source imagery", async () => {
+      const result = await selectBestCandidate({
+        candidates: [
+          makeCard({ identifier: "a" }),
+          makeCard({ identifier: "b" }),
+        ],
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "ambiguous",
+          reason: "name_ambiguous",
+        })
+      );
     });
   });
 });

@@ -239,4 +239,76 @@ describe("bulkUpgradeToMpcAutofill", () => {
       })
     );
   });
+
+  it("records a no-match outcome when MPC search results do not exactly match the card name", async () => {
+    const card = makeCardOption({
+      uuid: "card-3",
+      name: "Sol Ring",
+      set: "C21",
+      number: "267",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockSearchMpcAutofill.mockResolvedValue([
+      {
+        identifier: "other-card",
+        name: "Arcane Signet",
+        rawName: "Arcane Signet [C21] {237}",
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        dpi: 300,
+        tags: [],
+        sourceName: "test",
+        source: "test",
+        extension: "png",
+        size: 1000,
+      },
+    ]);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 0,
+      autoMatched: 0,
+      ambiguous: 0,
+      noMatch: 1,
+      skipped: 1,
+      errors: 0,
+    });
+    expect(mockDbSettings.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        value: expect.objectContaining({
+          status: "skipped",
+          reason: "no_exact_name_match",
+        }),
+      })
+    );
+  });
+
+  it("skips non-Scryfall images without counting them as no-match outcomes", async () => {
+    const card = makeCardOption({ uuid: "card-4" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "custom" }]);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 0,
+      autoMatched: 0,
+      ambiguous: 0,
+      noMatch: 0,
+      skipped: 1,
+      errors: 0,
+    });
+    expect(mockDbSettings.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        value: expect.objectContaining({
+          status: "skipped",
+          reason: "source_not_scryfall",
+        }),
+      })
+    );
+  });
 });
