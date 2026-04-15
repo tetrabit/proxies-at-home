@@ -403,6 +403,33 @@ describe("UploadSection", () => {
       ).toBeDefined();
     });
 
+    it("should use a success toast when the bulk upgrade only skips cards", async () => {
+      mockBulkUpgradeToMpcAutofill.mockResolvedValue({
+        totalCards: 2,
+        upgraded: 0,
+        autoMatched: 0,
+        ambiguous: 0,
+        noMatch: 0,
+        skipped: 2,
+        errors: 0,
+      });
+
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: /Bulk upgrade to MPC Autofill/i })
+        );
+      });
+
+      expect(mockAddToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "success",
+          message: "Bulk MPC upgrade: 0 upgraded, 2 skipped.",
+        })
+      );
+    });
+
     it("should trigger reset helper and show summary toast", async () => {
       mockResetCardsToOriginalImages.mockResolvedValue({
         reset: 2,
