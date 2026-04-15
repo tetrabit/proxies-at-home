@@ -286,6 +286,33 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result?.card.identifier).toBe("b");
         expect(result?.reason).toBe("name_ssim");
       });
+
+      it("can pick a lower-DPI same-name different-art candidate when SSIM is decisive", async () => {
+        const showcase = makeCard({
+          identifier: "showcase",
+          rawName: "Sol Ring (Showcase)",
+          dpi: 300,
+        });
+        const regular = makeCard({
+          identifier: "regular",
+          rawName: "Sol Ring",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("showcase") ? 0.98 : 0.82
+        );
+
+        const result = await selectBestCandidate({
+          candidates: [regular, showcase],
+          sourceImageUrl: "https://scryfall.test/sol-ring-showcase.png",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result?.card.identifier).toBe("showcase");
+        expect(result?.reason).toBe("name_ssim");
+      });
     });
 
     describe("SSIM inconclusive fallback", () => {
@@ -318,6 +345,35 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result?.reason).toBe("set_collector_dpi_fallback");
       });
 
+      it("falls back to DPI within a set-only bucket when scores are too close", async () => {
+        const lowDpi = makeCard({
+          identifier: "low",
+          rawName: "Sol Ring [CMR] {395}",
+          dpi: 300,
+        });
+        const highDpi = makeCard({
+          identifier: "high",
+          rawName: "Sol Ring [CMR] {396}",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("low") ? 0.81 : 0.8
+        );
+
+        const result = await selectBestCandidate({
+          candidates: [lowDpi, highDpi],
+          set: "CMR",
+          collectorNumber: "999",
+          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result?.card.identifier).toBe("high");
+        expect(result?.reason).toBe("set_dpi_fallback");
+      });
+
       it("falls back to DPI when all scores are below minimum", async () => {
         const cardA = makeCard({
           identifier: "a",
@@ -343,6 +399,33 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         expect(result?.card.identifier).toBe("b");
         expect(result?.reason).toBe("set_collector_dpi_fallback");
+      });
+
+      it("falls back to higher DPI within a set-only bucket when visual scores are too low", async () => {
+        const lowDpi = makeCard({
+          identifier: "low",
+          rawName: "Sol Ring [CMR] {395}",
+          dpi: 300,
+        });
+        const highDpi = makeCard({
+          identifier: "high",
+          rawName: "Sol Ring [CMR] {396}",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async () => 0.1);
+
+        const result = await selectBestCandidate({
+          candidates: [lowDpi, highDpi],
+          set: "CMR",
+          collectorNumber: "999",
+          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result?.card.identifier).toBe("high");
+        expect(result?.reason).toBe("set_dpi_fallback");
       });
     });
 
@@ -372,6 +455,33 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         expect(result?.card.identifier).toBe("b");
         expect(result?.reason).toBe("set_collector_dpi_fallback");
+      });
+
+      it("falls back to DPI within a set-only bucket when comparison is unavailable", async () => {
+        const lowDpi = makeCard({
+          identifier: "low",
+          rawName: "Sol Ring [CMR] {395}",
+          dpi: 300,
+        });
+        const highDpi = makeCard({
+          identifier: "high",
+          rawName: "Sol Ring [CMR] {396}",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async () => null);
+
+        const result = await selectBestCandidate({
+          candidates: [lowDpi, highDpi],
+          set: "CMR",
+          collectorNumber: "999",
+          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result?.card.identifier).toBe("high");
+        expect(result?.reason).toBe("set_dpi_fallback");
       });
 
       it("falls back to DPI when SSIM throws", async () => {

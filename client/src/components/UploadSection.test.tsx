@@ -1,301 +1,547 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 
 // Mock stores and child components
-const mockToggleUploadPanel = vi.fn();
-const mockAddToast = vi.fn(() => "toast-id");
-const mockRemoveToast = vi.fn();
-const mockShowErrorToast = vi.fn();
-
-vi.mock('@/store/settings', () => ({
-    useSettingsStore: vi.fn((selector) => {
-        const state = { toggleUploadPanel: mockToggleUploadPanel };
-        return selector(state);
-    }),
+const {
+  mockToggleUploadPanel,
+  mockAddToast,
+  mockUpdateToast,
+  mockRemoveToast,
+  mockShowInfoToast,
+  mockShowErrorToast,
+  mockResetCardsToOriginalImages,
+} = vi.hoisted(() => ({
+  mockToggleUploadPanel: vi.fn(),
+  mockAddToast: vi.fn(() => "toast-id"),
+  mockUpdateToast: vi.fn(),
+  mockRemoveToast: vi.fn(),
+  mockShowInfoToast: vi.fn(),
+  mockShowErrorToast: vi.fn(),
+  mockResetCardsToOriginalImages: vi.fn(),
 }));
 
-vi.mock('@/store/projectStore', () => ({
-    useProjectStore: vi.fn((selector) => {
-        const state = { currentProjectId: 'test-project-id' };
-        return selector(state);
-    }),
+const mockBulkUpgradeToMpcAutofill = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    totalCards: 0,
+    upgraded: 0,
+    autoMatched: 0,
+    ambiguous: 0,
+    noMatch: 0,
+    skipped: 0,
+    errors: 0,
+  })
+);
+
+vi.mock("@/store/settings", () => ({
+  useSettingsStore: vi.fn((selector) => {
+    const state = { toggleUploadPanel: mockToggleUploadPanel };
+    return selector(state);
+  }),
 }));
 
-vi.mock('@/store/toast', () => ({
-    useToastStore: vi.fn((selector) => {
-        const state = {
-            addToast: mockAddToast,
-            removeToast: mockRemoveToast,
-            showErrorToast: mockShowErrorToast,
-        };
-        return selector(state);
-    }),
+vi.mock("@/store/projectStore", () => ({
+  useProjectStore: vi.fn((selector) => {
+    const state = { currentProjectId: "test-project-id" };
+    return selector(state);
+  }),
 }));
 
-vi.mock('@/helpers/mpcBulkUpgrade', () => ({
-    bulkUpgradeToMpcAutofill: vi.fn().mockResolvedValue({
-        totalCards: 0,
-        upgraded: 0,
-        skipped: 0,
-        errors: 0,
-    }),
+vi.mock("@/store/toast", () => ({
+  useToastStore: vi.fn((selector) => {
+    const state = {
+      addToast: mockAddToast,
+      updateToast: mockUpdateToast,
+      removeToast: mockRemoveToast,
+      showInfoToast: mockShowInfoToast,
+      showErrorToast: mockShowErrorToast,
+    };
+    return selector(state);
+  }),
 }));
 
-vi.mock('@/assets/fullLogo.png', () => ({
-    default: '/mock-full-logo.png',
+vi.mock("@/helpers/dbUtils", () => ({
+  resetCardsToOriginalImages: mockResetCardsToOriginalImages,
 }));
 
-vi.mock('./PullToRefresh', () => ({
-    PullToRefresh: ({ children, className }: { children: React.ReactNode; className?: string }) => (
-        <div data-testid="pull-to-refresh" className={className}>{children}</div>
-    ),
+vi.mock("@/helpers/mpcBulkUpgrade", () => ({
+  bulkUpgradeToMpcAutofill: mockBulkUpgradeToMpcAutofill,
 }));
 
-vi.mock('./common', () => ({
-    AutoTooltip: ({ children, content }: { children: React.ReactNode; content: string }) => (
-        <div data-testid="auto-tooltip" data-content={content}>{children}</div>
-    ),
+vi.mock("@/assets/fullLogo.png", () => ({
+  default: "/mock-full-logo.png",
 }));
 
-vi.mock('./Upload', () => ({
-    FileUploader: ({ mobile, onUploadComplete }: { mobile?: boolean; onUploadComplete?: () => void }) => (
-        <div data-testid="file-uploader" data-mobile={mobile} data-has-callback={!!onUploadComplete}>FileUploader</div>
-    ),
-    MpcImportSection: ({ mobile, onUploadComplete }: { mobile?: boolean; onUploadComplete?: () => void }) => (
-        <div data-testid="mpc-import-section" data-mobile={mobile} data-has-callback={!!onUploadComplete}>MpcImportSection</div>
-    ),
-    DecklistUploader: ({ mobile, cardCount, onUploadComplete }: { mobile?: boolean; cardCount: number; onUploadComplete?: () => void }) => (
-        <div data-testid="decklist-uploader" data-mobile={mobile} data-card-count={cardCount} data-has-callback={!!onUploadComplete}>DecklistUploader</div>
-    ),
-    DeckBuilderImporter: ({ mobile, onUploadComplete }: { mobile?: boolean; onUploadComplete?: () => void }) => (
-        <div data-testid="deck-builder-importer" data-mobile={mobile} data-has-callback={!!onUploadComplete}>DeckBuilderImporter</div>
-    ),
+vi.mock("@/assets", () => ({
+  logoSvg: "/mock-logo.svg",
 }));
 
-vi.mock('flowbite-react', () => ({
-    HR: ({ className }: { className?: string }) => <hr data-testid="hr" className={className} />,
+vi.mock("./PullToRefresh", () => ({
+  PullToRefresh: ({
+    children,
+    className,
+  }: {
+    children: React.ReactNode;
+    className?: string;
+  }) => (
+    <div data-testid="pull-to-refresh" className={className}>
+      {children}
+    </div>
+  ),
 }));
 
-import { UploadSection } from './UploadSection';
+vi.mock("./common", () => ({
+  AutoTooltip: ({
+    children,
+    content,
+  }: {
+    children: React.ReactNode;
+    content: string;
+  }) => (
+    <div data-testid="auto-tooltip" data-content={content}>
+      {children}
+    </div>
+  ),
+}));
 
-describe('UploadSection', () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
+vi.mock("./Upload", () => ({
+  FileUploader: ({
+    mobile,
+    onUploadComplete,
+  }: {
+    mobile?: boolean;
+    onUploadComplete?: () => void;
+  }) => (
+    <div
+      data-testid="file-uploader"
+      data-mobile={mobile}
+      data-has-callback={!!onUploadComplete}
+    >
+      FileUploader
+    </div>
+  ),
+  MpcImportSection: ({
+    mobile,
+    onUploadComplete,
+  }: {
+    mobile?: boolean;
+    onUploadComplete?: () => void;
+  }) => (
+    <div
+      data-testid="mpc-import-section"
+      data-mobile={mobile}
+      data-has-callback={!!onUploadComplete}
+    >
+      MpcImportSection
+    </div>
+  ),
+  DecklistUploader: ({
+    mobile,
+    cardCount,
+    onUploadComplete,
+  }: {
+    mobile?: boolean;
+    cardCount: number;
+    onUploadComplete?: () => void;
+  }) => (
+    <div
+      data-testid="decklist-uploader"
+      data-mobile={mobile}
+      data-card-count={cardCount}
+      data-has-callback={!!onUploadComplete}
+    >
+      DecklistUploader
+    </div>
+  ),
+  DeckBuilderImporter: ({
+    mobile,
+    onUploadComplete,
+  }: {
+    mobile?: boolean;
+    onUploadComplete?: () => void;
+  }) => (
+    <div
+      data-testid="deck-builder-importer"
+      data-mobile={mobile}
+      data-has-callback={!!onUploadComplete}
+    >
+      DeckBuilderImporter
+    </div>
+  ),
+}));
+
+vi.mock("flowbite-react", () => ({
+  HR: ({ className }: { className?: string }) => (
+    <hr data-testid="hr" className={className} />
+  ),
+}));
+
+import { UploadSection } from "./UploadSection";
+
+describe("UploadSection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBulkUpgradeToMpcAutofill.mockReset();
+    mockBulkUpgradeToMpcAutofill.mockResolvedValue({
+      totalCards: 0,
+      upgraded: 0,
+      autoMatched: 0,
+      ambiguous: 0,
+      noMatch: 0,
+      skipped: 0,
+      errors: 0,
+    });
+    mockResetCardsToOriginalImages.mockResolvedValue({
+      reset: 0,
+      skipped: 0,
+      alreadyOriginal: 0,
+      legacy: 0,
+    });
+    mockUpdateToast.mockReset();
+  });
+
+  describe("collapsed view", () => {
+    it("should render collapsed view when isCollapsed is true", () => {
+      render(<UploadSection isCollapsed={true} cardCount={10} />);
+
+      // Should show logo button
+      expect(screen.getByAltText("Proxxied Logo")).toBeDefined();
+      // Should not show uploaders
+      expect(screen.queryByTestId("file-uploader")).toBeNull();
     });
 
-    describe('collapsed view', () => {
-        it('should render collapsed view when isCollapsed is true', () => {
-            render(<UploadSection isCollapsed={true} cardCount={10} />);
+    it("should toggle upload panel when clicking logo button", () => {
+      render(
+        <UploadSection
+          isCollapsed={true}
+          cardCount={10}
+          onToggle={mockToggleUploadPanel}
+        />
+      );
 
-            // Should show logo button
-            expect(screen.getByAltText('Proxxied Logo')).toBeDefined();
-            // Should not show uploaders
-            expect(screen.queryByTestId('file-uploader')).toBeNull();
-        });
+      const logoButton = screen.getByAltText("Proxxied Logo").closest("button");
+      fireEvent.click(logoButton!);
 
-        it('should toggle upload panel when clicking logo button', () => {
-            render(<UploadSection isCollapsed={true} cardCount={10} onToggle={mockToggleUploadPanel} />);
-
-            const logoButton = screen.getByAltText('Proxxied Logo').closest('button');
-            fireEvent.click(logoButton!);
-
-            expect(mockToggleUploadPanel).toHaveBeenCalled();
-        });
-
-        it('should toggle upload panel on double-click of container', () => {
-            const { container } = render(<UploadSection isCollapsed={true} cardCount={10} onToggle={mockToggleUploadPanel} />);
-
-            const collapsedContainer = container.firstChild as HTMLElement;
-            fireEvent.doubleClick(collapsedContainer);
-
-            expect(mockToggleUploadPanel).toHaveBeenCalled();
-        });
-
-        it('should wrap logo in AutoTooltip', () => {
-            render(<UploadSection isCollapsed={true} cardCount={10} />);
-
-            const tooltip = screen.getByTestId('auto-tooltip');
-            expect(tooltip).toBeDefined();
-            expect(tooltip.getAttribute('data-content')).toBe('Proxxied');
-        });
-
-        it('should apply mobile scrollbar class when mobile', () => {
-            const { container } = render(<UploadSection isCollapsed={true} cardCount={10} mobile={true} />);
-
-            const collapsedContainer = container.firstChild as HTMLElement;
-            expect(collapsedContainer.className).toContain('mobile-scrollbar-hide');
-        });
-
-        it('should not apply mobile scrollbar class when not mobile', () => {
-            const { container } = render(<UploadSection isCollapsed={true} cardCount={10} mobile={false} />);
-
-            const collapsedContainer = container.firstChild as HTMLElement;
-            expect(collapsedContainer.className).not.toContain('mobile-scrollbar-hide');
-        });
+      expect(mockToggleUploadPanel).toHaveBeenCalled();
     });
 
-    describe('expanded view', () => {
-        it('should render expanded view when isCollapsed is false', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
+    it("should toggle upload panel on double-click of container", () => {
+      const { container } = render(
+        <UploadSection
+          isCollapsed={true}
+          cardCount={10}
+          onToggle={mockToggleUploadPanel}
+        />
+      );
 
-            expect(screen.getByTestId('file-uploader')).toBeDefined();
-            expect(screen.getByTestId('mpc-import-section')).toBeDefined();
-            expect(screen.getByTestId('decklist-uploader')).toBeDefined();
-            expect(screen.getAllByTestId('deck-builder-importer')).toHaveLength(2); // One portrait, one landscape
-        });
+      const collapsedContainer = container.firstChild as HTMLElement;
+      fireEvent.doubleClick(collapsedContainer);
 
-        it('should render expanded view by default', () => {
-            render(<UploadSection cardCount={10} />);
-
-            expect(screen.getByTestId('file-uploader')).toBeDefined();
-        });
-
-        it('should show full logo on desktop', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={false} />);
-
-            // Full logo should be visible (in the outer div, not in PullToRefresh)
-            const fullLogos = screen.getAllByAltText('Proxxied Logo');
-            expect(fullLogos.length).toBeGreaterThanOrEqual(1);
-        });
-
-        it('should show logo inside PullToRefresh on mobile', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            // Should have pull to refresh
-            expect(screen.getByTestId('pull-to-refresh')).toBeDefined();
-            // Logo should be present (portrait and landscape versions)
-            expect(screen.getAllByAltText('Proxxied Logo')).toHaveLength(2);
-        });
-
-        it('should pass mobile prop to child uploaders', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            expect(screen.getByTestId('file-uploader').getAttribute('data-mobile')).toBe('true');
-            expect(screen.getByTestId('mpc-import-section').getAttribute('data-mobile')).toBe('true');
-            expect(screen.getByTestId('decklist-uploader').getAttribute('data-mobile')).toBe('true');
-        });
-
-        it('should pass cardCount to DecklistUploader', () => {
-            render(<UploadSection isCollapsed={false} cardCount={42} />);
-
-            expect(screen.getByTestId('decklist-uploader').getAttribute('data-card-count')).toBe('42');
-        });
-
-        it('should pass onUploadComplete callback to uploaders', () => {
-            const onUploadComplete = vi.fn();
-            render(<UploadSection isCollapsed={false} cardCount={10} onUploadComplete={onUploadComplete} />);
-
-            expect(screen.getByTestId('file-uploader').getAttribute('data-has-callback')).toBe('true');
-            expect(screen.getByTestId('mpc-import-section').getAttribute('data-has-callback')).toBe('true');
-            expect(screen.getByTestId('decklist-uploader').getAttribute('data-has-callback')).toBe('true');
-        });
-
-        it('should render tips section', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            expect(screen.getByText('Tips:')).toBeDefined();
-        });
-
-        it('should render bulk upgrade button', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            expect(screen.getByRole('button', { name: /Bulk upgrade to MPC Autofill/i })).toBeDefined();
-        });
-
-        it('should render MPC Autofill link', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            const mpcLink = screen.getByRole('link', { name: /MPC Autofill/i });
-            expect(mpcLink.getAttribute('href')).toBe('https://mpcfill.com');
-            expect(mpcLink.getAttribute('target')).toBe('_blank');
-        });
-
-        it('should render Archidekt link', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            const archidektLink = screen.getByRole('link', { name: /Archidekt/i });
-            expect(archidektLink.getAttribute('href')).toBe('https://archidekt.com');
-            expect(archidektLink.getAttribute('target')).toBe('_blank');
-        });
-
-        it('should render Moxfield link', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            const moxfieldLink = screen.getByRole('link', { name: /Moxfield/i });
-            expect(moxfieldLink.getAttribute('href')).toBe('https://moxfield.com');
-            expect(moxfieldLink.getAttribute('target')).toBe('_blank');
-        });
-
-        it('should render horizontal rules', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            const hrs = screen.getAllByTestId('hr');
-            expect(hrs.length).toBe(3);
-        });
+      expect(mockToggleUploadPanel).toHaveBeenCalled();
     });
 
-    describe('tips content variations', () => {
-        it('should show "click" for desktop card interaction tip', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={false} />);
+    it("should wrap logo in AutoTooltip", () => {
+      render(<UploadSection isCollapsed={true} cardCount={10} />);
 
-            expect(screen.getByText(/To change a card art - click it/)).toBeDefined();
-        });
-
-        it('should show "tap" for mobile card interaction tip', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            expect(screen.getByText(/To change a card art - tap it/)).toBeDefined();
-        });
-
-        it('should show desktop drag instructions', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={false} />);
-
-            expect(screen.getByText(/drag from the box at the top right/)).toBeDefined();
-        });
-
-        it('should show mobile drag instructions', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            expect(screen.getByText(/long press and drag/)).toBeDefined();
-        });
-
-        it('should show desktop duplicate/delete instructions', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={false} />);
-
-            expect(screen.getByText(/right click/)).toBeDefined();
-        });
-
-        it('should show mobile duplicate/delete instructions', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            expect(screen.getByText(/double tap/)).toBeDefined();
-        });
-
-        it('should show custom upload tip', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            expect(screen.getByText(/mtgcardsmith/)).toBeDefined();
-        });
-
-        it('should show deck category import tip', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
-
-            expect(screen.getByText(/filter by deck categories/)).toBeDefined();
-        });
+      const tooltip = screen.getByTestId("auto-tooltip");
+      expect(tooltip).toBeDefined();
+      expect(tooltip.getAttribute("data-content")).toBe("Proxxied");
     });
 
-    describe('PullToRefresh wrapper', () => {
-        it('should wrap content in PullToRefresh', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} />);
+    it("should apply mobile scrollbar class when mobile", () => {
+      const { container } = render(
+        <UploadSection isCollapsed={true} cardCount={10} mobile={true} />
+      );
 
-            expect(screen.getByTestId('pull-to-refresh')).toBeDefined();
-        });
-
-        it('should apply mobile scrollbar hiding class on mobile', () => {
-            render(<UploadSection isCollapsed={false} cardCount={10} mobile={true} />);
-
-            const pullToRefresh = screen.getByTestId('pull-to-refresh');
-            expect(pullToRefresh.className).toContain('[&::-webkit-scrollbar]:hidden');
-        });
+      const collapsedContainer = container.firstChild as HTMLElement;
+      expect(collapsedContainer.className).toContain("mobile-scrollbar-hide");
     });
+
+    it("should not apply mobile scrollbar class when not mobile", () => {
+      const { container } = render(
+        <UploadSection isCollapsed={true} cardCount={10} mobile={false} />
+      );
+
+      const collapsedContainer = container.firstChild as HTMLElement;
+      expect(collapsedContainer.className).not.toContain(
+        "mobile-scrollbar-hide"
+      );
+    });
+  });
+
+  describe("expanded view", () => {
+    it("should render expanded view when isCollapsed is false", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(screen.getByTestId("file-uploader")).toBeDefined();
+      expect(screen.getByTestId("mpc-import-section")).toBeDefined();
+      expect(screen.getByTestId("decklist-uploader")).toBeDefined();
+      expect(screen.getAllByTestId("deck-builder-importer")).toHaveLength(2); // One portrait, one landscape
+    });
+
+    it("should render expanded view by default", () => {
+      render(<UploadSection cardCount={10} />);
+
+      expect(screen.getByTestId("file-uploader")).toBeDefined();
+    });
+
+    it("should show full logo on desktop", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={false} />
+      );
+
+      // Full logo should be visible (in the outer div, not in PullToRefresh)
+      const fullLogos = screen.getAllByAltText("Proxxied Logo");
+      expect(fullLogos.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("should show logo inside PullToRefresh on mobile", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      // Should have pull to refresh
+      expect(screen.getByTestId("pull-to-refresh")).toBeDefined();
+      // Logo should be present (portrait and landscape versions)
+      expect(screen.getAllByAltText("Proxxied Logo")).toHaveLength(2);
+    });
+
+    it("should pass mobile prop to child uploaders", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      expect(
+        screen.getByTestId("file-uploader").getAttribute("data-mobile")
+      ).toBe("true");
+      expect(
+        screen.getByTestId("mpc-import-section").getAttribute("data-mobile")
+      ).toBe("true");
+      expect(
+        screen.getByTestId("decklist-uploader").getAttribute("data-mobile")
+      ).toBe("true");
+    });
+
+    it("should pass cardCount to DecklistUploader", () => {
+      render(<UploadSection isCollapsed={false} cardCount={42} />);
+
+      expect(
+        screen.getByTestId("decklist-uploader").getAttribute("data-card-count")
+      ).toBe("42");
+    });
+
+    it("should pass onUploadComplete callback to uploaders", () => {
+      const onUploadComplete = vi.fn();
+      render(
+        <UploadSection
+          isCollapsed={false}
+          cardCount={10}
+          onUploadComplete={onUploadComplete}
+        />
+      );
+
+      expect(
+        screen.getByTestId("file-uploader").getAttribute("data-has-callback")
+      ).toBe("true");
+      expect(
+        screen
+          .getByTestId("mpc-import-section")
+          .getAttribute("data-has-callback")
+      ).toBe("true");
+      expect(
+        screen
+          .getByTestId("decklist-uploader")
+          .getAttribute("data-has-callback")
+      ).toBe("true");
+    });
+
+    it("should render tips section", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(screen.getByText("Tips:")).toBeDefined();
+    });
+
+    it("should render bulk upgrade button", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(
+        screen.getByRole("button", { name: /Bulk upgrade to MPC Autofill/i })
+      ).toBeDefined();
+    });
+
+    it("should abort an in-progress bulk upgrade when clicked again", async () => {
+      let capturedSignal: AbortSignal | undefined;
+      mockBulkUpgradeToMpcAutofill.mockImplementation(({ signal }) => {
+        capturedSignal = signal;
+        return new Promise(() => {});
+      });
+
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      const button = screen.getByRole("button", {
+        name: /Bulk upgrade to MPC Autofill/i,
+      });
+
+      fireEvent.click(button);
+
+      await vi.waitFor(() => {
+        expect(mockBulkUpgradeToMpcAutofill).toHaveBeenCalledTimes(1);
+        expect(
+          screen.getByRole("button", { name: /Cancel upgrade/i })
+        ).toBeDefined();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: /Cancel upgrade/i }));
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it("should render reset to original import art button", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(
+        screen.getByRole("button", { name: /Reset to original import art/i })
+      ).toBeDefined();
+    });
+
+    it("should trigger reset helper and show summary toast", async () => {
+      mockResetCardsToOriginalImages.mockResolvedValue({
+        reset: 2,
+        skipped: 1,
+        alreadyOriginal: 3,
+        legacy: 4,
+      });
+
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: /Reset to original import art/i })
+        );
+      });
+
+      await vi.waitFor(() => {
+        expect(mockResetCardsToOriginalImages).toHaveBeenCalledWith(
+          "test-project-id"
+        );
+      });
+
+      expect(mockShowInfoToast).toHaveBeenCalledWith(
+        "Reset 2 cards to original import image. (Skipped 3 already original, 4 legacy)"
+      );
+    });
+
+    it("should render MPC Autofill link", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      const mpcLink = screen.getByRole("link", { name: /MPC Autofill/i });
+      expect(mpcLink.getAttribute("href")).toBe("https://mpcfill.com");
+      expect(mpcLink.getAttribute("target")).toBe("_blank");
+    });
+
+    it("should render Archidekt link", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      const archidektLink = screen.getByRole("link", { name: /Archidekt/i });
+      expect(archidektLink.getAttribute("href")).toBe("https://archidekt.com");
+      expect(archidektLink.getAttribute("target")).toBe("_blank");
+    });
+
+    it("should render Moxfield link", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      const moxfieldLink = screen.getByRole("link", { name: /Moxfield/i });
+      expect(moxfieldLink.getAttribute("href")).toBe("https://moxfield.com");
+      expect(moxfieldLink.getAttribute("target")).toBe("_blank");
+    });
+
+    it("should render horizontal rules", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      const hrs = screen.getAllByTestId("hr");
+      expect(hrs.length).toBe(3);
+    });
+  });
+
+  describe("tips content variations", () => {
+    it('should show "click" for desktop card interaction tip', () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={false} />
+      );
+
+      expect(screen.getByText(/To change a card art - click it/)).toBeDefined();
+    });
+
+    it('should show "tap" for mobile card interaction tip', () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      expect(screen.getByText(/To change a card art - tap it/)).toBeDefined();
+    });
+
+    it("should show desktop drag instructions", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={false} />
+      );
+
+      expect(
+        screen.getByText(/drag from the box at the top right/)
+      ).toBeDefined();
+    });
+
+    it("should show mobile drag instructions", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      expect(screen.getByText(/long press and drag/)).toBeDefined();
+    });
+
+    it("should show desktop duplicate/delete instructions", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={false} />
+      );
+
+      expect(screen.getByText(/right click/)).toBeDefined();
+    });
+
+    it("should show mobile duplicate/delete instructions", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      expect(screen.getByText(/double tap/)).toBeDefined();
+    });
+
+    it("should show custom upload tip", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(screen.getByText(/mtgcardsmith/)).toBeDefined();
+    });
+
+    it("should show deck category import tip", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(screen.getByText(/filter by deck categories/)).toBeDefined();
+    });
+  });
+
+  describe("PullToRefresh wrapper", () => {
+    it("should wrap content in PullToRefresh", () => {
+      render(<UploadSection isCollapsed={false} cardCount={10} />);
+
+      expect(screen.getByTestId("pull-to-refresh")).toBeDefined();
+    });
+
+    it("should apply mobile scrollbar hiding class on mobile", () => {
+      render(
+        <UploadSection isCollapsed={false} cardCount={10} mobile={true} />
+      );
+
+      const pullToRefresh = screen.getByTestId("pull-to-refresh");
+      expect(pullToRefresh.className).toContain(
+        "[&::-webkit-scrollbar]:hidden"
+      );
+    });
+  });
 });
