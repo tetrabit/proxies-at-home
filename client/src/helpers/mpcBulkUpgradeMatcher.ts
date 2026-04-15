@@ -509,6 +509,15 @@ function sortByDpiThenId(cards: MpcAutofillCard[]): MpcAutofillCard[] {
   });
 }
 
+function normalizeCollectorNumberForMatch(collectorNumber: string): string {
+  if (!/^\d+$/.test(collectorNumber)) {
+    return collectorNumber;
+  }
+
+  const normalized = collectorNumber.replace(/^0+/, "");
+  return normalized === "" ? "0" : normalized;
+}
+
 function bucketBySetCollector(
   candidates: MpcAutofillCard[],
   set?: string,
@@ -517,15 +526,21 @@ function bucketBySetCollector(
   if (!set && !collectorNumber) return [];
 
   const normalizedSet = set?.toUpperCase() ?? "";
-  const normalizedCN = collectorNumber ?? "";
+  const normalizedCN = collectorNumber
+    ? normalizeCollectorNumberForMatch(collectorNumber)
+    : "";
 
   return candidates.filter((card) => {
     const parsed = parseMpcSetCollector(card.rawName || card.name);
     if (!parsed) return false;
 
+    const parsedCollectorNumber = normalizeCollectorNumberForMatch(
+      parsed.collectorNumber
+    );
+
     if (normalizedSet && normalizedCN) {
       return (
-        parsed.set === normalizedSet && parsed.collectorNumber === normalizedCN
+        parsed.set === normalizedSet && parsedCollectorNumber === normalizedCN
       );
     }
     if (normalizedSet && parsed.set) {

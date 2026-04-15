@@ -639,6 +639,31 @@ describe("mpcBulkUpgradeMatcher", () => {
         ).toEqual(["set_collector", "set"]);
       });
 
+      it("matches exact-printing collector numbers when only numeric leading zeros differ", async () => {
+        const exactWithLeadingZeros = makeCard({
+          identifier: "leading-zero-match",
+          rawName: "Sol Ring [C21] {001}",
+          dpi: 300,
+        });
+        const setOnly = makeCard({
+          identifier: "set-only",
+          rawName: "Sol Ring [C21] {268}",
+          dpi: 600,
+        });
+
+        const result = await rankCandidates({
+          candidates: [setOnly, exactWithLeadingZeros],
+          set: "C21",
+          collectorNumber: "1",
+        });
+
+        expect(result.exactPrinting).toHaveLength(2);
+        expect(result.exactPrinting[0].card.identifier).toBe(
+          "leading-zero-match"
+        );
+        expect(result.exactPrinting[0].bucket).toBe("set_collector");
+      });
+
       it("falls back to same-set matches when no exact collector match exists", async () => {
         const setOnly = makeCard({
           identifier: "set-only",
