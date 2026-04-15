@@ -18,6 +18,7 @@ const {
   mockImportOrchestratorResolve,
   mockChangeCardArtwork,
   mockCreateLinkedBackCard,
+  mockToProxied,
   mockAddToast,
   mockRemoveToast,
   mockDbImages,
@@ -67,6 +68,10 @@ const {
     }),
     mockChangeCardArtwork: vi.fn().mockResolvedValue(undefined),
     mockCreateLinkedBackCard: vi.fn().mockResolvedValue(undefined),
+    mockToProxied: vi.fn(
+      (url: string) =>
+        `https://proxy.example.invalid/?url=${encodeURIComponent(url)}`
+    ),
     mockAddToast: vi.fn().mockReturnValue("toast-1"),
     mockRemoveToast: vi.fn(),
     mockDbImages: { get: vi.fn().mockResolvedValue(null) },
@@ -165,7 +170,7 @@ vi.mock("@/helpers/mpcUpgradeLayerAdapter", () => ({
 }));
 
 vi.mock("@/helpers/imageHelper", () => ({
-  toProxied: vi.fn((url: string) => url),
+  toProxied: mockToProxied,
 }));
 
 vi.mock("@/helpers/ImportOrchestrator", () => ({
@@ -731,6 +736,38 @@ describe("MpcUpgradeModal", () => {
           set: "lea",
           collectorNumber: "161",
           candidates: [card],
+        })
+      );
+    });
+  });
+
+  it("passes the raw source image URL to rankCandidates for art-match scoring", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const rawSourceUrl =
+      "https://cards.scryfall.io/normal/front/c/8/c83ed3e0-82d0-4410-a6ca-b0f923eadf83.jpg?1581479572";
+    const card = makeMpcCard();
+
+    mockDbImages.get.mockResolvedValueOnce({ sourceUrl: rawSourceUrl });
+    mockSearchMpcAutofill.mockResolvedValueOnce([card]);
+    mockFilterByExactName.mockReturnValueOnce([card]);
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [card],
+    });
+    mockBuildLayerTabs.mockReturnValue(makeLayerTabs());
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockRankCandidates).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceImageUrl: rawSourceUrl,
         })
       );
     });
@@ -1344,5 +1381,21 @@ describe("MPC Upgrade component flow", () => {
       const modals = screen.getAllByTestId("mpc-upgrade-modal");
       expect(modals.length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+  it("renders a top-right close button that closes the modal", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([]);
+
+    render(<MpcUpgradeModal />);
+
+    const closeButton = await screen.findByRole("button", { name: /close/i });
+
+    fireEvent.click(closeButton);
+
+    expect(mockCloseModal).toHaveBeenCalledTimes(1);
   });
 });

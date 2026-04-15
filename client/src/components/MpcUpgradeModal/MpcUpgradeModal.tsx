@@ -14,7 +14,6 @@ import {
 import type { RankedRecommendations } from "@/helpers/mpcBulkUpgradeMatcher";
 import { buildLayerTabs } from "@/helpers/mpcUpgradeLayerAdapter";
 import type { LayerKey, LayerTab } from "@/helpers/mpcUpgradeLayerAdapter";
-import { toProxied } from "@/helpers/imageHelper";
 import { ImportOrchestrator } from "@/helpers/ImportOrchestrator";
 import type { ImportIntent } from "@/helpers/importParsers";
 import { changeCardArtwork, createLinkedBackCard } from "@/helpers/dbUtils";
@@ -106,9 +105,6 @@ export function MpcUpgradeModal() {
         if (!signal.aborted) {
           sourceImageUrl =
             imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || undefined;
-          if (sourceImageUrl) {
-            sourceImageUrl = toProxied(sourceImageUrl);
-          }
         }
       }
       if (signal.aborted) return;
@@ -306,6 +302,7 @@ export function MpcUpgradeModal() {
       show={open}
       onClose={closeModal}
       size="4xl"
+      dismissible
       data-testid="mpc-upgrade-modal"
     >
       <ModalHeader>MPC Upgrade{card ? ` — ${card.name}` : ""}</ModalHeader>
