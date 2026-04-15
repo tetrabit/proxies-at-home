@@ -6,6 +6,10 @@ vi.mock("./imageProcessing", () => ({
 
 vi.mock("./imageHelper", () => ({
   toProxied: (url: string) => url,
+  toArtCrop: (url: string) =>
+    url.includes("cards.scryfall.io")
+      ? url.replace("/normal/", "/art_crop/")
+      : null,
 }));
 
 import {
@@ -38,6 +42,8 @@ function makeCard(
 }
 
 const defaultGetUrl = (id: string) => `https://mpc.test/${id}`;
+const scryfallSourceUrl =
+  "https://cards.scryfall.io/normal/front/c/8/c83ed3e0-82d0-4410-a6ca-b0f923eadf83.jpg?1581479572";
 
 describe("mpcBulkUpgradeMatcher", () => {
   describe("edge similarity helpers", () => {
@@ -222,7 +228,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -251,7 +257,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "CMR",
           collectorNumber: "999",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -278,7 +284,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await selectBestCandidate({
           candidates: [cardA, cardB],
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -305,7 +311,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await selectBestCandidate({
           candidates: [regular, showcase],
-          sourceImageUrl: "https://scryfall.test/sol-ring-showcase.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -336,7 +342,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -365,7 +371,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [lowDpi, highDpi],
           set: "CMR",
           collectorNumber: "999",
-          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -392,7 +398,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -419,7 +425,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [lowDpi, highDpi],
           set: "CMR",
           collectorNumber: "999",
-          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -448,7 +454,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -475,7 +481,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [lowDpi, highDpi],
           set: "CMR",
           collectorNumber: "999",
-          sourceImageUrl: "https://scryfall.test/sol-ring-cmr.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -504,7 +510,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -696,7 +702,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: cards,
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -744,7 +750,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: [cardA, cardB],
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -754,6 +760,48 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.artMatch[0].score).toBe(0.95);
         expect(result.artMatch[1].card.identifier).toBe("a");
         expect(result.artMatch[1].score).toBe(0.85);
+        expect(ssimCompare).toHaveBeenCalledWith(
+          expect.stringContaining("/art_crop/"),
+          expect.stringContaining("#crop="),
+          undefined
+        );
+      });
+
+      it("ranks same-art different-border candidates above clearly different art", async () => {
+        const borderless = makeCard({
+          identifier: "borderless",
+          rawName: "Thassa, Deep-Dwelling (Borderless)",
+          dpi: 1200,
+        });
+        const matching = makeCard({
+          identifier: "matching",
+          rawName: "Thassa, Deep-Dwelling",
+          dpi: 800,
+        });
+        const unrelated = makeCard({
+          identifier: "unrelated",
+          rawName: "Thassa, Deep-Dwelling (Poseidon)",
+          dpi: 1200,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("matching")) return 0.94;
+          if (candidateUrl.includes("borderless")) return 0.78;
+          if (candidateUrl.includes("unrelated")) return 0.22;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [unrelated, borderless, matching],
+          sourceImageUrl:
+            "https://cards.scryfall.io/normal/front/c/8/c83ed3e0-82d0-4410-a6ca-b0f923eadf83.jpg?1581479572",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(
+          result.artMatch.map((candidate) => candidate.card.identifier)
+        ).toEqual(["matching", "borderless", "unrelated"]);
       });
 
       it("is empty when SSIM infrastructure is not provided", async () => {
@@ -772,7 +820,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: [card],
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -860,7 +908,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -962,7 +1010,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: cards,
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -1012,7 +1060,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: [card],
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -1029,7 +1077,7 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         const result = await rankCandidates({
           candidates: [lowDpiHighSsim, highDpiLowSsim],
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
         });
 
         expect(result.artMatch).toEqual([]);
@@ -1058,7 +1106,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [exactPrint, artFavorite],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });
@@ -1098,7 +1146,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           candidates: [scA, scB, nameOnly],
           set: "C21",
           collectorNumber: "267",
-          sourceImageUrl: "https://scryfall.test/sol-ring.png",
+          sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
         });

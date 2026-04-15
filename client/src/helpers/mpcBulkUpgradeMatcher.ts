@@ -16,7 +16,7 @@
 
 import type { MpcAutofillCard } from "./mpcAutofillApi";
 import { loadImage } from "./imageProcessing";
-import { toProxied } from "./imageHelper";
+import { toArtCrop, toProxied } from "./imageHelper";
 import { parseMpcCardName, parseMpcSetCollector } from "./mpcUtils";
 
 export type MatchReason =
@@ -81,6 +81,13 @@ type NormalizedImage = {
   height: number;
 };
 
+type CropSpec = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
+
 type ImageCache = Map<string, Promise<NormalizedImage | null>>;
 type EdgeCache = Map<string, Promise<Float32Array | null>>;
 
@@ -89,6 +96,12 @@ const EDGE_INSET_RATIO = 0.08;
 const BLOCK_SIZE = 8;
 const LUMINANCE_WEIGHT = 0.75;
 const EDGE_WEIGHT = 0.25;
+const ART_MATCH_CANDIDATE_CROP: CropSpec = {
+  top: 0.14,
+  right: 0.08,
+  bottom: 0.25,
+  left: 0.08,
+};
 
 /** Minimum absolute score to accept an SSIM result. */
 const SSIM_MIN_SCORE = 0.92;
@@ -115,11 +128,59 @@ function computeInset(size: number): number {
   return Math.max(0, Math.floor(size * EDGE_INSET_RATIO));
 }
 
-function normalizeBitmap(bitmap: ImageBitmap): NormalizedImage | null {
-  const cropX = computeInset(bitmap.width);
-  const cropY = computeInset(bitmap.height);
-  const cropWidth = Math.max(1, bitmap.width - cropX * 2);
-  const cropHeight = Math.max(1, bitmap.height - cropY * 2);
+function encodeCropSpecInUrl(url: string, cropSpec: CropSpec): string {
+  const cropPayload = [
+    cropSpec.top,
+    cropSpec.right,
+    cropSpec.bottom,
+    cropSpec.left,
+  ].join(",");
+  return `${url}#crop=${cropPayload}`;
+}
+
+function decodeCropSpecFromUrl(url: string): {
+  imageUrl: string;
+  cropSpec?: CropSpec;
+} {
+  const [imageUrl, fragment] = url.split("#crop=");
+  if (!fragment) {
+    return { imageUrl };
+  }
+
+  const values = fragment.split(",").map((part) => Number(part));
+  if (values.length !== 4 || values.some((value) => Number.isNaN(value))) {
+    return { imageUrl };
+  }
+
+  const [top, right, bottom, left] = values;
+  return {
+    imageUrl,
+    cropSpec: { top, right, bottom, left },
+  };
+}
+
+function normalizeBitmap(
+  bitmap: ImageBitmap,
+  cropSpec?: CropSpec
+): NormalizedImage | null {
+  const cropX = cropSpec
+    ? Math.max(0, Math.floor(bitmap.width * cropSpec.left))
+    : computeInset(bitmap.width);
+  const cropY = cropSpec
+    ? Math.max(0, Math.floor(bitmap.height * cropSpec.top))
+    : computeInset(bitmap.height);
+  const cropWidth = cropSpec
+    ? Math.max(
+        1,
+        bitmap.width - cropX - Math.floor(bitmap.width * cropSpec.right)
+      )
+    : Math.max(1, bitmap.width - cropX * 2);
+  const cropHeight = cropSpec
+    ? Math.max(
+        1,
+        bitmap.height - cropY - Math.floor(bitmap.height * cropSpec.bottom)
+      )
+    : Math.max(1, bitmap.height - cropY * 2);
 
   const canvas = createCanvas(NORMALIZED_SIZE);
   const context = get2dContext(canvas);
@@ -324,12 +385,13 @@ async function loadNormalizedImage(
 
   const loadPromise = (async () => {
     try {
+      const decoded = decodeCropSpecFromUrl(imageUrl);
       const bitmap = await loadImage(
-        toProxied(imageUrl),
+        toProxied(decoded.imageUrl),
         signal ? { signal } : undefined
       );
       try {
-        return normalizeBitmap(bitmap);
+        return normalizeBitmap(bitmap, decoded.cropSpec);
       } finally {
         bitmap.close();
       }
@@ -513,6 +575,42 @@ export async function scoreCandidatesBySsim(
   return scored.sort((a, b) => b.score - a.score);
 }
 
+async function scoreCandidatesByArtCrop(
+  bucket: MpcAutofillCard[],
+  sourceImageUrl: string,
+  ssimCompare: SsimCompareFn,
+  getMpcImageUrl: (identifier: string) => string,
+  signal?: AbortSignal
+): Promise<ScoredCandidate[]> {
+  const sourceArtCropUrl = toArtCrop(sourceImageUrl);
+  if (!sourceArtCropUrl) {
+    return [];
+  }
+
+  const scores: (number | null)[] = await Promise.all(
+    bucket.map((card) =>
+      ssimCompare(
+        sourceArtCropUrl,
+        encodeCropSpecInUrl(
+          getMpcImageUrl(card.identifier),
+          ART_MATCH_CANDIDATE_CROP
+        ),
+        signal
+      ).catch(() => null)
+    )
+  );
+
+  const scored: ScoredCandidate[] = [];
+  for (let i = 0; i < scores.length; i++) {
+    const score = scores[i];
+    if (score !== null) {
+      scored.push({ card: bucket[i], score });
+    }
+  }
+
+  return scored.sort((a, b) => b.score - a.score);
+}
+
 const MAX_RECOMMENDATIONS = 6;
 
 export async function rankCandidates(
@@ -527,7 +625,7 @@ export async function rankCandidates(
   let artMatch: RankedCandidate[] = [];
   if (input.sourceImageUrl && input.ssimCompare && input.getMpcImageUrl) {
     try {
-      const scored = await scoreCandidatesBySsim(
+      const scored = await scoreCandidatesByArtCrop(
         candidates,
         input.sourceImageUrl,
         input.ssimCompare,
