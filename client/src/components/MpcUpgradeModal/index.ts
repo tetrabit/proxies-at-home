@@ -1,0 +1,1 @@
+export { MpcUpgradeModal } from "./MpcUpgradeModal";
