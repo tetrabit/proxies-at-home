@@ -1207,6 +1207,66 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.fullProcess[0].bucket).toBe("set_collector");
         expect(result.artMatch[0].card.identifier).toBe("name-only");
       });
+
+      it("preserves the corrected Thassa, Deep-Dwelling ordering across layers", async () => {
+        const exactPrinting = makeCard({
+          identifier: "exact-printing",
+          rawName: "Thassa, Deep-Dwelling [THB] {71}",
+          dpi: 1200,
+        });
+        const sameArt = makeCard({
+          identifier: "same-art",
+          rawName: "Thassa, Deep-Dwelling",
+          dpi: 800,
+        });
+        const borderVariant = makeCard({
+          identifier: "border-variant",
+          rawName: "Thassa, Deep-Dwelling (Borderless Zack Stella)",
+          dpi: 1200,
+        });
+        const unrelatedArt = makeCard({
+          identifier: "unrelated-art",
+          rawName: "Thassa, Deep-Dwelling (Poseidon, God of the Sea)",
+          dpi: 1210,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("same-art")) return 0.94;
+          if (candidateUrl.includes("border-variant")) return 0.78;
+          if (candidateUrl.includes("exact-printing")) return 0.52;
+          if (candidateUrl.includes("unrelated-art")) return 0.22;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [unrelatedArt, borderVariant, sameArt, exactPrinting],
+          set: "THB",
+          collectorNumber: "71",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("exact-printing");
+        expect(result.exactPrinting[0].card.identifier).toBe("exact-printing");
+        expect(
+          result.artMatch.map((candidate) => candidate.card.identifier)
+        ).toEqual([
+          "same-art",
+          "border-variant",
+          "exact-printing",
+          "unrelated-art",
+        ]);
+        expect(result.fullCard[0].card.identifier).toBe("same-art");
+        expect(
+          result.allMatches.map((candidate) => candidate.card.identifier)
+        ).toEqual([
+          "same-art",
+          "border-variant",
+          "exact-printing",
+          "unrelated-art",
+        ]);
+      });
     });
 
     describe("selectBestCandidate preserves behavior as wrapper", () => {

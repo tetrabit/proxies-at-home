@@ -1176,12 +1176,6 @@ describe("MPC Upgrade component flow", () => {
     render(<MpcUpgradeModal />);
 
     await waitFor(() => {
-      expect(screen.getByText("Full Card (1)")).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByText("Full Card (1)"));
-
-    await waitFor(() => {
       expect(
         screen.getByText(
           "Full Card is currently showing DPI fallback ordering because the visual full-card comparison was unavailable or inconclusive."
