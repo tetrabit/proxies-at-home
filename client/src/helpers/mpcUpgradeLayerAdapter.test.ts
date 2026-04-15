@@ -110,9 +110,9 @@ describe("mpcUpgradeLayerAdapter", () => {
       expect(tab.count).toBe(1);
     });
 
-    it("wraps allMatches raw cards as RankedCandidates", () => {
+    it("maps allMatches ranked candidates directly", () => {
       const recs = emptyRecommendations();
-      recs.allMatches = [makeCard("raw1"), makeCard("raw2")];
+      recs.allMatches = [makeRanked("raw1"), makeRanked("raw2")];
       const tabs = buildLayerTabs(recs);
       const tab = tabs.find((t) => t.key === "allMatches")!;
       expect(tab.count).toBe(2);
@@ -137,7 +137,7 @@ describe("mpcUpgradeLayerAdapter", () => {
       recs.exactPrinting = [makeRanked("ep", "set_collector")];
       recs.artMatch = [makeRanked("am")];
       recs.fullCard = [makeRanked("fc")];
-      recs.allMatches = [makeCard("all")];
+      recs.allMatches = [makeRanked("all")];
 
       const tabs = buildLayerTabs(recs);
       for (const tab of tabs) {
@@ -190,7 +190,7 @@ describe("mpcUpgradeLayerAdapter", () => {
       recs.exactPrinting = [makeRanked("exact-print", "set_collector")];
       recs.artMatch = [makeRanked("art-match")];
       recs.fullCard = [makeRanked("full-card")];
-      recs.allMatches = [makeCard("raw-a"), makeCard("raw-b")];
+      recs.allMatches = [makeRanked("raw-a"), makeRanked("raw-b")];
 
       const tabs = buildLayerTabs(recs);
 

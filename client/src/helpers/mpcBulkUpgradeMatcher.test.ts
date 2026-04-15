@@ -920,18 +920,68 @@ describe("mpcBulkUpgradeMatcher", () => {
     });
 
     describe("allMatches layer", () => {
-      it("returns raw candidates without ranking metadata", async () => {
-        const cards = [
-          makeCard({ identifier: "a", dpi: 200 }),
-          makeCard({ identifier: "b", dpi: 600 }),
-        ];
+      it("returns ranked candidates instead of raw API order", async () => {
+        const fallback = makeCard({ identifier: "fallback", dpi: 600 });
+        const exact = makeCard({
+          identifier: "exact",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 200,
+        });
+        const artFav = makeCard({ identifier: "art-fav", dpi: 300 });
 
-        const result = await rankCandidates({ candidates: cards });
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("art-fav")) return 0.99;
+          if (candidateUrl.includes("exact")) return 0.8;
+          return null;
+        });
 
-        expect(result.allMatches).toHaveLength(2);
-        // allMatches returns MpcAutofillCard[] (no RankedCandidate wrapper)
-        expect(result.allMatches[0].identifier).toBe("a");
-        expect(result.allMatches[1].identifier).toBe("b");
+        const result = await rankCandidates({
+          candidates: [fallback, exact, artFav],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.allMatches).toHaveLength(3);
+        expect(
+          result.allMatches.map((candidate) => candidate.card.identifier)
+        ).toEqual(["art-fav", "exact", "fallback"]);
+        expect(result.allMatches[0].reason).toBe("name_ssim");
+      });
+
+      it("dedupes cards already surfaced by higher-priority layers", async () => {
+        const exact = makeCard({
+          identifier: "exact",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const sameSet = makeCard({
+          identifier: "same-set",
+          rawName: "Sol Ring [C21] {268}",
+          dpi: 400,
+        });
+        const nameOnly = makeCard({ identifier: "name-only", dpi: 800 });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("name-only")) return 0.97;
+          if (candidateUrl.includes("exact")) return 0.9;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [nameOnly, exact, sameSet],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(
+          result.allMatches.map((candidate) => candidate.card.identifier)
+        ).toEqual(["name-only", "exact", "same-set"]);
       });
     });
 
@@ -1023,12 +1073,14 @@ describe("mpcBulkUpgradeMatcher", () => {
 
       it("caps allMatches to 6", async () => {
         const cards = Array.from({ length: 10 }, (_, i) =>
-          makeCard({ identifier: `card-${i}`, dpi: 300 })
+          makeCard({ identifier: `card-${i}`, dpi: 100 + i * 50 })
         );
 
         const result = await rankCandidates({ candidates: cards });
 
         expect(result.allMatches).toHaveLength(6);
+        expect(result.allMatches[0].card.identifier).toBe("card-9");
+        expect(result.allMatches[5].card.identifier).toBe("card-4");
       });
     });
 

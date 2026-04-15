@@ -52,7 +52,7 @@ export interface RankedRecommendations {
   exactPrinting: RankedCandidate[];
   artMatch: RankedCandidate[];
   fullCard: RankedCandidate[];
-  allMatches: MpcAutofillCard[];
+  allMatches: RankedCandidate[];
 }
 
 /**
@@ -618,7 +618,6 @@ export async function rankCandidates(
 ): Promise<RankedRecommendations> {
   const { candidates } = input;
 
-  const allMatches = candidates.slice(0, MAX_RECOMMENDATIONS);
   const fullCard = await buildFullCardLayer(input);
   const exactPrinting = await buildExactPrintingLayer(input);
 
@@ -646,6 +645,12 @@ export async function rankCandidates(
   }
 
   const fullProcess = await buildFullProcessLayer(input);
+  const allMatches = buildAllMatchesLayer(
+    candidates,
+    artMatch,
+    exactPrinting,
+    fullCard
+  );
 
   return {
     fullProcess,
@@ -654,6 +659,44 @@ export async function rankCandidates(
     fullCard,
     allMatches,
   };
+}
+
+function buildAllMatchesLayer(
+  candidates: MpcAutofillCard[],
+  artMatch: RankedCandidate[],
+  exactPrinting: RankedCandidate[],
+  fullCard: RankedCandidate[]
+): RankedCandidate[] {
+  const ordered: RankedCandidate[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (items: RankedCandidate[]) => {
+    for (const item of items) {
+      if (seen.has(item.card.identifier)) continue;
+      seen.add(item.card.identifier);
+      ordered.push(item);
+      if (ordered.length >= MAX_RECOMMENDATIONS) return;
+    }
+  };
+
+  pushUnique(artMatch);
+  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(exactPrinting);
+  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(fullCard);
+
+  if (ordered.length < MAX_RECOMMENDATIONS) {
+    const remainder = sortByDpiThenId(candidates)
+      .filter((card) => !seen.has(card.identifier))
+      .map(
+        (card): RankedCandidate => ({
+          card,
+          reason: "name_dpi_fallback",
+          bucket: "name",
+        })
+      );
+    pushUnique(remainder);
+  }
+
+  return ordered.slice(0, MAX_RECOMMENDATIONS);
 }
 
 async function buildExactPrintingLayer(

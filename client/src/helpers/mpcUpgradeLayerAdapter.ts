@@ -1,4 +1,3 @@
-import type { MpcAutofillCard } from "./mpcAutofillApi";
 import type {
   RankedCandidate,
   RankedRecommendations,
@@ -34,22 +33,11 @@ const LAYER_LABELS: Record<LayerKey, string> = {
   allMatches: "All Matches",
 };
 
-function allMatchesToRanked(cards: MpcAutofillCard[]): RankedCandidate[] {
-  return cards.map((card) => ({
-    card,
-    reason: "name_dpi_fallback" as const,
-    bucket: "name" as const,
-  }));
-}
-
 export function buildLayerTabs(
   recommendations: RankedRecommendations
 ): LayerTab[] {
   return LAYER_ORDER.map((key) => {
-    const candidates =
-      key === "allMatches"
-        ? allMatchesToRanked(recommendations.allMatches)
-        : recommendations[key];
+    const candidates = recommendations[key];
 
     return {
       key,
