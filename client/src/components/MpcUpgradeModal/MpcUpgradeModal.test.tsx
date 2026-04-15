@@ -526,7 +526,7 @@ describe("MpcUpgradeModal", () => {
     ).toHaveLength(1);
   });
 
-  it("renders score badge when score is present", async () => {
+  it("renders rank-based badge instead of raw percentage when score is present", async () => {
     mockModalState.open = true;
     mockModalState.card = TEST_CARD;
     mockModalState.cardUuid = TEST_CARD.uuid;
@@ -557,8 +557,10 @@ describe("MpcUpgradeModal", () => {
     render(<MpcUpgradeModal />);
 
     await waitFor(() => {
-      expect(screen.getByText("95%")).toBeTruthy();
+      expect(screen.getByText("Top rank")).toBeTruthy();
     });
+
+    expect(screen.queryByText("95%")).toBeNull();
   });
 
   /* ==================== SINGLE-CARD APPLY ===================== */
@@ -1086,8 +1088,8 @@ describe("MPC Upgrade component flow", () => {
     });
     cards = screen.getAllByTestId("mpc-upgrade-recommendation-card");
     expect(cards).toHaveLength(1);
-    // Art Match candidate has score badge
-    expect(screen.getByText("92%")).toBeTruthy();
+    // Art Match candidate has rank-based badge
+    expect(screen.getByText("Top rank")).toBeTruthy();
 
     // Switch to Full Card tab
     fireEvent.click(screen.getByText("Full Card (1)"));

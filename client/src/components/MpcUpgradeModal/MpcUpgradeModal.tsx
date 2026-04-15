@@ -339,6 +339,7 @@ export function MpcUpgradeModal() {
                         <MpcCandidateCard
                           key={`${rc.card.identifier}-${idx}`}
                           card={rc.card}
+                          rank={idx + 1}
                           score={rc.score}
                           isSelected={selectedIdentifier === rc.card.identifier}
                           onClick={handleCardClick}
@@ -369,6 +370,7 @@ export function MpcUpgradeModal() {
 
 interface MpcCandidateCardProps {
   card: MpcAutofillCard;
+  rank: number;
   score?: number;
   isSelected: boolean;
   onClick: (card: MpcAutofillCard) => void;
@@ -376,6 +378,7 @@ interface MpcCandidateCardProps {
 
 function MpcCandidateCard({
   card,
+  rank,
   score,
   isSelected,
   onClick,
@@ -416,7 +419,7 @@ function MpcCandidateCard({
 
       {score != null && (
         <div className="absolute top-2 left-2 bg-purple-600/80 text-white text-xs px-2 py-1 rounded z-30">
-          {(score * 100).toFixed(0)}%
+          {rank === 1 ? "Top rank" : `Rank #${rank}`}
         </div>
       )}
 
