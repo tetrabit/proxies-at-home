@@ -161,6 +161,36 @@ export function MpcUpgradeModal() {
     return tab?.candidates ?? [];
   }, [layerTabs, activeTab]);
 
+  const activeLayerExplanation = useMemo(() => {
+    const top = activeCandidates[0];
+    if (!top) return null;
+
+    if (activeTab === "fullCard") {
+      if (top.reason === "name_dpi_fallback") {
+        return "Full Card is currently showing DPI fallback ordering because the visual full-card comparison was unavailable or inconclusive.";
+      }
+
+      return "Full Card is currently using the preserved full-card visual comparison path.";
+    }
+
+    if (activeTab === "fullProcess") {
+      if (top.reason === "set_collector_only") {
+        return "Full Process is currently led by an exact-printing metadata match.";
+      }
+      if (top.reason === "set_only") {
+        return "Full Process is currently led by a same-set metadata fallback.";
+      }
+      if (top.reason.endsWith("_dpi_fallback")) {
+        return "Full Process is currently using DPI fallback ordering because visual comparison was unavailable or inconclusive.";
+      }
+      if (top.reason.endsWith("_ssim")) {
+        return "Full Process is currently using visual comparison within the highest-priority bucket.";
+      }
+    }
+
+    return null;
+  }, [activeCandidates, activeTab]);
+
   const handleCardClick = useCallback(
     async (mpcCard: MpcAutofillCard) => {
       // Snapshot store values at click time to avoid stale closures
@@ -334,6 +364,11 @@ export function MpcUpgradeModal() {
                         : ""
                     }
                   >
+                    {activeLayerExplanation && (
+                      <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                        {activeLayerExplanation}
+                      </p>
+                    )}
                     <CardGrid cardSize={0.65}>
                       {activeCandidates.map((rc, idx) => (
                         <MpcCandidateCard

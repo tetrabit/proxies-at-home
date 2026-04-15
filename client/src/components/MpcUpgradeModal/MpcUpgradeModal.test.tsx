@@ -1109,6 +1109,87 @@ describe("MPC Upgrade component flow", () => {
     });
   });
 
+  it("explains when Full Process is led by exact-printing metadata", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const exact = makeRankedCandidate(
+      makeMpcCard({ identifier: "exact-meta" }),
+      "set_collector_only",
+      "set_collector"
+    );
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([exact.card]);
+    mockFilterByExactName.mockReturnValueOnce([exact.card]);
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [exact],
+      exactPrinting: [exact],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [exact.card],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({
+        fullProcess: [exact],
+        exactPrinting: [exact],
+      })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Full Process is currently led by an exact-printing metadata match."
+        )
+      ).toBeTruthy();
+    });
+  });
+
+  it("explains when Full Card is using DPI fallback ordering", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const fallback = makeRankedCandidate(
+      makeMpcCard({ identifier: "dpi-fallback" }),
+      "name_dpi_fallback",
+      "name"
+    );
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([fallback.card]);
+    mockFilterByExactName.mockReturnValueOnce([fallback.card]);
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [fallback],
+      allMatches: [fallback.card],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({
+        fullCard: [fallback],
+      })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Full Card (1)")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText("Full Card (1)"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Full Card is currently showing DPI fallback ordering because the visual full-card comparison was unavailable or inconclusive."
+        )
+      ).toBeTruthy();
+    });
+  });
+
   it("shows 'No candidates in this layer' for empty tab", async () => {
     mockModalState.open = true;
     mockModalState.card = TEST_CARD;
