@@ -2,8 +2,15 @@ import { db, type Image } from "@/db";
 import type { CardOption, PrintInfo } from "../../../shared/types";
 import { parseImageIdFromUrl } from "./imageHelper";
 import { isCardbackId } from "./cardbackLibrary";
-import { extractMpcIdentifierFromImageId, getMpcAutofillImageUrl } from "./mpcAutofillApi";
-import { inferSourceFromUrl, getImageSourceSync, isCustomSource } from "./imageSourceUtils";
+import {
+  extractMpcIdentifierFromImageId,
+  getMpcAutofillImageUrl,
+} from "./mpcAutofillApi";
+import {
+  inferSourceFromUrl,
+  getImageSourceSync,
+  isCustomSource,
+} from "./imageSourceUtils";
 import { API_BASE } from "@/constants";
 
 /**
@@ -42,7 +49,7 @@ export async function addCustomImage(
       await db.user_images.add({
         hash: imageId,
         data: blob,
-        type: blob.type || 'image/png',
+        type: blob.type || "image/png",
         createdAt: Date.now(),
       });
     }
@@ -58,7 +65,7 @@ export async function addCustomImage(
         id: imageId,
         originalBlob: blob,
         refCount: 1,
-        source: 'custom',
+        source: "custom",
       });
     }
   });
@@ -128,12 +135,15 @@ export async function addRemoteImages(
   if (!images || images.length === 0) return result;
 
   // 1. Calculate IDs and deduplicate inputs
-  const inputsById = new Map<string, {
-    id: string;
-    urls: string[];
-    count: number;
-    prints?: Image['prints'];
-  }>();
+  const inputsById = new Map<
+    string,
+    {
+      id: string;
+      urls: string[];
+      count: number;
+      prints?: Image["prints"];
+    }
+  >();
 
   for (const img of images) {
     if (!img.imageUrls || img.imageUrls.length === 0) continue;
@@ -146,7 +156,7 @@ export async function addRemoteImages(
 
     const check = inputsById.get(imageId);
     if (check) {
-      check.count += (img.count || 1);
+      check.count += img.count || 1;
     } else {
       inputsById.set(imageId, {
         id: imageId,
@@ -175,7 +185,8 @@ export async function addRemoteImages(
           ...existing,
           refCount: existing.refCount + input.count,
           // Only update prints if new input has them and existing doesn't
-          prints: (input.prints && !existing.prints) ? input.prints : existing.prints,
+          prints:
+            input.prints && !existing.prints ? input.prints : existing.prints,
         };
         updates.push(update);
       } else {
@@ -231,6 +242,61 @@ export async function removeImageRef(imageId: string): Promise<void> {
   });
 }
 
+export interface ResetToOriginalImagesResult {
+  reset: number;
+  skipped: number;
+  alreadyOriginal: number;
+  legacy: number;
+}
+
+/**
+ * Best-effort reset helper for original import art.
+ *
+ * The current schema does not persist per-card original-art history, so cards
+ * can only be classified as already original (currently using a Scryfall image)
+ * or legacy/unresettable (no original import art history available).
+ */
+export async function resetCardsToOriginalImages(
+  projectId?: string
+): Promise<ResetToOriginalImagesResult> {
+  const result: ResetToOriginalImagesResult = {
+    reset: 0,
+    skipped: 0,
+    alreadyOriginal: 0,
+    legacy: 0,
+  };
+
+  if (!projectId) return result;
+
+  const cards = await db.cards.where("projectId").equals(projectId).toArray();
+  const imageIds = Array.from(
+    new Set(cards.map((card) => card.imageId).filter(Boolean))
+  ) as string[];
+  const images = await db.images.bulkGet(imageIds);
+  const imagesById = new Map(
+    imageIds.map((imageId, index) => [imageId, images[index]])
+  );
+
+  for (const card of cards) {
+    if (!card.imageId) {
+      result.skipped += 1;
+      continue;
+    }
+
+    const image = imagesById.get(card.imageId);
+    const source = getImageSourceSync(card.imageId, image?.source);
+
+    if (source === "scryfall") {
+      result.alreadyOriginal += 1;
+      continue;
+    }
+
+    result.legacy += 1;
+  }
+
+  return result;
+}
+
 /**
  * Adds a new card to the database, linking it to an image.
  * This function assumes the image reference has already been accounted for.
@@ -244,13 +310,15 @@ export async function addCards(
   options?: { startOrder?: number }
 ): Promise<CardOption[]> {
   // Use explicit startOrder if provided, otherwise append after all existing cards
-  const startOrder = options?.startOrder ?? ((await db.cards.orderBy("order").last())?.order ?? 0) + 10;
+  const startOrder =
+    options?.startOrder ??
+    ((await db.cards.orderBy("order").last())?.order ?? 0) + 10;
 
   const newCards: CardOption[] = cardsData.map((cardData, i) => ({
     ...cardData,
     uuid: crypto.randomUUID(),
     // Respect explicit order if provided, otherwise use sequential order
-    order: cardData.order ?? (startOrder + i * 10),
+    order: cardData.order ?? startOrder + i * 10,
   }));
 
   if (newCards.length > 0) {
@@ -269,13 +337,16 @@ export async function rebalanceCardOrders(projectId?: string): Promise<void> {
 
   await db.transaction("rw", db.cards, async () => {
     // 1. Fetch all cards for the project
-    const allCards = await db.cards.where('projectId').equals(projectId).toArray();
+    const allCards = await db.cards
+      .where("projectId")
+      .equals(projectId)
+      .toArray();
 
     // 2. Identify "Slots" (Front Cards)
     // We sort fronts by their current order to maintain relative topology.
     // Back cards are effectively attached to these slots.
     const fronts = allCards
-      .filter(c => !c.linkedFrontId)
+      .filter((c) => !c.linkedFrontId)
       .sort((a, b) => a.order - b.order);
 
     const updates: { key: string; changes: { order: number } }[] = [];
@@ -292,7 +363,7 @@ export async function rebalanceCardOrders(projectId?: string): Promise<void> {
       // 4. Update Linked Back if exists
       // We must ensure the back card gets the EXACT same order as the front
       if (front.linkedBackId) {
-        const back = allCards.find(c => c.uuid === front.linkedBackId);
+        const back = allCards.find((c) => c.uuid === front.linkedBackId);
         // Only update if back exists and order is different
         // We implicitly fix any drift here by forcing back.order = newOrder
         if (back && Math.abs(back.order - newOrder) > 0.001) {
@@ -324,13 +395,17 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
   if (!projectId) return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
 
   return await db.transaction("rw", db.cards, async () => {
-    const allCards = await db.cards.where("projectId").equals(projectId).toArray();
-    if (allCards.length === 0) return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
+    const allCards = await db.cards
+      .where("projectId")
+      .equals(projectId)
+      .toArray();
+    if (allCards.length === 0)
+      return { totalSlots: 0, multiFaceSlots: 0, updatedSlots: 0 };
 
     const linkedBackIds = new Set(
       allCards
         .map((c) => c.linkedBackId)
-        .filter((id): id is string => typeof id === "string" && id.length > 0),
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
     );
     const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
     const fronts = allCards
@@ -385,10 +460,14 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
       }
 
       const backByRef = backByFrontUuid.get(front.uuid);
-      const linkedBack = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
-      const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
-        ? linkedBack
+      const linkedBack = front.linkedBackId
+        ? byUuid.get(front.linkedBackId)
         : undefined;
+      const backByLink =
+        linkedBack &&
+        (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
+          ? linkedBack
+          : undefined;
       const back = backByRef ?? backByLink;
 
       if (back) {
@@ -396,7 +475,10 @@ export async function moveMultiFaceCardsToEnd(projectId?: string): Promise<{
           updates.push({ key: back.uuid, changes: { order: newOrder } });
         }
         if (front.linkedBackId !== back.uuid) {
-          linkFixes.push({ key: front.uuid, changes: { linkedBackId: back.uuid } });
+          linkFixes.push({
+            key: front.uuid,
+            changes: { linkedBackId: back.uuid },
+          });
         }
       }
 
@@ -432,7 +514,14 @@ type EnrichedCard = {
 function _isMultiFaceLayout(layout: string | undefined): boolean {
   if (!layout) return false;
   // Match the layouts used by the existing enrichment logic.
-  return ["transform", "modal_dfc", "mdfc", "double_faced_token", "flip", "adventure"].includes(layout);
+  return [
+    "transform",
+    "modal_dfc",
+    "mdfc",
+    "double_faced_token",
+    "flip",
+    "adventure",
+  ].includes(layout);
 }
 
 function _hasBackFaceImage(data: EnrichedCard): boolean {
@@ -457,7 +546,9 @@ function _backNeedsRepair(back: CardOption | undefined): boolean {
  * a generic/default back, and repair them by resolving the correct back face art and
  * (re)creating/(re)linking the back card as needed.
  */
-export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Promise<{
+export async function checkMultiFaceCardsHaveCorrectBack(
+  projectId?: string
+): Promise<{
   checked: number;
   multiFace: number;
   broken: number;
@@ -466,16 +557,28 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
   errors: number;
 }> {
   if (!projectId) {
-    return { checked: 0, multiFace: 0, broken: 0, fixed: 0, skipped: 0, errors: 0 };
+    return {
+      checked: 0,
+      multiFace: 0,
+      broken: 0,
+      fixed: 0,
+      skipped: 0,
+      errors: 0,
+    };
   }
 
-  const allCards = await db.cards.where("projectId").equals(projectId).toArray();
+  const allCards = await db.cards
+    .where("projectId")
+    .equals(projectId)
+    .toArray();
   const linkedBackIds = new Set(
     allCards
       .map((c) => c.linkedBackId)
-      .filter((id): id is string => typeof id === "string" && id.length > 0),
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
   );
-  const fronts = allCards.filter((c) => !c.linkedFrontId && !linkedBackIds.has(c.uuid) && !c.isUserUpload);
+  const fronts = allCards.filter(
+    (c) => !c.linkedFrontId && !linkedBackIds.has(c.uuid) && !c.isUserUpload
+  );
   const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
   const backByFrontUuid = new Map<string, CardOption>();
   for (const c of allCards) {
@@ -489,7 +592,11 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
   let errors = 0;
 
   const frontBackLinkFixes = new Map<string, Partial<CardOption>>();
-  const repairs: Array<{ front: CardOption; backName: string; backImageUrl: string }> = [];
+  const repairs: Array<{
+    front: CardOption;
+    backName: string;
+    backImageUrl: string;
+  }> = [];
 
   for (let i = 0; i < fronts.length; i += 100) {
     const batch = fronts.slice(i, i + 100);
@@ -500,7 +607,11 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cards: batch.map((c) => ({ name: c.name, set: c.set, number: c.number })),
+          cards: batch.map((c) => ({
+            name: c.name,
+            set: c.set,
+            number: c.number,
+          })),
         }),
       });
 
@@ -516,19 +627,27 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         const data = enriched[j];
         if (!data) continue;
 
-        if (!_isMultiFaceLayout(data.layout) || !_hasBackFaceImage(data)) continue;
+        if (!_isMultiFaceLayout(data.layout) || !_hasBackFaceImage(data))
+          continue;
         multiFace++;
 
-        const linkedBack = front.linkedBackId ? byUuid.get(front.linkedBackId) : undefined;
-        const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
-          ? linkedBack
+        const linkedBack = front.linkedBackId
+          ? byUuid.get(front.linkedBackId)
           : undefined;
+        const backByLink =
+          linkedBack &&
+          (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === front.uuid)
+            ? linkedBack
+            : undefined;
         const backByRef = backByFrontUuid.get(front.uuid);
         const back = backByRef ?? backByLink;
 
         if (back && front.linkedBackId !== back.uuid) {
           const prev = frontBackLinkFixes.get(front.uuid) || {};
-          frontBackLinkFixes.set(front.uuid, { ...prev, linkedBackId: back.uuid });
+          frontBackLinkFixes.set(front.uuid, {
+            ...prev,
+            linkedBackId: back.uuid,
+          });
         }
 
         if (!_backNeedsRepair(back)) continue;
@@ -538,7 +657,9 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         const backFace = faces[1];
         const backName = backFace?.name || `${front.name} (Back)`;
         const backImageUrl =
-          backFace?.image_uris?.large || backFace?.image_uris?.png || backFace?.image_uris?.normal;
+          backFace?.image_uris?.large ||
+          backFace?.image_uris?.png ||
+          backFace?.image_uris?.normal;
         if (!backImageUrl) {
           skipped++;
           continue;
@@ -553,11 +674,13 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
 
   // Create/lookup back images (refCount increments here, matching the new card usage).
   const backImageIdByUrl = await addRemoteImages(
-    repairs.map((r) => ({ imageUrls: [r.backImageUrl], count: 1 })),
+    repairs.map((r) => ({ imageUrls: [r.backImageUrl], count: 1 }))
   );
 
   if (frontBackLinkFixes.size > 0) {
-    const updates = Array.from(frontBackLinkFixes.entries()).map(([key, changes]) => ({ key, changes }));
+    const updates = Array.from(frontBackLinkFixes.entries()).map(
+      ([key, changes]) => ({ key, changes })
+    );
     await db.cards.bulkUpdate(updates);
   }
 
@@ -577,15 +700,24 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
         }
 
         const backByRef = backByFrontUuid.get(r.front.uuid);
-        const linkedBack = currentFront.linkedBackId ? await db.cards.get(currentFront.linkedBackId) : undefined;
-        const backByLink = linkedBack && (!linkedBack.linkedFrontId || linkedBack.linkedFrontId === currentFront.uuid)
-          ? linkedBack
+        const linkedBack = currentFront.linkedBackId
+          ? await db.cards.get(currentFront.linkedBackId)
           : undefined;
+        const backByLink =
+          linkedBack &&
+          (!linkedBack.linkedFrontId ||
+            linkedBack.linkedFrontId === currentFront.uuid)
+            ? linkedBack
+            : undefined;
         const back = backByRef ?? backByLink;
 
         if (back) {
           // If swapping away from a custom image, decrement it.
-          if (back.imageId && back.imageId !== backImageId && !isCardbackId(back.imageId)) {
+          if (
+            back.imageId &&
+            back.imageId !== backImageId &&
+            !isCardbackId(back.imageId)
+          ) {
             await _removeImageRef_transactional(back.imageId);
           }
 
@@ -600,7 +732,9 @@ export async function checkMultiFaceCardsHaveCorrectBack(projectId?: string): Pr
           });
 
           if (currentFront.linkedBackId !== back.uuid) {
-            await db.cards.update(currentFront.uuid, { linkedBackId: back.uuid });
+            await db.cards.update(currentFront.uuid, {
+              linkedBackId: back.uuid,
+            });
           }
           fixed++;
         } else {
@@ -671,102 +805,132 @@ function _isBasicLandNameFallback(name: string | undefined): boolean {
   return false;
 }
 
-function _shouldRemoveBasicLand(card: Pick<CardOption, "name" | "type_line">, options: RemoveBasicLandsOptions): boolean {
-  const isBasic = _isBasicLandTypeLine(card.type_line) || _isBasicLandNameFallback(card.name);
+function _shouldRemoveBasicLand(
+  card: Pick<CardOption, "name" | "type_line">,
+  options: RemoveBasicLandsOptions
+): boolean {
+  const isBasic =
+    _isBasicLandTypeLine(card.type_line) || _isBasicLandNameFallback(card.name);
   if (!isBasic) return false;
 
   if (!options.includeWastes && _isWastesName(card.name)) return false;
-  if (!options.includeSnowCovered && _isSnowCoveredBasicName(card.name)) return false;
+  if (!options.includeSnowCovered && _isSnowCoveredBasicName(card.name))
+    return false;
 
   return true;
 }
 
-export async function countBasicLandsToRemove(projectId: string, options: RemoveBasicLandsOptions): Promise<number> {
-  return await db.cards.where("projectId").equals(projectId).filter((c) => _shouldRemoveBasicLand(c, options)).count();
+export async function countBasicLandsToRemove(
+  projectId: string,
+  options: RemoveBasicLandsOptions
+): Promise<number> {
+  return await db.cards
+    .where("projectId")
+    .equals(projectId)
+    .filter((c) => _shouldRemoveBasicLand(c, options))
+    .count();
 }
 
 /**
  * Removes all basic lands from a project's card list, optionally excluding Wastes and/or Snow-Covered basics.
  * Decrements (and deletes) referenced images as needed. Ordering of remaining cards is preserved.
  */
-export async function removeBasicLandsFromProject(projectId: string, options: RemoveBasicLandsOptions): Promise<{
+export async function removeBasicLandsFromProject(
+  projectId: string,
+  options: RemoveBasicLandsOptions
+): Promise<{
   removedCards: number;
   removedBasics: number;
 }> {
-  return await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
-    const allCards = await db.cards.where("projectId").equals(projectId).toArray();
-    if (allCards.length === 0) return { removedCards: 0, removedBasics: 0 };
+  return await db.transaction(
+    "rw",
+    db.cards,
+    db.images,
+    db.cardbacks,
+    async () => {
+      const allCards = await db.cards
+        .where("projectId")
+        .equals(projectId)
+        .toArray();
+      if (allCards.length === 0) return { removedCards: 0, removedBasics: 0 };
 
-    const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
+      const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
 
-    const toRemove = new Set<string>();
-    for (const c of allCards) {
-      if (_shouldRemoveBasicLand(c, options)) {
-        toRemove.add(c.uuid);
-        if (c.linkedBackId) {
-          toRemove.add(c.linkedBackId);
-        }
-      }
-    }
-
-    if (toRemove.size === 0) return { removedCards: 0, removedBasics: 0 };
-
-    const removedBasics = allCards.filter((c) => toRemove.has(c.uuid) && _shouldRemoveBasicLand(c, options)).length;
-
-    // If a back card is removed but the front remains, clear the front's back link.
-    const frontUpdates: { key: string; changes: Partial<CardOption> }[] = [];
-    for (const uuid of toRemove) {
-      const c = byUuid.get(uuid);
-      if (!c?.linkedFrontId) continue;
-      if (toRemove.has(c.linkedFrontId)) continue;
-      frontUpdates.push({ key: c.linkedFrontId, changes: { linkedBackId: undefined } });
-    }
-    if (frontUpdates.length > 0) {
-      await db.cards.bulkUpdate(frontUpdates);
-    }
-
-    // Decrement image refcounts for any removed cards (skip cardbacks).
-    const imageIdCounts = new Map<string, number>();
-    for (const uuid of toRemove) {
-      const c = byUuid.get(uuid);
-      const imageId = c?.imageId;
-      if (!imageId) continue;
-      if (isCardbackId(imageId)) continue;
-      imageIdCounts.set(imageId, (imageIdCounts.get(imageId) || 0) + 1);
-    }
-
-    // Delete cards.
-    await db.cards.bulkDelete(Array.from(toRemove));
-
-    if (imageIdCounts.size > 0) {
-      const imageIds = Array.from(imageIdCounts.keys());
-      const images = await db.images.bulkGet(imageIds);
-      const imageUpdates: { key: string; changes: { refCount: number } }[] = [];
-      const imagesToDelete: string[] = [];
-
-      for (let i = 0; i < imageIds.length; i++) {
-        const id = imageIds[i];
-        const img = images[i];
-        if (!img) continue;
-        const dec = imageIdCounts.get(id) || 0;
-        const newRefCount = img.refCount - dec;
-        if (newRefCount > 0) {
-          imageUpdates.push({ key: id, changes: { refCount: newRefCount } });
-        } else {
-          imagesToDelete.push(id);
+      const toRemove = new Set<string>();
+      for (const c of allCards) {
+        if (_shouldRemoveBasicLand(c, options)) {
+          toRemove.add(c.uuid);
+          if (c.linkedBackId) {
+            toRemove.add(c.linkedBackId);
+          }
         }
       }
 
-      if (imageUpdates.length > 0) {
-        await db.images.bulkUpdate(imageUpdates);
-      }
-      if (imagesToDelete.length > 0) {
-        await db.images.bulkDelete(imagesToDelete);
-      }
-    }
+      if (toRemove.size === 0) return { removedCards: 0, removedBasics: 0 };
 
-    return { removedCards: toRemove.size, removedBasics };
-  });
+      const removedBasics = allCards.filter(
+        (c) => toRemove.has(c.uuid) && _shouldRemoveBasicLand(c, options)
+      ).length;
+
+      // If a back card is removed but the front remains, clear the front's back link.
+      const frontUpdates: { key: string; changes: Partial<CardOption> }[] = [];
+      for (const uuid of toRemove) {
+        const c = byUuid.get(uuid);
+        if (!c?.linkedFrontId) continue;
+        if (toRemove.has(c.linkedFrontId)) continue;
+        frontUpdates.push({
+          key: c.linkedFrontId,
+          changes: { linkedBackId: undefined },
+        });
+      }
+      if (frontUpdates.length > 0) {
+        await db.cards.bulkUpdate(frontUpdates);
+      }
+
+      // Decrement image refcounts for any removed cards (skip cardbacks).
+      const imageIdCounts = new Map<string, number>();
+      for (const uuid of toRemove) {
+        const c = byUuid.get(uuid);
+        const imageId = c?.imageId;
+        if (!imageId) continue;
+        if (isCardbackId(imageId)) continue;
+        imageIdCounts.set(imageId, (imageIdCounts.get(imageId) || 0) + 1);
+      }
+
+      // Delete cards.
+      await db.cards.bulkDelete(Array.from(toRemove));
+
+      if (imageIdCounts.size > 0) {
+        const imageIds = Array.from(imageIdCounts.keys());
+        const images = await db.images.bulkGet(imageIds);
+        const imageUpdates: { key: string; changes: { refCount: number } }[] =
+          [];
+        const imagesToDelete: string[] = [];
+
+        for (let i = 0; i < imageIds.length; i++) {
+          const id = imageIds[i];
+          const img = images[i];
+          if (!img) continue;
+          const dec = imageIdCounts.get(id) || 0;
+          const newRefCount = img.refCount - dec;
+          if (newRefCount > 0) {
+            imageUpdates.push({ key: id, changes: { refCount: newRefCount } });
+          } else {
+            imagesToDelete.push(id);
+          }
+        }
+
+        if (imageUpdates.length > 0) {
+          await db.images.bulkUpdate(imageUpdates);
+        }
+        if (imagesToDelete.length > 0) {
+          await db.images.bulkDelete(imagesToDelete);
+        }
+      }
+
+      return { removedCards: toRemove.size, removedBasics };
+    }
+  );
 }
 /**
  * Deletes a card from the database and decrements the reference count of its image.
@@ -838,7 +1002,7 @@ export async function createLinkedBackCard(
       isUserUpload: frontCard.isUserUpload,
       imageId: backImageId,
       linkedFrontId: frontUuid,
-      needsEnrichment: false,  // Back cards never need Scryfall metadata
+      needsEnrichment: false, // Back cards never need Scryfall metadata
       hasBuiltInBleed: options?.hasBuiltInBleed,
       usesDefaultCardback: options?.usesDefaultCardback,
       projectId: frontCard.projectId,
@@ -881,12 +1045,12 @@ export async function createLinkedBackCardsBulk(
   const newUuids: string[] = [];
 
   await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
-    // 1. Fetch all front cards 
-    const frontUuids = items.map(i => i.frontUuid);
+    // 1. Fetch all front cards
+    const frontUuids = items.map((i) => i.frontUuid);
     const frontCards = await db.cards.bulkGet(frontUuids);
 
     const backCardsToAdd: CardOption[] = [];
-    const frontUpdates: { key: string; changes: Partial<CardOption>; }[] = [];
+    const frontUpdates: { key: string; changes: Partial<CardOption> }[] = [];
     // Only track ref counts for non-cardback images (cardbacks don't need ref counting)
     const imageRefIncrements = new Map<string, number>();
     // Track existing backs that need updating (when front already has a linked back)
@@ -933,7 +1097,7 @@ export async function createLinkedBackCardsBulk(
         isUserUpload: front.isUserUpload,
         imageId: item.backImageId,
         linkedFrontId: item.frontUuid,
-        needsEnrichment: false,  // Back cards never need Scryfall metadata
+        needsEnrichment: false, // Back cards never need Scryfall metadata
         hasBuiltInBleed: item.options?.hasBuiltInBleed,
         usesDefaultCardback: item.options?.usesDefaultCardback,
         projectId: front.projectId,
@@ -942,12 +1106,15 @@ export async function createLinkedBackCardsBulk(
       // Prepare front update
       frontUpdates.push({
         key: item.frontUuid,
-        changes: { linkedBackId: backUuid }
+        changes: { linkedBackId: backUuid },
       });
 
       // Only tally ref counts for non-cardback images (cardbacks don't need ref counting)
       if (item.backImageId && !isCardbackId(item.backImageId)) {
-        imageRefIncrements.set(item.backImageId, (imageRefIncrements.get(item.backImageId) || 0) + 1);
+        imageRefIncrements.set(
+          item.backImageId,
+          (imageRefIncrements.get(item.backImageId) || 0) + 1
+        );
       }
     }
 
@@ -986,7 +1153,7 @@ export async function createLinkedBackCardsBulk(
     // 4. Update existing back cards (replace their imageId and properties) using bulk operations
     if (existingBackIdsToUpdate.length > 0) {
       // Get all existing back cards at once
-      const backUuids = existingBackIdsToUpdate.map(u => u.backUuid);
+      const backUuids = existingBackIdsToUpdate.map((u) => u.backUuid);
       const existingBacks = await db.cards.bulkGet(backUuids);
 
       // Collect old image IDs to decrement and new image IDs to increment
@@ -998,7 +1165,11 @@ export async function createLinkedBackCardsBulk(
         const update = existingBackIdsToUpdate[i];
         const existingBack = existingBacks[i];
         // Only track non-cardback images
-        if (existingBack?.imageId && existingBack.imageId !== update.newImageId && !isCardbackId(existingBack.imageId)) {
+        if (
+          existingBack?.imageId &&
+          existingBack.imageId !== update.newImageId &&
+          !isCardbackId(existingBack.imageId)
+        ) {
           oldImageIds.add(existingBack.imageId);
         }
         if (update.newImageId && !isCardbackId(update.newImageId)) {
@@ -1007,9 +1178,12 @@ export async function createLinkedBackCardsBulk(
       }
 
       // Get all images at once
-      const allImageIds = [...Array.from(oldImageIds), ...Array.from(newImageIds)];
+      const allImageIds = [
+        ...Array.from(oldImageIds),
+        ...Array.from(newImageIds),
+      ];
       const allImages = await db.images.bulkGet(allImageIds);
-      const imageMap = new Map<string, typeof allImages[0]>();
+      const imageMap = new Map<string, (typeof allImages)[0]>();
       for (let i = 0; i < allImageIds.length; i++) {
         if (allImages[i]) {
           imageMap.set(allImageIds[i], allImages[i]);
@@ -1023,11 +1197,21 @@ export async function createLinkedBackCardsBulk(
       for (let i = 0; i < existingBackIdsToUpdate.length; i++) {
         const update = existingBackIdsToUpdate[i];
         const existingBack = existingBacks[i];
-        if (existingBack?.imageId && existingBack.imageId !== update.newImageId && !isCardbackId(existingBack.imageId)) {
-          imageRefDecrements.set(existingBack.imageId, (imageRefDecrements.get(existingBack.imageId) || 0) + 1);
+        if (
+          existingBack?.imageId &&
+          existingBack.imageId !== update.newImageId &&
+          !isCardbackId(existingBack.imageId)
+        ) {
+          imageRefDecrements.set(
+            existingBack.imageId,
+            (imageRefDecrements.get(existingBack.imageId) || 0) + 1
+          );
         }
         if (update.newImageId && !isCardbackId(update.newImageId)) {
-          imageRefIncrements.set(update.newImageId, (imageRefIncrements.get(update.newImageId) || 0) + 1);
+          imageRefIncrements.set(
+            update.newImageId,
+            (imageRefIncrements.get(update.newImageId) || 0) + 1
+          );
         }
       }
 
@@ -1038,7 +1222,10 @@ export async function createLinkedBackCardsBulk(
         const image = imageMap.get(imageId);
         if (image) {
           const newRefCount = Math.max(0, image.refCount - decrement);
-          imageUpdates.push({ key: imageId, changes: { refCount: newRefCount } });
+          imageUpdates.push({
+            key: imageId,
+            changes: { refCount: newRefCount },
+          });
         }
       }
 
@@ -1046,17 +1233,20 @@ export async function createLinkedBackCardsBulk(
         const image = imageMap.get(imageId);
         if (image) {
           // Check if already in updates (from decrement)
-          const existing = imageUpdates.find(u => u.key === imageId);
+          const existing = imageUpdates.find((u) => u.key === imageId);
           if (existing) {
             existing.changes.refCount += increment;
           } else {
-            imageUpdates.push({ key: imageId, changes: { refCount: image.refCount + increment } });
+            imageUpdates.push({
+              key: imageId,
+              changes: { refCount: image.refCount + increment },
+            });
           }
         }
       }
 
       // Prepare card updates
-      const cardUpdates = existingBackIdsToUpdate.map(update => ({
+      const cardUpdates = existingBackIdsToUpdate.map((update) => ({
         key: update.backUuid,
         changes: {
           imageId: update.newImageId,
@@ -1080,7 +1270,6 @@ export async function createLinkedBackCardsBulk(
   return newUuids;
 }
 
-
 /**
  * Duplicates a card, creating a new card entry and incrementing the
  * reference count of the shared image. If the card has a linked back,
@@ -1095,7 +1284,7 @@ export async function duplicateCard(uuid: string): Promise<void> {
     // Get cards only from the same project
     const projectId = cardToCopy.projectId;
     const allCards = projectId
-      ? await db.cards.where('projectId').equals(projectId).sortBy('order')
+      ? await db.cards.where("projectId").equals(projectId).sortBy("order")
       : await db.cards.orderBy("order").toArray();
     const currentIndex = allCards.findIndex((c) => c.uuid === uuid);
     const nextCard = allCards[currentIndex + 1];
@@ -1188,11 +1377,31 @@ export async function changeCardArtwork(
   applyToAll: boolean,
   newName?: string,
   newImageUrls?: string[],
-  cardMetadata?: Partial<Pick<CardOption, 'set' | 'number' | 'colors' | 'cmc' | 'type_line' | 'rarity' | 'mana_cost' | 'lang' | 'token_parts' | 'needs_token' | 'isToken'>>,
+  cardMetadata?: Partial<
+    Pick<
+      CardOption,
+      | "set"
+      | "number"
+      | "colors"
+      | "cmc"
+      | "type_line"
+      | "rarity"
+      | "mana_cost"
+      | "lang"
+      | "token_parts"
+      | "needs_token"
+      | "isToken"
+    >
+  >,
   hasBuiltInBleed?: boolean
 ): Promise<void> {
   await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
-    if (oldImageId === newImageId && !newName && !newImageUrls && !cardMetadata) {
+    if (
+      oldImageId === newImageId &&
+      !newName &&
+      !newImageUrls &&
+      !cardMetadata
+    ) {
       return;
     }
 
@@ -1221,7 +1430,9 @@ export async function changeCardArtwork(
       newImageIsCustom = cardback ? !!cardback.originalBlob : false;
     } else {
       const newImage = await db.images.get(newImageId);
-      newImageIsCustom = isCustomSource(getImageSourceSync(newImageId, newImage?.source));
+      newImageIsCustom = isCustomSource(
+        getImageSourceSync(newImageId, newImage?.source)
+      );
     }
 
     const changes: Partial<CardOption> = {
@@ -1271,7 +1482,9 @@ export async function changeCardArtwork(
         }
         await db.images.update(newImageId, updates);
       } else {
-        const oldImage = oldImageId ? await db.images.get(oldImageId) : undefined;
+        const oldImage = oldImageId
+          ? await db.images.get(oldImageId)
+          : undefined;
         const isMpcImage = extractMpcIdentifierFromImageId(newImageId) !== null;
         let sourceUrl: string;
         if (isMpcImage) {
@@ -1280,14 +1493,18 @@ export async function changeCardArtwork(
           sourceUrl = newImageId;
         }
 
-        const imageUrls = newImageUrls || (newName ? [sourceUrl] : (oldImage?.imageUrls || [sourceUrl]));
+        const imageUrls =
+          newImageUrls ||
+          (newName ? [sourceUrl] : oldImage?.imageUrls || [sourceUrl]);
 
         await db.images.add({
           id: newImageId,
           sourceUrl: sourceUrl,
           imageUrls: imageUrls,
           refCount: cardsToUpdate.length,
-          source: isMpcImage ? 'mpc' : (inferSourceFromUrl(sourceUrl) ?? undefined),
+          source: isMpcImage
+            ? "mpc"
+            : (inferSourceFromUrl(sourceUrl) ?? undefined),
         });
       }
     }
@@ -1296,13 +1513,16 @@ export async function changeCardArtwork(
     // Skip cardbacks - they're in db.cardbacks and don't need ref counting
     if (oldImageId !== newImageId) {
       // Filter out cardback IDs and collect image IDs to check
-      const imageIdsToCheck = Array.from(oldImageIdCounts.keys()).filter(id => !isCardbackId(id));
+      const imageIdsToCheck = Array.from(oldImageIdCounts.keys()).filter(
+        (id) => !isCardbackId(id)
+      );
 
       if (imageIdsToCheck.length > 0) {
         // Bulk fetch all old images at once instead of sequential awaits
         const oldImages = await db.images.bulkGet(imageIdsToCheck);
 
-        const imageUpdates: { key: string; changes: { refCount: number } }[] = [];
+        const imageUpdates: { key: string; changes: { refCount: number } }[] =
+          [];
         const imagesToDelete: string[] = [];
 
         for (let i = 0; i < imageIdsToCheck.length; i++) {
@@ -1312,7 +1532,10 @@ export async function changeCardArtwork(
             const count = oldImageIdCounts.get(id) || 0;
             const newRefCount = oldImage.refCount - count;
             if (newRefCount > 0) {
-              imageUpdates.push({ key: id, changes: { refCount: newRefCount } });
+              imageUpdates.push({
+                key: id,
+                changes: { refCount: newRefCount },
+              });
             } else {
               imagesToDelete.push(id);
             }
@@ -1331,13 +1554,16 @@ export async function changeCardArtwork(
   });
 }
 
-
 /**
  * Helper to safely increment/decrement image reference counts.
  * Handles restoring images if they were deleted and are being re-added (undo delete),
  * and deleting images if their refCount drops to 0.
  */
-export async function modifyImageRefCount(imageId: string, delta: number, restoreData?: Image) {
+export async function modifyImageRefCount(
+  imageId: string,
+  delta: number,
+  restoreData?: Image
+) {
   const image = await db.images.get(imageId);
   if (image) {
     const newRefCount = (image.refCount || 0) + delta;
