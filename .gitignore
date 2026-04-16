@@ -25,3 +25,4 @@ electron/.tsbuildinfo/
 .sidecar-start.sh
 .sidecar-base
 .td-root
+.sisyphus/
