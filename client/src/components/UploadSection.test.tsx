@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 // Mock stores and child components
 const {
   mockToggleUploadPanel,
+  mockOpenCalibrationModal,
   mockAddToast,
   mockUpdateToast,
   mockRemoveToast,
@@ -12,6 +13,7 @@ const {
   mockResetCardsToOriginalImages,
 } = vi.hoisted(() => ({
   mockToggleUploadPanel: vi.fn(),
+  mockOpenCalibrationModal: vi.fn(),
   mockAddToast: vi.fn(() => "toast-id"),
   mockUpdateToast: vi.fn(),
   mockRemoveToast: vi.fn(),
@@ -35,6 +37,13 @@ const mockBulkUpgradeToMpcAutofill = vi.hoisted(() =>
 vi.mock("@/store/settings", () => ({
   useSettingsStore: vi.fn((selector) => {
     const state = { toggleUploadPanel: mockToggleUploadPanel };
+    return selector(state);
+  }),
+}));
+
+vi.mock("@/store", () => ({
+  useCalibrationModalStore: vi.fn((selector) => {
+    const state = { openModal: mockOpenCalibrationModal };
     return selector(state);
   }),
 }));

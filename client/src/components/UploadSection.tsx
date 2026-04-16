@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import fullLogo from "@/assets/fullLogo.png";
 import { logoSvg } from "@/assets";
+import { useCalibrationModalStore } from "@/store";
 import { useProjectStore } from "@/store/projectStore";
 import { useToastStore } from "@/store/toast";
 import { HR } from "flowbite-react";
@@ -46,6 +47,9 @@ export function UploadSection({
   const removeToast = useToastStore((state) => state.removeToast);
   const showInfoToast = useToastStore((state) => state.showInfoToast);
   const showErrorToast = useToastStore((state) => state.showErrorToast);
+  const openCalibrationModal = useCalibrationModalStore(
+    (state) => state.openModal
+  );
   const [isBulkUpgrading, setIsBulkUpgrading] = useState(false);
   const [isResettingImages, setIsResettingImages] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -299,6 +303,24 @@ export function UploadSection({
           <p className="text-xs text-gray-600 dark:text-white/60 mt-2">
             Replaces current Scryfall art with the closest MPC Autofill match.
           </p>
+          <button
+            type="button"
+            onClick={() =>
+              openCalibrationModal({
+                cardUuid: "upload-calibration",
+                card: {
+                  uuid: "upload-calibration",
+                  name: "Calibration Session",
+                  order: 0,
+                  isUserUpload: false,
+                },
+              })
+            }
+            className="mt-2 w-full rounded-md px-3 py-2 text-sm font-medium text-white transition-colors bg-purple-600 hover:bg-purple-700"
+            data-testid="open-mpc-calibration-harness"
+          >
+            Open MPC Calibration Harness
+          </button>
         </div>
 
         <div className={`mt-2 ${mobile ? "landscape:col-span-2" : ""}`}>
