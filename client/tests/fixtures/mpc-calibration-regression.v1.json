@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "exportedAt": "2026-04-16T00:00:00.000Z",
+  "dataset": {
+    "id": "dataset-regression-v1",
+    "name": "MPC Calibration Regression v1",
+    "description": "Canonical nine-case regression dataset for MPC calibration tuning.",
+    "targetCaseCount": 9,
+    "createdAt": 1776297600000,
+    "updatedAt": 1776297600000,
+    "version": 1
+  },
+  "cases": [
+    {
+      "id": "case-1",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Sol Ring",
+        "set": "C21",
+        "collectorNumber": "267",
+        "sourceImageUrl": "fixture://source/sol-ring-1",
+        "sourceArtImageUrl": "fixture://art/sol-ring-1"
+      },
+      "expectedIdentifier": "sol-ring-art-1",
+      "candidates": [
+        {
+          "identifier": "sol-ring-exact-1",
+          "name": "Sol Ring",
+          "rawName": "Sol Ring [C21] {267}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/sol-ring-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "sol-ring-art-1",
+          "name": "Sol Ring",
+          "rawName": "Sol Ring (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/sol-ring-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "sol-ring-exact-1": 0.8,
+          "sol-ring-art-1": 0.97
+        },
+        "artMatch": {
+          "sol-ring-exact-1": 0.75,
+          "sol-ring-art-1": 0.98
+        }
+      }
+    },
+    {
+      "id": "case-2",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Counterspell",
+        "set": "MH2",
+        "collectorNumber": "267",
+        "sourceImageUrl": "fixture://source/counterspell-1",
+        "sourceArtImageUrl": "fixture://art/counterspell-1"
+      },
+      "expectedIdentifier": "counterspell-art-1",
+      "candidates": [
+        {
+          "identifier": "counterspell-exact-1",
+          "name": "Counterspell",
+          "rawName": "Counterspell [MH2] {267}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/counterspell-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "counterspell-art-1",
+          "name": "Counterspell",
+          "rawName": "Counterspell (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/counterspell-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "counterspell-exact-1": 0.78,
+          "counterspell-art-1": 0.96
+        },
+        "artMatch": {
+          "counterspell-exact-1": 0.72,
+          "counterspell-art-1": 0.97
+        }
+      }
+    },
+    {
+      "id": "case-3",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Ponder",
+        "set": "M12",
+        "collectorNumber": "73",
+        "sourceImageUrl": "fixture://source/ponder-1",
+        "sourceArtImageUrl": "fixture://art/ponder-1"
+      },
+      "expectedIdentifier": "ponder-art-1",
+      "candidates": [
+        {
+          "identifier": "ponder-exact-1",
+          "name": "Ponder",
+          "rawName": "Ponder [M12] {73}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/ponder-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "ponder-art-1",
+          "name": "Ponder",
+          "rawName": "Ponder (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/ponder-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "ponder-exact-1": 0.81,
+          "ponder-art-1": 0.95
+        },
+        "artMatch": {
+          "ponder-exact-1": 0.76,
+          "ponder-art-1": 0.96
+        }
+      }
+    },
+    {
+      "id": "case-4",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Brainstorm",
+        "set": "C21",
+        "collectorNumber": "119",
+        "sourceImageUrl": "fixture://source/brainstorm-1",
+        "sourceArtImageUrl": "fixture://art/brainstorm-1"
+      },
+      "expectedIdentifier": "brainstorm-art-1",
+      "candidates": [
+        {
+          "identifier": "brainstorm-exact-1",
+          "name": "Brainstorm",
+          "rawName": "Brainstorm [C21] {119}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/brainstorm-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "brainstorm-art-1",
+          "name": "Brainstorm",
+          "rawName": "Brainstorm (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/brainstorm-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "brainstorm-exact-1": 0.82,
+          "brainstorm-art-1": 0.95
+        },
+        "artMatch": {
+          "brainstorm-exact-1": 0.76,
+          "brainstorm-art-1": 0.97
+        }
+      }
+    },
+    {
+      "id": "case-5",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Swords to Plowshares",
+        "set": "2XM",
+        "collectorNumber": "34",
+        "sourceImageUrl": "fixture://source/stp-1",
+        "sourceArtImageUrl": "fixture://art/stp-1"
+      },
+      "expectedIdentifier": "stp-art-1",
+      "candidates": [
+        {
+          "identifier": "stp-exact-1",
+          "name": "Swords to Plowshares",
+          "rawName": "Swords to Plowshares [2XM] {34}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/stp-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "stp-art-1",
+          "name": "Swords to Plowshares",
+          "rawName": "Swords to Plowshares (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/stp-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "stp-exact-1": 0.84,
+          "stp-art-1": 0.96
+        },
+        "artMatch": {
+          "stp-exact-1": 0.79,
+          "stp-art-1": 0.98
+        }
+      }
+    },
+    {
+      "id": "case-6",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Path to Exile",
+        "set": "2XM",
+        "collectorNumber": "26",
+        "sourceImageUrl": "fixture://source/path-1",
+        "sourceArtImageUrl": "fixture://art/path-1"
+      },
+      "expectedIdentifier": "path-art-1",
+      "candidates": [
+        {
+          "identifier": "path-exact-1",
+          "name": "Path to Exile",
+          "rawName": "Path to Exile [2XM] {26}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/path-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "path-art-1",
+          "name": "Path to Exile",
+          "rawName": "Path to Exile (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/path-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "path-exact-1": 0.82,
+          "path-art-1": 0.95
+        },
+        "artMatch": {
+          "path-exact-1": 0.77,
+          "path-art-1": 0.97
+        }
+      }
+    },
+    {
+      "id": "case-7",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Preordain",
+        "set": "M11",
+        "collectorNumber": "72",
+        "sourceImageUrl": "fixture://source/preordain-1",
+        "sourceArtImageUrl": "fixture://art/preordain-1"
+      },
+      "expectedIdentifier": "preordain-art-1",
+      "candidates": [
+        {
+          "identifier": "preordain-exact-1",
+          "name": "Preordain",
+          "rawName": "Preordain [M11] {72}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/preordain-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "preordain-art-1",
+          "name": "Preordain",
+          "rawName": "Preordain (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/preordain-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "preordain-exact-1": 0.82,
+          "preordain-art-1": 0.95
+        },
+        "artMatch": {
+          "preordain-exact-1": 0.77,
+          "preordain-art-1": 0.97
+        }
+      }
+    },
+    {
+      "id": "case-8",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Serum Visions",
+        "set": "5DN",
+        "collectorNumber": "31",
+        "sourceImageUrl": "fixture://source/serum-1",
+        "sourceArtImageUrl": "fixture://art/serum-1"
+      },
+      "expectedIdentifier": "serum-art-1",
+      "candidates": [
+        {
+          "identifier": "serum-exact-1",
+          "name": "Serum Visions",
+          "rawName": "Serum Visions [5DN] {31}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/serum-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "serum-art-1",
+          "name": "Serum Visions",
+          "rawName": "Serum Visions (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/serum-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "serum-exact-1": 0.81,
+          "serum-art-1": 0.95
+        },
+        "artMatch": {
+          "serum-exact-1": 0.76,
+          "serum-art-1": 0.97
+        }
+      }
+    },
+    {
+      "id": "case-9",
+      "datasetId": "dataset-regression-v1",
+      "createdAt": 1776297600000,
+      "updatedAt": 1776297600000,
+      "source": {
+        "name": "Lightning Bolt",
+        "set": "M11",
+        "collectorNumber": "146",
+        "sourceImageUrl": "fixture://source/bolt-1",
+        "sourceArtImageUrl": "fixture://art/bolt-1"
+      },
+      "expectedIdentifier": "bolt-art-1",
+      "candidates": [
+        {
+          "identifier": "bolt-exact-1",
+          "name": "Lightning Bolt",
+          "rawName": "Lightning Bolt [M11] {146}",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/bolt-exact-1",
+          "dpi": 300,
+          "tags": [],
+          "sourceName": "Source A",
+          "source": "source-a",
+          "extension": "png",
+          "size": 100
+        },
+        {
+          "identifier": "bolt-art-1",
+          "name": "Lightning Bolt",
+          "rawName": "Lightning Bolt (Alt Art)",
+          "smallThumbnailUrl": "",
+          "mediumThumbnailUrl": "",
+          "imageUrl": "fixture://candidate/bolt-art-1",
+          "dpi": 600,
+          "tags": [],
+          "sourceName": "Source B",
+          "source": "source-b",
+          "extension": "png",
+          "size": 100
+        }
+      ],
+      "comparisonHints": {
+        "fullCard": {
+          "bolt-exact-1": 0.83,
+          "bolt-art-1": 0.96
+        },
+        "artMatch": {
+          "bolt-exact-1": 0.78,
+          "bolt-art-1": 0.98
+        }
+      }
+    }
+  ],
+  "assets": [],
+  "runs": []
+}
