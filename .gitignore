@@ -18,3 +18,10 @@ shared/scryfall-client/dist/
 # TypeScript incremental build caches
 server/.tsbuildinfo/
 electron/.tsbuildinfo/
+.sidecar/
+.sidecar-agent
+.sidecar-task
+.sidecar-pr
+.sidecar-start.sh
+.sidecar-base
+.td-root
