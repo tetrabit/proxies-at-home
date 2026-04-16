@@ -14,5 +14,10 @@ export {
   type MpcUpgradeModalStore,
 } from "./mpcUpgradeModal";
 
+export {
+  useCalibrationModalStore,
+  type CalibrationModalStore,
+} from "./calibrationModal";
+
 // Future slices - exported for migration documentation
 export { LAYOUT_FIELDS, type LayoutField } from "./layoutSettings";
