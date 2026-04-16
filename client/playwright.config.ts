@@ -1,5 +1,32 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const projects = [
+  {
+    name: "chromium",
+    use: { ...devices["Desktop Chrome"] },
+  },
+  {
+    name: "firefox",
+    use: {
+      ...devices["Desktop Firefox"],
+      launchOptions: {
+        firefoxUserPrefs: {
+          "webgl.disabled": false,
+          "webgl.force-enabled": true,
+          "layers.acceleration.force-enabled": true,
+        },
+      },
+    },
+  },
+];
+
+if (process.env.PLAYWRIGHT_ENABLE_WEBKIT === "true") {
+  projects.push({
+    name: "webkit",
+    use: { ...devices["Desktop Safari"] },
+  });
+}
+
 export default defineConfig({
   testDir: "./tests/e2e",
   // Warm up server before tests run
@@ -31,29 +58,7 @@ export default defineConfig({
   expect: {
     timeout: 30000,
   },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-    {
-      name: "firefox",
-      use: {
-        ...devices["Desktop Firefox"],
-        launchOptions: {
-          firefoxUserPrefs: {
-            "webgl.disabled": false,
-            "webgl.force-enabled": true,
-            "layers.acceleration.force-enabled": true,
-          },
-        },
-      },
-    },
-    {
-      name: "webkit",
-      use: { ...devices["Desktop Safari"] },
-    },
-  ],
+  projects,
   webServer: {
     command: "npm run dev -- --host 127.0.0.1 --port 4175",
     url: "http://127.0.0.1:4175",
