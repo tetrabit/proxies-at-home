@@ -714,6 +714,36 @@ describe("mpcBulkUpgradeMatcher", () => {
     });
 
     describe("fullCard layer", () => {
+      it("can use a separate art-match comparator from the full-card comparator", async () => {
+        const cards = [
+          makeCard({ identifier: "full-fav", dpi: 300 }),
+          makeCard({ identifier: "art-fav", dpi: 300 }),
+        ];
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("full-fav")) return 0.97;
+          if (candidateUrl.includes("art-fav")) return 0.93;
+          return null;
+        });
+        const artMatchCompare: SsimCompareFn = vi.fn(
+          async (_src, candidateUrl) => {
+            if (candidateUrl.includes("art-fav")) return 0.98;
+            if (candidateUrl.includes("full-fav")) return 0.91;
+            return null;
+          }
+        );
+
+        const result = await rankCandidates({
+          candidates: cards,
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          artMatchCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.fullCard[0].card.identifier).toBe("full-fav");
+        expect(result.artMatch[0].card.identifier).toBe("art-fav");
+      });
+
       it("uses the preserved full-card comparison path when comparison is available", async () => {
         const cards = [
           makeCard({ identifier: "low", dpi: 200 }),
@@ -835,6 +865,73 @@ describe("mpcBulkUpgradeMatcher", () => {
         const result = await rankCandidates({ candidates: [card] });
 
         expect(result.artMatch).toEqual([]);
+      });
+
+      it("falls back to full-card comparison when source art crop is unavailable", async () => {
+        const cardA = makeCard({ identifier: "a", dpi: 300 });
+        const cardB = makeCard({ identifier: "b", dpi: 300 });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("b")) return 0.95;
+          if (candidateUrl.includes("a")) return 0.85;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [cardA, cardB],
+          sourceImageUrl: "https://proxy.example.invalid/source-image.png",
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.artMatch).toHaveLength(2);
+        expect(result.artMatch[0].card.identifier).toBe("b");
+        expect(result.artMatch[1].card.identifier).toBe("a");
+        expect(ssimCompare).toHaveBeenCalledWith(
+          "https://proxy.example.invalid/source-image.png",
+          expect.stringContaining("/b"),
+          undefined
+        );
+      });
+
+      it("lets fallback art-match scoring drive fullProcess shortlisting when art crop is unavailable", async () => {
+        const exactPrint = makeCard({
+          identifier: "exact",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const artFavorite = makeCard({
+          identifier: "art-fav",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("exact")) return 0.97;
+          if (candidateUrl.includes("art-fav")) return 0.6;
+          return null;
+        });
+        const artMatchCompare: SsimCompareFn = vi.fn(
+          async (_src, candidateUrl) => {
+            if (candidateUrl.includes("art-fav")) return 0.98;
+            if (candidateUrl.includes("exact")) return 0.8;
+            return null;
+          }
+        );
+
+        const result = await rankCandidates({
+          candidates: [exactPrint, artFavorite],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: "https://proxy.example.invalid/source-image.png",
+          ssimCompare,
+          artMatchCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.artMatch[0].card.identifier).toBe("art-fav");
+        expect(result.fullProcess[0].card.identifier).toBe("art-fav");
+        expect(result.fullProcess[0].bucket).toBe("name");
       });
 
       it("is empty when SSIM comparison throws", async () => {
@@ -1161,7 +1258,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.fullCard[0].card.identifier).toBe("dpi-fav");
       });
 
-      it("fullProcess preserves exact-printing priority even when art-match disagrees", async () => {
+      it("fullProcess narrows to a decisive art shortlist before metadata buckets", async () => {
         const exactPrint = makeCard({
           identifier: "exact",
           rawName: "Sol Ring [C21] {267}",
@@ -1189,13 +1286,13 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result.artMatch[0].card.identifier).toBe("art-fav");
-        expect(result.fullProcess[0].card.identifier).toBe("exact");
-        expect(result.fullProcess[0].bucket).toBe("set_collector");
+        expect(result.fullProcess[0].card.identifier).toBe("art-fav");
+        expect(result.fullProcess[0].bucket).toBe("name");
         expect(result.exactPrinting[0].card.identifier).toBe("exact");
         expect(result.fullCard[0].card.identifier).toBe("art-fav");
       });
 
-      it("fullProcess uses SSIM within its bucket, not across layers", async () => {
+      it("fullProcess falls back to the original pool when art scores are inconclusive", async () => {
         const scA = makeCard({
           identifier: "sc-a",
           rawName: "Sol Ring [C21] {267}",
@@ -1213,7 +1310,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
-          if (candidateUrl.includes("sc-a")) return 0.96;
+          if (candidateUrl.includes("sc-a")) return 0.985;
           if (candidateUrl.includes("sc-b")) return 0.93;
           if (candidateUrl.includes("name-only")) return 0.99;
           return null;
@@ -1231,6 +1328,44 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.fullProcess[0].card.identifier).toBe("sc-a");
         expect(result.fullProcess[0].bucket).toBe("set_collector");
         expect(result.artMatch[0].card.identifier).toBe("name-only");
+      });
+
+      it("keeps near-tied top art candidates so metadata can still decide within the shortlist", async () => {
+        const exactPrint = makeCard({
+          identifier: "exact",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const sameArtAlt = makeCard({
+          identifier: "same-art-alt",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 600,
+        });
+        const unrelated = makeCard({
+          identifier: "unrelated",
+          rawName: "Sol Ring (Different Art)",
+          dpi: 900,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("exact")) return 0.97;
+          if (candidateUrl.includes("same-art-alt")) return 0.965;
+          if (candidateUrl.includes("unrelated")) return 0.5;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [unrelated, sameArtAlt, exactPrint],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.artMatch[0].card.identifier).toBe("exact");
+        expect(result.fullProcess[0].card.identifier).toBe("exact");
+        expect(result.fullProcess[0].bucket).toBe("set_collector");
       });
 
       it("preserves the corrected Thassa, Deep-Dwelling ordering across layers", async () => {
@@ -1272,7 +1407,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           getMpcImageUrl: defaultGetUrl,
         });
 
-        expect(result.fullProcess[0].card.identifier).toBe("exact-printing");
+        expect(result.fullProcess[0].card.identifier).toBe("same-art");
         expect(result.exactPrinting[0].card.identifier).toBe("exact-printing");
         expect(
           result.artMatch.map((candidate) => candidate.card.identifier)

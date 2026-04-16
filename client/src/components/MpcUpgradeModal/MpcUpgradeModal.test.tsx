@@ -128,11 +128,20 @@ vi.mock("@/store", () => {
   };
   cardEditorFn.getState = () => ({ openModal: mockOpenCardEditor });
 
+  const calibrationFn = (
+    selector: (state: { openModal: typeof vi.fn }) => unknown
+  ) => {
+    const state = { openModal: vi.fn() };
+    return typeof selector === "function" ? selector(state) : state;
+  };
+  calibrationFn.getState = () => ({ openModal: vi.fn() });
+
   return {
     useMpcUpgradeModalStore: mpcFn,
     useProjectStore: projFn,
     useArtworkModalStore: artworkFn,
     useCardEditorModalStore: cardEditorFn,
+    useCalibrationModalStore: calibrationFn,
   };
 });
 
@@ -163,6 +172,7 @@ vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
   filterByExactName: mockFilterByExactName,
   rankCandidates: mockRankCandidates,
   createSsimCompare: mockCreateSsimCompare,
+  FULL_CARD_NORMALIZED_SIZE: 1024,
 }));
 
 vi.mock("@/helpers/mpcUpgradeLayerAdapter", () => ({

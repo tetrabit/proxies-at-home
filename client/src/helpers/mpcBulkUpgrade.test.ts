@@ -84,9 +84,13 @@ function makeBitmap(): ImageBitmap {
 
 function installCanvasStub() {
   const drawImage = vi.fn();
-  const getImageData = vi.fn(() => ({
-    data: new Uint8ClampedArray(128 * 128 * 4).fill(200),
-  }));
+  const getImageData = vi.fn(
+    (_x: number, _y: number, width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4).fill(200),
+      width,
+      height,
+    })
+  );
 
   vi.stubGlobal("document", {
     createElement: vi.fn(() => ({
@@ -123,7 +127,7 @@ describe("bulkUpgradeToMpcAutofill", () => {
     );
   });
 
-  it("skips an ambiguous exact-name match instead of forcing an upgrade", async () => {
+  it("uses deterministic fallback selection when multiple exact-name matches remain", async () => {
     const card = makeCardOption({
       uuid: "card-1",
       set: "C21",
@@ -165,33 +169,22 @@ describe("bulkUpgradeToMpcAutofill", () => {
     mockGetMpcAutofillImageUrl.mockImplementation(
       (identifier: string) => `https://mpc.test/${identifier}`
     );
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
 
     const result = await bulkUpgradeToMpcAutofill();
 
     expect(result).toEqual({
       totalCards: 1,
-      upgraded: 0,
-      autoMatched: 0,
-      ambiguous: 1,
-      noMatch: 0,
-      skipped: 1,
+      upgraded: 1,
+      skipped: 0,
       errors: 0,
     });
-    expect(mockDbSettings.put).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: expect.stringContaining("mpc-bulk-upgrade-diagnostic:proj-1:"),
-        value: expect.objectContaining({
-          status: "ambiguous",
-          reason: "set_collector_visual_tie",
-          candidateCount: 2,
-        }),
-      })
-    );
-    expect(mockAddRemoteImage).not.toHaveBeenCalled();
-    expect(mockDbCards.bulkUpdate).not.toHaveBeenCalled();
+    expect(mockAddRemoteImage).toHaveBeenCalledWith(["https://mpc.test/b"], 1);
+    expect(mockDbCards.bulkUpdate).toHaveBeenCalled();
   });
 
-  it("persists matched diagnostics when an upgrade succeeds", async () => {
+  it("updates cards and image refs when an upgrade succeeds", async () => {
     const card = makeCardOption({
       uuid: "card-2",
       set: "C21",
@@ -226,25 +219,26 @@ describe("bulkUpgradeToMpcAutofill", () => {
     expect(result).toEqual({
       totalCards: 1,
       upgraded: 1,
-      autoMatched: 1,
-      ambiguous: 0,
-      noMatch: 0,
       skipped: 0,
       errors: 0,
     });
-    expect(mockDbSettings.put).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: expect.stringContaining("mpc-bulk-upgrade-diagnostic:proj-1:"),
-        value: expect.objectContaining({
-          status: "matched",
-          reason: "set_collector_only",
-          matchedIdentifier: "match-1",
-        }),
-      })
+    expect(mockAddRemoteImage).toHaveBeenCalledWith(
+      ["https://mpc.test/match-1"],
+      1
     );
+    expect(mockDbCards.bulkUpdate).toHaveBeenCalledWith([
+      expect.objectContaining({
+        key: "card-2",
+        changes: expect.objectContaining({
+          imageId: "new-image-id",
+          isUserUpload: false,
+          hasBuiltInBleed: true,
+        }),
+      }),
+    ]);
   });
 
-  it("tries a Scryfall art-crop source before falling back to the full-card comparison", async () => {
+  it("uses MPC small URLs for matching and the full URL for the applied upgrade", async () => {
     const card = makeCardOption({
       uuid: "card-2b",
       set: "C21",
@@ -294,13 +288,14 @@ describe("bulkUpgradeToMpcAutofill", () => {
           : `https://mpc.test/${identifier}`
     );
 
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
     await bulkUpgradeToMpcAutofill();
 
-    expect(mockLoadImage).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "/art_crop/front/1/2/12345678-1234-1234-1234-123456789abc.jpg?version"
-      )
-    );
+    expect(mockGetMpcAutofillImageUrl).toHaveBeenCalledWith("a", "small");
+    expect(mockGetMpcAutofillImageUrl).toHaveBeenCalledWith("b", "small");
+    expect(mockAddRemoteImage).toHaveBeenCalledWith(["https://mpc.test/b"], 1);
   });
 
   it("records a no-match outcome when MPC search results do not exactly match the card name", async () => {
@@ -333,23 +328,14 @@ describe("bulkUpgradeToMpcAutofill", () => {
     expect(result).toEqual({
       totalCards: 1,
       upgraded: 0,
-      autoMatched: 0,
-      ambiguous: 0,
-      noMatch: 1,
       skipped: 1,
       errors: 0,
     });
-    expect(mockDbSettings.put).toHaveBeenCalledWith(
-      expect.objectContaining({
-        value: expect.objectContaining({
-          status: "skipped",
-          reason: "no_exact_name_match",
-        }),
-      })
-    );
+    expect(mockAddRemoteImage).not.toHaveBeenCalled();
+    expect(mockDbCards.bulkUpdate).not.toHaveBeenCalled();
   });
 
-  it("skips non-Scryfall images without counting them as no-match outcomes", async () => {
+  it("skips non-Scryfall images before attempting an MPC search", async () => {
     const card = makeCardOption({ uuid: "card-4" });
     mockDbCards.toArray.mockResolvedValue([card]);
     mockDbImages.bulkGet.mockResolvedValue([{ source: "custom" }]);
@@ -359,19 +345,9 @@ describe("bulkUpgradeToMpcAutofill", () => {
     expect(result).toEqual({
       totalCards: 1,
       upgraded: 0,
-      autoMatched: 0,
-      ambiguous: 0,
-      noMatch: 0,
       skipped: 1,
       errors: 0,
     });
-    expect(mockDbSettings.put).toHaveBeenCalledWith(
-      expect.objectContaining({
-        value: expect.objectContaining({
-          status: "skipped",
-          reason: "source_not_scryfall",
-        }),
-      })
-    );
+    expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
   });
 });
