@@ -72,6 +72,7 @@ export interface MatcherInput {
   sourceImageUrl?: string;
   signal?: AbortSignal;
   ssimCompare?: SsimCompareFn;
+  artMatchCompare?: SsimCompareFn;
   getMpcImageUrl?: (identifier: string) => string;
 }
 
@@ -91,7 +92,8 @@ type CropSpec = {
 type ImageCache = Map<string, Promise<NormalizedImage | null>>;
 type EdgeCache = Map<string, Promise<Float32Array | null>>;
 
-const NORMALIZED_SIZE = 192;
+const DEFAULT_NORMALIZED_SIZE = 192;
+export const FULL_CARD_NORMALIZED_SIZE = 1024;
 const EDGE_INSET_RATIO = 0.08;
 const BLOCK_SIZE = 8;
 const LUMINANCE_WEIGHT = 0.75;
@@ -161,7 +163,8 @@ function decodeCropSpecFromUrl(url: string): {
 
 function normalizeBitmap(
   bitmap: ImageBitmap,
-  cropSpec?: CropSpec
+  cropSpec?: CropSpec,
+  normalizedSize = DEFAULT_NORMALIZED_SIZE
 ): NormalizedImage | null {
   const cropX = cropSpec
     ? Math.max(0, Math.floor(bitmap.width * cropSpec.left))
@@ -182,7 +185,7 @@ function normalizeBitmap(
       )
     : Math.max(1, bitmap.height - cropY * 2);
 
-  const canvas = createCanvas(NORMALIZED_SIZE);
+  const canvas = createCanvas(normalizedSize);
   const context = get2dContext(canvas);
   if (!context) return null;
 
@@ -194,15 +197,15 @@ function normalizeBitmap(
     cropHeight,
     0,
     0,
-    NORMALIZED_SIZE,
-    NORMALIZED_SIZE
+    normalizedSize,
+    normalizedSize
   );
 
   const { data, width, height } = context.getImageData(
     0,
     0,
-    NORMALIZED_SIZE,
-    NORMALIZED_SIZE
+    normalizedSize,
+    normalizedSize
   );
   const pixels = new Float32Array(width * height);
 
@@ -376,9 +379,11 @@ function blendVisualScores(luminanceScore: number, edgeScore: number): number {
 async function loadNormalizedImage(
   imageUrl: string,
   signal: AbortSignal | undefined,
-  cache: ImageCache
+  cache: ImageCache,
+  normalizedSize: number
 ): Promise<NormalizedImage | null> {
-  const cached = cache.get(imageUrl);
+  const cacheKey = `${normalizedSize}:${imageUrl}`;
+  const cached = cache.get(cacheKey);
   if (cached) {
     return cached;
   }
@@ -391,7 +396,7 @@ async function loadNormalizedImage(
         signal ? { signal } : undefined
       );
       try {
-        return normalizeBitmap(bitmap, decoded.cropSpec);
+        return normalizeBitmap(bitmap, decoded.cropSpec, normalizedSize);
       } finally {
         bitmap.close();
       }
@@ -400,7 +405,7 @@ async function loadNormalizedImage(
     }
   })();
 
-  cache.set(imageUrl, loadPromise);
+  cache.set(cacheKey, loadPromise);
   return loadPromise;
 }
 
@@ -408,15 +413,22 @@ async function loadEdgeMap(
   imageUrl: string,
   signal: AbortSignal | undefined,
   imageCache: ImageCache,
-  edgeCache: EdgeCache
+  edgeCache: EdgeCache,
+  normalizedSize: number
 ): Promise<Float32Array | null> {
-  const cached = edgeCache.get(imageUrl);
+  const cacheKey = `${normalizedSize}:${imageUrl}`;
+  const cached = edgeCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
   const edgePromise = (async () => {
-    const normalized = await loadNormalizedImage(imageUrl, signal, imageCache);
+    const normalized = await loadNormalizedImage(
+      imageUrl,
+      signal,
+      imageCache,
+      normalizedSize
+    );
     if (!normalized) {
       return null;
     }
@@ -428,12 +440,13 @@ async function loadEdgeMap(
     );
   })();
 
-  edgeCache.set(imageUrl, edgePromise);
+  edgeCache.set(cacheKey, edgePromise);
   return edgePromise;
 }
 
 export function createSsimCompare(
-  cache: ImageCache = new Map()
+  cache: ImageCache = new Map(),
+  normalizedSize = DEFAULT_NORMALIZED_SIZE
 ): SsimCompareFn {
   const edgeCache: EdgeCache = new Map();
 
@@ -443,8 +456,8 @@ export function createSsimCompare(
     signal?: AbortSignal
   ) => {
     const [source, candidate] = await Promise.all([
-      loadNormalizedImage(sourceImageUrl, signal, cache),
-      loadNormalizedImage(candidateImageUrl, signal, cache),
+      loadNormalizedImage(sourceImageUrl, signal, cache, normalizedSize),
+      loadNormalizedImage(candidateImageUrl, signal, cache, normalizedSize),
     ]);
 
     if (!source || !candidate) return null;
@@ -464,8 +477,14 @@ export function createSsimCompare(
 
     try {
       const [sourceEdges, candidateEdges] = await Promise.all([
-        loadEdgeMap(sourceImageUrl, signal, cache, edgeCache),
-        loadEdgeMap(candidateImageUrl, signal, cache, edgeCache),
+        loadEdgeMap(sourceImageUrl, signal, cache, edgeCache, normalizedSize),
+        loadEdgeMap(
+          candidateImageUrl,
+          signal,
+          cache,
+          edgeCache,
+          normalizedSize
+        ),
       ]);
 
       if (!sourceEdges || !candidateEdges) {
@@ -599,7 +618,13 @@ async function scoreCandidatesByArtCrop(
 ): Promise<ScoredCandidate[]> {
   const sourceArtCropUrl = toArtCrop(sourceImageUrl);
   if (!sourceArtCropUrl) {
-    return [];
+    return await scoreCandidatesBySsim(
+      bucket,
+      sourceImageUrl,
+      ssimCompare,
+      getMpcImageUrl,
+      signal
+    );
   }
 
   const scores: (number | null)[] = await Promise.all(
@@ -628,25 +653,55 @@ async function scoreCandidatesByArtCrop(
 
 const MAX_RECOMMENDATIONS = 6;
 
+function resolveFullProcessCandidates(
+  candidates: MpcAutofillCard[],
+  artScoredCandidates: ScoredCandidate[]
+): MpcAutofillCard[] {
+  if (candidates.length <= 1) {
+    return candidates;
+  }
+
+  const topCandidate = artScoredCandidates[0];
+  if (!topCandidate || topCandidate.score < SSIM_MIN_SCORE) {
+    return candidates;
+  }
+
+  if (artScoredCandidates.length < 2) {
+    return candidates;
+  }
+
+  const runnerUp = artScoredCandidates[1];
+  if (topCandidate.score - runnerUp.score < SSIM_MIN_MARGIN) {
+    return candidates;
+  }
+
+  const shortlisted = artScoredCandidates
+    .filter(
+      (candidate) => topCandidate.score - candidate.score < SSIM_MIN_MARGIN
+    )
+    .map((candidate) => candidate.card);
+
+  return shortlisted.length > 0 ? shortlisted : candidates;
+}
+
 export async function rankCandidates(
   input: MatcherInput
 ): Promise<RankedRecommendations> {
   const { candidates } = input;
-
-  const fullCard = await buildFullCardLayer(input);
-  const exactPrinting = await buildExactPrintingLayer(input);
+  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
+  let artScoredCandidates: ScoredCandidate[] = [];
 
   let artMatch: RankedCandidate[] = [];
-  if (input.sourceImageUrl && input.ssimCompare && input.getMpcImageUrl) {
+  if (input.sourceImageUrl && artMatchCompare && input.getMpcImageUrl) {
     try {
-      const scored = await scoreCandidatesByArtCrop(
+      artScoredCandidates = await scoreCandidatesByArtCrop(
         candidates,
         input.sourceImageUrl,
-        input.ssimCompare,
+        artMatchCompare,
         input.getMpcImageUrl,
         input.signal
       );
-      artMatch = scored.slice(0, MAX_RECOMMENDATIONS).map(
+      artMatch = artScoredCandidates.slice(0, MAX_RECOMMENDATIONS).map(
         (sc): RankedCandidate => ({
           card: sc.card,
           reason: "name_ssim",
@@ -659,7 +714,18 @@ export async function rankCandidates(
     }
   }
 
-  const fullProcess = await buildFullProcessLayer(input);
+  const fullProcessCandidates = resolveFullProcessCandidates(
+    candidates,
+    artScoredCandidates
+  );
+
+  const fullCard = await buildFullCardLayer(input);
+  const exactPrinting = await buildExactPrintingLayer(input);
+
+  const fullProcess = await buildFullProcessLayer({
+    ...input,
+    candidates: fullProcessCandidates,
+  });
   const allMatches = buildAllMatchesLayer(
     candidates,
     artMatch,

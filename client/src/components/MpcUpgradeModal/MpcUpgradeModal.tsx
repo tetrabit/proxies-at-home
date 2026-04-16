@@ -10,6 +10,7 @@ import {
   filterByExactName,
   rankCandidates,
   createSsimCompare,
+  FULL_CARD_NORMALIZED_SIZE,
 } from "@/helpers/mpcBulkUpgradeMatcher";
 import type { RankedRecommendations } from "@/helpers/mpcBulkUpgradeMatcher";
 import { buildLayerTabs } from "@/helpers/mpcUpgradeLayerAdapter";
@@ -109,7 +110,11 @@ export function MpcUpgradeModal() {
       }
       if (signal.aborted) return;
 
-      const ssimCompare = createSsimCompare();
+      const ssimCompare = createSsimCompare(
+        undefined,
+        FULL_CARD_NORMALIZED_SIZE
+      );
+      const artMatchCompare = createSsimCompare();
       const ranked = await rankCandidates({
         candidates: exactMatches,
         set,
@@ -117,6 +122,7 @@ export function MpcUpgradeModal() {
         sourceImageUrl,
         signal,
         ssimCompare,
+        artMatchCompare,
         getMpcImageUrl: (id: string) => getMpcAutofillImageUrl(id, "small"),
       });
       if (signal.aborted) return;

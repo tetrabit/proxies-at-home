@@ -5,6 +5,7 @@ import { searchMpcAutofill, getMpcAutofillImageUrl } from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
 import {
   createSsimCompare,
+  FULL_CARD_NORMALIZED_SIZE,
   selectBestCandidate,
   filterByExactName,
 } from "./mpcBulkUpgradeMatcher";
@@ -198,7 +199,7 @@ export async function bulkUpgradeToMpcAutofill(
 
   const allEntries = Array.from(cardsByImageId.entries());
   const totalImages = allEntries.length;
-  const ssimCompare = createSsimCompare();
+  const ssimCompare = createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE);
 
   for (let i = 0; i < totalImages; i++) {
     if (signal?.aborted) break;
