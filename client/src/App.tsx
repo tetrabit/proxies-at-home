@@ -1,10 +1,15 @@
 import { Loader, UpdateNotification, AboutModal } from "@/components/common";
 import { lazy, useEffect, useState } from "react";
+import { Sparkles } from "lucide-react";
 import { ImageProcessor } from "@/helpers/imageProcessor";
 import { useShareUrl } from "@/hooks/useShareUrl";
 
 import { db } from "@/db";
-import { useProjectStore, useUserPreferencesStore } from "@/store";
+import {
+  useCalibrationModalStore,
+  useProjectStore,
+  useUserPreferencesStore,
+} from "@/store";
 import { useToastStore } from "@/store/toast";
 import { autoRestore } from "@/helpers/autoRestore";
 
@@ -12,6 +17,9 @@ const ProxyBuilderPage = lazy(() => import("@/pages/ProxyBuilderPage"));
 
 function App() {
   const [showAbout, setShowAbout] = useState(false);
+  const openCalibrationModal = useCalibrationModalStore(
+    (state) => state.openModal
+  );
 
   // Detect and load shared deck from ?share=xxx URL parameter
   useShareUrl();
@@ -44,10 +52,12 @@ function App() {
 
           if (restored.length > 0 && !isCancelled) {
             // Show success toast
-            const names = result.projectNames.join(', ');
-            useToastStore.getState().showInfoToast(
-              `Restored ${result.restoredCount} project${result.restoredCount > 1 ? 's' : ''} from server: ${names}`
-            );
+            const names = result.projectNames.join(", ");
+            useToastStore
+              .getState()
+              .showInfoToast(
+                `Restored ${result.restoredCount} project${result.restoredCount > 1 ? "s" : ""} from server: ${names}`
+              );
 
             // Switch to the most recently updated project
             await useProjectStore.getState().switchProject(restored[0].id);
@@ -57,14 +67,14 @@ function App() {
       }
 
       // 2. Ensure userPreferences record exists
-      let userPrefs = await db.userPreferences.get('default');
+      let userPrefs = await db.userPreferences.get("default");
       if (!userPrefs) {
         await db.userPreferences.add({
-          id: 'default',
+          id: "default",
           settings: {},
           favoriteCardbacks: [],
         });
-        userPrefs = await db.userPreferences.get('default');
+        userPrefs = await db.userPreferences.get("default");
       }
 
       // 3. Determine which project to load
@@ -72,7 +82,7 @@ function App() {
 
       // Priority 1: Last opened project (if it still exists)
       if (userPrefs?.lastProjectId) {
-        const exists = projects.find(p => p.id === userPrefs!.lastProjectId);
+        const exists = projects.find((p) => p.id === userPrefs!.lastProjectId);
         if (exists) {
           targetProjectId = userPrefs.lastProjectId;
         }
@@ -87,7 +97,9 @@ function App() {
       if (!targetProjectId) {
         // Final guard - check one more time before creating
         if (isCancelled) return;
-        targetProjectId = await useProjectStore.getState().createProject('My Project');
+        targetProjectId = await useProjectStore
+          .getState()
+          .createProject("My Project");
       }
 
       // 4. Switch to target project
@@ -98,9 +110,10 @@ function App() {
 
     initProject();
 
-    return () => { isCancelled = true; };
+    return () => {
+      isCancelled = true;
+    };
   }, []);
-
 
   // Listen for Electron "About" menu click and settings button click
   useEffect(() => {
@@ -113,12 +126,13 @@ function App() {
 
     // Settings button handler (works in web and Electron)
     const handleOpenAbout = () => setShowAbout(true);
-    window.addEventListener('open-about-modal', handleOpenAbout);
+    window.addEventListener("open-about-modal", handleOpenAbout);
 
     // Pre-warm workers
     ImageProcessor.getInstance().prewarm();
 
-    return () => window.removeEventListener('open-about-modal', handleOpenAbout);
+    return () =>
+      window.removeEventListener("open-about-modal", handleOpenAbout);
   }, []);
 
   return (
@@ -129,10 +143,29 @@ function App() {
       <UpdateNotification />
       <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
 
+      <button
+        type="button"
+        className="fixed top-4 right-4 z-50 rounded-full bg-purple-600 p-3 text-white shadow-lg hover:bg-purple-700"
+        data-testid="open-mpc-calibration-global"
+        aria-label="Open MPC Calibration Harness"
+        onClick={() =>
+          openCalibrationModal({
+            cardUuid: "global-calibration",
+            card: {
+              uuid: "global-calibration",
+              name: "Calibration Session",
+              order: 0,
+              isUserUpload: false,
+            },
+          })
+        }
+      >
+        <Sparkles className="size-5" />
+      </button>
+
       <ProxyBuilderPage />
     </>
   );
 }
 
 export default App;
-

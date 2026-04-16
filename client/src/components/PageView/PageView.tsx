@@ -61,6 +61,7 @@ import { ArtworkModal } from "../ArtworkModal";
 import { CardEditorModalWrapper } from "../CardEditorModal/CardEditorModalWrapper";
 import { KeyboardShortcutsModal } from "../common";
 import { MpcUpgradeModal } from "../MpcUpgradeModal";
+import { CalibrationModal } from "../CalibrationModal";
 import { usePageViewHotkeys } from "@/hooks/usePageViewHotkeys";
 import { usePageViewZoom } from "@/hooks/usePageViewZoom";
 import { PullToRefresh } from "../PullToRefresh";
@@ -1236,6 +1237,8 @@ export function PageView({
       <KeyboardShortcutsModal />
 
       <MpcUpgradeModal />
+
+      <CalibrationModal />
     </>
   );
 }

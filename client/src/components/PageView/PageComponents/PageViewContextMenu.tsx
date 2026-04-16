@@ -10,6 +10,7 @@ import {
 } from "@/helpers/undoableActions";
 import {
   useArtworkModalStore,
+  useCalibrationModalStore,
   useCardEditorModalStore,
   useMpcUpgradeModalStore,
 } from "@/store";
@@ -58,6 +59,9 @@ export function PageViewContextMenu({
   const selectedCards = useSelectionStore((state) => state.selectedCards);
   const clearSelection = useSelectionStore((state) => state.clearSelection);
   const openArtworkModal = useArtworkModalStore((state) => state.openModal);
+  const openCalibrationModal = useCalibrationModalStore(
+    (state) => state.openModal
+  );
   const openCardEditor = useCardEditorModalStore((state) => state.openModal);
   const openMpcUpgrade = useMpcUpgradeModalStore((state) => state.openModal);
   const hasSelection = selectedCards.size > 0;
@@ -213,6 +217,21 @@ export function PageViewContextMenu({
           >
             <Sparkles className="size-3 mr-1" />
             MPC Upgrade
+          </Button>
+          <Button
+            size="sm"
+            color="light"
+            data-testid="card-context-menu-mpc-calibration"
+            onClick={() => {
+              const card = cards?.find((c) => c.uuid === contextMenu.cardUuid);
+              if (card) {
+                openCalibrationModal({ cardUuid: card.uuid, card });
+              }
+              setContextMenu({ ...contextMenu, visible: false });
+            }}
+          >
+            <Sparkles className="size-3 mr-1" />
+            MPC Calibration
           </Button>
           <Button
             size="sm"
