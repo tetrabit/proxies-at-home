@@ -114,3 +114,21 @@ MPC imports don't include card metadata (colors, cmc, type_line). This endpoint:
 3. Returns enriched metadata
 
 **Client Usage:** `useCardEnrichment.ts`
+
+---
+
+## preferencesRouter (`/api/preferences/`)
+
+### GET `/`
+**Purpose:** Load the server-backed MPC preference fixture
+
+- Returns `404` when no user preference file exists yet
+- Returns the parsed `MpcPreferenceFixture` JSON when present
+
+### PUT `/`
+**Purpose:** Persist the server-backed MPC preference fixture
+
+- Validates request bodies at runtime before writing
+- Writes to `./data/mpc-preferences.user.json` by default
+- `MPC_PREFERENCES_PATH` may override the filename, but strict path checks keep it under `./data`
+- Uses temp-file + rename writes with serialized request handling to avoid corrupting the JSON file

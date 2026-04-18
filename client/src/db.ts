@@ -290,6 +290,7 @@ class ProxxiedDexie extends Dexie {
   mpcCalibrationCases!: Table<MpcCalibrationCaseRecord, string>;
   mpcCalibrationAssets!: Table<MpcCalibrationAssetRecord, string>;
   mpcCalibrationRuns!: Table<MpcCalibrationRunRecord, string>;
+  fsAccessHandles!: Table<FsAccessHandleRecord, string>;
 
   // Persistent custom image storage (content-addressed)
   user_images!: Table<UserImage, string>;
@@ -627,6 +628,27 @@ class ProxxiedDexie extends Dexie {
       mpcCalibrationCases: "&id, datasetId, updatedAt",
       mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
       mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId",
+    });
+    this.version(21).stores({
+      cards:
+        "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id",
+      images:
+        "&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth",
+      cardbacks: "&id",
+      settings: "&id",
+      imageCache: "&url, cachedAt",
+      cardMetadataCache:
+        "id, name, set, number, oracle_id, scryfall_id, cachedAt",
+      effectCache: "&key, cachedAt",
+      mpcSearchCache: "&[query+cardType], cachedAt",
+      projects: "&id, shareId, lastOpenedAt",
+      userPreferences: "&id",
+      user_images: "&hash",
+      mpcCalibrationDatasets: "&id, updatedAt",
+      mpcCalibrationCases: "&id, datasetId, updatedAt",
+      mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
+      mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId",
+      fsAccessHandles: "&id, updatedAt",
     });
   }
 }

@@ -9,6 +9,24 @@ import {
   selectBestCandidate,
   filterByExactName,
 } from "./mpcBulkUpgradeMatcher";
+import {
+  getMpcCalibrationPreferenceProfile,
+  getMpcCalibrationPreferredIdentifier,
+  listDefaultMpcCalibrationCases,
+} from "./mpcCalibrationStorage";
+import {
+  buildMpcPreferenceScoreMap,
+  trainMpcPreferenceModel,
+} from "./mpcPreferenceModel";
+import { hydrateMpcPreferences } from "./mpcPreferenceBootstrap";
+import {
+  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+  harvestSourcePreferenceCandidates,
+} from "./mpcPreferenceBootstrap";
+import {
+  buildMpcSourceVisualProfiles,
+  buildMpcVisualPreferenceScoreMap,
+} from "./mpcVisualPreference";
 
 export type BulkMpcUpgradeSummary = {
   totalCards: number;
@@ -84,6 +102,54 @@ async function processImageGroup(
   }
 
   // ── Find best candidate via matcher ──
+  await hydrateMpcPreferences();
+  const preferenceInput = {
+    name: representative.name,
+    set: representative.set,
+    collectorNumber: representative.number,
+  };
+  const [preferredIdentifier, preferenceProfile, calibrationCases] =
+    await Promise.all([
+      getMpcCalibrationPreferredIdentifier(preferenceInput),
+      getMpcCalibrationPreferenceProfile(preferenceInput),
+      listDefaultMpcCalibrationCases(),
+    ]);
+  const unseenPreferenceScores =
+    preferredIdentifier || preferenceProfile
+      ? undefined
+      : await (async () => {
+          const model = trainMpcPreferenceModel(calibrationCases, {
+            emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+          });
+          if (!model) {
+            return undefined;
+          }
+
+          const metadataScores = buildMpcPreferenceScoreMap(
+            model,
+            exactMatches
+          );
+          const harvested = await harvestSourcePreferenceCandidates(
+            BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+            async (name) => searchMpcAutofill(name, "CARD", true),
+            ["Hathwellcrisping", "Chilli_Axe"]
+          );
+          const profiles = await buildMpcSourceVisualProfiles(harvested);
+          const visualScores = await buildMpcVisualPreferenceScoreMap(
+            exactMatches,
+            profiles,
+            model,
+            signal
+          );
+
+          return Object.fromEntries(
+            exactMatches.map((candidate) => [
+              candidate.identifier,
+              (metadataScores[candidate.identifier] ?? 0) +
+                (visualScores[candidate.identifier] ?? 0),
+            ])
+          );
+        })();
   const matchResult = await selectBestCandidate({
     candidates: exactMatches,
     set: representative.set,
@@ -93,6 +159,9 @@ async function processImageGroup(
     signal,
     ssimCompare,
     getMpcImageUrl: (identifier) => getMpcAutofillImageUrl(identifier, "small"),
+    preferredIdentifier,
+    preferenceProfile,
+    unseenPreferenceScores,
   });
 
   if (!matchResult) {

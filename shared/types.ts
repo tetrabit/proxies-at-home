@@ -191,3 +191,51 @@ export interface TokenPart {
   type_line?: string; // Type line of the token
   uri?: string; // Scryfall URI to fetch full token data
 }
+
+export interface MpcPreferenceSourceCardSnapshot {
+  name: string;
+  set?: string;
+  collectorNumber?: string;
+  sourceImageUrl?: string;
+  sourceArtImageUrl?: string;
+}
+
+export interface MpcPreferenceCandidate {
+  identifier: string;
+  name: string;
+  rawName: string;
+  smallThumbnailUrl: string;
+  mediumThumbnailUrl: string;
+  imageUrl?: string;
+  dpi: number;
+  tags: string[];
+  sourceName: string;
+  source: string;
+  extension: string;
+  size: number;
+}
+
+export interface MpcPreferenceComparisonHints {
+  fullCard?: Record<string, number | null>;
+  artMatch?: Record<string, number | null>;
+}
+
+export interface MpcPreferenceCase {
+  source: MpcPreferenceSourceCardSnapshot;
+  candidates: MpcPreferenceCandidate[];
+  expectedIdentifier?: string;
+  notes?: string;
+  comparisonHints?: MpcPreferenceComparisonHints;
+}
+
+export interface MpcPreferenceFixture {
+  version: number;
+  exportedAt: string;
+  cases: MpcPreferenceCase[];
+}
+
+export interface PreferenceSyncTarget {
+  load(): Promise<MpcPreferenceFixture | null>;
+  write(fixture: MpcPreferenceFixture): Promise<void>;
+  describe(): string;
+}

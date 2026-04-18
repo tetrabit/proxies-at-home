@@ -12,6 +12,7 @@ import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
 import { backupRouter } from "./routes/backupRouter.js";
 import { keystoneRouter } from "./routes/keystoneRouter.js";
+import { preferencesRouter } from "./routes/preferencesRouter.js";
 import metricsRouter from "./routes/metricsRouter.js";
 import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
 import { initDatabase } from "./db/db.js";
@@ -99,7 +100,7 @@ export function startServer(port: number = 3001): Promise<number> {
 
         cb(new Error("Not allowed by CORS"));
       },
-      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization"],
       maxAge: 86400,
     })
@@ -195,6 +196,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/share", shareRouter);
   app.use("/api/backup", backupRouter);
   app.use("/api/keystone", keystoneRouter);
+  app.use("/api/preferences", preferencesRouter);
   app.use("/api/metrics", metricsRouter);
 
   return new Promise((resolve) => {

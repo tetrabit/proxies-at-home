@@ -18,6 +18,7 @@ import type { MpcAutofillCard } from "./mpcAutofillApi";
 import { loadImage } from "./imageProcessing";
 import { toArtCrop, toProxied } from "./imageHelper";
 import { parseMpcCardName, parseMpcSetCollector } from "./mpcUtils";
+import type { MpcCalibrationPreferenceProfile } from "./mpcCalibrationStorage";
 
 export type MatchReason =
   | "set_collector_only"
@@ -74,6 +75,9 @@ export interface MatcherInput {
   ssimCompare?: SsimCompareFn;
   artMatchCompare?: SsimCompareFn;
   getMpcImageUrl?: (identifier: string) => string;
+  preferredIdentifier?: string;
+  preferenceProfile?: MpcCalibrationPreferenceProfile;
+  unseenPreferenceScores?: Record<string, number>;
 }
 
 type NormalizedImage = {
@@ -91,6 +95,182 @@ type CropSpec = {
 
 type ImageCache = Map<string, Promise<NormalizedImage | null>>;
 type EdgeCache = Map<string, Promise<Float32Array | null>>;
+
+function prioritizePreferredCandidate(
+  layer: RankedCandidate[],
+  candidates: MpcAutofillCard[],
+  preferredIdentifier: string | undefined
+): RankedCandidate[] {
+  if (!preferredIdentifier) {
+    return layer;
+  }
+
+  const existing = layer.find(
+    (candidate) => candidate.card.identifier === preferredIdentifier
+  );
+  if (existing) {
+    return [
+      { ...existing, reason: "name_only", score: undefined },
+      ...layer.filter(
+        (candidate) => candidate.card.identifier !== preferredIdentifier
+      ),
+    ];
+  }
+
+  const preferredCard = candidates.find(
+    (candidate) => candidate.identifier === preferredIdentifier
+  );
+  if (!preferredCard) {
+    return layer;
+  }
+
+  return [
+    {
+      card: preferredCard,
+      reason: "name_only",
+      bucket: "name",
+    },
+    ...layer,
+  ];
+}
+
+function scoreCalibrationPreference(
+  card: MpcAutofillCard,
+  profile: MpcCalibrationPreferenceProfile
+): number {
+  const rawName = card.rawName ?? card.name;
+  let score = 0;
+
+  if (profile.sourceName && card.sourceName === profile.sourceName) {
+    score += 100;
+  }
+
+  const cardTags = new Set(card.tags);
+  for (const tag of profile.tags) {
+    if (cardTags.has(tag)) {
+      score += 20;
+    }
+  }
+
+  if (/\[[^\]]+\]\s*\{[^}]+\}/.test(rawName) === profile.hasBracketSet) {
+    score += 15;
+  }
+
+  const parenText = rawName.match(/\(([^)]+)\)/)?.[1]?.toLowerCase();
+  if (profile.parenText && parenText === profile.parenText) {
+    score += 25;
+  }
+  if (!profile.parenText && !parenText) {
+    score += 10;
+  }
+
+  if (rawName === profile.rawName) {
+    score += 40;
+  }
+
+  score += Math.min(card.dpi / 400, 5);
+
+  return score;
+}
+
+function prioritizePreferenceProfile(
+  layer: RankedCandidate[],
+  candidates: MpcAutofillCard[],
+  preferenceProfile: MpcCalibrationPreferenceProfile | undefined
+): RankedCandidate[] {
+  if (!preferenceProfile) {
+    return layer;
+  }
+
+  const rankedByPreference = candidates
+    .map((candidate) => ({
+      candidate,
+      preferenceScore: scoreCalibrationPreference(candidate, preferenceProfile),
+    }))
+    .sort(
+      (left, right) =>
+        right.preferenceScore - left.preferenceScore ||
+        right.candidate.dpi - left.candidate.dpi ||
+        left.candidate.identifier.localeCompare(right.candidate.identifier)
+    );
+
+  const preferred = rankedByPreference[0];
+  if (!preferred || preferred.preferenceScore <= 0) {
+    return layer;
+  }
+
+  const existing = layer.find(
+    (candidate) => candidate.card.identifier === preferred.candidate.identifier
+  );
+  if (existing) {
+    return [
+      { ...existing, reason: "name_only", score: undefined },
+      ...layer.filter(
+        (candidate) =>
+          candidate.card.identifier !== preferred.candidate.identifier
+      ),
+    ];
+  }
+
+  return [
+    {
+      card: preferred.candidate,
+      reason: "name_only",
+      bucket: "name",
+    },
+    ...layer,
+  ];
+}
+
+function prioritizeUnseenPreferenceScores(
+  layer: RankedCandidate[],
+  candidates: MpcAutofillCard[],
+  unseenPreferenceScores: Record<string, number> | undefined
+): RankedCandidate[] {
+  if (!unseenPreferenceScores) {
+    return layer;
+  }
+
+  const ranked = candidates
+    .map((candidate) => ({
+      candidate,
+      score: unseenPreferenceScores[candidate.identifier],
+    }))
+    .filter((entry) => typeof entry.score === "number")
+    .sort(
+      (left, right) =>
+        (right.score ?? 0) - (left.score ?? 0) ||
+        right.candidate.dpi - left.candidate.dpi ||
+        left.candidate.identifier.localeCompare(right.candidate.identifier)
+    );
+
+  const preferred = ranked[0];
+  if (!preferred) {
+    return layer;
+  }
+
+  const existing = layer.find(
+    (candidate) => candidate.card.identifier === preferred.candidate.identifier
+  );
+  if (existing) {
+    return [
+      { ...existing, reason: "name_only", score: undefined },
+      ...layer.filter(
+        (candidate) =>
+          candidate.card.identifier !== preferred.candidate.identifier
+      ),
+    ];
+  }
+
+  return [
+    {
+      card: preferred.candidate,
+      reason: "name_only",
+      bucket: "name",
+    },
+    ...layer,
+  ];
+}
 
 const DEFAULT_NORMALIZED_SIZE = 192;
 export const FULL_CARD_NORMALIZED_SIZE = 1024;
@@ -110,6 +290,14 @@ const SSIM_MIN_SCORE = 0.92;
 
 /** Minimum lead over runner-up to declare a decisive SSIM winner. */
 const SSIM_MIN_MARGIN = 0.01;
+
+/**
+ * Cap the number of candidates that get expensive SSIM scoring. Cards like
+ * Sol Ring can have hundreds of MPC variants — scoring them all stalls the
+ * upgrader. Top-N by DPI keeps the highest-quality scans, which is also the
+ * pool any DPI fallback would prefer.
+ */
+const MAX_SSIM_CANDIDATES = 30;
 
 function createCanvas(size: number): HTMLCanvasElement | OffscreenCanvas {
   if (typeof OffscreenCanvas !== "undefined") {
@@ -393,7 +581,8 @@ async function loadNormalizedImage(
       const decoded = decodeCropSpecFromUrl(imageUrl);
       const bitmap = await loadImage(
         toProxied(decoded.imageUrl),
-        signal ? { signal } : undefined
+        signal ? { signal } : undefined,
+        1
       );
       try {
         return normalizeBitmap(bitmap, decoded.cropSpec, normalizedSize);
@@ -505,14 +694,25 @@ export function normalizeName(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizeCanonicalCardName(value: string): string {
+  return normalizeName(value)
+    .replace(/\s*\[[^\]]+\]\s*\{[^}]+\}\s*/g, " ")
+    .replace(/\s*\[[^\]]+\]\s*/g, " ")
+    .replace(/\s*\{[^}]+\}\s*/g, " ")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function filterByExactName(
   cards: MpcAutofillCard[],
   cardName: string
 ): MpcAutofillCard[] {
-  const normalized = normalizeName(cardName);
+  const normalized = normalizeCanonicalCardName(cardName);
   return cards.filter(
     (card) =>
-      normalizeName(parseMpcCardName(card.name, card.name)) === normalized
+      normalizeCanonicalCardName(parseMpcCardName(card.name, card.name)) ===
+      normalized
   );
 }
 
@@ -588,8 +788,9 @@ export async function scoreCandidatesBySsim(
   getMpcImageUrl: (identifier: string) => string,
   signal?: AbortSignal
 ): Promise<ScoredCandidate[]> {
+  const limited = sortByDpiThenId(bucket).slice(0, MAX_SSIM_CANDIDATES);
   const scores: (number | null)[] = await Promise.all(
-    bucket.map((card) =>
+    limited.map((card) =>
       ssimCompare(
         sourceImageUrl,
         getMpcImageUrl(card.identifier),
@@ -602,7 +803,7 @@ export async function scoreCandidatesBySsim(
   for (let i = 0; i < scores.length; i++) {
     const s = scores[i];
     if (s !== null) {
-      scored.push({ card: bucket[i], score: s });
+      scored.push({ card: limited[i], score: s });
     }
   }
 
@@ -627,8 +828,9 @@ async function scoreCandidatesByArtCrop(
     );
   }
 
+  const limited = sortByDpiThenId(bucket).slice(0, MAX_SSIM_CANDIDATES);
   const scores: (number | null)[] = await Promise.all(
-    bucket.map((card) =>
+    limited.map((card) =>
       ssimCompare(
         sourceArtCropUrl,
         encodeCropSpecInUrl(
@@ -644,7 +846,7 @@ async function scoreCandidatesByArtCrop(
   for (let i = 0; i < scores.length; i++) {
     const score = scores[i];
     if (score !== null) {
-      scored.push({ card: bucket[i], score });
+      scored.push({ card: limited[i], score });
     }
   }
 
@@ -722,10 +924,22 @@ export async function rankCandidates(
   const fullCard = await buildFullCardLayer(input);
   const exactPrinting = await buildExactPrintingLayer(input);
 
-  const fullProcess = await buildFullProcessLayer({
-    ...input,
-    candidates: fullProcessCandidates,
-  });
+  const fullProcess = prioritizePreferredCandidate(
+    prioritizeUnseenPreferenceScores(
+      prioritizePreferenceProfile(
+        await buildFullProcessLayer({
+          ...input,
+          candidates: fullProcessCandidates,
+        }),
+        candidates,
+        input.preferenceProfile
+      ),
+      candidates,
+      input.unseenPreferenceScores
+    ),
+    candidates,
+    input.preferredIdentifier
+  );
   const allMatches = buildAllMatchesLayer(
     candidates,
     artMatch,
@@ -950,8 +1164,17 @@ async function rankWithinBucket(
 export async function selectBestCandidate(
   input: MatcherInput
 ): Promise<MatchResult | null> {
-  const { candidates } = input;
+  const { candidates, preferredIdentifier } = input;
   if (candidates.length === 0) return null;
+
+  if (preferredIdentifier) {
+    const preferredCard = candidates.find(
+      (candidate) => candidate.identifier === preferredIdentifier
+    );
+    if (preferredCard) {
+      return { card: preferredCard, reason: "name_only" };
+    }
+  }
 
   const ranked = await rankCandidates(input);
   const top = ranked.fullProcess[0];

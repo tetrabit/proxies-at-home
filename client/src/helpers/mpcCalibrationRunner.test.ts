@@ -1,9 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   MpcCalibrationCaseRecord,
   MpcCalibrationDatasetRecord,
 } from "@/db";
+
+const mockSearchMpcAutofill = vi.hoisted(() => vi.fn());
+const mockHarvestCandidates = vi.hoisted(() => vi.fn());
+const mockBuildVisualProfiles = vi.hoisted(() => vi.fn());
+const mockBuildVisualScoreMap = vi.hoisted(() => vi.fn());
+
+vi.mock("./mpcAutofillApi", () => ({
+  searchMpcAutofill: mockSearchMpcAutofill,
+}));
+
+vi.mock("./mpcPreferenceBootstrap", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./mpcPreferenceBootstrap")>();
+  return {
+    ...actual,
+    harvestSourcePreferenceCandidates: mockHarvestCandidates,
+    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: ["Windborn Muse"],
+  };
+});
+
+vi.mock("./mpcVisualPreference", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mpcVisualPreference")>();
+  return {
+    ...actual,
+    buildMpcSourceVisualProfiles: mockBuildVisualProfiles,
+    buildMpcVisualPreferenceScoreMap: mockBuildVisualScoreMap,
+  };
+});
+
 import {
+  evaluateHeldOutCalibrationDataset,
   evaluateMpcCalibrationCase,
   evaluateMpcCalibrationDataset,
 } from "./mpcCalibrationRunner";
@@ -73,9 +103,18 @@ const calibrationCase: MpcCalibrationCaseRecord = {
 };
 
 describe("mpcCalibrationRunner", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockHarvestCandidates.mockResolvedValue([]);
+    mockBuildVisualProfiles.mockResolvedValue({});
+    mockBuildVisualScoreMap.mockResolvedValue({});
+    mockSearchMpcAutofill.mockResolvedValue([]);
+  });
+
   it("evaluates a single case with comparison hints", async () => {
     const result = await evaluateMpcCalibrationCase(calibrationCase, {
       id: "baseline",
+      usePreferenceProfile: false,
     });
 
     expect(result.predictedIdentifier).toBe("art-match");
@@ -89,11 +128,68 @@ describe("mpcCalibrationRunner", () => {
     const result = await evaluateMpcCalibrationDataset(
       dataset,
       [calibrationCase],
-      { id: "baseline", label: "Baseline" }
+      { id: "baseline", label: "Baseline", usePreferenceProfile: false }
     );
 
     expect(result.summary.totalCases).toBe(1);
     expect(result.summary.matchedCases).toBe(1);
     expect(result.summary.accuracy).toBe(1);
+  });
+
+  it("uses the stored expected case profile as a learned preference by default", async () => {
+    const result = await evaluateMpcCalibrationCase(
+      {
+        ...calibrationCase,
+        expectedIdentifier: "exact-print",
+      },
+      { id: "learned" }
+    );
+
+    expect(result.predictedIdentifier).toBe("exact-print");
+    expect(result.matched).toBe(true);
+  });
+
+  it("uses visual/source-profile scoring in held-out unseen evaluation", async () => {
+    const heldOut = {
+      ...calibrationCase,
+      id: "case-2",
+      expectedIdentifier: "art-match",
+    };
+    const thirdCase = {
+      ...calibrationCase,
+      id: "case-3",
+      expectedIdentifier: "art-match",
+    };
+
+    mockHarvestCandidates.mockResolvedValue([
+      {
+        cardName: "Windborn Muse",
+        sourceName: "Hathwellcrisping",
+        candidates: [],
+      },
+    ]);
+    mockBuildVisualProfiles.mockResolvedValue({
+      Hathwellcrisping: {
+        sourceName: "Hathwellcrisping",
+        descriptor: { meanLuma: 0.4, variance: 0.1, edgeDensity: 0.2 },
+        sampleCount: 1,
+      },
+    });
+    mockBuildVisualScoreMap.mockResolvedValue({
+      "exact-print": 0,
+      "art-match": 5,
+    });
+
+    const result = await evaluateHeldOutCalibrationDataset(
+      dataset,
+      [calibrationCase, heldOut, thirdCase],
+      {
+        emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+        minCaseCount: 1,
+      }
+    );
+
+    expect(result.summary.totalCases).toBe(3);
+    expect(result.summary.matchedCases).toBe(3);
   });
 });

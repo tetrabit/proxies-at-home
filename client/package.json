@@ -11,7 +11,8 @@
     "test:ui": "vitest --ui --coverage.enabled=true",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preferences:promote": "node ./scripts/promote-preferences.mjs"
   },
   "dependencies": {
     "@tetrabit/scryfall-cache-client": "file:../shared/scryfall-client",

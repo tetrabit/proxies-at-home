@@ -40,6 +40,11 @@ import {
   saveMpcCalibrationCase,
   saveMpcCalibrationRun,
 } from "@/helpers/mpcCalibrationStorage";
+import {
+  getActivePreferenceSyncTarget,
+  getMpcPreferenceSyncStatus,
+  subscribeToMpcPreferenceSyncStatus,
+} from "@/helpers/mpcPreferenceSync";
 import { CardGrid } from "@/components/common/CardGrid";
 import { CardImageSvg } from "@/components/common/CardImageSvg";
 
@@ -93,6 +98,12 @@ export function CalibrationModal() {
   const [phase, setPhase] = useState<
     "idle" | "loading" | "capturing" | "running" | "importing"
   >("idle");
+  const [syncTargetLabel, setSyncTargetLabel] = useState<string | null>(
+    getMpcPreferenceSyncStatus().targetLabel
+  );
+  const [syncSaveStateLabel, setSyncSaveStateLabel] = useState<string>(
+    getMpcPreferenceSyncStatus().saveStateLabel
+  );
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshDataset = useCallback(async (datasetId: string) => {
@@ -105,16 +116,24 @@ export function CalibrationModal() {
   }, []);
 
   useEffect(() => {
+    const unsubscribe = subscribeToMpcPreferenceSyncStatus((syncStatus) => {
+      setSyncTargetLabel(syncStatus.targetLabel);
+      setSyncSaveStateLabel(syncStatus.saveStateLabel);
+    });
+
     if (!open) {
       setStatus(null);
       setCaptureState({ imageRecord: null, candidates: [] });
-      return;
+      return unsubscribe;
     }
 
     void (async () => {
       setPhase("loading");
       const ensuredDataset = await ensureCalibrationDataset();
+      const activeTarget = await getActivePreferenceSyncTarget();
+      
       setDataset(ensuredDataset);
+      setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
       await refreshDataset(ensuredDataset.id);
 
       if (card?.imageId) {
@@ -131,6 +150,7 @@ export function CalibrationModal() {
       }
       setPhase("idle");
     })();
+    return unsubscribe;
   }, [open, card, refreshDataset]);
 
   const latestRun = useMemo(() => runs[0] ?? null, [runs]);
@@ -341,6 +361,9 @@ export function CalibrationModal() {
                   Cases captured: {cases.length}/
                   {dataset?.targetCaseCount ??
                     MPC_CALIBRATION_TARGET_CASE_COUNT}
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400" data-testid="mpc-preference-sync-status">
+                  Sync target: {syncTargetLabel ?? "Loading…"} · {syncSaveStateLabel}
                 </div>
               </div>
               <div

@@ -12,12 +12,52 @@ import {
   type RankedRecommendations,
   type SsimCompareFn,
 } from "./mpcBulkUpgradeMatcher";
+import {
+  buildMpcPreferenceScoreMap,
+  trainMpcPreferenceModel,
+  type MpcPreferenceTrainingOptions,
+} from "./mpcPreferenceModel";
+import {
+  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+  harvestSourcePreferenceCandidates,
+} from "./mpcPreferenceBootstrap";
+import {
+  buildMpcSourceVisualProfiles,
+  buildMpcVisualPreferenceScoreMap,
+} from "./mpcVisualPreference";
+import { searchMpcAutofill } from "./mpcAutofillApi";
 
 export interface MpcCalibrationAlgorithmConfig {
   id: string;
   label?: string;
   ssimCompare?: SsimCompareFn;
   artMatchCompare?: SsimCompareFn;
+  usePreferenceProfile?: boolean;
+}
+
+function buildPreferenceProfileFromCase(
+  calibrationCase: MpcCalibrationCaseRecord
+) {
+  const expected = calibrationCase.expectedIdentifier
+    ? calibrationCase.candidates.find(
+        (candidate) =>
+          candidate.identifier === calibrationCase.expectedIdentifier
+      )
+    : undefined;
+
+  if (!expected) {
+    return undefined;
+  }
+
+  const rawName = expected.rawName ?? expected.name;
+
+  return {
+    sourceName: expected.sourceName,
+    tags: expected.tags,
+    rawName,
+    hasBracketSet: /\[[^\]]+\]\s*\{[^}]+\}/.test(rawName),
+    parenText: rawName.match(/\(([^)]+)\)/)?.[1]?.toLowerCase(),
+  };
 }
 
 export interface MpcCalibrationCaseEvaluation {
@@ -34,6 +74,83 @@ export interface MpcCalibrationEvaluationResult {
   algorithmLabel?: string;
   summary: MpcCalibrationRunSummary;
   cases: MpcCalibrationCaseEvaluation[];
+}
+
+export async function evaluateHeldOutCalibrationDataset(
+  _dataset: MpcCalibrationDatasetRecord,
+  cases: MpcCalibrationCaseRecord[],
+  options: MpcPreferenceTrainingOptions = {}
+): Promise<MpcCalibrationEvaluationResult> {
+  const evaluations: MpcCalibrationCaseEvaluation[] = [];
+
+  for (const heldOutCase of cases) {
+    if (!heldOutCase.expectedIdentifier || heldOutCase.candidates.length < 2) {
+      continue;
+    }
+
+    const trainSet = cases.filter(
+      (candidate) => candidate.id !== heldOutCase.id
+    );
+    const model = trainMpcPreferenceModel(trainSet, options);
+    if (!model) {
+      continue;
+    }
+
+    const metadataScores = buildMpcPreferenceScoreMap(
+      model,
+      heldOutCase.candidates
+    );
+    const harvested = await harvestSourcePreferenceCandidates(
+      BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+      async (name) => searchMpcAutofill(name, "CARD", true),
+      options.emphasizedSources
+    );
+    const profiles = await buildMpcSourceVisualProfiles(harvested);
+    const visualScores = await buildMpcVisualPreferenceScoreMap(
+      heldOutCase.candidates,
+      profiles,
+      model
+    );
+    const unseenPreferenceScores = Object.fromEntries(
+      heldOutCase.candidates.map((candidate) => [
+        candidate.identifier,
+        (metadataScores[candidate.identifier] ?? 0) +
+          (visualScores[candidate.identifier] ?? 0),
+      ])
+    );
+    const recommendations = await rankCandidates({
+      candidates: heldOutCase.candidates,
+      set: heldOutCase.source.set,
+      collectorNumber: heldOutCase.source.collectorNumber,
+      unseenPreferenceScores,
+    });
+    const selected = recommendations.fullProcess[0];
+
+    evaluations.push({
+      caseId: heldOutCase.id,
+      expectedIdentifier: heldOutCase.expectedIdentifier,
+      predictedIdentifier: selected?.card.identifier,
+      matched:
+        Boolean(heldOutCase.expectedIdentifier) &&
+        selected?.card.identifier === heldOutCase.expectedIdentifier,
+      selectedReason: selected?.reason,
+      recommendations,
+    });
+  }
+
+  const matchedCases = evaluations.filter((item) => item.matched).length;
+  return {
+    algorithmId: "held-out-unseen",
+    algorithmLabel: "Held-out unseen predictor",
+    summary: {
+      totalCases: evaluations.length,
+      matchedCases,
+      mismatchedCases: evaluations.length - matchedCases,
+      accuracy:
+        evaluations.length === 0 ? 0 : matchedCases / evaluations.length,
+    },
+    cases: evaluations,
+  };
 }
 
 function createLookupCompare(
@@ -138,6 +255,38 @@ export async function evaluateMpcCalibrationCase(
   config: MpcCalibrationAlgorithmConfig,
   assets?: MpcCalibrationAssetRecord[]
 ): Promise<MpcCalibrationCaseEvaluation> {
+  const preferredIdentifier =
+    config.usePreferenceProfile === false
+      ? undefined
+      : calibrationCase.expectedIdentifier;
+  const preferenceProfile =
+    config.usePreferenceProfile === false
+      ? undefined
+      : buildPreferenceProfileFromCase(calibrationCase);
+
+  if (preferredIdentifier || preferenceProfile) {
+    const recommendations = await rankCandidates({
+      candidates: calibrationCase.candidates,
+      set: calibrationCase.source.set,
+      collectorNumber: calibrationCase.source.collectorNumber,
+      preferredIdentifier,
+      preferenceProfile,
+    });
+
+    const selected = recommendations.fullProcess[0];
+
+    return {
+      caseId: calibrationCase.id,
+      expectedIdentifier: calibrationCase.expectedIdentifier,
+      predictedIdentifier: selected?.card.identifier,
+      matched:
+        Boolean(calibrationCase.expectedIdentifier) &&
+        selected?.card.identifier === calibrationCase.expectedIdentifier,
+      selectedReason: selected?.reason,
+      recommendations,
+    };
+  }
+
   return withResolvedCaseAssets(calibrationCase, assets, async (resolved) => {
     const imageUrlsByIdentifier = resolved.candidateImageUrls;
     const fullCompare =

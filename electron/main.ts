@@ -3,6 +3,8 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import fs from 'fs';
 import pkg from 'electron-updater';
+import type { IpcMain } from 'electron';
+import type { MpcPreferenceFixture } from '../shared/types.js';
 const { autoUpdater } = pkg;
 import { createScryfallMicroservice, MicroserviceManager } from './microservice-manager.js';
 
@@ -31,6 +33,177 @@ function saveElectronSettings(settings: { autoUpdateEnabled?: boolean, updateCha
     } catch (e) {
         console.error('[Electron] Failed to save settings:', e);
     }
+}
+
+const MPC_PREFERENCES_FILENAME = 'mpc-preferences.user.json';
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+    return value === undefined || typeof value === 'string';
+}
+
+function isNumberOrNullRecord(value: unknown): value is Record<string, number | null> {
+    return isRecord(value) && Object.values(value).every((item) => typeof item === 'number' || item === null);
+}
+
+function validateMpcPreferenceFixture(data: unknown): MpcPreferenceFixture {
+    if (!isRecord(data)) {
+        throw new Error('Invalid preference fixture: not a JSON object');
+    }
+
+    if (typeof data.version !== 'number') {
+        throw new Error('Invalid preference fixture: missing version');
+    }
+
+    if (typeof data.exportedAt !== 'string') {
+        throw new Error('Invalid preference fixture: missing exportedAt');
+    }
+
+    if (!Array.isArray(data.cases)) {
+        throw new Error('Invalid preference fixture: missing cases array');
+    }
+
+    for (const testCase of data.cases) {
+        if (!isRecord(testCase) || !isRecord(testCase.source)) {
+            throw new Error('Invalid preference fixture: malformed case');
+        }
+
+        if (
+            typeof testCase.source.name !== 'string' ||
+            !isOptionalString(testCase.source.set) ||
+            !isOptionalString(testCase.source.collectorNumber) ||
+            !isOptionalString(testCase.source.sourceImageUrl) ||
+            !isOptionalString(testCase.source.sourceArtImageUrl)
+        ) {
+            throw new Error('Invalid preference fixture: malformed source card');
+        }
+
+        if (!Array.isArray(testCase.candidates)) {
+            throw new Error('Invalid preference fixture: candidates must be an array');
+        }
+
+        for (const candidate of testCase.candidates) {
+            if (!isRecord(candidate)) {
+                throw new Error('Invalid preference fixture: candidate must be an object');
+            }
+
+            if (
+                typeof candidate.identifier !== 'string' ||
+                typeof candidate.name !== 'string' ||
+                typeof candidate.rawName !== 'string' ||
+                typeof candidate.smallThumbnailUrl !== 'string' ||
+                typeof candidate.mediumThumbnailUrl !== 'string' ||
+                !isOptionalString(candidate.imageUrl) ||
+                typeof candidate.dpi !== 'number' ||
+                !Array.isArray(candidate.tags) ||
+                !candidate.tags.every((tag) => typeof tag === 'string') ||
+                typeof candidate.sourceName !== 'string' ||
+                typeof candidate.source !== 'string' ||
+                typeof candidate.extension !== 'string' ||
+                typeof candidate.size !== 'number'
+            ) {
+                throw new Error('Invalid preference fixture: malformed candidate');
+            }
+        }
+
+        if (!isOptionalString(testCase.expectedIdentifier) || !isOptionalString(testCase.notes)) {
+            throw new Error('Invalid preference fixture: malformed case metadata');
+        }
+
+        if (testCase.comparisonHints !== undefined) {
+            if (!isRecord(testCase.comparisonHints)) {
+                throw new Error('Invalid preference fixture: malformed comparison hints');
+            }
+
+            if (
+                (testCase.comparisonHints.fullCard !== undefined && !isNumberOrNullRecord(testCase.comparisonHints.fullCard)) ||
+                (testCase.comparisonHints.artMatch !== undefined && !isNumberOrNullRecord(testCase.comparisonHints.artMatch))
+            ) {
+                throw new Error('Invalid preference fixture: malformed comparison hints');
+            }
+        }
+    }
+
+    return {
+        version: data.version,
+        exportedAt: data.exportedAt,
+        cases: data.cases,
+    };
+}
+
+export function getMpcPreferencesPath(appLike: Pick<typeof app, 'getPath'> = app): string {
+    return path.join(appLike.getPath('userData'), MPC_PREFERENCES_FILENAME);
+}
+
+export async function loadMpcPreferencesFromDisk(
+    filePath: string = getMpcPreferencesPath()
+): Promise<MpcPreferenceFixture | null> {
+    try {
+        const payload = await fs.promises.readFile(filePath, 'utf8');
+        return validateMpcPreferenceFixture(JSON.parse(payload));
+    } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+            return null;
+        }
+
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`[Electron] Failed to load MPC preferences: ${reason}`);
+    }
+}
+
+let pendingMpcPreferenceWrite = Promise.resolve();
+
+async function writeMpcPreferencesAtomically(
+    filePath: string,
+    fixture: MpcPreferenceFixture
+): Promise<void> {
+    const directory = path.dirname(filePath);
+    const tempPath = path.join(
+        directory,
+        `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+    );
+    const payload = `${JSON.stringify(fixture, null, 2)}\n`;
+
+    await fs.promises.mkdir(directory, { recursive: true });
+
+    try {
+        await fs.promises.writeFile(tempPath, payload, 'utf8');
+        await fs.promises.rename(tempPath, filePath);
+    } catch (error) {
+        await fs.promises.unlink(tempPath).catch(() => undefined);
+        throw error;
+    }
+}
+
+export async function saveMpcPreferencesToDisk(
+    fixture: MpcPreferenceFixture,
+    filePath: string = getMpcPreferencesPath()
+): Promise<void> {
+    const validatedFixture = validateMpcPreferenceFixture(fixture);
+    const writeOperation = pendingMpcPreferenceWrite.then(() =>
+        writeMpcPreferencesAtomically(filePath, validatedFixture)
+    );
+
+    pendingMpcPreferenceWrite = writeOperation.catch(() => undefined);
+    await writeOperation;
+}
+
+export function registerMpcPreferenceIpcHandlers(
+    ipcMainLike: Pick<IpcMain, 'handle'>,
+    appLike: Pick<typeof app, 'getPath'> = app
+): void {
+    ipcMainLike.handle('mpc-preferences:load', async () => {
+        return loadMpcPreferencesFromDisk(getMpcPreferencesPath(appLike));
+    });
+
+    ipcMainLike.handle('mpc-preferences:save', async (_event, fixture: MpcPreferenceFixture) => {
+        await saveMpcPreferencesToDisk(fixture, getMpcPreferencesPath(appLike));
+    });
 }
 
 // Handle ESM imports for __dirname
@@ -305,6 +478,7 @@ app.whenReady().then(async () => {
         console.log(`[Electron] Auto-update enabled: ${enabled}`);
         return true;
     });
+    registerMpcPreferenceIpcHandlers(ipcMain, app);
 
     // Moxfield deck fetch handler - uses Chromium's network stack to bypass Cloudflare
     ipcMain.handle('fetch-moxfield-deck', async (_event, deckId: string) => {

@@ -54,8 +54,8 @@ export async function fetchWithRetry(url: string, retries = 3, baseDelay = 1000,
     throw new Error(`Fetch failed for ${url} after ${retries} attempts.`);
 }
 
-export async function loadImage(src: string, init?: RequestInit): Promise<ImageBitmap> {
-    const response = await fetchWithRetry(src, 3, 1000, init);
+export async function loadImage(src: string, init?: RequestInit, retries: number = 3): Promise<ImageBitmap> {
+    const response = await fetchWithRetry(src, retries, 1000, init);
     const blob = await response.blob();
     return await createImageBitmap(blob);
 }

@@ -108,6 +108,20 @@ vi.mock("@/helpers/mpcCalibrationImport", () => ({
   validateMpcCalibrationFixture: mockValidateFixture,
 }));
 
+vi.mock("@/helpers/mpcPreferenceSync", () => ({
+  getActivePreferenceSyncTarget: vi.fn().mockResolvedValue({
+    describe: () => "Mock Sync Target",
+  }),
+  getMpcPreferenceSyncStatus: vi.fn(() => ({
+    targetLabel: "Mock Sync Target",
+    saveStateLabel: "Idle",
+  })),
+  subscribeToMpcPreferenceSyncStatus: vi.fn((listener) => {
+    listener({ targetLabel: "Mock Sync Target", saveStateLabel: "Idle" });
+    return () => undefined;
+  }),
+}));
+
 vi.mock("@/components/common/CardImageSvg", () => ({
   CardImageSvg: ({ id }: { id: string }) => <div data-testid={id}>image</div>,
 }));
@@ -181,7 +195,27 @@ describe("CalibrationModal", () => {
       assets: [],
     });
 
+    mockSearchMpcAutofill.mockResolvedValue([
+      {
+        identifier: "cand-1",
+        rawName: "Sol Ring [C21] {267}",
+        sourceName: "MPC",
+        dpi: 600,
+        smallThumbnailUrl: "image-small",
+        mediumThumbnailUrl: "image-med",
+      },
+    ]);
+
     render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-calibration-candidate-cand-1")
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("mpc-preference-sync-status").textContent
+      ).toContain("Sync target: Mock Sync Target · Idle");
+    });
 
     const button = await screen.findByRole("button", {
       name: /use as expected choice/i,

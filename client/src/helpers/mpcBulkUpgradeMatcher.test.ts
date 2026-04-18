@@ -117,6 +117,39 @@ describe("mpcBulkUpgradeMatcher", () => {
       const cards = [makeCard({ identifier: "a", name: "Lightning Bolt" })];
       expect(filterByExactName(cards, "Sol Ring")).toEqual([]);
     });
+
+    it("keeps name variants that only add style or set suffixes", () => {
+      const cards = [
+        makeCard({
+          identifier: "a",
+          name: "Adarkar Wastes (DMU)",
+          rawName: "Adarkar Wastes (DMU)",
+        }),
+        makeCard({
+          identifier: "b",
+          name: "Jace Beleren (Art Nouveau)",
+          rawName: "Jace Beleren (Art Nouveau)",
+        }),
+        makeCard({
+          identifier: "c",
+          name: "Approach of the Second Sun (Normal, Noah Bradley) [AKH] {4}",
+          rawName:
+            "Approach of the Second Sun (Normal, Noah Bradley) [AKH] {4}",
+        }),
+      ];
+
+      expect(
+        filterByExactName(cards, "Adarkar Wastes").map((c) => c.identifier)
+      ).toEqual(["a"]);
+      expect(
+        filterByExactName(cards, "Jace Beleren").map((c) => c.identifier)
+      ).toEqual(["b"]);
+      expect(
+        filterByExactName(cards, "Approach of the Second Sun").map(
+          (c) => c.identifier
+        )
+      ).toEqual(["c"]);
+    });
   });
 
   describe("selectBestCandidate", () => {
@@ -1038,6 +1071,90 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.fullProcess[0].card.identifier).toBe("b");
         expect(result.fullProcess[0].reason).toBe("set_collector_ssim");
         expect(result.fullProcess[0].score).toBe(0.97);
+      });
+
+      it("promotes the best profile-matching candidate to the top of fullProcess", async () => {
+        const exactPrint = makeCard({
+          identifier: "exact",
+          rawName: "Aven Mindcensor [CLB] {34}",
+          dpi: 1200,
+          tags: ["Borderless", "Frame"],
+          sourceName: "BeardedBeowolf",
+        });
+        const preferred = makeCard({
+          identifier: "preferred",
+          rawName: "Aven Mindcensor (Rebecca Guay)",
+          dpi: 1200,
+          sourceName: "MrTeferi",
+        });
+
+        const result = await rankCandidates({
+          candidates: [exactPrint, preferred],
+          set: "CLB",
+          collectorNumber: "34",
+          preferenceProfile: {
+            sourceName: "MrTeferi",
+            tags: [],
+            rawName: "Aven Mindcensor (Rebecca Guay)",
+            hasBracketSet: false,
+            parenText: "rebecca guay",
+          },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("preferred");
+        expect(result.fullProcess[0].bucket).toBe("name");
+      });
+
+      it("uses the stored preferred identifier before profile fallback", async () => {
+        const exact = makeCard({
+          identifier: "exact",
+          rawName: "Aven Mindcensor [AKH] {5}",
+          dpi: 1200,
+          tags: ["Borderless"],
+          sourceName: "Default Artist",
+        });
+        const preferred = makeCard({
+          identifier: "preferred",
+          rawName: "Aven Mindcensor (Rebecca Guay)",
+          dpi: 600,
+          sourceName: "MrTeferi",
+        });
+
+        const result = await rankCandidates({
+          candidates: [exact, preferred],
+          preferredIdentifier: "preferred",
+          preferenceProfile: {
+            sourceName: "Default Artist",
+            tags: ["Borderless"],
+            rawName: "Aven Mindcensor [AKH] {5}",
+            hasBracketSet: true,
+          },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("preferred");
+      });
+
+      it("uses unseen preference scores when no replay/profile is available", async () => {
+        const fallback = makeCard({
+          identifier: "fallback",
+          rawName: "Windborn Muse",
+          dpi: 1200,
+        });
+        const predicted = makeCard({
+          identifier: "predicted",
+          rawName: "Windborn Muse (Preferred)",
+          dpi: 800,
+        });
+
+        const result = await rankCandidates({
+          candidates: [fallback, predicted],
+          unseenPreferenceScores: {
+            fallback: 0.1,
+            predicted: 2.5,
+          },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("predicted");
       });
     });
 

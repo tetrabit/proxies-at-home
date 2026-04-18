@@ -23,6 +23,12 @@ const {
   mockRemoveToast,
   mockDbImages,
   mockDbCards,
+  mockListDefaultCalibrationCases,
+  mockGetCalibrationPreferredIdentifier,
+  mockGetCalibrationPreferenceProfile,
+  mockHarvestSourcePreferenceCandidates,
+  mockBuildSourceVisualProfiles,
+  mockBuildVisualPreferenceScoreMap,
 } = vi.hoisted(() => {
   return {
     mockCloseModal: vi.fn(),
@@ -79,6 +85,12 @@ const {
       get: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue(undefined),
     },
+    mockListDefaultCalibrationCases: vi.fn().mockResolvedValue([]),
+    mockGetCalibrationPreferredIdentifier: vi.fn().mockResolvedValue(undefined),
+    mockGetCalibrationPreferenceProfile: vi.fn().mockResolvedValue(undefined),
+    mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+    mockBuildSourceVisualProfiles: vi.fn().mockResolvedValue({}),
+    mockBuildVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
   };
 });
 
@@ -183,6 +195,24 @@ vi.mock("@/helpers/imageHelper", () => ({
   toProxied: mockToProxied,
 }));
 
+vi.mock("@/helpers/mpcCalibrationStorage", () => ({
+  getMpcCalibrationPreferredIdentifier: mockGetCalibrationPreferredIdentifier,
+  getMpcCalibrationPreferenceProfile: mockGetCalibrationPreferenceProfile,
+  listDefaultMpcCalibrationCases: mockListDefaultCalibrationCases,
+}));
+
+vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
+  hydrateMpcPreferences: vi.fn(async () => undefined),
+  ensureBootstrapPreferenceDataset: vi.fn(async () => undefined),
+  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: ["Windborn Muse"],
+  harvestSourcePreferenceCandidates: mockHarvestSourcePreferenceCandidates,
+}));
+
+vi.mock("@/helpers/mpcVisualPreference", () => ({
+  buildMpcSourceVisualProfiles: mockBuildSourceVisualProfiles,
+  buildMpcVisualPreferenceScoreMap: mockBuildVisualPreferenceScoreMap,
+}));
+
 vi.mock("@/helpers/ImportOrchestrator", () => ({
   ImportOrchestrator: {
     resolve: mockImportOrchestratorResolve,
@@ -263,6 +293,7 @@ function makeMpcCard(
   overrides: Partial<{
     identifier: string;
     name: string;
+    rawName: string;
     dpi: number;
     sourceName: string;
     tags: string[];
@@ -272,6 +303,7 @@ function makeMpcCard(
   return {
     identifier: overrides.identifier ?? "mpc-001",
     name: overrides.name ?? "Lightning Bolt",
+    rawName: overrides.rawName ?? overrides.name ?? "Lightning Bolt",
     dpi: overrides.dpi ?? 1200,
     sourceName: overrides.sourceName ?? "TestSource",
     tags: overrides.tags ?? [],
@@ -343,6 +375,9 @@ const TEST_CARD = {
 describe("MpcUpgradeModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
     mockModalState.open = false;
     mockModalState.card = null;
     mockModalState.cardUuid = null;
@@ -368,6 +403,22 @@ describe("MpcUpgradeModal", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/MPC Upgrade/)).toBeTruthy();
+    });
+  });
+
+  it("shows source debug info when there are no matches", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+    mockSearchMpcAutofill.mockResolvedValueOnce([]);
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-upgrade-source-card-json").textContent
+      ).toContain(TEST_CARD.name);
+      expect(screen.getByText(/No MPC matches found/i)).toBeTruthy();
     });
   });
 
@@ -781,6 +832,179 @@ describe("MpcUpgradeModal", () => {
         })
       );
     });
+  });
+
+  it("passes unseen visual preference scores to rankCandidates when no replay/profile exists", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const candidate = makeMpcCard({
+      identifier: "visual-pick",
+      name: TEST_CARD.name,
+      sourceName: "Hathwellcrisping",
+    });
+    mockListDefaultCalibrationCases.mockResolvedValue([
+      {
+        id: "case-1",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Windborn Muse" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-1", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "visual-pick",
+      },
+      {
+        id: "case-2",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Talrand, Sky Summoner" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-2", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "visual-pick",
+      },
+      {
+        id: "case-3",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Thassa, Deep-Dwelling" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-3", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "visual-pick",
+      },
+    ]);
+
+    mockDbImages.get.mockResolvedValueOnce({
+      sourceUrl:
+        "https://cards.scryfall.io/normal/front/c/8/c83ed3e0-82d0-4410-a6ca-b0f923eadf83.jpg?1581479572",
+    });
+    mockSearchMpcAutofill.mockResolvedValue([candidate]);
+    mockFilterByExactName.mockReturnValue([candidate]);
+    mockBuildVisualPreferenceScoreMap.mockResolvedValue({
+      "visual-pick": 4.2,
+    });
+    mockRankCandidates.mockResolvedValue({
+      fullProcess: [],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [candidate],
+    });
+    mockBuildLayerTabs.mockReturnValue(makeLayerTabs());
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockRankCandidates).toHaveBeenCalledWith(
+        expect.objectContaining({
+          unseenPreferenceScores: {
+            "visual-pick": 10.2,
+          },
+        })
+      );
+    });
+  });
+
+  it("shows copyable source card and candidate identifier details", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const card = makeMpcCard({
+      identifier: "debug-id",
+      name: TEST_CARD.name,
+      rawName: `${TEST_CARD.name} (Alt Art)`,
+      sourceName: "Hathwellcrisping",
+    });
+    const ranked = makeRankedCandidate(card, "name_only", "name", 0.91);
+
+    mockDbImages.get.mockResolvedValueOnce({
+      sourceUrl: "https://cards.scryfall.io/normal/front/test.jpg",
+    });
+    mockSearchMpcAutofill.mockResolvedValueOnce([card]);
+    mockFilterByExactName.mockReturnValueOnce([card]);
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [ranked],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [ranked],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({ fullProcess: [ranked], allMatches: [ranked] })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-upgrade-source-card-json").textContent
+      ).toContain(TEST_CARD.name);
+      expect(
+        screen.getByTestId("mpc-upgrade-candidate-id-debug-id").textContent
+      ).toContain("debug-id");
+      expect(
+        screen.getByTestId("mpc-upgrade-candidate-source-debug-id").textContent
+      ).toContain("Hathwellcrisping");
+      expect(
+        screen.getByTestId("mpc-upgrade-candidate-reason-debug-id").textContent
+      ).toContain("name_only");
+    });
+  });
+
+  it("copies candidate debug values without triggering apply", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const card = makeMpcCard({
+      identifier: "copy-id",
+      name: TEST_CARD.name,
+      rawName: `${TEST_CARD.name} (Alt Art)`,
+      sourceName: "Hathwellcrisping",
+    });
+    const ranked = makeRankedCandidate(card, "name_only", "name", 0.91);
+
+    mockDbImages.get.mockResolvedValueOnce({
+      sourceUrl: "https://cards.scryfall.io/normal/front/test.jpg",
+    });
+    mockSearchMpcAutofill.mockResolvedValueOnce([card]);
+    mockFilterByExactName.mockReturnValueOnce([card]);
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [ranked],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [ranked],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({ fullProcess: [ranked], allMatches: [ranked] })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-upgrade-candidate-id-copy-id")
+      ).toBeTruthy();
+    });
+
+    const copyButton = screen
+      .getByTestId("mpc-upgrade-candidate-id-copy-id")
+      .parentElement?.querySelector("button");
+    fireEvent.click(copyButton!);
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("copy-id");
+    expect(mockImportOrchestratorResolve).not.toHaveBeenCalled();
   });
 
   /* ==================== CLOSE BEHAVIOR ======================== */

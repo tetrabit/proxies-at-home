@@ -1,4 +1,5 @@
 import { Modal, ModalHeader, ModalBody, Spinner } from "flowbite-react";
+import { Copy } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMpcUpgradeModalStore, useProjectStore } from "@/store";
 import {
@@ -15,6 +16,24 @@ import {
 import type { RankedRecommendations } from "@/helpers/mpcBulkUpgradeMatcher";
 import { buildLayerTabs } from "@/helpers/mpcUpgradeLayerAdapter";
 import type { LayerKey, LayerTab } from "@/helpers/mpcUpgradeLayerAdapter";
+import {
+  getMpcCalibrationPreferenceProfile,
+  getMpcCalibrationPreferredIdentifier,
+  listDefaultMpcCalibrationCases,
+} from "@/helpers/mpcCalibrationStorage";
+import {
+  buildMpcPreferenceScoreMap,
+  trainMpcPreferenceModel,
+} from "@/helpers/mpcPreferenceModel";
+import { hydrateMpcPreferences } from "@/helpers/mpcPreferenceBootstrap";
+import {
+  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+  harvestSourcePreferenceCandidates,
+} from "@/helpers/mpcPreferenceBootstrap";
+import {
+  buildMpcSourceVisualProfiles,
+  buildMpcVisualPreferenceScoreMap,
+} from "@/helpers/mpcVisualPreference";
 import { ImportOrchestrator } from "@/helpers/ImportOrchestrator";
 import type { ImportIntent } from "@/helpers/importParsers";
 import { changeCardArtwork, createLinkedBackCard } from "@/helpers/dbUtils";
@@ -33,6 +52,55 @@ type ModalPhase =
   | "applying"
   | "error";
 
+type SourceDebugInfo = {
+  name: string;
+  set?: string;
+  collectorNumber?: string;
+  uuid?: string;
+  imageId?: string;
+  sourceImageUrl?: string;
+};
+
+async function copyValue(text: string) {
+  await navigator.clipboard.writeText(text);
+}
+
+function CopyableValue({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId?: string;
+}) {
+  return (
+    <div className="rounded-md border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-800">
+      <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        {label}
+      </div>
+      <div className="mt-1 flex items-start justify-between gap-2">
+        <code
+          className="break-all text-xs text-gray-800 dark:text-gray-100"
+          data-testid={testId}
+        >
+          {value}
+        </code>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            void copyValue(value);
+          }}
+          className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+        >
+          <Copy className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function MpcUpgradeModal() {
   const open = useMpcUpgradeModalStore((s) => s.open);
   const card = useMpcUpgradeModalStore((s) => s.card);
@@ -47,6 +115,8 @@ export function MpcUpgradeModal() {
   const [selectedIdentifier, setSelectedIdentifier] = useState<string | null>(
     null
   );
+  const [sourceDebugInfo, setSourceDebugInfo] =
+    useState<SourceDebugInfo | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const applyingRef = useRef(false);
@@ -61,6 +131,7 @@ export function MpcUpgradeModal() {
       setRecommendations(null);
       setActiveTab("fullProcess");
       setSelectedIdentifier(null);
+      setSourceDebugInfo(null);
       return;
     }
 
@@ -91,6 +162,32 @@ export function MpcUpgradeModal() {
       const results = await searchMpcAutofill(cardName, "CARD", false);
       if (signal.aborted) return;
 
+      let sourceImageUrl: string | undefined;
+      if (imageId) {
+        const imageRecord = await db.images.get(imageId);
+        if (!signal.aborted) {
+          sourceImageUrl =
+            imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || undefined;
+          setSourceDebugInfo({
+            name: cardName,
+            set,
+            collectorNumber,
+            uuid: card?.uuid,
+            imageId,
+            sourceImageUrl,
+          });
+        }
+      } else {
+        setSourceDebugInfo({
+          name: cardName,
+          set,
+          collectorNumber,
+          uuid: card?.uuid,
+          imageId,
+        });
+      }
+      if (signal.aborted) return;
+
       const exactMatches = filterByExactName(results, cardName);
       if (exactMatches.length === 0) {
         setRecommendations(null);
@@ -100,21 +197,59 @@ export function MpcUpgradeModal() {
 
       setPhase("ranking");
 
-      let sourceImageUrl: string | undefined;
-      if (imageId) {
-        const imageRecord = await db.images.get(imageId);
-        if (!signal.aborted) {
-          sourceImageUrl =
-            imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0] || undefined;
-        }
-      }
-      if (signal.aborted) return;
-
       const ssimCompare = createSsimCompare(
         undefined,
         FULL_CARD_NORMALIZED_SIZE
       );
       const artMatchCompare = createSsimCompare();
+      await hydrateMpcPreferences();
+      const preferenceInput = {
+        name: card!.name,
+        set,
+        collectorNumber,
+      };
+      const [preferredIdentifier, preferenceProfile, calibrationCases] =
+        await Promise.all([
+          getMpcCalibrationPreferredIdentifier(preferenceInput),
+          getMpcCalibrationPreferenceProfile(preferenceInput),
+          listDefaultMpcCalibrationCases(),
+        ]);
+      const unseenPreferenceScores =
+        preferredIdentifier || preferenceProfile
+          ? undefined
+          : await (async () => {
+              const model = trainMpcPreferenceModel(calibrationCases, {
+                emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+              });
+              if (!model) {
+                return undefined;
+              }
+
+              const metadataScores = buildMpcPreferenceScoreMap(
+                model,
+                exactMatches
+              );
+              const harvested = await harvestSourcePreferenceCandidates(
+                BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                async (name) => searchMpcAutofill(name, "CARD", true),
+                ["Hathwellcrisping", "Chilli_Axe"]
+              );
+              const profiles = await buildMpcSourceVisualProfiles(harvested);
+              const visualScores = await buildMpcVisualPreferenceScoreMap(
+                exactMatches,
+                profiles,
+                model,
+                signal
+              );
+
+              return Object.fromEntries(
+                exactMatches.map((candidate) => [
+                  candidate.identifier,
+                  (metadataScores[candidate.identifier] ?? 0) +
+                    (visualScores[candidate.identifier] ?? 0),
+                ])
+              );
+            })();
       const ranked = await rankCandidates({
         candidates: exactMatches,
         set,
@@ -124,6 +259,9 @@ export function MpcUpgradeModal() {
         ssimCompare,
         artMatchCompare,
         getMpcImageUrl: (id: string) => getMpcAutofillImageUrl(id, "small"),
+        preferredIdentifier,
+        preferenceProfile,
+        unseenPreferenceScores,
       });
       if (signal.aborted) return;
 
@@ -334,10 +472,24 @@ export function MpcUpgradeModal() {
           )}
 
           {phase === "ready" && !hasResults && (
-            <div className="flex flex-col items-center justify-center gap-2 py-12">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                No MPC matches found for &ldquo;{card?.name}&rdquo;.
-              </p>
+            <div className="flex flex-col gap-4 py-12">
+              {sourceDebugInfo ? (
+                <div
+                  className="grid gap-2 md:grid-cols-2"
+                  data-testid="mpc-upgrade-source-info"
+                >
+                  <CopyableValue
+                    label="Source card"
+                    value={JSON.stringify(sourceDebugInfo, null, 2)}
+                    testId="mpc-upgrade-source-card-json"
+                  />
+                </div>
+              ) : null}
+              <div className="flex flex-col items-center justify-center gap-2">
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  No MPC matches found for &ldquo;{card?.name}&rdquo;.
+                </p>
+              </div>
             </div>
           )}
 
@@ -351,6 +503,19 @@ export function MpcUpgradeModal() {
                     {errorMsg}
                   </div>
                 )}
+
+                {sourceDebugInfo ? (
+                  <div
+                    className="grid gap-2 md:grid-cols-2"
+                    data-testid="mpc-upgrade-source-info"
+                  >
+                    <CopyableValue
+                      label="Source card"
+                      value={JSON.stringify(sourceDebugInfo, null, 2)}
+                      testId="mpc-upgrade-source-card-json"
+                    />
+                  </div>
+                ) : null}
 
                 <TabBar<LayerKey>
                   tabs={tabItems}
@@ -379,6 +544,7 @@ export function MpcUpgradeModal() {
                           card={rc.card}
                           rank={idx + 1}
                           score={rc.score}
+                          reason={rc.reason}
                           isSelected={selectedIdentifier === rc.card.identifier}
                           onClick={handleCardClick}
                         />
@@ -410,6 +576,7 @@ interface MpcCandidateCardProps {
   card: MpcAutofillCard;
   rank: number;
   score?: number;
+  reason?: string;
   isSelected: boolean;
   onClick: (card: MpcAutofillCard) => void;
 }
@@ -418,6 +585,7 @@ function MpcCandidateCard({
   card,
   rank,
   score,
+  reason,
   isSelected,
   onClick,
 }: MpcCandidateCardProps) {
@@ -477,6 +645,31 @@ function MpcCandidateCard({
             ))}
           </div>
         )}
+      </div>
+
+      <div className="mt-2 space-y-2">
+        <div className="text-xs font-medium text-gray-900 dark:text-white line-clamp-2">
+          {card.rawName}
+        </div>
+        <div className="grid gap-2">
+          <CopyableValue
+            label="MPC ID"
+            value={card.identifier}
+            testId={`mpc-upgrade-candidate-id-${card.identifier}`}
+          />
+          <CopyableValue
+            label="Source"
+            value={card.sourceName}
+            testId={`mpc-upgrade-candidate-source-${card.identifier}`}
+          />
+          {reason ? (
+            <CopyableValue
+              label="Reason"
+              value={reason}
+              testId={`mpc-upgrade-candidate-reason-${card.identifier}`}
+            />
+          ) : null}
+        </div>
       </div>
     </div>
   );

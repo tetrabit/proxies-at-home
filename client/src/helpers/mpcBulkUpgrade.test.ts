@@ -30,6 +30,11 @@ const mockGetMpcAutofillImageUrl = vi.hoisted(() => vi.fn());
 const mockAddRemoteImage = vi.hoisted(() => vi.fn());
 const mockInferImageSource = vi.hoisted(() => vi.fn());
 const mockLoadImage = vi.hoisted(() => vi.fn());
+const mockGetPreferenceProfile = vi.hoisted(() => vi.fn());
+const mockListDefaultCalibrationCases = vi.hoisted(() => vi.fn());
+const mockHarvestCandidates = vi.hoisted(() => vi.fn());
+const mockBuildVisualProfiles = vi.hoisted(() => vi.fn());
+const mockBuildVisualScoreMap = vi.hoisted(() => vi.fn());
 
 vi.mock("@/db", () => ({ db: mockDb }));
 
@@ -48,6 +53,33 @@ vi.mock("./imageSourceUtils", () => ({
 
 vi.mock("./imageProcessing", () => ({
   loadImage: mockLoadImage,
+}));
+
+vi.mock("./mpcPreferenceBootstrap", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./mpcPreferenceBootstrap")>();
+  return {
+    ...actual,
+    hydrateMpcPreferences: vi.fn(async () => undefined),
+    ensureBootstrapPreferenceDataset: vi.fn(async () => undefined),
+    harvestSourcePreferenceCandidates: mockHarvestCandidates,
+    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: ["Windborn Muse"],
+  };
+});
+
+vi.mock("./mpcVisualPreference", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mpcVisualPreference")>();
+  return {
+    ...actual,
+    buildMpcSourceVisualProfiles: mockBuildVisualProfiles,
+    buildMpcVisualPreferenceScoreMap: mockBuildVisualScoreMap,
+  };
+});
+
+vi.mock("./mpcCalibrationStorage", () => ({
+  getMpcCalibrationPreferredIdentifier: vi.fn(),
+  getMpcCalibrationPreferenceProfile: mockGetPreferenceProfile,
+  listDefaultMpcCalibrationCases: mockListDefaultCalibrationCases,
 }));
 
 vi.mock("./imageHelper", () => ({
@@ -72,6 +104,53 @@ function makeCardOption(overrides: Partial<CardOption> = {}): CardOption {
     projectId: "proj-1",
     ...overrides,
   } as CardOption;
+}
+
+function makeCalibrationCase(
+  name: string,
+  expectedIdentifier: string,
+  sourceName: string
+) {
+  return {
+    id: crypto.randomUUID(),
+    datasetId: "dataset-1",
+    createdAt: 1,
+    updatedAt: 1,
+    source: { name },
+    candidates: [
+      {
+        identifier: expectedIdentifier,
+        name,
+        rawName: `${name} (Preferred)`,
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        imageUrl: `fixture://${expectedIdentifier}`,
+        dpi: 800,
+        tags: [],
+        sourceName,
+        source: sourceName,
+        extension: "png",
+        size: 100,
+      },
+      {
+        identifier: `${expectedIdentifier}-other`,
+        name,
+        rawName: `${name} [SET] {1}`,
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        imageUrl: `fixture://${expectedIdentifier}-other`,
+        dpi: 1200,
+        tags: ["Borderless"],
+        sourceName:
+          sourceName === "Hathwellcrisping" ? "Chilli_Axe" : "Hathwellcrisping",
+        source:
+          sourceName === "Hathwellcrisping" ? "Chilli_Axe" : "Hathwellcrisping",
+        extension: "png",
+        size: 100,
+      },
+    ],
+    expectedIdentifier,
+  };
 }
 
 function makeBitmap(): ImageBitmap {
@@ -110,6 +189,11 @@ describe("bulkUpgradeToMpcAutofill", () => {
     installCanvasStub();
     mockInferImageSource.mockReturnValue("scryfall");
     mockLoadImage.mockResolvedValue(makeBitmap());
+    mockGetPreferenceProfile.mockResolvedValue(undefined);
+    mockListDefaultCalibrationCases.mockResolvedValue([]);
+    mockHarvestCandidates.mockResolvedValue([]);
+    mockBuildVisualProfiles.mockResolvedValue({});
+    mockBuildVisualScoreMap.mockResolvedValue({});
     mockDb.transaction.mockImplementation(
       async (
         _mode: string,
@@ -236,6 +320,139 @@ describe("bulkUpgradeToMpcAutofill", () => {
         }),
       }),
     ]);
+  });
+
+  it("uses stored calibration preferences to override a higher-dpi fallback", async () => {
+    const card = makeCardOption({
+      uuid: "card-calibration",
+      name: "Aven Mindcensor",
+      set: "AKH",
+      number: "5",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+
+    mockSearchMpcAutofill.mockResolvedValue([
+      {
+        identifier: "default-pick",
+        name: "Aven Mindcensor",
+        rawName: "Aven Mindcensor [AKH] {5}",
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        dpi: 1200,
+        tags: ["Borderless"],
+        sourceName: "Default Artist",
+        source: "default",
+        extension: "png",
+        size: 1000,
+      },
+      {
+        identifier: "preferred-pick",
+        name: "Aven Mindcensor",
+        rawName: "Aven Mindcensor (Rebecca Guay)",
+        smallThumbnailUrl: "",
+        mediumThumbnailUrl: "",
+        dpi: 600,
+        tags: [],
+        sourceName: "MrTeferi",
+        source: "preferred",
+        extension: "png",
+        size: 1000,
+      },
+    ]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockGetPreferenceProfile.mockResolvedValue({
+      sourceName: "MrTeferi",
+      tags: [],
+      rawName: "Aven Mindcensor (Rebecca Guay)",
+      hasBracketSet: false,
+      parenText: "rebecca guay",
+    });
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockAddRemoteImage).toHaveBeenCalledWith(
+      ["https://mpc.test/preferred-pick"],
+      1
+    );
+  });
+
+  it("uses visual unseen preference scores when no replay data exists", async () => {
+    const card = makeCardOption({
+      uuid: "card-unseen",
+      name: "Windborn Muse",
+      set: "M10",
+      number: "31",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+
+    mockSearchMpcAutofill.mockResolvedValue([
+      {
+        identifier: "default-pick",
+        name: "Windborn Muse",
+        rawName: "Windborn Muse [M10] {31}",
+        smallThumbnailUrl: "thumb-default",
+        mediumThumbnailUrl: "",
+        dpi: 1200,
+        tags: ["Borderless"],
+        sourceName: "Default Artist",
+        source: "default",
+        extension: "png",
+        size: 1000,
+      },
+      {
+        identifier: "visual-pick",
+        name: "Windborn Muse",
+        rawName: "Windborn Muse",
+        smallThumbnailUrl: "thumb-visual",
+        mediumThumbnailUrl: "",
+        dpi: 600,
+        tags: [],
+        sourceName: "Hathwellcrisping",
+        source: "Hathwellcrisping",
+        extension: "png",
+        size: 1000,
+      },
+    ]);
+    mockListDefaultCalibrationCases.mockResolvedValue([
+      makeCalibrationCase("Windborn Muse", "seed-1", "Hathwellcrisping"),
+      makeCalibrationCase(
+        "Talrand, Sky Summoner",
+        "seed-2",
+        "Hathwellcrisping"
+      ),
+      makeCalibrationCase("Thassa, Deep-Dwelling", "seed-3", "Chilli_Axe"),
+    ]);
+    mockBuildVisualProfiles.mockResolvedValue({
+      Hathwellcrisping: {
+        sourceName: "Hathwellcrisping",
+        descriptor: { meanLuma: 0.4, variance: 0.2, edgeDensity: 0.1 },
+        sampleCount: 1,
+      },
+    });
+    mockBuildVisualScoreMap.mockResolvedValue({
+      "default-pick": 0,
+      "visual-pick": 8,
+    });
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockHarvestCandidates).toHaveBeenCalled();
+    expect(mockBuildVisualProfiles).toHaveBeenCalled();
+    expect(mockBuildVisualScoreMap).toHaveBeenCalled();
+    expect(mockAddRemoteImage).toHaveBeenCalledWith(
+      ["https://mpc.test/visual-pick"],
+      1
+    );
   });
 
   it("uses MPC small URLs for matching and the full URL for the applied upgrade", async () => {

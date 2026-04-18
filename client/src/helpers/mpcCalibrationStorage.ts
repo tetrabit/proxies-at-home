@@ -5,9 +5,19 @@ import {
   type MpcCalibrationDatasetRecord,
   type MpcCalibrationRunRecord,
 } from "@/db";
+import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
 
 export const MPC_CALIBRATION_DATASET_VERSION = 1;
 export const MPC_CALIBRATION_TARGET_CASE_COUNT = 9;
+export const MPC_CALIBRATION_DEFAULT_DATASET_NAME = "MPC Calibration Harness";
+
+export interface MpcCalibrationPreferenceProfile {
+  sourceName?: string;
+  tags: string[];
+  rawName: string;
+  hasBracketSet: boolean;
+  parenText?: string;
+}
 
 export interface CreateMpcCalibrationDatasetInput {
   name: string;
@@ -90,6 +100,8 @@ export async function saveMpcCalibrationCase(
     }
   );
 
+  markMpcPreferenceSyncDirty();
+
   return record;
 }
 
@@ -103,6 +115,133 @@ export async function listMpcCalibrationCases(
   datasetId: string
 ): Promise<MpcCalibrationCaseRecord[]> {
   return db.mpcCalibrationCases.where("datasetId").equals(datasetId).toArray();
+}
+
+export async function listDefaultMpcCalibrationCases(): Promise<
+  MpcCalibrationCaseRecord[]
+> {
+  if (!db.mpcCalibrationDatasets || !db.mpcCalibrationCases) {
+    return [];
+  }
+
+  const datasets = await listMpcCalibrationDatasets();
+  const calibrationDatasets = datasets.filter(
+    (dataset) => dataset.name === MPC_CALIBRATION_DEFAULT_DATASET_NAME
+  );
+
+  const cases = await Promise.all(
+    calibrationDatasets.map((dataset) => listMpcCalibrationCases(dataset.id))
+  );
+
+  return cases.flat();
+}
+
+export async function getMpcCalibrationPreferredIdentifier(input: {
+  name: string;
+  set?: string;
+  collectorNumber?: string;
+}): Promise<string | undefined> {
+  if (!db.mpcCalibrationDatasets || !db.mpcCalibrationCases) {
+    return undefined;
+  }
+
+  const datasets = await listMpcCalibrationDatasets();
+  const calibrationDatasets = datasets.filter(
+    (dataset) => dataset.name === MPC_CALIBRATION_DEFAULT_DATASET_NAME
+  );
+
+  for (const dataset of calibrationDatasets) {
+    const cases = await listMpcCalibrationCases(dataset.id);
+    const exact = cases.find(
+      (calibrationCase) =>
+        calibrationCase.expectedIdentifier &&
+        calibrationCase.source.name === input.name &&
+        calibrationCase.source.set === input.set &&
+        calibrationCase.source.collectorNumber === input.collectorNumber
+    );
+    if (exact?.expectedIdentifier) {
+      return exact.expectedIdentifier;
+    }
+
+    const byName = cases.find(
+      (calibrationCase) =>
+        calibrationCase.expectedIdentifier &&
+        calibrationCase.source.name === input.name
+    );
+    if (byName?.expectedIdentifier) {
+      return byName.expectedIdentifier;
+    }
+  }
+
+  return undefined;
+}
+
+function toPreferenceProfile(
+  calibrationCase: MpcCalibrationCaseRecord
+): MpcCalibrationPreferenceProfile | undefined {
+  const expected = calibrationCase.expectedIdentifier
+    ? calibrationCase.candidates.find(
+        (candidate) =>
+          candidate.identifier === calibrationCase.expectedIdentifier
+      )
+    : undefined;
+
+  if (!expected) {
+    return undefined;
+  }
+
+  const rawName = expected.rawName ?? expected.name;
+  const parenText = rawName.match(/\(([^)]+)\)/)?.[1]?.toLowerCase();
+
+  return {
+    sourceName: expected.sourceName,
+    tags: expected.tags,
+    rawName,
+    hasBracketSet: /\[[^\]]+\]\s*\{[^}]+\}/.test(rawName),
+    parenText,
+  };
+}
+
+export async function getMpcCalibrationPreferenceProfile(input: {
+  name: string;
+  set?: string;
+  collectorNumber?: string;
+}): Promise<MpcCalibrationPreferenceProfile | undefined> {
+  if (!db.mpcCalibrationDatasets || !db.mpcCalibrationCases) {
+    return undefined;
+  }
+
+  const datasets = await listMpcCalibrationDatasets();
+  const calibrationDatasets = datasets.filter(
+    (dataset) => dataset.name === MPC_CALIBRATION_DEFAULT_DATASET_NAME
+  );
+
+  for (const dataset of calibrationDatasets) {
+    const cases = await listMpcCalibrationCases(dataset.id);
+    const exact = cases.find(
+      (calibrationCase) =>
+        calibrationCase.expectedIdentifier &&
+        calibrationCase.source.name === input.name &&
+        calibrationCase.source.set === input.set &&
+        calibrationCase.source.collectorNumber === input.collectorNumber
+    );
+    const exactProfile = exact ? toPreferenceProfile(exact) : undefined;
+    if (exactProfile) {
+      return exactProfile;
+    }
+
+    const byName = cases.find(
+      (calibrationCase) =>
+        calibrationCase.expectedIdentifier &&
+        calibrationCase.source.name === input.name
+    );
+    const byNameProfile = byName ? toPreferenceProfile(byName) : undefined;
+    if (byNameProfile) {
+      return byNameProfile;
+    }
+  }
+
+  return undefined;
 }
 
 export async function deleteMpcCalibrationCase(caseId: string): Promise<void> {
@@ -142,6 +281,8 @@ export async function deleteMpcCalibrationCase(caseId: string): Promise<void> {
       });
     }
   );
+
+  markMpcPreferenceSyncDirty();
 }
 
 export async function saveMpcCalibrationAssets(

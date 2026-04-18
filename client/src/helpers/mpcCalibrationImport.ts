@@ -5,6 +5,7 @@ import type {
   MpcCalibrationRunRecord,
 } from "@/db";
 import { db } from "@/db";
+import type { MpcPreferenceFixture } from "@/types";
 import {
   getMpcCalibrationDataset,
   listMpcCalibrationAssets,
@@ -14,6 +15,7 @@ import {
   saveMpcCalibrationCase,
   saveMpcCalibrationRun,
 } from "./mpcCalibrationStorage";
+import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
 
 export const MPC_CALIBRATION_FIXTURE_VERSION = 1;
 
@@ -39,10 +41,46 @@ export interface MpcCalibrationFixture {
   runs: MpcCalibrationRunRecord[];
 }
 
+export type { MpcPreferenceFixture };
+
+export function getMpcCalibrationFixtureFilename(
+  fixture: Pick<MpcCalibrationFixture, "dataset">
+): string {
+  const safeName = fixture.dataset.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `mpc-calibration_${safeName}.json`;
+}
+
+interface WritableFileStreamLike {
+  write(data: string): Promise<void>;
+  close(): Promise<void>;
+  abort?(): Promise<void>;
+}
+
+interface SaveFileHandleLike {
+  createWritable(): Promise<WritableFileStreamLike>;
+}
+
+type SaveFilePickerFn = (options: {
+  suggestedName: string;
+  types: Array<{
+    description: string;
+    accept: Record<string, string[]>;
+  }>;
+}) => Promise<SaveFileHandleLike>;
+
 function blobToBase64(blob: Blob): Promise<string> {
-  return new Response(blob)
-    .arrayBuffer()
-    .then((buffer) => Buffer.from(buffer).toString("base64"));
+  return new Response(blob).arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+
+    return btoa(binary);
+  });
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -118,7 +156,19 @@ export function validateMpcCalibrationFixture(
     throw new Error("Invalid calibration fixture: missing dataset sections");
   }
 
-  return fixture as MpcCalibrationFixture;
+  return migrateMpcCalibrationFixture(fixture as MpcCalibrationFixture);
+}
+
+export function migrateMpcCalibrationFixture(
+  fixture: MpcCalibrationFixture
+): MpcCalibrationFixture {
+  if (fixture.version === MPC_CALIBRATION_FIXTURE_VERSION) {
+    return fixture;
+  }
+
+  throw new Error(
+    `Unsupported calibration fixture migration: v${fixture.version} → v${MPC_CALIBRATION_FIXTURE_VERSION}`
+  );
 }
 
 export function downloadMpcCalibrationFixture(
@@ -129,13 +179,66 @@ export function downloadMpcCalibrationFixture(
   });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
-  const safeName = fixture.dataset.name.replace(/[^a-zA-Z0-9_-]/g, "_");
   anchor.href = url;
-  anchor.download = `mpc-calibration_${safeName}.json`;
+  anchor.download = getMpcCalibrationFixtureFilename(fixture);
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function requestMpcCalibrationSaveHandle(
+  fixture: Pick<MpcCalibrationFixture, "dataset">
+): Promise<SaveFileHandleLike | null> {
+  const pickerWindow = window as Window & {
+    showSaveFilePicker?: SaveFilePickerFn;
+  };
+
+  if (!pickerWindow.showSaveFilePicker) {
+    return null;
+  }
+
+  return pickerWindow.showSaveFilePicker({
+    suggestedName: getMpcCalibrationFixtureFilename(fixture),
+    types: [
+      {
+        description: "JSON",
+        accept: {
+          "application/json": [".json"],
+        },
+      },
+    ],
+  });
+}
+
+export async function writeMpcCalibrationFixtureToHandle(
+  payload: string,
+  handle: SaveFileHandleLike
+): Promise<void> {
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(payload);
+    await writable.close();
+  } catch (error) {
+    if (typeof writable.abort === "function") {
+      await writable.abort().catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+export async function saveMpcCalibrationFixture(
+  fixture: MpcCalibrationFixture
+): Promise<"picker" | "download"> {
+  const payload = JSON.stringify(fixture, null, 2);
+  const handle = await requestMpcCalibrationSaveHandle(fixture);
+  if (handle) {
+    await writeMpcCalibrationFixtureToHandle(payload, handle);
+    return "picker";
+  }
+
+  downloadMpcCalibrationFixture(fixture);
+  return "download";
 }
 
 export async function importMpcCalibrationFixture(
@@ -164,6 +267,8 @@ export async function importMpcCalibrationFixture(
     }))
   );
   await Promise.all(validFixture.runs.map((run) => saveMpcCalibrationRun(run)));
+
+  markMpcPreferenceSyncDirty();
 
   return validFixture.dataset.id;
 }

@@ -71,9 +71,11 @@ describe("mpcCalibrationCompare", () => {
       cases,
       {
         id: "baseline",
+        usePreferenceProfile: false,
       },
       {
         id: "candidate",
+        usePreferenceProfile: false,
         ssimCompare: async (_source, candidateUrl) =>
           candidateUrl.includes("exact-print") ? 0.99 : 0.2,
       }
