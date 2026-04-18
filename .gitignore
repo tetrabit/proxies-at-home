@@ -26,3 +26,4 @@ electron/.tsbuildinfo/
 .sidecar-base
 .td-root
 .sisyphus/
+.playwright-mcp/
