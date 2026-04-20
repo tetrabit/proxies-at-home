@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { TextInput } from "flowbite-react";
 import { X, Filter } from "lucide-react";
 
-import { ArtSourceToggle, ResponsiveModal, FloatingZoomPanel, CardArtContent } from "../common";
+import { ArtSourceToggle, ResponsiveModal, FloatingZoomPanel } from "../common";
+import { CardArtContent } from "../common/CardArtContent";
 import { useToastStore } from "@/store/toast";
 
 import { useZoomShortcuts } from "@/hooks/useZoomShortcuts";

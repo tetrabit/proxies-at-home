@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Button, Checkbox } from "flowbite-react";
 import { Search, Filter, Image, Settings } from "lucide-react";
-import { ToggleButtonGroup, CardGrid, ArtSourceToggle, FloatingZoomPanel, CardArtContent } from "../common";
+import { ToggleButtonGroup, CardGrid, ArtSourceToggle, FloatingZoomPanel } from "../common";
+import { CardArtContent } from "../common/CardArtContent";
 
 import { CardbackLibrary } from "./CardbackLibrary";
 import type { CardOption } from "../../../../shared/types";

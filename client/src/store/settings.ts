@@ -147,6 +147,12 @@ export type Store = {
   preferredArtSource: 'scryfall' | 'mpc';
   setPreferredArtSource: (value: 'scryfall' | 'mpc') => void;
   setAllSettings: (settings: Partial<Store>) => void;
+  // Printer Calibration settings
+  printerCalibrationProfileId: string | null;
+  setPrinterCalibrationProfileId: (id: string | null) => void;
+  printerCalibrationEnabled: boolean;
+  setPrinterCalibrationEnabled: (enabled: boolean) => void;
+
   hasHydrated: boolean;
   setHasHydrated: (value: boolean) => void;
 };
@@ -220,6 +226,8 @@ const defaultPageSettings = {
   mpcFuzzySearch: true, // Default to fuzzy search enabled
   // Preferred art source
   preferredArtSource: 'scryfall' as 'scryfall' | 'mpc',
+  printerCalibrationProfileId: null as string | null,
+  printerCalibrationEnabled: false,
 };
 
 const layoutPresetsSizes: Record<
@@ -543,6 +551,16 @@ export const useSettingsStore = create<Store>()((set) => ({
   // Preferred art source
   preferredArtSource: 'scryfall',
   setPreferredArtSource: (value) => set({ preferredArtSource: value }),
+  printerCalibrationProfileId: null,
+  setPrinterCalibrationProfileId: (id) => set((state) => {
+    recordSettingChange("printerCalibrationProfileId", state.printerCalibrationProfileId);
+    return { printerCalibrationProfileId: id };
+  }),
+  printerCalibrationEnabled: false,
+  setPrinterCalibrationEnabled: (enabled) => set((state) => {
+    recordSettingChange("printerCalibrationEnabled", state.printerCalibrationEnabled);
+    return { printerCalibrationEnabled: enabled };
+  }),
   // Card Editor section state
 
   hasHydrated: false,
@@ -586,6 +604,8 @@ export const useSettingsStore = create<Store>()((set) => ({
       filterFeatures: currentState.filterFeatures,
       filterMatchType: currentState.filterMatchType,
       autoImportTokens: currentState.autoImportTokens,
+      printerCalibrationProfileId: currentState.printerCalibrationProfileId,
+      printerCalibrationEnabled: currentState.printerCalibrationEnabled,
     };
 
     // Reset to defaults

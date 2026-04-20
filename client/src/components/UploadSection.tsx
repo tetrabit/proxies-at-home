@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { AutoTooltip } from "./common";
 import { PullToRefresh } from "./PullToRefresh";
-import { bulkUpgradeToMpcAutofill } from "@/helpers/mpcBulkUpgrade";
 import type { BulkUpgradeProgress } from "@/helpers/mpcBulkUpgrade";
 import { resetCardsToOriginalImages } from "@/helpers/dbUtils";
 import {
@@ -72,6 +71,9 @@ export function UploadSection({
     });
 
     try {
+      const { bulkUpgradeToMpcAutofill } = await import(
+        "@/helpers/mpcBulkUpgrade"
+      );
       const summary = await bulkUpgradeToMpcAutofill({
         projectId: currentProjectId ?? undefined,
         signal: abortController.signal,

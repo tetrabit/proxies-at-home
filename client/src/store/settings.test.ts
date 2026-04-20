@@ -326,6 +326,14 @@ describe("useSettingsStore", () => {
             setHasHydrated(true);
             expect(useSettingsStore.getState().hasHydrated).toBe(true);
         });
+
+        it("printer calibration setters should update state", () => {
+            const { setPrinterCalibrationProfileId, setPrinterCalibrationEnabled } = useSettingsStore.getState();
+            setPrinterCalibrationProfileId("office-printer");
+            setPrinterCalibrationEnabled(true);
+            expect(useSettingsStore.getState().printerCalibrationProfileId).toBe("office-printer");
+            expect(useSettingsStore.getState().printerCalibrationEnabled).toBe(true);
+        });
     });
 
     describe("bleed settings", () => {

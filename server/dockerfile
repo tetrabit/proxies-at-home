@@ -9,8 +9,6 @@ RUN apk add --no-cache python3 make g++
 
 # package-lock.json installs @tetrabit/scryfall-cache-client from a local workspace path:
 # file:../shared/scryfall-client (relative to /app/server).
-# Build the workspace package inside the image so docker builds don't depend on
-# prebuilt dist artifacts existing in the worktree.
 COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
 RUN npm ci --prefix /app/shared/scryfall-client && npm run build --prefix /app/shared/scryfall-client
@@ -45,9 +43,13 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
+ARG NPM_VERSION=11.12.1
 ARG PRINTER_KEYSTONE_GIT_URL=
 ARG PRINTER_KEYSTONE_GIT_REF=main
 ENV PRINTER_KEYSTONE_REPO=/opt/printer-keystone
+
+COPY server/vendor/printer-calibration/pyproject.toml /opt/printer-calibration-src/pyproject.toml
+COPY server/vendor/printer-calibration/src /opt/printer-calibration-src/src
 
 # Optional Keystone (printer-keystone) runtime deps:
 # - We install OpenCV+numpy/etc from apk and PyMuPDF from pip into a venv.
@@ -61,9 +63,11 @@ RUN apk add --no-cache \
     py3-reportlab \
     py3-typer \
     py3-opencv \
+  && npm install -g "npm@${NPM_VERSION}" \
   && python3 -m venv --system-site-packages /opt/keystone-venv \
   && /opt/keystone-venv/bin/pip install --no-cache-dir -U pip \
-  && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF \
+  && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF pypdf tomli-w \
+  && /opt/keystone-venv/bin/pip install --no-cache-dir /opt/printer-calibration-src \
   && if [ -n "$PRINTER_KEYSTONE_GIT_URL" ]; then git clone --depth 1 --branch "$PRINTER_KEYSTONE_GIT_REF" "$PRINTER_KEYSTONE_GIT_URL" "$PRINTER_KEYSTONE_REPO"; fi \
   && true
 

@@ -2,6 +2,8 @@
 
 FROM node:20-alpine AS build
 WORKDIR /app
+ARG NPM_VERSION=11.12.1
+RUN npm install -g "npm@${NPM_VERSION}"
 
 # package-lock.json installs @tetrabit/scryfall-cache-client from a local workspace path:
 # file:../shared/scryfall-client (relative to /app/client).

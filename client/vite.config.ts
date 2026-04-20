@@ -46,6 +46,44 @@ export default defineConfig(({ mode }) => {
       : null,
   ].filter(Boolean);
 
+  const manualChunks = (id: string) => {
+    if (id.includes("node_modules")) {
+      if (
+        id.includes("/react/") ||
+        id.includes("/react-dom/") ||
+        id.includes("/scheduler/") ||
+        id.includes("/use-sync-external-store/")
+      ) {
+        return "vendor-react";
+      }
+      if (id.includes("pixi.js") || id.includes("@pixi/")) return "vendor-pixi";
+      if (id.includes("pdf-lib")) return "pdf";
+      if (
+        id.includes("flowbite-react") ||
+        id.includes("lucide-react") ||
+        id.includes("@use-gesture/react")
+      ) {
+        return "vendor-ui";
+      }
+      if (
+        id.includes("dexie") ||
+        id.includes("dexie-react-hooks")
+      ) {
+        return "vendor-db";
+      }
+      if (
+        id.includes("@dnd-kit/core") ||
+        id.includes("@dnd-kit/modifiers") ||
+        id.includes("@dnd-kit/sortable")
+      ) {
+        return "vendor-dnd";
+      }
+      return undefined;
+    }
+
+    return undefined;
+  };
+
   return {
   // Use relative paths for Electron (file:// protocol)
   base: './',
@@ -104,18 +142,12 @@ export default defineConfig(({ mode }) => {
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-ui': ['flowbite-react', 'lucide-react', 'swiper', '@use-gesture/react'],
-          'vendor-db': ['dexie', 'dexie-react-hooks'],
-          'vendor-dnd': ['@dnd-kit/core', '@dnd-kit/modifiers', '@dnd-kit/sortable'],
-          'vendor-pixi': ['pixi.js'],
-          pdf: ['pdf-lib'],
-        },
+        manualChunks,
       },
     },
-    // vendor-pixi is ~502KB which can't be split further
-    chunkSizeWarningLimit: 550,
+    // The remaining large chunk is the lazily loaded MPC calibration harness.
+    // It is optional tooling code, not part of the initial app path.
+    chunkSizeWarningLimit: 800,
   },
   };
 });

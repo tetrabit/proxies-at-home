@@ -32,11 +32,12 @@ type PersistableSettings = Omit<SettingsStore,
     | 'setCardPositionX' | 'setCardPositionY' | 'setUseCustomBackOffset' | 'setCardBackPositionX' | 'setCardBackPositionY'
     | 'setPerCardBackOffsets' | 'setPerCardBackOffset' | 'clearPerCardBackOffsets'
     | 'setKeystoneLastTransform' | 'clearKeystoneLastTransform'
-    | 'setDpi' | 'setCutLineStyle' | 'setPerCardGuideStyle' | 'setGuidePlacement' | 'setCutGuideLengthMm' | 'setGlobalLanguage'
+    | 'setDpi' | 'setCutLineStyle' | 'setPerCardGuideStyle' | 'setGuidePlacement' | 'setShowGuideLinesOnBackCards' | 'setCutGuideLengthMm' | 'setGlobalLanguage'
     | 'setRegistrationMarks' | 'setRegistrationMarksPortrait'
     | 'setSortBy' | 'setSortOrder' | 'setFilterManaCost' | 'setFilterColors' | 'setFilterTypes' | 'setFilterCategories' | 'setFilterFeatures'
     | 'setFilterMatchType' | 'setDecklistSortAlpha' | 'setShowProcessingToasts' | 'setDefaultCardbackId' | 'setExportMode'
     | 'setAutoImportTokens' | 'setMpcFuzzySearch' | 'setPreferredArtSource'
+    | 'setPrinterCalibrationProfileId' | 'setPrinterCalibrationEnabled'
     | 'hasHydrated'
 >;
 

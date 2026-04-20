@@ -20,6 +20,8 @@ const mockState = vi.hoisted(() => ({
     dpi: 600,
     perCardBackOffsets: {},
     keystoneLastTransform: null,
+    printerCalibrationEnabled: false,
+    printerCalibrationProfileId: null as string | null,
 }));
 
 const mockSetters = vi.hoisted(() => ({
@@ -43,6 +45,10 @@ vi.mock('@/store/settings', () => ({
         };
         return selector(state);
     }),
+}));
+
+vi.mock('@/store', () => ({
+    useCalibrationModalStore: vi.fn((selector) => selector({ openModal: vi.fn() })),
 }));
 
 vi.mock('flowbite-react', () => ({
@@ -93,6 +99,10 @@ vi.mock('@/hooks/useInputHooks', () => ({
     }),
 }));
 
+vi.mock('@/components/PrinterCalibrationModal', () => ({
+    PrinterCalibrationModal: ({ isOpen }: { isOpen: boolean }) => isOpen ? <div data-testid="printer-calibration-modal" /> : null,
+}));
+
 import { CardSection } from './CardSection';
 
 describe('CardSection', () => {
@@ -119,6 +129,11 @@ describe('CardSection', () => {
             render(<CardSection />);
             const tooltips = screen.getAllByTestId('tooltip');
             expect(tooltips.length).toBeGreaterThan(0);
+        });
+
+        it('should render printer calibration button', () => {
+            render(<CardSection />);
+            expect(screen.getByText('Printer Calibration (Translation)')).toBeDefined();
         });
     });
 

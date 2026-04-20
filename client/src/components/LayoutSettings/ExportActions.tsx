@@ -16,6 +16,7 @@ import { extractMpcIdentifierFromImageId } from "@/helpers/mpcAutofillApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
 import { buildCollatedDuplexPageOrder } from "@/helpers/duplexCollation";
 import { exportModeUsesPerCardBackOffsets } from "@/helpers/exportMode";
+import { applyCalibration } from "@/helpers/printerCalibrationApi";
 import type { CardOption } from "../../../../shared/types";
 
 type Props = {
@@ -273,6 +274,9 @@ export function ExportActions({ cards }: Props) {
 	      const cardBackPositionX = useSettingsStore.getState().cardBackPositionX;
 	      const cardBackPositionY = useSettingsStore.getState().cardBackPositionY;
 
+        const printerCalibrationEnabled = useSettingsStore.getState().printerCalibrationEnabled;
+        const printerCalibrationProfileId = useSettingsStore.getState().printerCalibrationProfileId;
+
       // Determine cards to export based on mode
       let cardsToExport: CardOption[] = [];
       let filenameSuffix = '';
@@ -368,6 +372,17 @@ export function ExportActions({ cards }: Props) {
             returnBuffer: true,
           });
 
+          // Apply printer calibration to backs if enabled
+          let finalBacksBuffer = backsBuffer;
+          if (finalBacksBuffer && finalBacksBuffer.length > 0 && printerCalibrationEnabled && printerCalibrationProfileId) {
+            setLoadingTask("Applying Printer Calibration");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const blob = new Blob([finalBacksBuffer as any], { type: "application/pdf" });
+            const calibratedBlob = await applyCalibration(blob, printerCalibrationProfileId);
+            finalBacksBuffer = new Uint8Array(await calibratedBlob.arrayBuffer());
+            setLoadingTask("Generating PDF");
+          }
+
           // Merge fronts and backs into single PDF
           setProgress(92);
           const mergedPdf = await PDFDocument.create();
@@ -378,8 +393,8 @@ export function ExportActions({ cards }: Props) {
             frontsPages.forEach(page => mergedPdf.addPage(page));
           }
 
-          if (backsBuffer && backsBuffer.length > 0) {
-            const backsPdf = await PDFDocument.load(backsBuffer);
+          if (finalBacksBuffer && finalBacksBuffer.length > 0) {
+            const backsPdf = await PDFDocument.load(finalBacksBuffer);
             const backsPages = await mergedPdf.copyPages(backsPdf, backsPdf.getPageIndices());
             backsPages.forEach(page => mergedPdf.addPage(page));
           }
@@ -437,11 +452,22 @@ export function ExportActions({ cards }: Props) {
             returnBuffer: true,
           });
 
+          // Apply printer calibration to backs if enabled
+          let finalBacksBuffer = backsBuffer;
+          if (finalBacksBuffer && finalBacksBuffer.length > 0 && printerCalibrationEnabled && printerCalibrationProfileId) {
+            setLoadingTask("Applying Printer Calibration");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const blob = new Blob([finalBacksBuffer as any], { type: "application/pdf" });
+            const calibratedBlob = await applyCalibration(blob, printerCalibrationProfileId);
+            finalBacksBuffer = new Uint8Array(await calibratedBlob.arrayBuffer());
+            setLoadingTask("Generating PDF");
+          }
+
           setProgress(92);
           const mergedPdf = await PDFDocument.create();
 
           const frontsPdf = (frontsBuffer && frontsBuffer.length > 0) ? await PDFDocument.load(frontsBuffer) : null;
-          const backsPdf = (backsBuffer && backsBuffer.length > 0) ? await PDFDocument.load(backsBuffer) : null;
+          const backsPdf = (finalBacksBuffer && finalBacksBuffer.length > 0) ? await PDFDocument.load(finalBacksBuffer) : null;
 
           const frontPages = frontsPdf ? frontsPdf.getPageIndices() : [];
           const backPages = backsPdf ? backsPdf.getPageIndices() : [];
@@ -487,6 +513,60 @@ export function ExportActions({ cards }: Props) {
           if (useCustomBackOffset) {
             pdfSettings.cardPositionX = cardBackPositionX;
             pdfSettings.cardPositionY = cardBackPositionY;
+          }
+          
+          if (printerCalibrationEnabled && printerCalibrationProfileId) {
+            // we have to intercept the buffer and apply calibration manually instead of letting exportProxyPagesToPdf download it
+            const backsBuffer = await exportProxyPagesToPdf({
+              cards: cardsToExport,
+              imagesById,
+              pdfSettings,
+              onProgress: setProgress,
+              pagesPerPdf: effectivePagesPerPdf,
+              cancellationPromise,
+              filenameSuffix,
+              returnBuffer: true,
+            });
+            
+            if (backsBuffer && backsBuffer.length > 0) {
+              setLoadingTask("Applying Printer Calibration");
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const blob = new Blob([backsBuffer as any], { type: "application/pdf" });
+              const calibratedBlob = await applyCalibration(blob, printerCalibrationProfileId);
+              
+              const date = new Date().toISOString().slice(0, 10);
+              const filename = `proxxies_${date}${filenameSuffix}.pdf`;
+              const url = URL.createObjectURL(calibratedBlob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+            
+            setProgress(100);
+            
+            // Log PDF export summary for this early exit branch
+            const elapsed = (performance.now() - startTime) / 1000;
+            const perPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
+            const totalPages = Math.ceil(cardsToExport.length / perPage);
+            const pad = (content: string) => content.padEnd(62);
+            const modeLabel = EXPORT_MODES.find(m => m.value === exportMode)?.label || exportMode;
+            const summary = `
+╔══════════════════════════════════════════════════════════════╗
+║${`PDF EXPORT (${modeLabel})`.padStart(44).padEnd(62)}║
+╠══════════════════════════════════════════════════════════════╣
+║${pad(`  Total Time:        ${elapsed.toFixed(2).padStart(8)}s`)}║
+╠══════════════════════════════════════════════════════════════╣
+║${pad(`  Cards:             ${String(cardsToExport.length).padStart(8)}`)}║
+║${pad(`  Pages:             ${String(totalPages).padStart(8)}`)}║
+║${pad(`  DPI:               ${String(dpi).padStart(8)}`)}║
+║${pad(`  Page Size:         ${(pageWidth + "x" + pageHeight + " " + pageSizeUnit).padStart(8)}`)}║
+╚══════════════════════════════════════════════════════════════╝`;
+            console.log(summary);
+            return;
           }
           break;
       }

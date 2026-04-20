@@ -69,7 +69,10 @@
       {
         "from": "../scryfall-cache-microservice/target/release",
         "to": "microservices",
-        "filter": ["scryfall-cache*", "!*.d"]
+        "filter": [
+          "scryfall-cache*",
+          "!*.d"
+        ]
       }
     ],
     "files": [
@@ -133,7 +136,6 @@
     "jsdom": "^27.4.0",
     "lucide-react": "^0.562.0",
     "multer": "^2.0.2",
-    "node-fetch": "^3.3.2",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tailwindcss": "^4.1.18",

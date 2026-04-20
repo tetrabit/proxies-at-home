@@ -5,7 +5,7 @@
  * that displays page backgrounds, card images, and cut guides.
  */
 
-import { useMemo, useState, useRef, useCallback, useEffect } from "react";
+import { lazy, Suspense, useMemo, useState, useRef, useCallback, useEffect } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -57,14 +57,29 @@ import {
 } from "./PageComponents/CardControlsOverlay";
 import { PageViewContextMenu } from "./PageComponents/PageViewContextMenu";
 import { PageViewSelectionBar } from "./PageComponents/PageViewSelectionBar";
-import { ArtworkModal } from "../ArtworkModal";
-import { CardEditorModalWrapper } from "../CardEditorModal/CardEditorModalWrapper";
 import { KeyboardShortcutsModal } from "../common";
-import { MpcUpgradeModal } from "../MpcUpgradeModal";
-import { CalibrationModal } from "../CalibrationModal";
 import { usePageViewHotkeys } from "@/hooks/usePageViewHotkeys";
 import { usePageViewZoom } from "@/hooks/usePageViewZoom";
 import { PullToRefresh } from "../PullToRefresh";
+
+const ArtworkModal = lazy(() =>
+  import("../ArtworkModal").then((module) => ({ default: module.ArtworkModal }))
+);
+const CardEditorModalWrapper = lazy(() =>
+  import("../CardEditorModal/CardEditorModalWrapper").then((module) => ({
+    default: module.CardEditorModalWrapper,
+  }))
+);
+const MpcUpgradeModal = lazy(() =>
+  import("../MpcUpgradeModal").then((module) => ({
+    default: module.MpcUpgradeModal,
+  }))
+);
+const CalibrationModal = lazy(() =>
+  import("../CalibrationModal").then((module) => ({
+    default: module.CalibrationModal,
+  }))
+);
 
 // Constants
 const MM_TO_PX = 96 / 25.4;
@@ -1227,18 +1242,20 @@ export function PageView({
         flippedCards={flippedCards}
       />
 
-      {/* Artwork selection modal */}
-      <ArtworkModal />
+      <Suspense fallback={null}>
+        {/* Artwork selection modal */}
+        <ArtworkModal />
 
-      {/* Card editor modal */}
-      <CardEditorModalWrapper />
+        {/* Card editor modal */}
+        <CardEditorModalWrapper />
+
+        <MpcUpgradeModal />
+
+        <CalibrationModal />
+      </Suspense>
 
       {/* Keyboard shortcuts help modal */}
       <KeyboardShortcutsModal />
-
-      <MpcUpgradeModal />
-
-      <CalibrationModal />
     </>
   );
 }

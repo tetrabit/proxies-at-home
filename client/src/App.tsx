@@ -1,5 +1,5 @@
-import { Loader, UpdateNotification, AboutModal } from "@/components/common";
-import { lazy, useEffect, useState } from "react";
+import { Loader, UpdateNotification } from "@/components/common";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { ImageProcessor } from "@/helpers/imageProcessor";
 import { useShareUrl } from "@/hooks/useShareUrl";
@@ -14,6 +14,11 @@ import { useToastStore } from "@/store/toast";
 import { autoRestore } from "@/helpers/autoRestore";
 
 const ProxyBuilderPage = lazy(() => import("@/pages/ProxyBuilderPage"));
+const AboutModal = lazy(() =>
+  import("@/components/common").then((module) => ({
+    default: module.AboutModal,
+  }))
+);
 
 function App() {
   const [showAbout, setShowAbout] = useState(false);
@@ -141,7 +146,9 @@ function App() {
 
       <Loader />
       <UpdateNotification />
-      <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
+      <Suspense fallback={null}>
+        <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
+      </Suspense>
 
       <button
         type="button"

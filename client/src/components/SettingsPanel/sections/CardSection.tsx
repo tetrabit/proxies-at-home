@@ -3,11 +3,26 @@ import { Label, Checkbox, Button } from "flowbite-react";
 import { NumberInput } from "@/components/common";
 import { useNormalizedInput, usePositionInput } from "@/hooks/useInputHooks";
 import { AutoTooltip } from "@/components/common";
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { useCalibrationModalStore } from "@/store";
-import { PerCardOffsetModal } from "@/components/PerCardOffsetModal";
 import { WrenchIcon, ScanLine } from "lucide-react";
-import { KeystoneCalibrationModal } from "@/components/KeystoneCalibrationModal";
+import { PrinterIcon } from "lucide-react";
+
+const PerCardOffsetModal = lazy(() =>
+  import("@/components/PerCardOffsetModal").then((module) => ({
+    default: module.PerCardOffsetModal,
+  }))
+);
+const KeystoneCalibrationModal = lazy(() =>
+  import("@/components/KeystoneCalibrationModal").then((module) => ({
+    default: module.KeystoneCalibrationModal,
+  }))
+);
+const PrinterCalibrationModal = lazy(() =>
+  import("@/components/PrinterCalibrationModal").then((module) => ({
+    default: module.PrinterCalibrationModal,
+  }))
+);
 
 const INCH_TO_MM = 25.4;
 const CARD_W_IN = 2.5;
@@ -65,6 +80,10 @@ export function CardSection() {
 
   const [showPerCardModal, setShowPerCardModal] = useState(false);
   const [showKeystoneModal, setShowKeystoneModal] = useState(false);
+  const [showPrinterCalibrationModal, setShowPrinterCalibrationModal] = useState(false);
+
+  const printerCalibrationEnabled = useSettingsStore((s) => s.printerCalibrationEnabled);
+  const printerCalibrationProfileId = useSettingsStore((s) => s.printerCalibrationProfileId);
 
   const pageWmm = pageUnit === "mm" ? pageWidth : inToMm(pageWidth);
   const pageHmm = pageUnit === "mm" ? pageHeight : inToMm(pageHeight);
@@ -128,6 +147,22 @@ export function CardSection() {
           </Button>
           <AutoTooltip content="Upload front/back scans of a calibration sheet to auto-populate back offsets (translation + rotation) for duplex printing." />
         </div>
+        <div className="flex items-center gap-2">
+          <Button
+            color="indigo"
+            onClick={() => setShowPrinterCalibrationModal(true)}
+            className="flex-1 gap-2"
+          >
+            <PrinterIcon className="h-5 w-5" />
+            Printer Calibration (Translation)
+          </Button>
+          <AutoTooltip content="Download a sheet to measure and apply simple X/Y translation offsets for your printer. Corrects back-page misalignment globally without keystone/rotation adjustments." />
+        </div>
+        {printerCalibrationEnabled && printerCalibrationProfileId && (
+          <div className="rounded-md border border-indigo-200 bg-indigo-50 p-2 text-xs text-indigo-800 dark:border-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-200">
+            <strong>Active Profile:</strong> {printerCalibrationProfileId} (Applied to backs)
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Button
             color="purple"
@@ -321,14 +356,20 @@ export function CardSection() {
         )}
       </div>
 
-      <PerCardOffsetModal
-        isOpen={showPerCardModal}
-        onClose={() => setShowPerCardModal(false)}
-      />
-      <KeystoneCalibrationModal
-        isOpen={showKeystoneModal}
-        onClose={() => setShowKeystoneModal(false)}
-      />
+      <Suspense fallback={null}>
+        <PerCardOffsetModal
+          isOpen={showPerCardModal}
+          onClose={() => setShowPerCardModal(false)}
+        />
+        <KeystoneCalibrationModal
+          isOpen={showKeystoneModal}
+          onClose={() => setShowKeystoneModal(false)}
+        />
+        <PrinterCalibrationModal
+          isOpen={showPrinterCalibrationModal}
+          onClose={() => setShowPrinterCalibrationModal(false)}
+        />
+      </Suspense>
     </div>
   );
 }

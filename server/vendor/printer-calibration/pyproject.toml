@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "printer-calibration"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pypdf",
+    "reportlab",
+    "tomli-w",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+printer-calibration = "printer_calibration.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/printer_calibration"]

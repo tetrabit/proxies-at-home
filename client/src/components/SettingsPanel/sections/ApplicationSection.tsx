@@ -6,7 +6,8 @@ import { createPortal } from "react-dom";
 import { db } from "@/db";
 import { cancelAllProcessing } from "@/helpers/cancellationService";
 import { LANGUAGE_OPTIONS } from "@/constants";
-import { AutoTooltip, ArtSourceToggle, UpdateChannelSelector } from "../../common";
+import { AutoTooltip, ArtSourceToggle } from "../../common";
+import { UpdateChannelSelector } from "../../common/UpdateChannelSelector";
 import { HelpCircle, Coffee, Save, RefreshCw } from "lucide-react";
 import { useToastStore } from "@/store/toast";
 

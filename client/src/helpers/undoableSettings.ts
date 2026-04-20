@@ -50,7 +50,11 @@ export type UndoableSettingKey =
     | "darkenAmount"
     | "darkenBrightness"
     | "darkenAutoDetect"
-    | "cutGuideLengthMm";
+    | "cutGuideLengthMm"
+    | "registrationMarks"
+    | "registrationMarksPortrait"
+    | "printerCalibrationProfileId"
+    | "printerCalibrationEnabled";
 
 // Human-readable descriptions for each setting
 const settingDescriptions: Record<UndoableSettingKey, string> = {
@@ -97,6 +101,10 @@ const settingDescriptions: Record<UndoableSettingKey, string> = {
     darkenBrightness: "darken brightness",
     darkenAutoDetect: "auto detect darkness",
     cutGuideLengthMm: "cut guide length",
+    registrationMarks: "registration marks",
+    registrationMarksPortrait: "registration mark orientation",
+    printerCalibrationProfileId: "printer calibration profile",
+    printerCalibrationEnabled: "printer calibration export toggle",
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
