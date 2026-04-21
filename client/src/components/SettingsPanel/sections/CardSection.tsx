@@ -156,11 +156,11 @@ export function CardSection() {
             <PrinterIcon className="h-5 w-5" />
             Printer Calibration (Translation)
           </Button>
-          <AutoTooltip content="Download a sheet to measure and apply simple X/Y translation offsets for your printer. Corrects back-page misalignment globally without keystone/rotation adjustments." />
+          <AutoTooltip content="Download a sheet to measure and apply simple X/Y translation offsets for your printer. Recenters duplex front and back pages globally without keystone/rotation adjustments." />
         </div>
         {printerCalibrationEnabled && printerCalibrationProfileId && (
           <div className="rounded-md border border-indigo-200 bg-indigo-50 p-2 text-xs text-indigo-800 dark:border-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-200">
-            <strong>Active Profile:</strong> {printerCalibrationProfileId} (Applied to backs)
+            <strong>Active Profile:</strong> {printerCalibrationProfileId} (Recenters fronts and backs)
           </div>
         )}
         <div className="flex items-center gap-2">

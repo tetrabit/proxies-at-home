@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSettingsStore } from "@/store/settings";
 import { useToastStore } from "@/store/toast";
 import * as api from "@/helpers/printerCalibrationApi";
+import { CalibrationApiUnavailableError } from "@/helpers/printerCalibrationApi";
 
 type Props = {
   isOpen: boolean;
@@ -23,6 +24,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
     back_x_measured_mm: 107.95,
     back_y_measured_mm: 139.70,
   });
+  const [apiUnavailable, setApiUnavailable] = useState(false);
 
   const getErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
@@ -31,9 +33,14 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
     try {
       const data = await api.getPrinterProfiles();
       setProfiles(data);
+      setApiUnavailable(false);
     } catch (e: unknown) {
-      // Ignored if API is not available
-      console.error(e);
+      if (e instanceof CalibrationApiUnavailableError) {
+        setApiUnavailable(true);
+      } else {
+        console.error(e);
+        setApiUnavailable(false);
+      }
     }
   }, []);
 
@@ -55,6 +62,9 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e: unknown) {
+      if (e instanceof CalibrationApiUnavailableError) {
+        setApiUnavailable(true);
+      }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
     }
   };
@@ -77,6 +87,9 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       setPrinterCalibrationProfileId(profileName);
       setNewProfileName("");
     } catch (e: unknown) {
+      if (e instanceof CalibrationApiUnavailableError) {
+        setApiUnavailable(true);
+      }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
     }
   };
@@ -91,6 +104,9 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       }
       await fetchProfiles();
     } catch (e: unknown) {
+      if (e instanceof CalibrationApiUnavailableError) {
+        setApiUnavailable(true);
+      }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
     }
   };
@@ -100,21 +116,32 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       <ModalHeader>Printer Calibration</ModalHeader>
       <ModalBody>
         <div className="space-y-6">
+          {apiUnavailable && (
+            <div
+              className="rounded-md border border-yellow-300 bg-yellow-50 dark:border-yellow-600 dark:bg-yellow-900/30 p-3 text-sm text-yellow-800 dark:text-yellow-200"
+              data-testid="calibration-unavailable-banner"
+            >
+              <strong>Printer calibration is not available.</strong>{" "}
+              Profile management and calibration sheet download require a connected Proxxied server.
+              Controls are disabled until the service responds.
+            </div>
+          )}
+
           <div className="rounded-md bg-gray-50 dark:bg-gray-800 p-3 text-sm text-gray-700 dark:text-gray-200">
             <p className="mb-2">
-              Printer calibration applies a global offset to the entire back page of duplex PDFs.
-              This corrects for hardware misalignment when printing.
+              Printer calibration recenters duplex exports using separate front and back translation offsets.
+              This corrects for hardware misalignment when printing both sides.
             </p>
             <ol className="list-decimal pl-5 space-y-1">
               <li>Download and print the calibration sheet (100% scale, long-edge duplex).</li>
               <li>Measure distances from the printed marks to the edge of the paper.</li>
               <li>Enter measurements below to create a profile.</li>
-              <li>Enable the profile to automatically apply it to back-page exports.</li>
+              <li>Enable the profile to automatically recenter duplex front and back pages during export.</li>
             </ol>
           </div>
 
           <div className="flex gap-4 items-end border-b pb-4 dark:border-gray-700">
-              <Button color="gray" onClick={downloadSheet} className="w-full">
+              <Button color="gray" onClick={downloadSheet} className="w-full" disabled={apiUnavailable}>
                 Download Calibration Sheet (US Letter)
               </Button>
           </div>
@@ -126,11 +153,13 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
                 checked={printerCalibrationEnabled}
                 label="Apply Profile on Export"
                 onChange={setPrinterCalibrationEnabled}
+                disabled={apiUnavailable}
               />
               <Select
                 value={printerCalibrationProfileId || ""}
                 onChange={(e) => setPrinterCalibrationProfileId(e.target.value || null)}
                 className="flex-1"
+                disabled={apiUnavailable}
               >
                 <option value="">-- No Profile Selected --</option>
                 {Object.values(profiles).map(p => (
@@ -138,7 +167,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
                 ))}
               </Select>
               {printerCalibrationProfileId && (
-                <Button color="failure" size="sm" onClick={() => handleDeleteProfile(printerCalibrationProfileId)}>
+                <Button color="failure" size="sm" onClick={() => handleDeleteProfile(printerCalibrationProfileId)} disabled={apiUnavailable}>
                   Delete
                 </Button>
               )}
@@ -196,9 +225,10 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
                   value={newProfileName} 
                   onChange={e => setNewProfileName(e.target.value)} 
                   placeholder="e.g., Office Brother Printer" 
+                  disabled={apiUnavailable}
                 />
               </div>
-              <Button color="green" onClick={handleCreateProfile} disabled={!newProfileName.trim()} data-testid="printer-calibration-save-profile">
+              <Button color="green" onClick={handleCreateProfile} disabled={!newProfileName.trim() || apiUnavailable} data-testid="printer-calibration-save-profile">
                 Save Profile
               </Button>
             </div>
