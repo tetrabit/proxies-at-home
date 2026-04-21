@@ -301,7 +301,7 @@ export function CalibrationModal() {
   );
 
   return (
-    <Modal show={open} onClose={closeModal} size="7xl">
+    <Modal show={open} onClose={closeModal} size="7xl" dismissible>
       <ModalHeader>MPC Calibration Harness</ModalHeader>
       <ModalBody>
         <div className="space-y-6" data-testid="mpc-calibration-modal">

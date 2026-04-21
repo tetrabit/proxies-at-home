@@ -310,4 +310,11 @@ describe("CalibrationModal", () => {
       expect(screen.getByText(/Current: current-pick/i)).toBeTruthy();
     });
   });
+
+  it("renders a top-right close button that closes the modal", async () => {
+    render(<CalibrationModal />);
+    const closeButton = await screen.findByRole("button", { name: /close/i });
+    fireEvent.click(closeButton);
+    expect(mockCalibrationState.closeModal).toHaveBeenCalled();
+  });
 });
