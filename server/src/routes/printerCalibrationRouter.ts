@@ -16,6 +16,8 @@ export type PrinterCalibrationProfile = {
   duplex_mode?: string;
 };
 
+type CalibrationPageMode = "duplex" | "back-only";
+
 type PrinterCalibrationRunner =
   | {
       kind: "bin";
@@ -48,7 +50,7 @@ function fileExists(filePath: string) {
   }
 }
 
-function detectDefaultPrinterCalibrationRepo(): string | null {
+export function detectDefaultPrinterCalibrationRepo(): string | null {
   const candidates = new Set<string>();
   const home = process.env.HOME || process.env.USERPROFILE;
 
@@ -58,6 +60,14 @@ function detectDefaultPrinterCalibrationRepo(): string | null {
 
   candidates.add(path.resolve(process.cwd(), "..", "printer-calibration"));
   candidates.add(path.resolve(process.cwd(), "..", "..", "printer-calibration"));
+  candidates.add(path.resolve(process.cwd(), "vendor", "printer-calibration"));
+  candidates.add(path.resolve(process.cwd(), "server", "vendor", "printer-calibration"));
+  candidates.add(
+    path.resolve(ROUTES_DIRECTORY, "..", "..", "..", "vendor", "printer-calibration")
+  );
+  candidates.add(
+    path.resolve(ROUTES_DIRECTORY, "..", "..", "..", "..", "vendor", "printer-calibration")
+  );
   candidates.add(
     path.resolve(ROUTES_DIRECTORY, "..", "..", "..", "..", "printer-calibration")
   );
@@ -78,7 +88,6 @@ function resolveRunners(): PrinterCalibrationRunner[] {
   const out: PrinterCalibrationRunner[] = [];
   const bin = process.env.PRINTER_CALIBRATION_BIN;
   if (bin) out.push({ kind: "bin", cmd: bin });
-  out.push({ kind: "bin", cmd: "printer-calibration" });
 
   const configuredRepoDir = process.env.PRINTER_CALIBRATION_REPO;
   const repoDir =
@@ -97,7 +106,25 @@ function resolveRunners(): PrinterCalibrationRunner[] {
     out.push({ kind: "python", python, repoDir: repoDir || undefined });
   }
 
+  out.push({ kind: "bin", cmd: "printer-calibration" });
+
   return out;
+}
+
+export function buildPythonCliArgs(args: string[]): string[] {
+  return ["-m", "printer_calibration", ...args];
+}
+
+export function shouldTryNextPrinterCalibrationRunner(message: string): boolean {
+  const lowerMessage = message.toLowerCase();
+  return (
+    message.includes("ENOENT") ||
+    lowerMessage.includes("not found") ||
+    lowerMessage.includes("no module named") ||
+    lowerMessage.includes("does not exist") ||
+    lowerMessage.includes("unrecognized arguments") ||
+    lowerMessage.includes("unrecognized option")
+  );
 }
 
 function runProcess(
@@ -180,7 +207,7 @@ async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
 
       const result = await runProcess(
         runner.python,
-        ["-m", "printer_calibration.cli", ...args],
+        buildPythonCliArgs(args),
         {
           cwd: runner.repoDir,
           env,
@@ -196,12 +223,7 @@ async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
     } catch (error: unknown) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes("ENOENT") ||
-        message.toLowerCase().includes("not found") ||
-        message.toLowerCase().includes("no module named") ||
-        message.toLowerCase().includes("does not exist")
-      ) {
+      if (shouldTryNextPrinterCalibrationRunner(message)) {
         continue;
       }
       throw error;
@@ -228,14 +250,20 @@ function safeNumber(value: unknown, field: string): number {
   return parsed;
 }
 
-function writeTempFile(buffer: Buffer, originalName: string): string {
+function buildTempFilePath(prefix: string, originalName: string): string {
   const extension = path.extname(originalName || "").slice(0, 10) || ".bin";
-  const tempPath = path.join(
+  return path.join(
     os.tmpdir(),
-    `proxxied-printer-calibration-${Date.now()}-${Math.random().toString(16).slice(2)}${extension}`
+    `proxxied-printer-calibration-${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}${extension}`
   );
-  fs.writeFileSync(tempPath, buffer);
-  return tempPath;
+}
+
+function parsePageMode(value: unknown): CalibrationPageMode {
+  const mode = String(value || "duplex").trim();
+  if (mode === "duplex" || mode === "back-only") {
+    return mode;
+  }
+  throw new Error("Invalid pageMode. Expected 'duplex' or 'back-only'.");
 }
 
 function unlinkQuiet(filePath: string | null | undefined) {
@@ -341,9 +369,18 @@ function unavailableStatus(error: unknown): 500 | 501 {
     : 500;
 }
 
+const CALIBRATION_UPLOAD_LIMIT_BYTES = 1024 * 1024 * 1024;
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, os.tmpdir());
+    },
+    filename: (_req, file, cb) => {
+      cb(null, path.basename(buildTempFilePath("upload", file.originalname || "input.pdf")));
+    },
+  }),
+  limits: { fileSize: CALIBRATION_UPLOAD_LIMIT_BYTES },
 });
 
 export function createPrinterCalibrationRouter(
@@ -540,21 +577,26 @@ export function createPrinterCalibrationRouter(
     async (req: Request, res: Response) => {
       const file = req.file;
       const profileName = String(req.body.profileName || "").trim();
+      let pageMode: CalibrationPageMode;
       if (!file) {
         return res.status(400).json({ error: "Missing file upload." });
       }
       if (!profileName) {
         return res.status(400).json({ error: "Missing profileName." });
       }
+      try {
+        pageMode = parsePageMode(req.body.pageMode);
+      } catch (error: unknown) {
+        return res.status(400).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       let inputPath: string | null = null;
       let outputPath: string | null = null;
       try {
-        inputPath = writeTempFile(file.buffer, file.originalname || "input.pdf");
-        outputPath = path.join(
-          os.tmpdir(),
-          `proxxied-printer-calibration-output-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`
-        );
+        inputPath = file.path;
+        outputPath = buildTempFilePath("output", `${path.parse(file.originalname || "document").name}.pdf`);
         await runCli([
           "apply",
           "--profile",
@@ -563,6 +605,8 @@ export function createPrinterCalibrationRouter(
           inputPath,
           "--output",
           outputPath,
+          "--page-mode",
+          pageMode,
           "--profile-file",
           profilesPath,
         ]);

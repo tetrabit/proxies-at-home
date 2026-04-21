@@ -5,10 +5,13 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  buildPythonCliArgs,
   calculatePrinterCalibrationProfile,
   createPrinterCalibrationRouter,
+  detectDefaultPrinterCalibrationRepo,
   parsePrinterCalibrationProfileOutput,
   resolvePrinterCalibrationProfilesPath,
+  shouldTryNextPrinterCalibrationRunner,
   type PrinterCalibrationProfile,
 } from "./printerCalibrationRouter.js";
 
@@ -17,6 +20,7 @@ describe("printerCalibrationRouter", () => {
   let dataDirectory: string;
   let app: express.Express;
   let profiles = new Map<string, PrinterCalibrationProfile>();
+  let applyInvocations: string[][] = [];
 
   beforeEach(async () => {
     tempDirectory = await fs.mkdtemp(
@@ -24,6 +28,7 @@ describe("printerCalibrationRouter", () => {
     );
     dataDirectory = path.join(tempDirectory, "data");
     profiles = new Map();
+    applyInvocations = [];
 
     const runCli = vi.fn(async (args: string[]) => {
       const [command, subcommand] = args;
@@ -81,6 +86,7 @@ describe("printerCalibrationRouter", () => {
       }
 
       if (command === "apply") {
+        applyInvocations.push(args);
         const outputPath = args[args.indexOf("--output") + 1];
         await fs.mkdir(path.dirname(outputPath), { recursive: true });
         await fs.writeFile(outputPath, "%PDF-1.4\nmock calibrated\n");
@@ -148,6 +154,55 @@ describe("printerCalibrationRouter", () => {
       back_x_mm: -3.19,
       back_y_mm: 2.86,
     });
+  });
+
+  it("detects the vendored printer calibration repo from a server cwd", async () => {
+    const originalCwd = process.cwd();
+    const originalHome = process.env.HOME;
+    const repoRoot = path.join(tempDirectory, "workspace", "proxies-at-home");
+    const serverRoot = path.join(repoRoot, "server");
+    const vendorRepo = path.join(serverRoot, "vendor", "printer-calibration");
+
+    await fs.mkdir(path.join(vendorRepo, "src", "printer_calibration"), {
+      recursive: true,
+    });
+
+    process.env.HOME = path.join(tempDirectory, "no-home-match");
+    process.chdir(serverRoot);
+    try {
+      expect(detectDefaultPrinterCalibrationRepo()).toBe(
+        vendorRepo
+      );
+    } finally {
+      process.chdir(originalCwd);
+      process.env.HOME = originalHome;
+    }
+  });
+
+  it("builds python module invocations through the package entrypoint", () => {
+    expect(buildPythonCliArgs(["apply", "--profile", "office"])).toEqual([
+      "-m",
+      "printer_calibration",
+      "apply",
+      "--profile",
+      "office",
+    ]);
+  });
+
+  it("continues to the next runner for missing or incompatible cli implementations", () => {
+    expect(
+      shouldTryNextPrinterCalibrationRunner(
+        "printer-calibration failed (code=2): error: unrecognized arguments: --page-mode duplex"
+      )
+    ).toBe(true);
+    expect(
+      shouldTryNextPrinterCalibrationRunner(
+        "Printer calibration unavailable. No module named printer_calibration"
+      )
+    ).toBe(true);
+    expect(
+      shouldTryNextPrinterCalibrationRunner("printer-calibration failed (code=1): invalid profile")
+    ).toBe(false);
   });
 
   it("returns an empty profile map when nothing is saved", async () => {
@@ -224,6 +279,42 @@ describe("printerCalibrationRouter", () => {
     expect(response.status).toBe(200);
     expect(response.header["content-type"]).toContain("application/pdf");
     expect(Buffer.isBuffer(response.body)).toBe(true);
+    expect(applyInvocations).toHaveLength(1);
+    expect(applyInvocations[0]).toContain("--page-mode");
+    expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("duplex");
+  });
+
+  it("passes back-only page mode to the apply command", async () => {
+    profiles.set("office", {
+      name: "office",
+      front_x_mm: 1,
+      front_y_mm: 2,
+      back_x_mm: 3,
+      back_y_mm: 4,
+      paper_size: "letter",
+      duplex_mode: "long-edge",
+    });
+
+    const response = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .field("pageMode", "back-only")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(response.status).toBe(200);
+    expect(applyInvocations).toHaveLength(1);
+    expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("back-only");
+  });
+
+  it("rejects invalid page modes", async () => {
+    const response = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .field("pageMode", "weird-mode")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("Invalid pageMode");
   });
 
   it("returns 501 when the python tool is unavailable", async () => {

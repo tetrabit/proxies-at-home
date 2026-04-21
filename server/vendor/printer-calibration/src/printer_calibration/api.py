@@ -99,9 +99,10 @@ def apply_calibration(
     input_path: str | Path,
     output_path: str | Path,
     profile: CalibrationProfile | Mapping[str, object],
+    page_mode: str = "duplex",
 ) -> None:
     """Apply a profile to a PDF using the library-friendly profile type."""
-    apply_profile(input_path, output_path, _coerce_profile(profile))
+    apply_profile(input_path, output_path, _coerce_profile(profile), page_mode=page_mode)
 
 
 def save_profile(

@@ -14,12 +14,15 @@ def apply_profile(
     input_path: str | Path,
     output_path: str | Path,
     profile: dict,
+    page_mode: str = "duplex",
 ) -> None:
     """Apply calibration offsets from *profile* to every page of *input_path*.
 
-    Even-indexed pages (0-based: 0, 2, 4, …) are treated as front faces and
-    receive ``front_x_mm`` / ``front_y_mm`` offsets. Odd-indexed pages
-    (1, 3, 5, …) are back faces and receive ``back_x_mm`` / ``back_y_mm``.
+    In ``duplex`` mode, even-indexed pages (0-based: 0, 2, 4, …) are treated
+    as front faces and receive ``front_x_mm`` / ``front_y_mm`` offsets. Odd-
+    indexed pages (1, 3, 5, …) are back faces and receive ``back_x_mm`` /
+    ``back_y_mm``. In ``back-only`` mode, every page receives the back-page
+    offsets.
 
     The output PDF is written to *output_path* and has the same page count as
     the input.  All arithmetic stays in floating-point — values are never
@@ -30,6 +33,8 @@ def apply_profile(
         output_path: Destination path for the calibrated PDF.
         profile: Dict with keys ``front_x_mm``, ``front_y_mm``,
             ``back_x_mm``, ``back_y_mm`` (all floats, mm units).
+        page_mode: ``duplex`` for alternating front/back pages, ``back-only``
+            for PDFs that contain only back pages.
 
     Raises:
         ValueError: If the input file cannot be opened, is not a valid PDF,
@@ -37,6 +42,8 @@ def apply_profile(
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
+    if page_mode not in {"duplex", "back-only"}:
+        raise ValueError("page_mode must be 'duplex' or 'back-only'")
 
     # --- open & validate -------------------------------------------------------
     try:
@@ -57,8 +64,9 @@ def apply_profile(
     writer = PdfWriter()
 
     for index, page in enumerate(reader.pages):
-        # 0-based index: 0, 2, 4 … are front faces; 1, 3, 5 … are back faces
-        if index % 2 == 0:
+        if page_mode == "back-only":
+            tx, ty = back_tx, back_ty
+        elif index % 2 == 0:
             tx, ty = front_tx, front_ty
         else:
             tx, ty = back_tx, back_ty

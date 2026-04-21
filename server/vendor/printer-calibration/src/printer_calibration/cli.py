@@ -136,6 +136,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         default=None,
         help="Output PDF path (default: <input-stem>.calibrated.pdf next to input)",
     )
+    apply_p.add_argument(
+        "--page-mode",
+        dest="page_mode",
+        choices=["duplex", "back-only"],
+        default="duplex",
+        help="Interpret input pages as alternating duplex pages or as back-only pages",
+    )
     _add_profile_file_arg(apply_p)
 
     return parser, profile_p
@@ -238,7 +245,12 @@ def _handle_apply(args: argparse.Namespace) -> None:
 
     try:
         profile = get_profile(name=args.profile_name, profile_file=args.profile_file)
-        apply_profile(str(input_path), str(output_path), profile)
+        apply_profile(
+            str(input_path),
+            str(output_path),
+            profile,
+            page_mode=args.page_mode,
+        )
         print(f"Calibrated PDF written to {output_path}")
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)

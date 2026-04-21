@@ -67,6 +67,10 @@
         "to": "server/package.json"
       },
       {
+        "from": "server/vendor",
+        "to": "server/vendor"
+      },
+      {
         "from": "../scryfall-cache-microservice/target/release",
         "to": "microservices",
         "filter": [
