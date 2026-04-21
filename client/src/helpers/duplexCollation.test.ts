@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { buildCollatedDuplexPageOrder } from "./duplexCollation";
+import {
+  buildCollatedDuplexPageOrder,
+  splitInterleavedDuplexPageIndices,
+} from "./duplexCollation";
 
 describe("buildCollatedDuplexPageOrder", () => {
   test("interleaves front/back pages", () => {
@@ -28,3 +31,23 @@ describe("buildCollatedDuplexPageOrder", () => {
   });
 });
 
+describe("splitInterleavedDuplexPageIndices", () => {
+  test("returns grouped front/back page indices for interleaved output", () => {
+    expect(splitInterleavedDuplexPageIndices(3, 3)).toEqual({
+      frontPageIndices: [0, 2, 4],
+      backPageIndices: [1, 3, 5],
+    });
+  });
+
+  test("handles mismatched counts", () => {
+    expect(splitInterleavedDuplexPageIndices(2, 1)).toEqual({
+      frontPageIndices: [0, 2],
+      backPageIndices: [1],
+    });
+
+    expect(splitInterleavedDuplexPageIndices(1, 2)).toEqual({
+      frontPageIndices: [0],
+      backPageIndices: [1, 2],
+    });
+  });
+});

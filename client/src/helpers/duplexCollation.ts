@@ -10,3 +10,20 @@ export function buildCollatedDuplexPageOrder(frontPages: number, backPages: numb
   return out;
 }
 
+export function splitInterleavedDuplexPageIndices(frontPages: number, backPages: number): {
+  frontPageIndices: number[];
+  backPageIndices: number[];
+} {
+  const frontPageIndices: number[] = [];
+  const backPageIndices: number[] = [];
+
+  buildCollatedDuplexPageOrder(frontPages, backPages).forEach((step, outputIndex) => {
+    if (step.src === "front") {
+      frontPageIndices.push(outputIndex);
+      return;
+    }
+    backPageIndices.push(outputIndex);
+  });
+
+  return { frontPageIndices, backPageIndices };
+}
