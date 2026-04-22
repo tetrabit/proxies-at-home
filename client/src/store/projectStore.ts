@@ -53,8 +53,7 @@ function getPersistableSettings(state: SettingsStore): PersistableSettings {
 }
 
 // --- Store Implementation ---
-
-export const useProjectStore = create<ProjectState>((set, get) => ({
+export const useProjectStore = create<ProjectState>()((set, get) => ({
     currentProjectId: null,
     projects: [],
     isLoading: false,
@@ -114,17 +113,34 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             const project = await db.projects.get(targetProjectId);
             if (!project) throw new Error(`Project ${targetProjectId} not found`);
 
-            // 5. Load project settings
+            // 5. Flush any pending settings saves BEFORE switching
+            // This ensures that if the user made changes before switchProject was called,
+            // those changes are persisted to the database
+            if (settingsSaveTimer) {
+                clearTimeout(settingsSaveTimer);
+                settingsSaveTimer = null;
+                
+                // Immediately save pending settings
+                const currentSettings = useSettingsStore.getState();
+                const persistable = getPersistableSettings(currentSettings);
+                if (currentProjectId) {
+                    await db.projects.update(currentProjectId, { settings: persistable });
+                } else {
+                    await db.userPreferences.update('default', { settings: persistable });
+                }
+            }
+
+            // 6. Set currentProjectId EARLY so settings subscription can save during hydration
+            set({ currentProjectId: targetProjectId });
+
+            // 7. Load project settings
             useSettingsStore.getState().setHasHydrated(false);
             useSettingsStore.getState().resetSettings();
             const migratedSettings = migrateLegacySettings(project.settings as LegacySettingsState);
             useSettingsStore.getState().setAllSettings(migratedSettings);
             useSettingsStore.getState().setHasHydrated(true);
 
-            // 6. Update current project ID (triggers UI refresh via useLiveQuery)
-            set({ currentProjectId: targetProjectId });
-
-            // 7. Update persistence
+            // 8. Update persistence
             await db.transaction('rw', db.projects, db.userPreferences, async () => {
                 await db.projects.update(targetProjectId, { lastOpenedAt: Date.now() });
                 await db.userPreferences.update('default', { lastProjectId: targetProjectId });
@@ -176,12 +192,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                 if (updatedProjects.length > 0) {
                     await get().switchProject(updatedProjects[0].id);
                 } else {
-                    // Create new project and switch to it
+                    // No projects left, create a new one
                     const newId = await get().createProject("My Project");
                     await get().switchProject(newId);
                 }
             }
-
         } catch (e) {
             console.error('[ProjectStore] Delete failed:', e);
         } finally {
@@ -198,7 +213,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
 // Subscribe to settings changes to auto-persist
 useSettingsStore.subscribe((state) => {
-    if (state.hasHydrated) {
+    const { currentProjectId } = useProjectStore.getState();
+    if (state.hasHydrated || currentProjectId) {
         useProjectStore.getState().updateProjectSettings(state);
     }
 });

@@ -1,16 +1,14 @@
-import { test, expect } from './fixtures';
+import { test, expect } from '@playwright/test';
 
 test.describe('Settings Persistence', () => {
     test('should persist column count after reload', async ({ page }) => {
         await page.goto('/');
 
-        // Open Layout Settings if not already visible (assuming it might be in an accordion or similar)
-        // Based on previous context, there is a LayoutSettings component.
-        // We'll look for the input directly first.
+        // Wait for the page to fully load and initialize
+        await page.waitForLoadState('networkidle');
+        await page.waitForTimeout(1500);
 
-        // Locate the Columns input.
-        // In PageSettingsControls.tsx: <Label>Columns</Label> followed by <TextInput ... placeholder={columns.toString()} />
-        // We can find the input by the label "Columns"
+        // Locate the Columns input
         const columnsInput = page.getByLabel('Columns', { exact: true });
 
         // Ensure it's visible
@@ -23,8 +21,15 @@ test.describe('Settings Persistence', () => {
         // Verify it's set to 4
         await expect(columnsInput).toHaveValue('4');
 
+        // Wait for settings to be saved (debounce is 1000ms + buffer)
+        await page.waitForTimeout(2500);
+
         // Reload the page
         await page.reload();
+
+        // Wait for page to load
+        await page.waitForLoadState('load');
+        await page.waitForTimeout(1500);
 
         // Verify it's still 4
         await expect(columnsInput).toHaveValue('4');

@@ -5,6 +5,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CALIBRATION_UPLOAD_LIMIT_BYTES,
   buildPythonCliArgs,
   calculatePrinterCalibrationProfile,
   createPrinterCalibrationRouter,
@@ -102,6 +103,10 @@ describe("printerCalibrationRouter", () => {
       "/api/printer-calibration",
       createPrinterCalibrationRouter({ dataDirectory, runCli })
     );
+  });
+
+  it("allows calibration uploads up to 10 GB", () => {
+    expect(CALIBRATION_UPLOAD_LIMIT_BYTES).toBe(10 * 1024 * 1024 * 1024);
   });
 
   afterEach(async () => {

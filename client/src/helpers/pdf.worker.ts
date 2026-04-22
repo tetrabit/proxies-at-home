@@ -7,7 +7,7 @@ import {
 } from "./imageProcessing";
 import { generateBleedCanvasWebGL, processExistingBleedWebGL } from "./webglImageProcessing";
 import { darkenModeToInt } from "../components/CardCanvas/types";
-import { getCardTargetBleed, computeCardLayouts, computeGridDimensions } from "./layout";
+import { getCardTargetBleed, computeGuideLayouts, computeGridDimensions } from "./layout";
 import { getEffectiveBleedMode, getEffectiveExistingBleedMm } from "./imageSpecs";
 import { hasAdvancedOverrides, overridesToRenderParams, renderCardWithOverridesWorker } from "./cardCanvasWorker";
 import { generatePerCardGuide, executePathCommands, type GuideStyle } from "./cutGuideUtils";
@@ -492,7 +492,12 @@ self.onmessage = async (event: MessageEvent) => {
 
         // sourceSettings is now passed directly from the main thread (already normalized)
 
-        const layoutsMm = computeCardLayouts(pageCards, sourceSettings, bleedEdge ? bleedEdgeWidthMm : 0);
+        const guideBleedMm = bleedEdge ? bleedEdgeWidthMm : 0;
+
+        // Keep export guides anchored to the global bleed box regardless of
+        // per-card bleed overrides. Individual cards can still render with
+        // different bleed widths inside this fixed guide/layout box.
+        const layoutsMm = computeGuideLayouts(pageCards, guideBleedMm);
         const { colWidthsMm, rowHeightsMm } = computeGridDimensions(layoutsMm, columns, rows, cardSpacingMm);
 
         // Convert to pixels for rendering
@@ -535,7 +540,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // Create per-card guide canvas ONCE (guides are same size for all cards since they mark the fixed content boundary)
         // The bleed dimension affects where we DRAW the guide, not the guide shape itself
-        const bleedPxForGuide = MM_TO_PX(bleedEdgeWidthMm, DPI);
+        const bleedPxForGuide = MM_TO_PX(guideBleedMm, DPI);
         const pageHasGuideEligibleCards = pageCards.some((card: CardOption) => !card.linkedFrontId);
         const effectivePerCardGuideStyle =
             showGuideLinesOnBackCards || pageHasGuideEligibleCards
@@ -911,8 +916,10 @@ self.onmessage = async (event: MessageEvent) => {
             const expectedWidth = cardLayout.cardWidthPx;
             const expectedHeight = cardLayout.cardHeightPx;
 
-            // Trim if actual dimensions don't match expected (handles both excess bleed AND rounding differences)
-            if (finalCardCanvas.width !== expectedWidth || finalCardCanvas.height !== expectedHeight) {
+            // Only trim oversized renders. Smaller renders are centered inside
+            // the fixed guide box via centerOffsetX/Y so per-card bleed overrides
+            // don't move the export guides.
+            if (finalCardCanvas.width > expectedWidth || finalCardCanvas.height > expectedHeight) {
                 // Use layout dimensions as target
                 trimmedWidth = expectedWidth;
                 trimmedHeight = expectedHeight;

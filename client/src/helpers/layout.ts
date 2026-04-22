@@ -68,6 +68,24 @@ export function computeCardLayouts(
     });
 }
 
+/**
+ * Compute a uniform guide/layout box for export.
+ *
+ * Export guide positions should remain anchored to the global bleed box even
+ * when individual cards render with different bleed widths. Per-card bleed
+ * overrides are applied later during image processing inside this fixed box.
+ */
+export function computeGuideLayouts(
+    pageCards: CardOption[],
+    guideBleedWidth: number,
+): CardLayoutInfo[] {
+    return pageCards.map(() => ({
+        cardWidthMm: baseCardWidthMm + guideBleedWidth * 2,
+        cardHeightMm: baseCardHeightMm + guideBleedWidth * 2,
+        bleedMm: guideBleedWidth,
+    }));
+}
+
 export type GridDimensions = {
     colWidthsMm: number[];
     rowHeightsMm: number[];

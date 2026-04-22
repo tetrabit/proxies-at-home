@@ -369,7 +369,7 @@ function unavailableStatus(error: unknown): 500 | 501 {
     : 500;
 }
 
-const CALIBRATION_UPLOAD_LIMIT_BYTES = 1024 * 1024 * 1024;
+export const CALIBRATION_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
 
 const upload = multer({
   storage: multer.diskStorage({

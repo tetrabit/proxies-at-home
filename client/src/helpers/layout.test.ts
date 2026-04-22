@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     getCardTargetBleed,
     computeCardLayouts,
+    computeGuideLayouts,
     computeGridDimensions,
     chunkCards,
     baseCardWidthMm,
@@ -123,6 +124,43 @@ describe('computeCardLayouts', () => {
     });
 });
 
+describe('computeGuideLayouts', () => {
+    it('should use a uniform guide bleed for every card regardless of overrides', () => {
+        const cards: CardOption[] = [
+            {
+                uuid: '1',
+                name: 'Default Card',
+                order: 0,
+                isUserUpload: false,
+            },
+            {
+                uuid: '2',
+                name: 'Override Card',
+                order: 1,
+                isUserUpload: false,
+                bleedMode: 'generate',
+                generateBleedMm: 1,
+                existingBleedMm: 5,
+            },
+        ];
+
+        const layouts = computeGuideLayouts(cards, 3);
+
+        expect(layouts).toEqual([
+            {
+                cardWidthMm: baseCardWidthMm + 6,
+                cardHeightMm: baseCardHeightMm + 6,
+                bleedMm: 3,
+            },
+            {
+                cardWidthMm: baseCardWidthMm + 6,
+                cardHeightMm: baseCardHeightMm + 6,
+                bleedMm: 3,
+            },
+        ]);
+    });
+});
+
 describe('computeGridDimensions', () => {
     it('should compute grid dimensions for a 3x3 grid', () => {
         const layouts: CardLayoutInfo[] = [
@@ -185,4 +223,3 @@ describe('chunkCards', () => {
         expect(chunks).toEqual([[1, 2]]);
     });
 });
-
