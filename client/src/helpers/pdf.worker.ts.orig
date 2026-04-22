@@ -1022,8 +1022,9 @@ self.onmessage = async (event: MessageEvent) => {
                         ctx.translate(-centerX, -centerY);
                     }
 
-                    // Guides are anchored to the fixed card origin, not affected by per-card bleed overrides
-                    ctx.drawImage(perCardGuideCanvas, prepared.x, prepared.y);
+                    const guideOffsetX = prepared.bleedPx - bleedPxForGuide;
+                    const guideOffsetY = prepared.bleedPx - bleedPxForGuide;
+                    ctx.drawImage(perCardGuideCanvas, prepared.x + guideOffsetX, prepared.y + guideOffsetY);
                     ctx.restore();
                 }
             }

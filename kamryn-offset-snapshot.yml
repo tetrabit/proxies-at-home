@@ -1,0 +1,85 @@
+- generic [ref=e2]:
+  - heading "Proxxied — MTG Proxy Builder and Print" [level=1] [ref=e8]
+  - button "Open MPC Calibration Harness" [ref=e9] [cursor=pointer]:
+    - img [ref=e10]
+  - generic [ref=e14]:
+    - generic [ref=e16]:
+      - img "Proxxied Logo" [ref=e18]
+      - generic [ref=e19]:
+        - generic:
+          - img "Refresh"
+          - generic: Pull to Refresh
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - generic [ref=e23]
+            - separator [ref=e42]
+            - generic [ref=e43]
+            - separator [ref=e65]
+            - generic [ref=e67]
+            - separator [ref=e79]
+          - generic [ref=e80]:
+            - heading "MPC Autofill Upgrade" [level=6] [ref=e81]
+            - button "Bulk upgrade to MPC Autofill" [ref=e82] [cursor=pointer]
+            - paragraph [ref=e83]: Replaces current Scryfall art with the closest MPC Autofill match.
+            - button "Open MPC Calibration Harness" [ref=e84] [cursor=pointer]
+          - generic [ref=e85]:
+            - heading "Original Art" [level=6] [ref=e86]
+            - button "Reset to original import art" [ref=e87] [cursor=pointer]
+            - paragraph [ref=e88]: Reverts cards to the art they had when first imported.
+          - generic [ref=e89]:
+            - heading "Tips:" [level=6] [ref=e90]
+            - generic [ref=e91]
+    - button [ref=e137] [cursor=pointer]:
+      - img [ref=e138]
+    - generic [ref=e140]:
+      - generic [ref=e142]:
+        - generic:
+          - img "Refresh"
+          - generic: Pull to Refresh
+        - generic [ref=e145]:
+          - generic:
+            - generic
+          - status [ref=e255]
+      - generic [ref=e256]:
+        - generic [ref=e257] [cursor=pointer]:
+          - img [ref=e258]
+          - generic [ref=e261]: 1.0x
+        - generic:
+          - generic:
+            - button
+            - generic
+            - button
+      - generic [ref=e263]:
+        - button "Undo" [ref=e264] [cursor=pointer]:
+          - img [ref=e265]
+        - button "Redo" [disabled] [ref=e268] [cursor=pointer]:
+          - img [ref=e269]
+      - button "Open MPC Calibration Harness" [ref=e272] [cursor=pointer]:
+        - img [ref=e273]
+      - generic [ref=e1135]:
+        - generic [ref=e1137]: Processing images...
+        - button "Dismiss" [ref=e1138] [cursor=pointer]:
+          - img [ref=e1139]
+    - button [ref=e278] [cursor=pointer]:
+      - img [ref=e279]
+    - generic [ref=e282]:
+      - generic:
+        - img "Refresh"
+        - generic: Pull to Refresh
+      - generic [ref=e283]:
+        - generic [ref=e284]:
+          - heading "Settings" [level=2] [ref=e285]
+          - button "Collapse all sections" [ref=e288] [cursor=pointer]:
+            - img [ref=e289]
+        - generic [ref=e292]:
+          - generic [ref=e293]:
+            - generic [ref=e294]
+            - generic [ref=e325]
+            - generic [ref=e396]
+            - generic [ref=e434]
+            - generic [ref=e555]
+            - generic [ref=e730]
+            - generic [ref=e756]
+            - generic [ref=e860]
+            - generic [ref=e931]
+          - status [ref=e983]
