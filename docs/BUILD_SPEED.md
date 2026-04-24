@@ -82,3 +82,25 @@ Measured on 2026-02-10 (Linux, 16 cores, mold 2.37.1):
 
 The script defaults to `MICROSERVICE_PROFILE=release` to match packaging needs.
 Release builds default to `CARGO_INCREMENTAL=0` (can be overridden with `MICROSERVICE_INCREMENTAL=1`).
+
+## Docker Build Speed
+
+Docker image builds use BuildKit-only cache mounts for npm, pip, and apk package
+caches. Install the Buildx CLI plugin once if `docker buildx version` is not
+available:
+
+```bash
+bash scripts/install-docker-buildx.sh
+```
+
+Then build normally with Compose:
+
+```bash
+docker compose build
+```
+
+The first build still downloads packages, but repeated builds reuse BuildKit
+cache mounts for:
+- npm package tarballs in the client, server, and shared client stages
+- apk package indexes/packages for Node native build tooling and runtime Python/OpenCV packages
+- pip downloads for PyMuPDF, pypdf, and the vendored printer calibration package

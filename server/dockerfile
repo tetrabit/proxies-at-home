@@ -5,20 +5,23 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 # better-sqlite3 requires build tools for native module compilation
-RUN apk add --no-cache python3 make g++
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --update-cache python3 make g++
 
 # package-lock.json installs @tetrabit/scryfall-cache-client from a local workspace path:
 # file:../shared/scryfall-client (relative to /app/server).
 COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-RUN npm ci --prefix /app/shared/scryfall-client \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefix /app/shared/scryfall-client \
     && npm run build --prefix /app/shared/scryfall-client
 
 WORKDIR /app/server
 
 # Install only server deps
 COPY server/package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
 
 FROM deps AS prod-deps
 WORKDIR /app/server
@@ -58,7 +61,8 @@ COPY server/vendor/printer-calibration/src /opt/printer-calibration-src/src
 # Optional Keystone (printer-keystone) runtime deps:
 # - We install OpenCV+numpy/etc from apk and PyMuPDF from pip into a venv.
 # - The printer-keystone code itself can be provided via PRINTER_KEYSTONE_REPO (e.g. bind-mount in docker-compose).
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --update-cache \
     git \
     python3 \
     py3-pip \
@@ -68,10 +72,11 @@ RUN apk add --no-cache \
     py3-typer \
     py3-opencv
 
-RUN python3 -m venv --system-site-packages /opt/keystone-venv \
-    && /opt/keystone-venv/bin/pip install --no-cache-dir -U pip \
-    && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF pypdf tomli-w \
-    && /opt/keystone-venv/bin/pip install --no-cache-dir /opt/printer-calibration-src
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python3 -m venv --system-site-packages /opt/keystone-venv \
+    && /opt/keystone-venv/bin/pip install -U pip \
+    && /opt/keystone-venv/bin/pip install PyMuPDF pypdf tomli-w \
+    && /opt/keystone-venv/bin/pip install /opt/printer-calibration-src
 
 RUN if [ -n "$PRINTER_KEYSTONE_GIT_URL" ]; then git clone --depth 1 --branch "$PRINTER_KEYSTONE_GIT_REF" "$PRINTER_KEYSTONE_GIT_URL" "$PRINTER_KEYSTONE_REPO"; fi
 

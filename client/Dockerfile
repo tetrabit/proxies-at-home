@@ -3,20 +3,23 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 ARG NPM_VERSION=11.12.1
-RUN npm install -g "npm@${NPM_VERSION}"
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install -g "npm@${NPM_VERSION}"
 
 # package-lock.json installs @tetrabit/scryfall-cache-client from a local workspace path:
 # file:../shared/scryfall-client (relative to /app/client).
 # Make that path exist before running `npm ci`.
 COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-RUN npm ci --prefix /app/shared/scryfall-client \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefix /app/shared/scryfall-client \
     && npm run build --prefix /app/shared/scryfall-client
 
 WORKDIR /app/client
 
 COPY client/package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
 
 COPY client/ ./
 COPY shared/ /app/shared/
