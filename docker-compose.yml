@@ -3,15 +3,9 @@ services:
     build:
       context: .
       dockerfile: server/dockerfile
-      args:
-        PRINTER_KEYSTONE_GIT_URL: ${PRINTER_KEYSTONE_GIT_URL-}
-        PRINTER_KEYSTONE_GIT_REF: ${PRINTER_KEYSTONE_GIT_REF-main}
     environment:
-      # Use the venv python that has PyMuPDF installed (and sees apk-installed cv2/numpy via --system-site-packages).
-      - PRINTER_KEYSTONE_PYTHON=/opt/keystone-venv/bin/python
-      - PRINTER_KEYSTONE_REPO=/opt/printer-keystone
-      - PRINTER_CALIBRATION_BIN=/opt/keystone-venv/bin/printer-calibration
-      - PRINTER_CALIBRATION_PYTHON=/opt/keystone-venv/bin/python
+      - PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration
+      - PRINTER_CALIBRATION_PYTHON=/opt/printer-calibration-venv/bin/python
     ports:
       - "3001:3001"
     volumes:

@@ -51,34 +51,21 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
-ARG PRINTER_KEYSTONE_GIT_URL=
-ARG PRINTER_KEYSTONE_GIT_REF=main
-ENV PRINTER_KEYSTONE_REPO=/opt/printer-keystone
 
 COPY server/vendor/printer-calibration/pyproject.toml /opt/printer-calibration-src/pyproject.toml
 COPY server/vendor/printer-calibration/src /opt/printer-calibration-src/src
 
-# Optional Keystone (printer-keystone) runtime deps:
-# - We install OpenCV+numpy/etc from apk and PyMuPDF from pip into a venv.
-# - The printer-keystone code itself can be provided via PRINTER_KEYSTONE_REPO (e.g. bind-mount in docker-compose).
+# Printer calibration runtime deps.
 RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     apk add --update-cache \
-    git \
     python3 \
     py3-pip \
-    py3-numpy \
-    py3-pillow \
-    py3-reportlab \
-    py3-typer \
-    py3-opencv
+    py3-reportlab
 
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    python3 -m venv --system-site-packages /opt/keystone-venv \
-    && /opt/keystone-venv/bin/pip install -U pip \
-    && /opt/keystone-venv/bin/pip install PyMuPDF pypdf tomli-w \
-    && /opt/keystone-venv/bin/pip install /opt/printer-calibration-src
-
-RUN if [ -n "$PRINTER_KEYSTONE_GIT_URL" ]; then git clone --depth 1 --branch "$PRINTER_KEYSTONE_GIT_REF" "$PRINTER_KEYSTONE_GIT_URL" "$PRINTER_KEYSTONE_REPO"; fi
+    python3 -m venv --system-site-packages /opt/printer-calibration-venv \
+    && /opt/printer-calibration-venv/bin/pip install -U pip \
+    && /opt/printer-calibration-venv/bin/pip install /opt/printer-calibration-src
 
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist

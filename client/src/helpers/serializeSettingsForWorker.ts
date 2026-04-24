@@ -53,7 +53,6 @@ export interface WorkerPdfSettings extends WorkerBleedSettings {
     useCustomBackOffset: boolean;
     cardBackPositionX: number;
     cardBackPositionY: number;
-    perCardBackOffsets: Record<number, { x: number; y: number; rotation: number }>;
 
     // Guide settings
     guideColor: string;
@@ -132,7 +131,6 @@ export function serializePdfSettingsForWorker(): WorkerPdfSettings {
         useCustomBackOffset: state.useCustomBackOffset,
         cardBackPositionX: state.cardBackPositionX,
         cardBackPositionY: state.cardBackPositionY,
-        perCardBackOffsets: state.perCardBackOffsets,
         // Guides
         guideColor: state.guideColor,
         guideWidthCssPx: state.guideWidth,

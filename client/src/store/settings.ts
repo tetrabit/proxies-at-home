@@ -6,12 +6,6 @@ export type LayoutPreset = "A4" | "A3" | "Letter" | "Tabloid" | "Legal" | "ArchA
 export type PageOrientation = "portrait" | "landscape";
 export type DarkenMode = 'none' | 'darken-all' | 'contrast-edges' | 'contrast-full';
 
-export type KeystoneLastTransform = {
-  rot_deg: number;
-  translation_mm: { x: number; y: number };
-  appliedAt: number; // epoch ms
-};
-
 export type Store = {
   pageSizeUnit: "mm" | "in";
   pageOrientation: PageOrientation;
@@ -81,15 +75,6 @@ export type Store = {
   setCardBackPositionX: (mm: number) => void;
   cardBackPositionY: number;
   setCardBackPositionY: (mm: number) => void;
-  // Per-card back offset settings (indexed by grid position)
-  perCardBackOffsets: Record<number, { x: number; y: number; rotation: number }>;
-  setPerCardBackOffsets: (offsets: Record<number, { x: number; y: number; rotation: number }>) => void;
-  setPerCardBackOffset: (index: number, offset: { x: number; y: number; rotation: number }) => void;
-  clearPerCardBackOffsets: () => void;
-  // Keystone calibration (most recently applied analysis result)
-  keystoneLastTransform: KeystoneLastTransform | null;
-  setKeystoneLastTransform: (value: KeystoneLastTransform | null) => void;
-  clearKeystoneLastTransform: () => void;
   dpi: number;
   setDpi: (value: number) => void;
   cutLineStyle: 'none' | 'edges' | 'full';
@@ -195,8 +180,6 @@ const defaultPageSettings = {
   useCustomBackOffset: false,
   cardBackPositionX: 0,
   cardBackPositionY: 0,
-  perCardBackOffsets: {} as Record<number, { x: number; y: number; rotation: number }>,
-  keystoneLastTransform: null as KeystoneLastTransform | null,
   zoom: 1,
   dpi: 900,
   cutLineStyle: "full" as "full" | "edges" | "none",
@@ -429,31 +412,6 @@ export const useSettingsStore = create<Store>()((set) => ({
     recordSettingChange("cardBackPositionY", state.cardBackPositionY);
     return { cardBackPositionY: mm };
   }),
-  setPerCardBackOffsets: (offsets) => set((state) => {
-    recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
-    return { perCardBackOffsets: offsets };
-  }),
-  setPerCardBackOffset: (index, offset) => set((state) => {
-    recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
-    return {
-      perCardBackOffsets: {
-        ...state.perCardBackOffsets,
-        [index]: offset,
-      },
-    };
-  }),
-  clearPerCardBackOffsets: () => set((state) => {
-    recordSettingChange("perCardBackOffsets", state.perCardBackOffsets);
-    return { perCardBackOffsets: {} };
-  }),
-  setKeystoneLastTransform: (value) => set((state) => {
-    recordSettingChange("keystoneLastTransform", state.keystoneLastTransform);
-    return { keystoneLastTransform: value };
-  }),
-  clearKeystoneLastTransform: () => set((state) => {
-    recordSettingChange("keystoneLastTransform", state.keystoneLastTransform);
-    return { keystoneLastTransform: null };
-  }),
   setDpi: (dpi) => set((state) => {
     recordSettingChange("dpi", state.dpi);
     return { dpi };
@@ -587,7 +545,6 @@ export const useSettingsStore = create<Store>()((set) => ({
       useCustomBackOffset: currentState.useCustomBackOffset,
       cardBackPositionX: currentState.cardBackPositionX,
       cardBackPositionY: currentState.cardBackPositionY,
-      perCardBackOffsets: currentState.perCardBackOffsets,
       dpi: currentState.dpi,
       cutLineStyle: currentState.cutLineStyle,
       perCardGuideStyle: currentState.perCardGuideStyle,

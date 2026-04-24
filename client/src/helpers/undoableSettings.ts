@@ -23,8 +23,6 @@ export type UndoableSettingKey =
     | "useCustomBackOffset"
     | "cardBackPositionX"
     | "cardBackPositionY"
-    | "perCardBackOffsets"
-    | "keystoneLastTransform"
     | "dpi"
     | "cutLineStyle"
     | "perCardGuideStyle"
@@ -73,8 +71,6 @@ const settingDescriptions: Record<UndoableSettingKey, string> = {
     useCustomBackOffset: "separate back offset",
     cardBackPositionX: "back card position X",
     cardBackPositionY: "back card position Y",
-    perCardBackOffsets: "per-card back offsets",
-    keystoneLastTransform: "keystone calibration",
     dpi: "DPI",
     cutLineStyle: "cut line style",
     perCardGuideStyle: "per-card guide style",

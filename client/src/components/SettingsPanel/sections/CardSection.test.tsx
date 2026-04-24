@@ -18,8 +18,6 @@ const mockState = vi.hoisted(() => ({
     cardBackPositionX: 0,
     cardBackPositionY: 0,
     dpi: 600,
-    perCardBackOffsets: {},
-    keystoneLastTransform: null,
     printerCalibrationEnabled: false,
     printerCalibrationProfileId: null as string | null,
 }));
@@ -32,9 +30,6 @@ const mockSetters = vi.hoisted(() => ({
     setCardBackPositionX: vi.fn(),
     setCardBackPositionY: vi.fn(),
     setDpi: vi.fn(),
-    setPerCardBackOffset: vi.fn(),
-    clearPerCardBackOffsets: vi.fn(),
-    clearKeystoneLastTransform: vi.fn(),
 }));
 
 vi.mock('@/store/settings', () => ({

@@ -102,5 +102,5 @@ docker compose build
 The first build still downloads packages, but repeated builds reuse BuildKit
 cache mounts for:
 - npm package tarballs in the client, server, and shared client stages
-- apk package indexes/packages for Node native build tooling and runtime Python/OpenCV packages
-- pip downloads for PyMuPDF, pypdf, and the vendored printer calibration package
+- apk package indexes/packages for Node native build tooling and runtime Python/reportlab packages
+- pip downloads for pypdf, tomli-w, and the vendored printer calibration package

@@ -11,7 +11,6 @@ import { mpcAutofillRouter } from "./routes/mpcAutofillRouter.js";
 import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
 import { backupRouter } from "./routes/backupRouter.js";
-import { keystoneRouter } from "./routes/keystoneRouter.js";
 import { printerCalibrationRouter } from "./routes/printerCalibrationRouter.js";
 import { preferencesRouter } from "./routes/preferencesRouter.js";
 import metricsRouter from "./routes/metricsRouter.js";
@@ -196,7 +195,6 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/scryfall", scryfallRouter);
   app.use("/api/share", shareRouter);
   app.use("/api/backup", backupRouter);
-  app.use("/api/keystone", keystoneRouter);
   app.use("/api/printer-calibration", printerCalibrationRouter);
   app.use("/api/preferences", preferencesRouter);
   app.use("/api/metrics", metricsRouter);

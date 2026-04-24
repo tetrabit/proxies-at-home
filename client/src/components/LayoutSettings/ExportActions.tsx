@@ -18,7 +18,6 @@ import {
   buildCollatedDuplexPageOrder,
   splitInterleavedDuplexPageIndices,
 } from "@/helpers/duplexCollation";
-import { exportModeUsesPerCardBackOffsets } from "@/helpers/exportMode";
 import { applyCalibration } from "@/helpers/printerCalibrationApi";
 import { applyInheritedCardbackTargetBleed, normalizeSharedCardbackTargetBleed } from "@/helpers/backBleedSettings";
 import {
@@ -300,12 +299,6 @@ export function ExportActions({ cards }: Props) {
 	      const startTime = performance.now();
 	      const pdfPageLimit = parsePdfPageLimit(pdfPageLimitInput);
 	      const cardsPerPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
-
-	      // Only apply per-card back offsets for duplex/back exports.
-	      // Interleaved/visible-face exports should not inherit grid-slot offsets.
-	      if (!exportModeUsesPerCardBackOffsets(exportMode)) {
-	        pdfSettings.perCardBackOffsets = {};
-	      }
 
 	      const useCustomBackOffset = useSettingsStore.getState().useCustomBackOffset;
 	      const cardBackPositionX = useSettingsStore.getState().cardBackPositionX;

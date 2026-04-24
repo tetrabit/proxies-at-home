@@ -89,7 +89,6 @@ export async function exportProxyPagesToPdf({
     useCustomBackOffset,
     cardBackPositionX,
     cardBackPositionY,
-    perCardBackOffsets,
   } = pdfSettings;
 
   const perPage = Math.max(1, columns * rows);
@@ -300,7 +299,6 @@ export async function exportProxyPagesToPdf({
                       useCustomBackOffset,
                       cardBackPositionX,
                       cardBackPositionY,
-                      perCardBackOffsets,
                       // Pre-rendered effect cache (filtered to this page's cards only)
                       effectCacheById: pageEffectCache,
                     };

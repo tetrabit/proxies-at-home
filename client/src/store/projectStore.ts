@@ -30,8 +30,6 @@ type PersistableSettings = Omit<SettingsStore,
     | 'setDarkenMode' | 'setDarkenContrast' | 'setDarkenEdgeWidth' | 'setDarkenAmount' | 'setDarkenBrightness' | 'setDarkenAutoDetect'
     | 'setGuideColor' | 'setGuideWidth' | 'setZoom' | 'setCardSpacingMm'
     | 'setCardPositionX' | 'setCardPositionY' | 'setUseCustomBackOffset' | 'setCardBackPositionX' | 'setCardBackPositionY'
-    | 'setPerCardBackOffsets' | 'setPerCardBackOffset' | 'clearPerCardBackOffsets'
-    | 'setKeystoneLastTransform' | 'clearKeystoneLastTransform'
     | 'setDpi' | 'setCutLineStyle' | 'setPerCardGuideStyle' | 'setGuidePlacement' | 'setShowGuideLinesOnBackCards' | 'setCutGuideLengthMm' | 'setGlobalLanguage'
     | 'setRegistrationMarks' | 'setRegistrationMarksPortrait'
     | 'setSortBy' | 'setSortOrder' | 'setFilterManaCost' | 'setFilterColors' | 'setFilterTypes' | 'setFilterCategories' | 'setFilterFeatures'

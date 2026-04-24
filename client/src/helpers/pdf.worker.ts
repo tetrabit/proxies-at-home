@@ -478,8 +478,7 @@ self.onmessage = async (event: MessageEvent) => {
             // Right-align incomplete rows (for backs export)
             rightAlignRows,
             // Pre-rendered effect cache (cardUuid -> Blob)
-            effectCacheById,
-            perCardBackOffsets
+            effectCacheById
         } = settings;
 
         const pageWidthPx = pageSizeUnit === "in" ? IN(pageWidth, DPI) : MM_TO_PX(pageWidth, DPI);
@@ -649,8 +648,6 @@ self.onmessage = async (event: MessageEvent) => {
             canvas: OffscreenCanvas | ImageBitmap;
             x: number;
             y: number;
-            cardWidthPx: number;
-            cardHeightPx: number;
             centerOffsetX: number;
             centerOffsetY: number;
             imageCardWidthPx: number;
@@ -658,9 +655,6 @@ self.onmessage = async (event: MessageEvent) => {
             bleedPx: number;
             isBlank: boolean;  // True for cardback_builtin_blank cards (no guides)
             isBackFace: boolean; // True for linked back cards
-            rotation: number;  // Rotation in degrees
-            offsetX: number;  // Final X offset applied after rotation
-            offsetY: number;  // Final Y offset applied after rotation
         };
 
         // PHASE 1: Prepare cards with LIMITED CONCURRENCY to avoid memory exhaustion
@@ -700,19 +694,6 @@ self.onmessage = async (event: MessageEvent) => {
                 card.bleedMode === 'generate' &&
                 card.generateBleedMm !== undefined
             );
-            let cardRotation = 0;
-            let offsetX = 0;
-            let offsetY = 0;
-
-            if (isBackCard && perCardBackOffsets) {
-                const perCardOffset = perCardBackOffsets[idx];
-                if (perCardOffset) {
-                    offsetX = MM_TO_PX(perCardOffset.x, DPI);
-                    offsetY = MM_TO_PX(perCardOffset.y, DPI);
-                    cardRotation = perCardOffset.rotation;
-                }
-            }
-
             let finalCardCanvas: OffscreenCanvas | ImageBitmap;
             const imageInfo = card.imageId ? imagesById.get(card.imageId) : undefined;
 
@@ -1094,8 +1075,6 @@ self.onmessage = async (event: MessageEvent) => {
                 canvas: renderCanvas,
                 x,
                 y,
-                cardWidthPx: cardLayout.cardWidthPx,
-                cardHeightPx: cardLayout.cardHeightPx,
                 centerOffsetX: Math.round((renderSlotWidth - normalizedWidth) / 2),
                 centerOffsetY: Math.round((renderSlotHeight - normalizedHeight) / 2),
                 imageCardWidthPx: normalizedWidth,
@@ -1103,9 +1082,6 @@ self.onmessage = async (event: MessageEvent) => {
                 bleedPx: cardLayout.bleedPx,
                 isBlank: card.imageId === 'cardback_builtin_blank',
                 isBackFace: !!card.linkedFrontId,
-                rotation: cardRotation,
-                offsetX,
-                offsetY,
             };
         }, MAX_CONCURRENT_CARDS);
 
@@ -1115,20 +1091,6 @@ self.onmessage = async (event: MessageEvent) => {
             // Skip drawing blank cards entirely (leave transparent/page background)
             if (!prepared.isBlank) {
                 ctx.save();
-
-                // Apply final offset (this is applied LAST after all other transforms)
-                if (prepared.offsetX !== 0 || prepared.offsetY !== 0) {
-                    ctx.translate(prepared.offsetX, prepared.offsetY);
-                }
-
-                // Apply rotation if needed
-                if (prepared.rotation !== 0) {
-                    const centerX = prepared.x + prepared.cardWidthPx / 2;
-                    const centerY = prepared.y + prepared.cardHeightPx / 2;
-                    ctx.translate(centerX, centerY);
-                    ctx.rotate(prepared.rotation * Math.PI / 180);
-                    ctx.translate(-centerX, -centerY);
-                }
                 ctx.drawImage(prepared.canvas, prepared.x + prepared.centerOffsetX, prepared.y + prepared.centerOffsetY, prepared.imageCardWidthPx, prepared.imageCardHeightPx);
                 ctx.restore();
 
@@ -1139,21 +1101,6 @@ self.onmessage = async (event: MessageEvent) => {
                 // Stamp per-card guide overlay (skip for blank cards)
                 if (perCardGuideCanvas && (showGuideLinesOnBackCards || !prepared.isBackFace)) {
                     ctx.save();
-
-                    // Apply final offset (this is applied LAST after all other transforms)
-                    if (prepared.offsetX !== 0 || prepared.offsetY !== 0) {
-                        ctx.translate(prepared.offsetX, prepared.offsetY);
-                    }
-
-                    // Apply rotation for guides too
-                    if (prepared.rotation !== 0) {
-                        const centerX = prepared.x + prepared.cardWidthPx / 2;
-                        const centerY = prepared.y + prepared.cardHeightPx / 2;
-                        ctx.translate(centerX, centerY);
-                        ctx.rotate(prepared.rotation * Math.PI / 180);
-                        ctx.translate(-centerX, -centerY);
-                    }
-
                     // Guides are anchored to the fixed card origin, not affected by per-card bleed overrides
                     ctx.drawImage(perCardGuideCanvas, prepared.x, prepared.y);
                     ctx.restore();
