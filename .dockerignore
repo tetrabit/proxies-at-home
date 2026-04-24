@@ -22,6 +22,8 @@ dist-app
 .flowbite-react
 .vite
 .eslintcache
+*.tsbuildinfo
+**/.tsbuildinfo
 .DS_Store
 .env
 .env.*
@@ -29,5 +31,35 @@ dist-app
 .git
 .github
 .vscode
+
+# Local/dev artifacts that are large or volatile and are not needed by the
+# production Docker images.
+.playwright-mcp
+.ruff_cache
+.sisyphus
+.sidecar
+.todos
+.smoke-artifacts
+client/.smoke-artifacts
+client/test-results
+client/playwright-report
+client/tests/e2e
 client/tests/e2e/test-results
 client/tests/e2e/playwright-report
+server/data
+server/test_output.txt
+**/__pycache__
+**/*.pyc
+
+# Accidental npm scratch dirs at the repo root.
+@typescript-eslint
+@typescript-eslint/parser@latest
+electron@latest
+typescript-eslint@latest
+
+# Tests are not used by the production image builds. Excluding them prevents
+# unrelated test edits from invalidating Docker build layers.
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx

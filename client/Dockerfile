@@ -10,7 +10,8 @@ RUN npm install -g "npm@${NPM_VERSION}"
 # Make that path exist before running `npm ci`.
 COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-RUN npm ci --prefix /app/shared/scryfall-client && npm run build --prefix /app/shared/scryfall-client
+RUN npm ci --prefix /app/shared/scryfall-client \
+    && npm run build --prefix /app/shared/scryfall-client
 
 WORKDIR /app/client
 

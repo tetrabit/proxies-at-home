@@ -11,13 +11,18 @@ RUN apk add --no-cache python3 make g++
 # file:../shared/scryfall-client (relative to /app/server).
 COPY shared/scryfall-client/package.json shared/scryfall-client/package-lock.json shared/scryfall-client/tsconfig.build.json shared/scryfall-client/index.ts shared/scryfall-client/schema.d.ts /app/shared/scryfall-client/
 COPY shared/scryfall-client/README.md /app/shared/scryfall-client/README.md
-RUN npm ci --prefix /app/shared/scryfall-client && npm run build --prefix /app/shared/scryfall-client
+RUN npm ci --prefix /app/shared/scryfall-client \
+    && npm run build --prefix /app/shared/scryfall-client
 
 WORKDIR /app/server
 
 # Install only server deps
 COPY server/package*.json ./
 RUN npm ci
+
+FROM deps AS prod-deps
+WORKDIR /app/server
+RUN npm prune --omit=dev
 
 # --- Build TypeScript -> server/dist/server/src/index.js
 FROM node:20-alpine AS build
@@ -43,7 +48,6 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
-ARG NPM_VERSION=11.12.1
 ARG PRINTER_KEYSTONE_GIT_URL=
 ARG PRINTER_KEYSTONE_GIT_REF=main
 ENV PRINTER_KEYSTONE_REPO=/opt/printer-keystone
@@ -62,25 +66,26 @@ RUN apk add --no-cache \
     py3-pillow \
     py3-reportlab \
     py3-typer \
-    py3-opencv \
-  && npm install -g "npm@${NPM_VERSION}" \
-  && python3 -m venv --system-site-packages /opt/keystone-venv \
-  && /opt/keystone-venv/bin/pip install --no-cache-dir -U pip \
-  && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF pypdf tomli-w \
-  && /opt/keystone-venv/bin/pip install --no-cache-dir /opt/printer-calibration-src \
-  && if [ -n "$PRINTER_KEYSTONE_GIT_URL" ]; then git clone --depth 1 --branch "$PRINTER_KEYSTONE_GIT_REF" "$PRINTER_KEYSTONE_GIT_URL" "$PRINTER_KEYSTONE_REPO"; fi \
-  && true
+    py3-opencv
+
+RUN python3 -m venv --system-site-packages /opt/keystone-venv \
+    && /opt/keystone-venv/bin/pip install --no-cache-dir -U pip \
+    && /opt/keystone-venv/bin/pip install --no-cache-dir PyMuPDF pypdf tomli-w \
+    && /opt/keystone-venv/bin/pip install --no-cache-dir /opt/printer-calibration-src
+
+RUN if [ -n "$PRINTER_KEYSTONE_GIT_URL" ]; then git clone --depth 1 --branch "$PRINTER_KEYSTONE_GIT_REF" "$PRINTER_KEYSTONE_GIT_URL" "$PRINTER_KEYSTONE_REPO"; fi
 
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist
 
-# package-lock.json still resolves @tetrabit/scryfall-cache-client via file:../shared/scryfall-client.
-# Copy the built workspace package from deps stage before installing prod deps.
-COPY --from=deps /app/shared/scryfall-client /app/shared/scryfall-client
+# package-lock.json resolves @tetrabit/scryfall-cache-client via
+# file:../shared/scryfall-client, so keep the built workspace package next to
+# the copied node_modules symlink.
+COPY --from=deps /app/shared/scryfall-client/package.json /app/shared/scryfall-client/README.md /app/shared/scryfall-client/
+COPY --from=deps /app/shared/scryfall-client/dist /app/shared/scryfall-client/dist
 
-# Server package.json + lockfile for prod deps
 COPY server/package*.json ./
-RUN npm ci --omit=dev
+COPY --from=prod-deps /app/server/node_modules ./node_modules
 
 # Koyeb will set PORT; make sure your code uses process.env.PORT
 RUN mkdir -p /app/server/data
