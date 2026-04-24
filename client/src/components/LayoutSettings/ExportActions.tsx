@@ -7,11 +7,11 @@ import { useLoadingStore } from "@/store/loading";
 import { useSettingsStore } from "@/store/settings";
 import { useSelectionStore } from "@/store/selection";
 import { useToastStore } from "@/store/toast";
-import { Button } from "flowbite-react";
+import { Button, Label } from "flowbite-react";
 import { db } from "../../db";
 import { serializePdfSettingsForWorker } from "@/helpers/serializeSettingsForWorker";
 import { useFilteredAndSortedCards } from "@/hooks/useFilteredAndSortedCards";
-import { SplitButton } from "../common";
+import { AutoTooltip, NumberInput, SplitButton } from "../common";
 import { extractMpcIdentifierFromImageId } from "@/helpers/mpcAutofillApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
 import {
@@ -20,6 +20,13 @@ import {
 } from "@/helpers/duplexCollation";
 import { exportModeUsesPerCardBackOffsets } from "@/helpers/exportMode";
 import { applyCalibration } from "@/helpers/printerCalibrationApi";
+import {
+  countExportPages,
+  formatPdfPageLimitInput,
+  parsePdfPageLimit,
+  splitCollatedDuplexPageLimit,
+  splitGroupedDuplexPageLimit,
+} from "@/helpers/exportPageLimit";
 import type { CardOption } from "../../../../shared/types";
 
 type Props = {
@@ -101,6 +108,7 @@ export function ExportActions({ cards }: Props) {
   const [copyMode, setCopyMode] = useState<CopyMode>('withMpc');
   const [downloadMode, setDownloadMode] = useState<DownloadMode>('withMpc');
   const [imageExportMode, setImageExportMode] = useState<ImageExportMode>('zip');
+  const [pdfPageLimitInput, setPdfPageLimitInput] = useState("");
 
   // Error Modal State
   const [showErrorModal, setShowErrorModal] = useState(false);
@@ -112,6 +120,10 @@ export function ExportActions({ cards }: Props) {
     filteredAndSortedCards.filter(c => !c.linkedFrontId),
     [filteredAndSortedCards]
   );
+
+  const handlePdfPageLimitCommit = () => {
+    setPdfPageLimitInput(formatPdfPageLimitInput(pdfPageLimitInput));
+  };
 
   const handleCopyDecklist = async () => {
     const style = copyMode === 'withMpc' ? "withMpc" : "withSetNum";
@@ -283,6 +295,8 @@ export function ExportActions({ cards }: Props) {
 	      // Get normalized settings at export time (consistent with display path)
 	      const pdfSettings = serializePdfSettingsForWorker();
 	      const startTime = performance.now();
+	      const pdfPageLimit = parsePdfPageLimit(pdfPageLimitInput);
+	      const cardsPerPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
 
 	      // Only apply per-card back offsets for duplex/back exports.
 	      // Interleaved/visible-face exports should not inherit grid-slot offsets.
@@ -364,6 +378,11 @@ export function ExportActions({ cards }: Props) {
 
           // Import PDFDocument for merging
           const { PDFDocument } = await import('pdf-lib');
+          const { frontMaxPages, backMaxPages } = splitGroupedDuplexPageLimit(
+            pdfPageLimit,
+            countExportPages(frontCards.length, cardsPerPage),
+            countExportPages(backCards.length, cardsPerPage)
+          );
 
           // Export fronts (normal left-aligned) - get buffer
           const frontsBuffer = await exportProxyPagesToPdf({
@@ -372,6 +391,7 @@ export function ExportActions({ cards }: Props) {
             pdfSettings,
             onProgress: (p) => setProgress(p * 0.45), // First 45% of progress
             pagesPerPdf: effectivePagesPerPdf,
+            maxPages: frontMaxPages,
             cancellationPromise,
             returnBuffer: true,
           });
@@ -388,6 +408,7 @@ export function ExportActions({ cards }: Props) {
             pdfSettings: pdfSettingsForBacks,
             onProgress: (p) => setProgress(45 + p * 0.45), // 45-90% of progress
             pagesPerPdf: effectivePagesPerPdf,
+            maxPages: backMaxPages,
             cancellationPromise,
             returnBuffer: true,
           });
@@ -477,6 +498,11 @@ export function ExportActions({ cards }: Props) {
           const backCards = await buildBackCardsForExport();
 
           const { PDFDocument } = await import('pdf-lib');
+          const { frontMaxPages, backMaxPages } = splitCollatedDuplexPageLimit(
+            pdfPageLimit,
+            countExportPages(frontCards.length, cardsPerPage),
+            countExportPages(backCards.length, cardsPerPage)
+          );
 
           const frontsBuffer = await exportProxyPagesToPdf({
             cards: frontCards,
@@ -484,6 +510,7 @@ export function ExportActions({ cards }: Props) {
             pdfSettings,
             onProgress: (p) => setProgress(p * 0.45),
             pagesPerPdf: effectivePagesPerPdf,
+            maxPages: frontMaxPages,
             cancellationPromise,
             returnBuffer: true,
           });
@@ -499,6 +526,7 @@ export function ExportActions({ cards }: Props) {
             pdfSettings: pdfSettingsForBacks,
             onProgress: (p) => setProgress(45 + p * 0.45),
             pagesPerPdf: effectivePagesPerPdf,
+            maxPages: backMaxPages,
             cancellationPromise,
             returnBuffer: true,
           });
@@ -568,6 +596,7 @@ export function ExportActions({ cards }: Props) {
               pdfSettings,
               onProgress: setProgress,
               pagesPerPdf: effectivePagesPerPdf,
+              maxPages: pdfPageLimit,
               cancellationPromise,
               filenameSuffix,
               returnBuffer: true,
@@ -593,7 +622,14 @@ export function ExportActions({ cards }: Props) {
             // Log PDF export summary for this early exit branch
             const elapsed = (performance.now() - startTime) / 1000;
             const perPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
-            const totalPages = Math.ceil(cardsToExport.length / perPage);
+            const totalPages = Math.min(
+              pdfPageLimit ?? Number.POSITIVE_INFINITY,
+              Math.ceil(cardsToExport.length / perPage)
+            );
+            const totalCards = Math.min(
+              cardsToExport.length,
+              (pdfPageLimit ?? Number.POSITIVE_INFINITY) * perPage
+            );
             const pad = (content: string) => content.padEnd(62);
             const modeLabel = EXPORT_MODES.find(m => m.value === exportMode)?.label || exportMode;
             const summary = `
@@ -602,7 +638,7 @@ export function ExportActions({ cards }: Props) {
 ╠══════════════════════════════════════════════════════════════╣
 ║${pad(`  Total Time:        ${elapsed.toFixed(2).padStart(8)}s`)}║
 ╠══════════════════════════════════════════════════════════════╣
-║${pad(`  Cards:             ${String(cardsToExport.length).padStart(8)}`)}║
+║${pad(`  Cards:             ${String(totalCards).padStart(8)}`)}║
 ║${pad(`  Pages:             ${String(totalPages).padStart(8)}`)}║
 ║${pad(`  DPI:               ${String(dpi).padStart(8)}`)}║
 ║${pad(`  Page Size:         ${(pageWidth + "x" + pageHeight + " " + pageSizeUnit).padStart(8)}`)}║
@@ -619,6 +655,7 @@ export function ExportActions({ cards }: Props) {
         pdfSettings,
         onProgress: setProgress,
         pagesPerPdf: effectivePagesPerPdf,
+        maxPages: pdfPageLimit,
         cancellationPromise,
         filenameSuffix,
       });
@@ -626,7 +663,14 @@ export function ExportActions({ cards }: Props) {
       // Log PDF export summary
       const elapsed = (performance.now() - startTime) / 1000;
       const perPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
-      const totalPages = Math.ceil(cardsToExport.length / perPage);
+      const totalPages = Math.min(
+        pdfPageLimit ?? Number.POSITIVE_INFINITY,
+        Math.ceil(cardsToExport.length / perPage)
+      );
+      const totalCards = Math.min(
+        cardsToExport.length,
+        (pdfPageLimit ?? Number.POSITIVE_INFINITY) * perPage
+      );
       const pad = (content: string) => content.padEnd(62);
       const modeLabel = EXPORT_MODES.find(m => m.value === exportMode)?.label || exportMode;
       const summary = `
@@ -635,7 +679,7 @@ export function ExportActions({ cards }: Props) {
 ╠══════════════════════════════════════════════════════════════╣
 ║${pad(`  Total Time:        ${elapsed.toFixed(2).padStart(8)}s`)}║
 ╠══════════════════════════════════════════════════════════════╣
-║${pad(`  Cards:             ${String(cardsToExport.length).padStart(8)}`)}║
+║${pad(`  Cards:             ${String(totalCards).padStart(8)}`)}║
 ║${pad(`  Pages:             ${String(totalPages).padStart(8)}`)}║
 ║${pad(`  DPI:               ${String(dpi).padStart(8)}`)}║
 ║${pad(`  Page Size:         ${(pageWidth + "x" + pageHeight + " " + pageSizeUnit).padStart(8)}`)}║
@@ -702,6 +746,27 @@ export function ExportActions({ cards }: Props) {
 
   return (
     <div className="flex flex-col gap-2">
+      <div>
+        <div className="mb-1 flex items-center gap-2">
+          <Label htmlFor="pdf-page-limit-input">PDF pages</Label>
+          <AutoTooltip content="Leave blank to export every PDF page. Duplex modes count the final PDF pages in the selected export order." />
+        </div>
+        <NumberInput
+          id="pdf-page-limit-input"
+          value={pdfPageLimitInput}
+          placeholder="All"
+          min={1}
+          step={1}
+          onChange={(e) => setPdfPageLimitInput(e.target.value)}
+          onBlur={handlePdfPageLimitCommit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              handlePdfPageLimitCommit();
+            }
+          }}
+        />
+      </div>
+
       {/* Split button for PDF export with mode selector */}
       <SplitButton
         label="Export to PDF"

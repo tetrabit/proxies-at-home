@@ -35,6 +35,7 @@ export async function exportProxyPagesToPdf({
   pdfSettings,
   onProgress,
   pagesPerPdf,
+  maxPages,
   cancellationPromise,
   filenameSuffix = '',
   returnBuffer = false,
@@ -44,6 +45,7 @@ export async function exportProxyPagesToPdf({
   pdfSettings: WorkerPdfSettings;
   onProgress?: (progress: number) => void;
   pagesPerPdf: number;
+  maxPages?: number;
   cancellationPromise: Promise<void>;
   filenameSuffix?: string;
   returnBuffer?: boolean;
@@ -91,13 +93,24 @@ export async function exportProxyPagesToPdf({
   } = pdfSettings;
 
   const perPage = Math.max(1, columns * rows);
-  const totalImages = cards.length;
+  const normalizedMaxPages =
+    maxPages === undefined ? undefined : Math.max(0, Math.floor(maxPages));
+  const cardsForExport =
+    normalizedMaxPages === undefined
+      ? cards
+      : cards.slice(0, normalizedMaxPages * perPage);
+
+  if (cardsForExport.length === 0) {
+    return returnBuffer ? new Uint8Array() : undefined;
+  }
+
+  const totalImages = cardsForExport.length;
   let totalImagesProcessed = 0;
   const pdfBuffers: Uint8Array[] = [];
 
   // Build effect cache map for cards with active adjustments
   const effectCacheById = new Map<string, Blob>();
-  for (const card of cards) {
+  for (const card of cardsForExport) {
     if (card.imageId && card.overrides && hasActiveAdjustments(card.overrides)) {
       const cached = await getEffectCacheEntry(card.imageId, card.overrides);
       if (cached) {
@@ -106,7 +119,7 @@ export async function exportProxyPagesToPdf({
     }
   }
 
-  const pagesIterator = pageGenerator(cards, perPage);
+  const pagesIterator = pageGenerator(cardsForExport, perPage);
 
   let isDone = false;
   while (!isDone) {
