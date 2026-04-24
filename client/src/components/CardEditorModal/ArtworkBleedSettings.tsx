@@ -1,5 +1,5 @@
 import { Button, Checkbox, Label } from "flowbite-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useArtworkModalStore } from "@/store/artworkModal";
 import { useCardEditorModalStore } from "@/store/cardEditorModal";
@@ -29,18 +29,34 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
     // Get the active card based on selected face - back cards have their own settings
     const activeCard = selectedFace === 'back' && linkedBackCard ? linkedBackCard : modalCard;
 
-    // Fetch image for active card (for Edit Card button)
-    const activeImage = useLiveQuery(
-        () => (activeCard?.imageId ? db.images.get(activeCard.imageId) : undefined),
-        [activeCard?.imageId]
+    const frontImage = useLiveQuery(
+        async () => {
+            if (!modalCard?.imageId) return undefined;
+            return (await db.images.get(modalCard.imageId)) ?? (await db.cardbacks?.get(modalCard.imageId));
+        },
+        [modalCard?.imageId]
     );
+
+    const backImage = useLiveQuery(
+        async () => {
+            if (!linkedBackCard?.imageId) return undefined;
+            return (await db.images.get(linkedBackCard.imageId)) ?? (await db.cardbacks?.get(linkedBackCard.imageId));
+        },
+        [linkedBackCard?.imageId]
+    );
+    const activeImage = selectedFace === 'back' ? backImage : frontImage;
 
     // Get global settings for display labels
     const globalBleedWidth = useSettingsStore((state) => state.bleedEdgeWidth);
+    const sameAsFrontUserEditedRef = useRef(false);
 
     // --- Local State ---
     // "Same as front" option for back face (default: true)
     const [sameAsFront, setSameAsFront] = useState(true);
+
+    useEffect(() => {
+        sameAsFrontUserEditedRef.current = false;
+    }, [selectedFace, modalCard?.uuid, linkedBackCard?.uuid]);
 
     // 1. Source Bleed
     const globalSourceAmount = useSettingsStore((state) => state.withBleedSourceAmount);
@@ -58,7 +74,7 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
     // Initialize from active card (front or back based on selectedFace)
     useEffect(() => {
         if (activeCard) {
-            setHasBleedBuiltIn(getHasBuiltInBleed(activeCard) ?? false);
+            setHasBleedBuiltIn(getHasBuiltInBleed(activeCard, activeImage) ?? false);
 
             if (activeCard.existingBleedMm !== undefined) {
                 setSourceMode('manual');
@@ -82,8 +98,8 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
 
             // Initialize sameAsFront by comparing back card settings to front card settings
             if (selectedFace === 'back' && modalCard && linkedBackCard) {
-                const frontHasBleed = getHasBuiltInBleed(modalCard) ?? false;
-                const backHasBleed = getHasBuiltInBleed(linkedBackCard) ?? false;
+                const frontHasBleed = getHasBuiltInBleed(modalCard, frontImage) ?? false;
+                const backHasBleed = getHasBuiltInBleed(linkedBackCard, backImage) ?? false;
                 const frontBleedMode = modalCard.bleedMode;
                 const backBleedMode = linkedBackCard.bleedMode;
                 const frontExisting = modalCard.existingBleedMm;
@@ -97,10 +113,12 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
                     frontExisting === backExisting &&
                     frontGenerate === backGenerate;
 
-                setSameAsFront(settingsMatch);
+                if (!sameAsFrontUserEditedRef.current) {
+                    setSameAsFront(settingsMatch);
+                }
             }
         }
-    }, [activeCard, globalBleedWidth, globalSourceAmount, selectedFace, modalCard, linkedBackCard]);
+    }, [activeCard, activeImage, globalBleedWidth, globalSourceAmount, selectedFace, modalCard, linkedBackCard, frontImage, backImage]);
 
     // Check if we're on a back card that doesn't exist yet
     const isBackTab = selectedFace === 'back';
@@ -127,7 +145,7 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
         // If "same as front" is checked for back card, copy front card settings
         if (isBackTab && sameAsFront && modalCard) {
             const frontSettings = {
-                hasBuiltInBleed: getHasBuiltInBleed(modalCard),
+                hasBuiltInBleed: getHasBuiltInBleed(modalCard, frontImage),
                 bleedMode: modalCard.bleedMode,
                 existingBleedMm: modalCard.existingBleedMm,
                 generateBleedMm: modalCard.generateBleedMm
@@ -135,7 +153,8 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
 
             await undoableUpdateCardBleedSettings(
                 [activeCard!.uuid],
-                frontSettings
+                frontSettings,
+                { scope: 'selected' }
             );
             closeModal();
             return;
@@ -172,15 +191,18 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
             ? Array.from(selectedCards)
             : [activeCard!.uuid];
 
-        await undoableUpdateCardBleedSettings(
-            cardUuids,
-            {
-                hasBuiltInBleed: hasBleedBuiltIn,
-                bleedMode,
-                existingBleedMm,
-                generateBleedMm
-            }
-        );
+        const settings = {
+            hasBuiltInBleed: hasBleedBuiltIn,
+            bleedMode,
+            existingBleedMm,
+            generateBleedMm
+        };
+
+        if (isBackTab) {
+            await undoableUpdateCardBleedSettings(cardUuids, settings, { scope: 'selected' });
+        } else {
+            await undoableUpdateCardBleedSettings(cardUuids, settings);
+        }
 
         closeModal();
     };
@@ -195,7 +217,10 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
                             <Checkbox
                                 id="same-as-front"
                                 checked={sameAsFront}
-                                onChange={(e) => setSameAsFront(e.target.checked)}
+                                onChange={(e) => {
+                                    sameAsFrontUserEditedRef.current = true;
+                                    setSameAsFront(e.target.checked);
+                                }}
                                 className="mt-0.5"
                             />
                             <div className="flex items-center gap-2 flex-1">

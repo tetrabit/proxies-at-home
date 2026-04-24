@@ -19,7 +19,7 @@ import {
   useUserPreferencesStore,
 } from "../store";
 import { useLoadingStore } from "../store/loading";
-import { db, type Image } from "../db";
+import { db, type Cardback, type Image } from "../db";
 import { ImageProcessor, Priority } from "../helpers/imageProcessor";
 import { rebalanceCardOrders } from "@/helpers/dbUtils";
 import {
@@ -36,6 +36,7 @@ import {
   getExpectedBleedWidth,
   getHasBuiltInBleed,
   getEffectiveBleedMode,
+  getEffectiveExistingBleedMm,
   type GlobalSettings,
 } from "../helpers/imageSpecs";
 
@@ -400,10 +401,14 @@ export default function ProxyBuilderPage() {
 
     const processUnprocessed = async () => {
       // Use efficient cursor iteration to avoid loading all huge blobs into memory at once
-      const imagesById = new Map<string, Image>();
+      const imagesById = new Map<string, Image | Cardback>();
       await db.images.each((img) => {
         const { originalBlob: _, ...rest } = img;
         imagesById.set(img.id, rest as Image);
+      });
+      await db.cardbacks.each((cardback) => {
+        const { originalBlob: _, ...rest } = cardback;
+        imagesById.set(cardback.id, rest as Cardback);
       });
 
       // Deduplicate by imageId - only process each unique image once
@@ -441,10 +446,11 @@ export default function ProxyBuilderPage() {
         const expectedBleedWidth = getExpectedBleedWidth(
           card,
           settings.bleedEdgeWidth,
-          settings
+          settings,
+          img
         );
-        const hasBuiltInBleed = getHasBuiltInBleed(card);
-        const effectiveBleedMode = getEffectiveBleedMode(card, settings);
+        const hasBuiltInBleed = getHasBuiltInBleed(card, img);
+        const effectiveBleedMode = getEffectiveBleedMode(card, settings, img);
 
         const isDpiMatch = img.exportDpi === dpi;
         const isBleedMatch =
@@ -454,9 +460,20 @@ export default function ProxyBuilderPage() {
         const isBuiltInBleedMatch =
           img.generatedHasBuiltInBleed === hasBuiltInBleed;
         const isBleedModeMatch = img.generatedBleedMode === effectiveBleedMode;
+        const effectiveExistingBleedMm =
+          img.generatedExistingBleedMm !== undefined
+            ? getEffectiveExistingBleedMm(card, settings, img)
+            : undefined;
+        const isExistingBleedMatch =
+          effectiveExistingBleedMm !== undefined &&
+          Math.abs(img.generatedExistingBleedMm! - (effectiveExistingBleedMm ?? 0)) < 0.001;
 
         const isProcessed =
-          isDpiMatch && isBleedMatch && isBuiltInBleedMatch && isBleedModeMatch;
+          isDpiMatch &&
+          isBleedMatch &&
+          isBuiltInBleedMatch &&
+          isBleedModeMatch &&
+          isExistingBleedMatch;
 
         if (!isProcessed) {
           imageIdToRepresentativeCard.set(card.imageId, card);
@@ -560,10 +577,14 @@ export default function ProxyBuilderPage() {
         noBleedTargetAmount: state.noBleedTargetAmount,
       };
 
-      const imageMap = new Map<string, Image>();
+      const imageMap = new Map<string, Image | Cardback>();
       await db.images.each((img) => {
         const { originalBlob: _, ...rest } = img;
         imageMap.set(img.id, rest as Image);
+      });
+      await db.cardbacks.each((cardback) => {
+        const { originalBlob: _, ...rest } = cardback;
+        imageMap.set(cardback.id, rest as Cardback);
       });
 
       const cardsToReprocess = cardsWithImages.filter((card) => {
@@ -575,8 +596,12 @@ export default function ProxyBuilderPage() {
         const expectedBleedWidth = getExpectedBleedWidth(
           card,
           settings.bleedEdgeWidth,
-          settings
+          settings,
+          img
         );
+        const hasBuiltInBleed = getHasBuiltInBleed(card, img);
+        const effectiveBleedMode = getEffectiveBleedMode(card, settings, img);
+        const effectiveExistingBleedMm = getEffectiveExistingBleedMm(card, settings, img);
 
         // Conditions requiring reprocessing:
         // 1. Export DPI mismatch
@@ -586,6 +611,13 @@ export default function ProxyBuilderPage() {
         if (img.exportBleedWidth === undefined) return true;
         const diff = Math.abs(img.exportBleedWidth - expectedBleedWidth);
         if (diff > 0.001) return true;
+
+        if (img.generatedHasBuiltInBleed !== hasBuiltInBleed) return true;
+        if (img.generatedBleedMode !== effectiveBleedMode) return true;
+        if (img.generatedExistingBleedMm === undefined) return true;
+        if (Math.abs(img.generatedExistingBleedMm - (effectiveExistingBleedMm ?? 0)) > 0.001) {
+          return true;
+        }
 
         // 3. Missing blobs (shouldn't happen if fully processed, but good safety)
         if (!img.displayBlob || !img.exportBlob) return true;

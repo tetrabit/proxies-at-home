@@ -39,6 +39,52 @@ function trackContextRelease(id: number, source: string) {
     webglLog(`Context RELEASED #${id} by ${source} (active: ${webglContextCount})`);
 }
 
+const CARD_CONTENT_WIDTH_MM = 63;
+const CARD_CONTENT_HEIGHT_MM = 88;
+
+export function getCardPixelDimensionsForBleed(
+    bleedMm: number,
+    dpi: number
+): { width: number; height: number; bleedPx: number; contentWidth: number; contentHeight: number } {
+    const safeBleedMm = Math.max(0, bleedMm);
+    const contentWidth = IN(CARD_CONTENT_WIDTH_MM / 25.4, dpi);
+    const contentHeight = IN(CARD_CONTENT_HEIGHT_MM / 25.4, dpi);
+    const bleedPx = Math.round(getBleedInPixels(safeBleedMm, "mm", dpi));
+
+    return {
+        width: Math.ceil(contentWidth + bleedPx * 2),
+        height: Math.ceil(contentHeight + bleedPx * 2),
+        bleedPx,
+        contentWidth,
+        contentHeight,
+    };
+}
+
+export function deriveSourceBleedPixelsFromGeometry(
+    widthPx: number,
+    heightPx: number,
+    inputBleedMm: number
+): { bleedPxX: number; bleedPxY: number } {
+    if (inputBleedMm <= 0) {
+        return { bleedPxX: 0, bleedPxY: 0 };
+    }
+
+    const totalWidthMm = CARD_CONTENT_WIDTH_MM + inputBleedMm * 2;
+    const totalHeightMm = CARD_CONTENT_HEIGHT_MM + inputBleedMm * 2;
+
+    if (totalWidthMm <= 0 || totalHeightMm <= 0) {
+        return { bleedPxX: 0, bleedPxY: 0 };
+    }
+
+    const bleedPxX = Math.round((widthPx * inputBleedMm) / totalWidthMm);
+    const bleedPxY = Math.round((heightPx * inputBleedMm) / totalHeightMm);
+
+    return {
+        bleedPxX: Math.max(0, bleedPxX),
+        bleedPxY: Math.max(0, bleedPxY),
+    };
+}
+
 /**
  * Persistent WebGL context manager.
  * Maintains a single context per "purpose" (export/display) that is reused across renders.
@@ -304,12 +350,13 @@ export async function generateBleedCanvasWebGL(
     opts: { unit?: "mm" | "in"; dpi?: number; inputBleed?: number; darkenMode?: DarkenMode; darkenThreshold?: number; darkenContrast?: number; darkenEdgeWidth?: number; darkenAmount?: number; darkenBrightness?: number; darkenAutoDetect?: boolean }
 ): Promise<OffscreenCanvas> {
     const dpi = opts?.dpi ?? 300;
-    const targetCardWidth = IN(2.48, dpi);
-    const targetCardHeight = IN(3.47, dpi);
-    const bleed = Math.round(getBleedInPixels(bleedWidth, opts?.unit ?? "mm", dpi));
-
-    const finalWidth = Math.ceil(targetCardWidth + bleed * 2);
-    const finalHeight = Math.ceil(targetCardHeight + bleed * 2);
+    const bleedWidthMm = (opts?.unit ?? "mm") === "in" ? bleedWidth * 25.4 : bleedWidth;
+    const targetGeometry = getCardPixelDimensionsForBleed(bleedWidthMm, dpi);
+    const targetCardWidth = targetGeometry.contentWidth;
+    const targetCardHeight = targetGeometry.contentHeight;
+    const bleed = targetGeometry.bleedPx;
+    const finalWidth = targetGeometry.width;
+    const finalHeight = targetGeometry.height;
 
     // Get or create WebGL context using context manager (reuses if available)
     const { canvas, gl, isNew } = bleedGenContextManager.getContext(finalWidth, finalHeight);
@@ -323,32 +370,50 @@ export async function generateBleedCanvasWebGL(
     // Calculate image placement
     // Calculate image placement
     // If input has bleed, we scale based on CONTENT size, not full image size
-    const inputBleedMm = opts?.inputBleed ?? 0;
-    const inputBleedPx = Math.round(getBleedInPixels(inputBleedMm, opts?.unit ?? "mm", dpi));
+    const inputBleedRaw = opts?.inputBleed ?? 0;
+    const inputBleedMm = (opts?.unit ?? "mm") === "in" ? inputBleedRaw * 25.4 : inputBleedRaw;
+    const { bleedPxX: inputBleedPxX, bleedPxY: inputBleedPxY } = deriveSourceBleedPixelsFromGeometry(
+        img.width,
+        img.height,
+        inputBleedMm
+    );
 
     let drawWidth: number, drawHeight: number, offsetX: number, offsetY: number;
 
     if (inputBleedMm > 0) {
         // Calculate scale factor relative to target content size
-        const inputContentWidth = img.width - inputBleedPx * 2;
-        const inputContentHeight = img.height - inputBleedPx * 2;
+        const inputContentWidth = img.width - inputBleedPxX * 2;
+        const inputContentHeight = img.height - inputBleedPxY * 2;
 
-        // Scale to fit width (keeping aspect ratio)
-        const scale = targetCardWidth / inputContentWidth;
+        if (inputContentWidth > 0 && inputContentHeight > 0) {
+            // Scale to fit width (keeping aspect ratio). With correct source-derived
+            // bleed geometry, width/height scales should agree for normal card art.
+            const scale = targetCardWidth / inputContentWidth;
 
-        drawWidth = img.width * scale;
-        drawHeight = img.height * scale;
+            drawWidth = img.width * scale;
+            drawHeight = img.height * scale;
 
-        // Center the input content relative to the target content area
-        const targetContentCenterX = targetCardWidth / 2;
-        const targetContentCenterY = targetCardHeight / 2;
+            // Center the input content relative to the target content area
+            const targetContentCenterX = targetCardWidth / 2;
+            const targetContentCenterY = targetCardHeight / 2;
 
-        // Calculate center of the content portion within the scaled input image
-        const inputContentCenterX = (inputContentWidth / 2 + inputBleedPx) * scale;
-        const inputContentCenterY = (inputContentHeight / 2 + inputBleedPx) * scale;
+            // Calculate center of the content portion within the scaled input image
+            const inputContentCenterX = (inputContentWidth / 2 + inputBleedPxX) * scale;
+            const inputContentCenterY = (inputContentHeight / 2 + inputBleedPxY) * scale;
 
-        offsetX = targetContentCenterX - inputContentCenterX;
-        offsetY = targetContentCenterY - inputContentCenterY;
+            offsetX = targetContentCenterX - inputContentCenterX;
+            offsetY = targetContentCenterY - inputContentCenterY;
+        } else {
+            const placement = calculateImagePlacement(
+                img,
+                targetCardWidth,
+                targetCardHeight
+            );
+            drawWidth = placement.drawWidth;
+            drawHeight = placement.drawHeight;
+            offsetX = placement.offsetX;
+            offsetY = placement.offsetY;
+        }
 
     } else {
         const placement = calculateImagePlacement(
@@ -517,30 +582,18 @@ export async function processCardImageWebGL(
     // The additional bleed we need to generate (beyond what's already in the image)
     const additionalBleedMm = Math.max(0, totalBleedMm - inputHasBleedMm);
 
-    const targetCardWidth = IN(2.48, exportDpi);
-    const targetCardHeight = IN(3.47, exportDpi);
-
-    // When input has existing bleed, use actual input dimensions instead of forcing to expected
-    // This prevents shrinking when aspect ratios don't exactly match
-    let inputWidth: number;
-    let inputHeight: number;
-
-    if (inputHasBleedMm > 0) {
-        // Use actual input image dimensions - the image already has bleed built in
-        inputWidth = img.width;
-        inputHeight = img.height;
-    } else {
-        // No existing bleed - use standard card dimensions
-        inputWidth = targetCardWidth;
-        inputHeight = targetCardHeight;
-    }
-
-    // The additional bleed to generate around the input (in export pixels)
-    const additionalBleedPx = Math.round(getBleedInPixels(additionalBleedMm, 'mm', exportDpi));
-
-    // Final output dimensions: input dimensions + additional bleed on each side
-    const finalWidth = Math.ceil(inputWidth + additionalBleedPx * 2);
-    const finalHeight = Math.ceil(inputHeight + additionalBleedPx * 2);
+    // Normalize both source and output geometry to the requested export DPI.
+    // The source bitmap may be a low-resolution Scryfall/cardback image; its
+    // pixel dimensions must not become the physical PDF card size.
+    const inputGeometry = getCardPixelDimensionsForBleed(Math.min(inputHasBleedMm, totalBleedMm), exportDpi);
+    const targetGeometry = getCardPixelDimensionsForBleed(totalBleedMm, exportDpi);
+    const displayGeometry = getCardPixelDimensionsForBleed(totalBleedMm, displayDpi);
+    const inputWidth = inputGeometry.width;
+    const inputHeight = inputGeometry.height;
+    const finalWidth = targetGeometry.width;
+    const finalHeight = targetGeometry.height;
+    const additionalBleedPxX = Math.max(0, Math.round((finalWidth - inputWidth) / 2));
+    const additionalBleedPxY = Math.max(0, Math.round((finalHeight - inputHeight) / 2));
 
     // Get or create WebGL context using context manager (reuses if available)
     const { canvas, gl, isNew } = jfaContextManager.getContext(finalWidth, finalHeight);
@@ -553,12 +606,7 @@ export async function processCardImageWebGL(
     const progs = initWebGLPrograms(gl);
     const quadBuffer = createQuadBuffer(gl);
 
-    // Calculate image placement
-    // When input has existing bleed, use actual dimensions (no scaling needed)
-    // When input has no bleed, fit to standard card dimensions
-    const { drawWidth, drawHeight, offsetX, offsetY } = inputHasBleedMm > 0
-        ? { drawWidth: inputWidth, drawHeight: inputHeight, offsetX: 0, offsetY: 0 }
-        : calculateImagePlacement(img, inputWidth, inputHeight);
+    const { drawWidth, drawHeight, offsetX, offsetY } = calculateImagePlacement(img, inputWidth, inputHeight);
 
     const scaleX = drawWidth / img.width;
     const scaleY = drawHeight / img.height;
@@ -599,7 +647,7 @@ export async function processCardImageWebGL(
     gl.uniform1i(gl.getUniformLocation(progs.init, "u_image"), 0);
     gl.uniform2f(gl.getUniformLocation(progs.init, "u_resolution"), finalWidth, finalHeight);
     gl.uniform2f(gl.getUniformLocation(progs.init, "u_imageSize"), inputWidth, inputHeight);
-    gl.uniform2f(gl.getUniformLocation(progs.init, "u_offset"), additionalBleedPx, additionalBleedPx);
+    gl.uniform2f(gl.getUniformLocation(progs.init, "u_offset"), additionalBleedPxX, additionalBleedPxY);
     gl.uniform2f(gl.getUniformLocation(progs.init, "u_srcImageSize"), img.width, img.height);
     gl.uniform2f(gl.getUniformLocation(progs.init, "u_srcOffset"), sourceOffsetX, sourceOffsetY);
     gl.uniform2f(gl.getUniformLocation(progs.init, "u_scale"), scaleX, scaleY);
@@ -631,7 +679,7 @@ export async function processCardImageWebGL(
 
         glCtx.uniform2f(glCtx.getUniformLocation(progs.final, "u_resolution"), finalWidth, finalHeight);
         glCtx.uniform2f(glCtx.getUniformLocation(progs.final, "u_imageSize"), inputWidth, inputHeight);
-        glCtx.uniform2f(glCtx.getUniformLocation(progs.final, "u_offset"), additionalBleedPx, additionalBleedPx);
+        glCtx.uniform2f(glCtx.getUniformLocation(progs.final, "u_offset"), additionalBleedPxX, additionalBleedPxY);
         glCtx.uniform1i(glCtx.getUniformLocation(progs.final, "u_darkenMode"), darkenMode);
         glCtx.uniform1f(glCtx.getUniformLocation(progs.final, "u_darknessFactor"), darknessFactor);
         // Explicitly set darken params
@@ -650,8 +698,8 @@ export async function processCardImageWebGL(
         const exportBlob = await canvas.convertToBlob({ type: "image/png" });
 
         // Create display version by downscaling
-        const displayWidth = (finalWidth / exportDpi) * displayDpi;
-        const displayHeight = (finalHeight / exportDpi) * displayDpi;
+        const displayWidth = displayGeometry.width;
+        const displayHeight = displayGeometry.height;
         const lowResCanvas = new OffscreenCanvas(displayWidth, displayHeight);
         const lowResCtx = lowResCanvas.getContext("2d");
         if (!lowResCtx) {
@@ -768,20 +816,15 @@ export async function processExistingBleedWebGL(
     const displayDpi = opts?.displayDpi ?? 300;
     const unit = opts?.unit ?? "mm";
 
-    // Standard MTG card dimensions: 63x88mm
-    const cardWidthMm = 63;
-    const cardHeightMm = 88;
-
     // Convert bleed to mm
     const bleedMm = unit === "in" ? bleedWidthMm * 25.4 : bleedWidthMm;
 
-    // Calculate dimensions at each DPI
-    const exportBleedPx = Math.round(getBleedInPixels(bleedMm, "mm", exportDpi));
-    const displayBleedPx = Math.round(getBleedInPixels(bleedMm, "mm", displayDpi));
-    const exportWidth = Math.ceil(IN(cardWidthMm / 25.4, exportDpi) + exportBleedPx * 2);
-    const exportHeight = Math.ceil(IN(cardHeightMm / 25.4, exportDpi) + exportBleedPx * 2);
-    const displayWidth = Math.ceil(IN(cardWidthMm / 25.4, displayDpi) + displayBleedPx * 2);
-    const displayHeight = Math.ceil(IN(cardHeightMm / 25.4, displayDpi) + displayBleedPx * 2);
+    const exportGeometry = getCardPixelDimensionsForBleed(bleedMm, exportDpi);
+    const displayGeometry = getCardPixelDimensionsForBleed(bleedMm, displayDpi);
+    const exportWidth = exportGeometry.width;
+    const exportHeight = exportGeometry.height;
+    const displayWidth = displayGeometry.width;
+    const displayHeight = displayGeometry.height;
 
     // Compute darknessFactor for adaptive effects
     const darknessFactor = computeDarknessFactor(img);

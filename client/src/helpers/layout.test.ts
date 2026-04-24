@@ -97,6 +97,32 @@ describe('getCardTargetBleed', () => {
             expect(getCardTargetBleed(standardCard, settings, globalBleedWidth)).toBe(0);
         });
     });
+
+    it('should use generated image metadata when card bleed metadata is unset', () => {
+        const card = mockCard({});
+        const settings = {
+            ...defaultSourceSettings,
+            withBleedTargetMode: 'manual' as const,
+            withBleedTargetAmount: 2.75,
+            noBleedTargetMode: 'manual' as const,
+            noBleedTargetAmount: 0.75,
+        };
+
+        expect(getCardTargetBleed(card, settings, globalBleedWidth, { generatedHasBuiltInBleed: true })).toBe(2.75);
+    });
+
+    it('should use cardback source metadata when card bleed metadata is unset', () => {
+        const card = mockCard({ imageId: 'cardback_custom' });
+        const settings = {
+            ...defaultSourceSettings,
+            withBleedTargetMode: 'manual' as const,
+            withBleedTargetAmount: 1.5,
+            noBleedTargetMode: 'manual' as const,
+            noBleedTargetAmount: 4,
+        };
+
+        expect(getCardTargetBleed(card, settings, globalBleedWidth, { hasBuiltInBleed: true })).toBe(1.5);
+    });
 });
 
 describe('computeCardLayouts', () => {
@@ -158,6 +184,38 @@ describe('computeGuideLayouts', () => {
                 bleedMm: 3,
             },
         ]);
+    });
+
+    it('should keep layouts anchored when a target override is larger than the guide bleed', () => {
+        const cards: CardOption[] = [
+            {
+                uuid: '1',
+                name: 'Default Card',
+                order: 0,
+                isUserUpload: false,
+            },
+            {
+                uuid: '2',
+                name: 'Large Override Card',
+                order: 1,
+                isUserUpload: false,
+                bleedMode: 'generate',
+                generateBleedMm: 5,
+            },
+        ];
+
+        const layouts = computeGuideLayouts(cards, 3);
+
+        expect(layouts[0]).toEqual({
+            cardWidthMm: baseCardWidthMm + 6,
+            cardHeightMm: baseCardHeightMm + 6,
+            bleedMm: 3,
+        });
+        expect(layouts[1]).toEqual({
+            cardWidthMm: baseCardWidthMm + 6,
+            cardHeightMm: baseCardHeightMm + 6,
+            bleedMm: 3,
+        });
     });
 });
 

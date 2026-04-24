@@ -155,22 +155,31 @@ self.onmessage = async (e: MessageEvent) => {
             }
         }
 
-        // Helper function to trim bleed with user-specified amount (in mm)
-        async function createTrimmedBitmapWithExistingBleed(inputBlob: Blob, existingMm: number): Promise<ImageBitmap> {
-            return trimBleedByMm(inputBlob, existingMm, existingMm);
+        // Helper function to trim bleed by a specific amount using the source's
+        // known existing bleed geometry for accurate mm->px conversion.
+        async function createTrimmedBitmapWithExistingBleed(
+            inputBlob: Blob,
+            trimAmountMm: number,
+            existingBleedMmForSource: number
+        ): Promise<ImageBitmap> {
+            return trimBleedByMm(inputBlob, trimAmountMm, existingBleedMmForSource);
         }
 
         // Determine how to handle the image based on bleed mode
         // 1. Create initial bitmap to check dimensions/process
         let imageBitmap = await createImageBitmap(blob!);
 
-        // 2. Auto-Detect Built-in Bleed if unknown
+        // 2. Auto-detect built-in bleed geometry and trust it when metadata disagrees.
+        const detectedHasBleed = detectBleed(imageBitmap.width, imageBitmap.height, 0.015);
+        const aspect = imageBitmap.width / imageBitmap.height;
+        debugLog(`[Worker] Auto-Detect: ${imageBitmap.width}x${imageBitmap.height} Aspect=${aspect.toFixed(4)} Diff=${Math.abs(aspect - STANDARD_ASPECT_RATIO).toFixed(4)} Tol=0.015 hasBleed=${detectedHasBleed}`);
+
         let effectiveHasBleed = hasBuiltInBleed;
-        if (effectiveHasBleed === undefined) {
-            const hasBleed = detectBleed(imageBitmap.width, imageBitmap.height, 0.015);
-            const aspect = imageBitmap.width / imageBitmap.height;
-            debugLog(`[Worker] Auto-Detect: ${imageBitmap.width}x${imageBitmap.height} Aspect=${aspect.toFixed(4)} Diff=${Math.abs(aspect - STANDARD_ASPECT_RATIO).toFixed(4)} Tol=0.015 hasBleed=${hasBleed}`);
-            effectiveHasBleed = hasBleed;
+        if (effectiveHasBleed === undefined || effectiveHasBleed !== detectedHasBleed) {
+            if (effectiveHasBleed !== undefined && effectiveHasBleed !== detectedHasBleed) {
+                debugLog(`[Worker] Bleed metadata mismatch: input=${effectiveHasBleed} detected=${detectedHasBleed}; using detected geometry`);
+            }
+            effectiveHasBleed = detectedHasBleed;
         }
         let result;
 
@@ -186,13 +195,32 @@ self.onmessage = async (e: MessageEvent) => {
             });
 
         } else if (bleedMode === 'none') {
-            // Strip any bleed (render at 0 bleed)
+            // Strip any existing bleed, then render at 0 bleed.
+            if (effectiveHasBleed) {
+                const assumedExistingBleedMm = (existingBleedMm && existingBleedMm > 0)
+                    ? existingBleedMm
+                    : IMAGE_PROCESSING.DEFAULT_MPC_BLEED_MM;
+
+                if (assumedExistingBleedMm > IMAGE_PROCESSING.BLEED_TRIM_EPSILON_MM) {
+                    imageBitmap.close();
+                    imageBitmap = await createTrimmedBitmapWithExistingBleed(
+                        blob!,
+                        assumedExistingBleedMm,
+                        assumedExistingBleedMm
+                    );
+                }
+            }
+
             result = await processExistingBleedWebGL(imageBitmap, 0, {
                 unit: 'mm',
                 exportDpi: dpi,
                 displayDpi: effectiveDisplayDpi,
                 darkenMode,
             });
+
+            if (hasBuiltInBleed === undefined) {
+                result.detectedHasBuiltInBleed = effectiveHasBleed;
+            }
 
         } else {
             // 'generate' mode (Default)
@@ -211,7 +239,7 @@ self.onmessage = async (e: MessageEvent) => {
                     imageBitmap.close();
 
                     if (trimAmount > IMAGE_PROCESSING.BLEED_TRIM_EPSILON_MM) {
-                        imageBitmap = await createTrimmedBitmapWithExistingBleed(blob!, trimAmount);
+                        imageBitmap = await createTrimmedBitmapWithExistingBleed(blob!, trimAmount, assumedExistingBleedMm);
                     } else {
                         imageBitmap = await createImageBitmap(blob!);
                     }

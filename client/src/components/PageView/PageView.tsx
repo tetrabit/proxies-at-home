@@ -41,7 +41,6 @@ import {
   baseCardWidthMm,
   baseCardHeightMm,
   getCardTargetBleed,
-  computeCardLayouts,
   chunkCards,
 } from "@/helpers/layout";
 import PixiVirtualCanvas, {
@@ -792,16 +791,23 @@ export function PageView({
       const gridStartYMm =
         (pageHeightMm - gridHeightMm) / 2 + effectiveCardPositionY;
 
-      const layouts = computeCardLayouts(
-        page,
-        sourceSettings,
-        effectiveBleedWidth
-      );
-
       page.forEach((card, index) => {
-        const layout = layouts[index];
         const col = index % columns;
         const row = Math.floor(index / columns);
+        const imageData = card.imageId
+          ? imageDataById.get(card.imageId)
+          : undefined;
+        const bleedMm = getCardTargetBleed(
+          card,
+          sourceSettings,
+          effectiveBleedWidth,
+          imageData
+        );
+        const layout = {
+          cardWidthMm: baseCardWidthMm + bleedMm * 2,
+          cardHeightMm: baseCardHeightMm + bleedMm * 2,
+          bleedMm,
+        };
 
         // Position based on fixed grid cell, centered within the cell
         const cellXMm = gridStartXMm + col * (fixedCardWidthMm + cardSpacingMm);
@@ -810,9 +816,6 @@ export function PageView({
         const xMm = cellXMm + (fixedCardWidthMm - layout.cardWidthMm) / 2;
         const yMm = cellYMm + (fixedCardHeightMm - layout.cardHeightMm) / 2;
 
-        const imageData = card.imageId
-          ? imageDataById.get(card.imageId)
-          : undefined;
         const backCard = backCardMap.get(card.uuid);
         const backImageData = backCard?.imageId
           ? imageDataById.get(backCard.imageId)
@@ -1064,7 +1067,8 @@ export function PageView({
                                 const bleedMm = getCardTargetBleed(
                                   card,
                                   sourceSettings,
-                                  effectiveBleedWidth
+                                  effectiveBleedWidth,
+                                  card.imageId ? imageDataById.get(card.imageId) : undefined
                                 );
                                 const cardWidth =
                                   (baseCardWidthMm + bleedMm * 2) *
@@ -1132,7 +1136,8 @@ export function PageView({
                         const bleedMm = getCardTargetBleed(
                           card,
                           sourceSettings,
-                          effectiveBleedWidth
+                          effectiveBleedWidth,
+                          card.imageId ? imageDataById.get(card.imageId) : undefined
                         );
                         const cardWidth =
                           (baseCardWidthMm + bleedMm * 2) *

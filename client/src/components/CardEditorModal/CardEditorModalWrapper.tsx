@@ -61,11 +61,25 @@ export function CardEditorModalWrapper() {
                     id: cardback.id,
                     displayBlob: cardback.displayBlob,
                     exportBlob: cardback.exportBlob,
+                    displayBlobDarkenAll: cardback.displayBlobDarkenAll,
+                    exportBlobDarkenAll: cardback.exportBlobDarkenAll,
+                    displayBlobContrastEdges: cardback.displayBlobContrastEdges,
+                    exportBlobContrastEdges: cardback.exportBlobContrastEdges,
+                    displayBlobContrastFull: cardback.displayBlobContrastFull,
+                    exportBlobContrastFull: cardback.exportBlobContrastFull,
+                    displayBlobDarkened: cardback.displayBlobDarkened,
+                    exportBlobDarkened: cardback.exportBlobDarkened,
                     baseDisplayBlob: cardback.displayBlob, // Use processed blob as base
                     baseExportBlob: cardback.exportBlob,
                     // Display at 300 DPI, export at global DPI setting
                     displayDpi: 300,
                     exportDpi: globalDpi,
+                    exportBleedWidth: cardback.exportBleedWidth,
+                    generatedHasBuiltInBleed: cardback.generatedHasBuiltInBleed,
+                    generatedBleedMode: cardback.generatedBleedMode,
+                    generatedExistingBleedMm: cardback.generatedExistingBleedMm,
+                    hasBuiltInBleed: cardback.hasBuiltInBleed,
+                    sourceUrl: cardback.sourceUrl,
                 } as Image;
             }
             return undefined;

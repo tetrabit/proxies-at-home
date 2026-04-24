@@ -1,4 +1,5 @@
 import type { CardOption } from "../../../shared/types";
+import { getHasBuiltInBleed, type BleedMetadataImage } from "./imageSpecs";
 
 export const baseCardWidthMm = 63;
 export const baseCardHeightMm = 88;
@@ -21,6 +22,7 @@ export function getCardTargetBleed(
     card: CardOption,
     sourceSettings: SourceTypeSettings,
     globalBleedWidth: number,
+    image?: BleedMetadataImage,
 ): number {
     // 1. Card-Specific Override
     if (card.bleedMode) {
@@ -35,7 +37,7 @@ export function getCardTargetBleed(
     }
 
     // 2. Type Settings (Global Defaults)
-    if (card.hasBuiltInBleed) {
+    if (getHasBuiltInBleed(card, image)) {
         switch (sourceSettings.withBleedTargetMode) {
             case 'none': return 0;
             case 'manual': return sourceSettings.withBleedTargetAmount;
@@ -71,9 +73,9 @@ export function computeCardLayouts(
 /**
  * Compute a uniform guide/layout box for export.
  *
- * Export guide positions should remain anchored to the global bleed box even
- * when individual cards render with different bleed widths. Per-card bleed
- * overrides are applied later during image processing inside this fixed box.
+ * Export guide positions stay anchored to the global bleed box even when
+ * individual cards render with different bleed widths. The PDF worker handles
+ * those differences during image composition instead of moving the cutline grid.
  */
 export function computeGuideLayouts(
     pageCards: CardOption[],

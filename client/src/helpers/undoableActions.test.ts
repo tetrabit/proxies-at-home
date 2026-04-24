@@ -5,6 +5,7 @@ import {
     undoableDeleteCard,
     undoableAddCards,
     undoableDuplicateCard,
+    undoableUpdateCardBleedSettings,
 } from "./undoableActions";
 import { db } from "@/db";
 import { addCards } from "./dbUtils";
@@ -46,7 +47,10 @@ vi.mock("@/db", () => ({
                 keys: vi.fn().mockResolvedValue([]),
             })),
         },
-        transaction: vi.fn((_mode, _tables, fn) => fn()),
+        cardbacks: {
+            update: vi.fn(),
+        },
+        transaction: vi.fn((...args) => args[args.length - 1]()),
     },
 }));
 
@@ -93,6 +97,7 @@ vi.mock("./cardbackLibrary", () => ({
     BUILTIN_CARDBACKS: [
         { id: "__builtin_mtg__", name: "MTG", hasBuiltInBleed: true },
     ],
+    isCardbackId: (id: string) => id.startsWith("cardback_"),
 }));
 
 describe("undoableActions", () => {
@@ -222,6 +227,68 @@ describe("undoableActions", () => {
                     description: expect.stringContaining('Duplicate "'),
                 })
             );
+        });
+    });
+
+    describe("undoableUpdateCardBleedSettings", () => {
+        const selectedCard = {
+            uuid: "back-1",
+            name: "Shared Back",
+            order: 0,
+            imageId: "cardback_uploaded_1",
+            isUserUpload: true,
+        } as CardOption;
+        const otherSharedCard = {
+            uuid: "back-2",
+            name: "Other Shared Back",
+            order: 1,
+            imageId: "cardback_uploaded_1",
+            isUserUpload: true,
+        } as CardOption;
+
+        beforeEach(() => {
+            vi.mocked(db.cards.where).mockImplementation((field: string) => ({
+                anyOf: vi.fn(() => ({
+                    toArray: vi.fn().mockResolvedValue(field === "uuid" ? [selectedCard] : []),
+                })),
+                equals: vi.fn(() => ({
+                    first: vi.fn(),
+                    toArray: vi.fn().mockResolvedValue(field === "imageId" ? [selectedCard, otherSharedCard] : []),
+                })),
+            }) as ReturnType<typeof db.cards.where>);
+        });
+
+        it("updates only selected cards when selected scope is requested", async () => {
+            await undoableUpdateCardBleedSettings(
+                ["back-1"],
+                { bleedMode: "none" },
+                { scope: "selected" }
+            );
+
+            expect(db.cards.bulkUpdate).toHaveBeenCalledWith([
+                {
+                    key: "back-1",
+                    changes: expect.objectContaining({ bleedMode: "none" }),
+                },
+            ]);
+        });
+
+        it("keeps shared-image updates as the default behavior", async () => {
+            await undoableUpdateCardBleedSettings(
+                ["back-1"],
+                { bleedMode: "none" }
+            );
+
+            expect(db.cards.bulkUpdate).toHaveBeenCalledWith([
+                {
+                    key: "back-1",
+                    changes: expect.objectContaining({ bleedMode: "none" }),
+                },
+                {
+                    key: "back-2",
+                    changes: expect.objectContaining({ bleedMode: "none" }),
+                },
+            ]);
         });
     });
 });

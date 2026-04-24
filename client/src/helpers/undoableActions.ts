@@ -774,7 +774,8 @@ export async function undoableUpdateCardBleedSettings(
         bleedMode?: 'generate' | 'existing' | 'none';
         existingBleedMm?: number;
         generateBleedMm?: number;
-    }
+    },
+    options: { scope?: 'selected' | 'shared-image' } = {}
 ): Promise<void> {
     if (cardUuids.length === 0) return;
 
@@ -782,12 +783,24 @@ export async function undoableUpdateCardBleedSettings(
     const selectedCards = await db.cards.where('uuid').anyOf(cardUuids).toArray();
     if (selectedCards.length === 0) return;
 
-    // Find ALL cards that share the same imageId (for "apply to all" behavior)
+    const scope = options.scope ?? 'shared-image';
+
+    // Front edits keep the historical "apply to all cards using this art" behavior.
+    // Back-card edits can opt into selected-only so shared default backs can have
+    // per-card target bleed overrides without clobbering every card using that back.
     const imageIds = new Set(selectedCards.map(c => c.imageId).filter((id): id is string => !!id));
-    const allAffectedCards: CardOption[] = [];
-    for (const imageId of imageIds) {
-        const cardsWithImage = await db.cards.where('imageId').equals(imageId).toArray();
-        allAffectedCards.push(...cardsWithImage);
+    let allAffectedCards: CardOption[];
+    if (scope === 'selected') {
+        allAffectedCards = selectedCards;
+    } else {
+        const cardsWithImageIds = new Map<string, CardOption>();
+        for (const imageId of imageIds) {
+            const cardsWithImage = await db.cards.where('imageId').equals(imageId).toArray();
+            for (const card of cardsWithImage) {
+                cardsWithImageIds.set(card.uuid, card);
+            }
+        }
+        allAffectedCards = Array.from(cardsWithImageIds.values());
     }
 
     // Capture old settings for ALL affected cards (for proper undo)
@@ -809,7 +822,7 @@ export async function undoableUpdateCardBleedSettings(
     const cardName = selectedCards.length === 1 ? selectedCards[0]?.name || 'card' : `${selectedCards.length} cards`;
     const allAffectedUuids = allAffectedCards.map(c => c.uuid);
 
-    // Perform the update - apply to ALL cards sharing the same imageId
+    // Perform the update against the scoped card set.
     await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
         const changes: Partial<CardOption> = {
             hasBuiltInBleed: newSettings.hasBuiltInBleed,
@@ -818,7 +831,7 @@ export async function undoableUpdateCardBleedSettings(
             generateBleedMm: newSettings.generateBleedMm,
         };
 
-        // Update ALL affected cards (not just selected)
+        // Update all affected cards for the chosen scope.
         await db.cards.bulkUpdate(
             allAffectedUuids.map((uuid) => ({
                 key: uuid,
@@ -831,6 +844,7 @@ export async function undoableUpdateCardBleedSettings(
             const invalidation = {
                 generatedBleedMode: undefined,
                 generatedHasBuiltInBleed: undefined,
+                generatedExistingBleedMm: undefined,
             };
             // Update the correct table based on ID type
             if (isCardbackId(imageId)) {
@@ -858,10 +872,16 @@ export async function undoableUpdateCardBleedSettings(
                 }
                 // Invalidate image cache to trigger regeneration
                 for (const imageId of imageIds) {
-                    await db.images.update(imageId, {
+                    const invalidation = {
                         generatedBleedMode: undefined,
                         generatedHasBuiltInBleed: undefined,
-                    });
+                        generatedExistingBleedMm: undefined,
+                    };
+                    if (isCardbackId(imageId)) {
+                        await db.cardbacks.update(imageId, invalidation);
+                    } else {
+                        await db.images.update(imageId, invalidation);
+                    }
                 }
             });
         },
@@ -883,10 +903,16 @@ export async function undoableUpdateCardBleedSettings(
                 );
                 // Invalidate image cache to trigger regeneration
                 for (const imageId of imageIds) {
-                    await db.images.update(imageId, {
+                    const invalidation = {
                         generatedBleedMode: undefined,
                         generatedHasBuiltInBleed: undefined,
-                    });
+                        generatedExistingBleedMm: undefined,
+                    };
+                    if (isCardbackId(imageId)) {
+                        await db.cardbacks.update(imageId, invalidation);
+                    } else {
+                        await db.images.update(imageId, invalidation);
+                    }
                 }
             });
         },

@@ -426,7 +426,11 @@ describe("useImageProcessing", () => {
       // Mock should return generatedHasBuiltInBleed to indicate settings are not invalidated
       (db.images.get as Mock).mockResolvedValue({
         sourceUrl: "http://example.com/img.png",
+        exportDpi: 300,
+        exportBleedWidth: 1,
         generatedHasBuiltInBleed: false, // Settings not invalidated
+        generatedBleedMode: "generate",
+        generatedExistingBleedMm: 0,
       });
       const card2 = { ...card, uuid: "different-uuid", imageId: "image123" };
 

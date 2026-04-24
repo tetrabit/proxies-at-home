@@ -1,6 +1,11 @@
 
 import type { CardOption } from "../../../shared/types";
 
+export type BleedMetadataImage = {
+    hasBuiltInBleed?: boolean;
+    generatedHasBuiltInBleed?: boolean;
+};
+
 export interface GlobalSettings {
     bleedEdgeWidth: number;
     bleedEdgeUnit: 'mm' | 'in';
@@ -14,10 +19,15 @@ export interface GlobalSettings {
 
 /**
  * Gets the hasBuiltInBleed status for a card, handling legacy hasBakedBleed property.
- * If card setting is undefined/unknown, falls back to the Image record's generated setting (if provided).
+ * If card setting is undefined/unknown, falls back to image/cardback metadata.
+ * Cardback records store source-truth hasBuiltInBleed, while generated metadata
+ * records the settings used for a cached processed blob.
  */
-export function getHasBuiltInBleed(card: CardOption, image?: { generatedHasBuiltInBleed?: boolean }): boolean | undefined {
-    return card.hasBuiltInBleed ?? (card as { hasBakedBleed?: boolean }).hasBakedBleed ?? image?.generatedHasBuiltInBleed;
+export function getHasBuiltInBleed(card: CardOption, image?: BleedMetadataImage): boolean | undefined {
+    return card.hasBuiltInBleed
+        ?? (card as { hasBakedBleed?: boolean }).hasBakedBleed
+        ?? image?.hasBuiltInBleed
+        ?? image?.generatedHasBuiltInBleed;
 }
 
 /**
@@ -29,7 +39,8 @@ export function getHasBuiltInBleed(card: CardOption, image?: { generatedHasBuilt
  */
 export function getEffectiveBleedMode(
     card: CardOption,
-    settings: Pick<GlobalSettings, 'withBleedTargetMode' | 'noBleedTargetMode'>
+    settings: Pick<GlobalSettings, 'withBleedTargetMode' | 'noBleedTargetMode'>,
+    image?: BleedMetadataImage
 ): 'generate' | 'none' | 'existing' {
     // 1. Per-card override
     if (card.bleedMode) {
@@ -39,7 +50,7 @@ export function getEffectiveBleedMode(
     // 2. Type-specific settings
     let targetMode: 'global' | 'manual' | 'none' = 'global';
 
-    if (getHasBuiltInBleed(card)) {
+    if (getHasBuiltInBleed(card, image)) {
         targetMode = settings.withBleedTargetMode;
     } else if (card.isUserUpload) {
         // Regular upload (no built in bleed)
@@ -64,7 +75,7 @@ export function getEffectiveBleedMode(
 export function getEffectiveExistingBleedMm(
     card: CardOption,
     settings: Pick<GlobalSettings, 'withBleedSourceAmount'>,
-    image?: { generatedHasBuiltInBleed?: boolean }
+    image?: BleedMetadataImage
 ): number | undefined {
     // 1. Per-card override
     if (card.existingBleedMm !== undefined) {
@@ -89,9 +100,10 @@ export function getEffectiveExistingBleedMm(
 export function getExpectedBleedWidth(
     card: CardOption,
     globalBleedWidthMm: number,
-    settings: GlobalSettings
+    settings: GlobalSettings,
+    image?: BleedMetadataImage
 ): number {
-    const effectiveMode = getEffectiveBleedMode(card, settings);
+    const effectiveMode = getEffectiveBleedMode(card, settings, image);
 
     if (effectiveMode === 'none') {
         return 0;
@@ -106,7 +118,7 @@ export function getExpectedBleedWidth(
     let targetMode: 'global' | 'manual' | 'none' = 'global';
     let manualAmount = 0;
 
-    if (getHasBuiltInBleed(card)) {
+    if (getHasBuiltInBleed(card, image)) {
         targetMode = settings.withBleedTargetMode;
         manualAmount = settings.withBleedTargetAmount;
     } else {

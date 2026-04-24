@@ -23,6 +23,7 @@ export interface Image {
   // Generation Metadata (for invalidating cache on setting changes)
   generatedHasBuiltInBleed?: boolean;
   generatedBleedMode?: string;
+  generatedExistingBleedMm?: number;
 
   // Darkened versions for each mode (instant toggle)
   // Mode 1: Darken All (legacy threshold)
@@ -78,6 +79,7 @@ export interface Cardback {
   // Generation metadata
   generatedHasBuiltInBleed?: boolean;
   generatedBleedMode?: string;
+  generatedExistingBleedMm?: number;
 
   // Source and display
   sourceUrl?: string;

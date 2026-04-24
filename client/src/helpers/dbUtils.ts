@@ -1400,7 +1400,8 @@ export async function changeCardArtwork(
       oldImageId === newImageId &&
       !newName &&
       !newImageUrls &&
-      !cardMetadata
+      !cardMetadata &&
+      hasBuiltInBleed === undefined
     ) {
       return;
     }
@@ -1478,6 +1479,7 @@ export async function changeCardArtwork(
             updates.exportBlobDarkened = undefined;
             updates.generatedHasBuiltInBleed = undefined;
             updates.generatedBleedMode = undefined;
+            updates.generatedExistingBleedMm = undefined;
           }
         }
         await db.images.update(newImageId, updates);
@@ -1505,6 +1507,25 @@ export async function changeCardArtwork(
           source: isMpcImage
             ? "mpc"
             : (inferSourceFromUrl(sourceUrl) ?? undefined),
+        });
+      }
+    } else if (hasBuiltInBleed !== undefined && oldImageId !== newImageId) {
+      const cardback = await db.cardbacks.get(newImageId);
+      if (cardback && cardback.generatedHasBuiltInBleed !== hasBuiltInBleed) {
+        await db.cardbacks.update(newImageId, {
+          displayBlob: undefined,
+          displayBlobDarkened: undefined,
+          exportBlob: undefined,
+          exportBlobDarkened: undefined,
+          displayBlobDarkenAll: undefined,
+          exportBlobDarkenAll: undefined,
+          displayBlobContrastEdges: undefined,
+          exportBlobContrastEdges: undefined,
+          displayBlobContrastFull: undefined,
+          exportBlobContrastFull: undefined,
+          generatedHasBuiltInBleed: undefined,
+          generatedBleedMode: undefined,
+          generatedExistingBleedMm: undefined,
         });
       }
     }

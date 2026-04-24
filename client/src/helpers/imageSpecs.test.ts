@@ -52,6 +52,19 @@ describe("imageSpecs", () => {
             expect(getHasBuiltInBleed(card)).toBe(true);
         });
 
+        it("should fall back to generated image metadata when card metadata is unset", () => {
+            const card = createTestCard();
+            expect(getHasBuiltInBleed(card, { generatedHasBuiltInBleed: true })).toBe(true);
+        });
+
+        it("should use cardback source metadata before generated cache metadata", () => {
+            const card = createTestCard();
+            expect(getHasBuiltInBleed(card, {
+                hasBuiltInBleed: true,
+                generatedHasBuiltInBleed: false,
+            })).toBe(true);
+        });
+
         it("should prefer hasBuiltInBleed over hasBakedBleed", () => {
             const card = createTestCard({ hasBuiltInBleed: false }) as CardOption & { hasBakedBleed?: boolean };
             card.hasBakedBleed = true;
@@ -91,6 +104,18 @@ describe("imageSpecs", () => {
             const card = createTestCard();
             expect(getEffectiveBleedMode(card, defaultSettings)).toBe("generate");
         });
+
+        it("should use image bleed metadata when selecting type-specific target mode", () => {
+            const card = createTestCard();
+            const settings = { ...defaultSettings, withBleedTargetMode: "none" as const };
+            expect(getEffectiveBleedMode(card, settings, { generatedHasBuiltInBleed: true })).toBe("none");
+        });
+
+        it("should use cardback bleed metadata when selecting type-specific target mode", () => {
+            const card = createTestCard({ imageId: "cardback_custom" });
+            const settings = { ...defaultSettings, withBleedTargetMode: "none" as const };
+            expect(getEffectiveBleedMode(card, settings, { hasBuiltInBleed: true })).toBe("none");
+        });
     });
 
     describe("getEffectiveExistingBleedMm", () => {
@@ -112,6 +137,11 @@ describe("imageSpecs", () => {
         it("should return 0 for user uploads without built-in bleed", () => {
             const card = createTestCard({ isUserUpload: true });
             expect(getEffectiveExistingBleedMm(card, defaultSettings)).toBe(0);
+        });
+
+        it("should return source amount for cardbacks with source bleed metadata", () => {
+            const card = createTestCard({ imageId: "cardback_custom" });
+            expect(getEffectiveExistingBleedMm(card, defaultSettings, { hasBuiltInBleed: true })).toBe(3);
         });
     });
 
@@ -156,6 +186,32 @@ describe("imageSpecs", () => {
                 noBleedTargetAmount: 1.5,
             };
             expect(getExpectedBleedWidth(card, 3, settings)).toBe(1.5);
+        });
+
+        it("should use image bleed metadata when calculating target bleed width", () => {
+            const card = createTestCard();
+            const settings: GlobalSettings = {
+                ...defaultSettings,
+                withBleedTargetMode: "manual",
+                withBleedTargetAmount: 2.25,
+                noBleedTargetMode: "manual",
+                noBleedTargetAmount: 0.75,
+            };
+
+            expect(getExpectedBleedWidth(card, 3, settings, { generatedHasBuiltInBleed: true })).toBe(2.25);
+        });
+
+        it("should use cardback metadata when calculating target bleed width", () => {
+            const card = createTestCard({ imageId: "cardback_custom" });
+            const settings: GlobalSettings = {
+                ...defaultSettings,
+                withBleedTargetMode: "manual",
+                withBleedTargetAmount: 1.25,
+                noBleedTargetMode: "manual",
+                noBleedTargetAmount: 4,
+            };
+
+            expect(getExpectedBleedWidth(card, 3, settings, { hasBuiltInBleed: true })).toBe(1.25);
         });
     });
 });

@@ -182,7 +182,7 @@ describe('ArtworkBleedSettings', () => {
                 expect(screen.getByLabelText('Built-in Bleed')).toBeChecked();
             });
 
-            expect(getHasBuiltInBleed).toHaveBeenCalledWith(persistedCard);
+            expect(getHasBuiltInBleed).toHaveBeenCalledWith(persistedCard, undefined);
         });
 
         it('toggling Built-in Bleed shows/hides source controls', () => {
@@ -317,7 +317,8 @@ describe('ArtworkBleedSettings', () => {
                     ['back-uuid'], // Should operate on back card
                     expect.objectContaining({
                         bleedMode: 'none'
-                    })
+                    }),
+                    { scope: 'selected' }
                 );
             });
         });
@@ -343,7 +344,8 @@ describe('ArtworkBleedSettings', () => {
                     ['back-uuid'],
                     expect.objectContaining({
                         bleedMode: 'none'
-                    })
+                    }),
+                    { scope: 'selected' }
                 );
             });
         });
@@ -389,7 +391,8 @@ describe('ArtworkBleedSettings', () => {
                 // Should only include the active back card UUID, not multiple
                 expect(undoableUpdateCardBleedSettings).toHaveBeenCalledWith(
                     ['back-uuid'],
-                    expect.anything()
+                    expect.anything(),
+                    { scope: 'selected' }
                 );
             });
         });

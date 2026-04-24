@@ -20,6 +20,7 @@ import {
 } from "@/helpers/duplexCollation";
 import { exportModeUsesPerCardBackOffsets } from "@/helpers/exportMode";
 import { applyCalibration } from "@/helpers/printerCalibrationApi";
+import { applyInheritedCardbackTargetBleed, normalizeSharedCardbackTargetBleed } from "@/helpers/backBleedSettings";
 import {
   countExportPages,
   formatPdfPageLimitInput,
@@ -217,22 +218,24 @@ export function ExportActions({ cards }: Props) {
         // Card has a linked back - use it
         const backCard = await db.cards.get(frontCard.linkedBackId);
         if (backCard) {
-          backCards.push(backCard);
+          backCards.push(applyInheritedCardbackTargetBleed(frontCard, backCard));
         } else {
           // Back card not found, use blank placeholder
-          backCards.push(createBlankBackCard(frontCard));
+          backCards.push(applyInheritedCardbackTargetBleed(frontCard, createBlankBackCard(frontCard)));
         }
       } else {
         // No linked back - use blank placeholder (no image)
-        backCards.push(createBlankBackCard(frontCard));
+        backCards.push(applyInheritedCardbackTargetBleed(frontCard, createBlankBackCard(frontCard)));
       }
     }
+
+    const normalizedBackCards = normalizeSharedCardbackTargetBleed(backCards);
 
     // Mirror rows for duplex printing: reverse order within each row
     // No blank padding - incomplete rows will be right-aligned by PDF worker
     const mirroredCards: CardOption[] = [];
-    for (let i = 0; i < backCards.length; i += columns) {
-      const row = backCards.slice(i, i + columns);
+    for (let i = 0; i < normalizedBackCards.length; i += columns) {
+      const row = normalizedBackCards.slice(i, i + columns);
       // Reverse the row so when printed duplex, backs align with fronts
       mirroredCards.push(...row.reverse());
     }
@@ -326,13 +329,13 @@ export function ExportActions({ cards }: Props) {
           // Each front followed by its back (skip blank backs - they don't add value)
           for (const frontCard of frontCards) {
             cardsToExport.push(frontCard);
-            if (frontCard.linkedBackId) {
-              const backCard = await db.cards.get(frontCard.linkedBackId);
-              // Only include if it's a real back (not blank)
-              if (backCard && backCard.imageId !== 'cardback_builtin_blank') {
-                cardsToExport.push(backCard);
-              }
-            }
+	            if (frontCard.linkedBackId) {
+	              const backCard = await db.cards.get(frontCard.linkedBackId);
+	              // Only include if it's a real back (not blank)
+	              if (backCard && backCard.imageId !== 'cardback_builtin_blank') {
+	                cardsToExport.push(applyInheritedCardbackTargetBleed(frontCard, backCard));
+	              }
+	            }
             // No else - skip cards without real backs
 	          }
 	          filenameSuffix = '_interleaved-all';
@@ -342,13 +345,13 @@ export function ExportActions({ cards }: Props) {
           // Each front followed by back ONLY for DFC/custom backs (not default cardbacks or blanks)
           for (const frontCard of frontCards) {
             cardsToExport.push(frontCard);
-            if (frontCard.linkedBackId) {
-              const backCard = await db.cards.get(frontCard.linkedBackId);
-              // Only include if it's a custom back (not using default cardback and not blank)
-              if (backCard && !backCard.usesDefaultCardback && backCard.imageId !== 'cardback_builtin_blank') {
-                cardsToExport.push(backCard);
-              }
-            }
+	            if (frontCard.linkedBackId) {
+	              const backCard = await db.cards.get(frontCard.linkedBackId);
+	              // Only include if it's a custom back (not using default cardback and not blank)
+	              if (backCard && !backCard.usesDefaultCardback && backCard.imageId !== 'cardback_builtin_blank') {
+	                cardsToExport.push(applyInheritedCardbackTargetBleed(frontCard, backCard));
+	              }
+	            }
 	          }
 	          filenameSuffix = '_interleaved-custom';
 	          break;
@@ -358,12 +361,12 @@ export function ExportActions({ cards }: Props) {
           for (const frontCard of frontCards) {
             const isFlipped = useSelectionStore.getState().flippedCards.has(frontCard.uuid);
             if (isFlipped && frontCard.linkedBackId) {
-              const backCard = await db.cards.get(frontCard.linkedBackId);
-              if (backCard) {
-                cardsToExport.push(backCard);
-              } else {
-                cardsToExport.push(frontCard);
-              }
+	              const backCard = await db.cards.get(frontCard.linkedBackId);
+	              if (backCard) {
+	                cardsToExport.push(applyInheritedCardbackTargetBleed(frontCard, backCard));
+	              } else {
+	                cardsToExport.push(frontCard);
+	              }
             } else {
               cardsToExport.push(frontCard);
             }
@@ -648,6 +651,8 @@ export function ExportActions({ cards }: Props) {
           }
           break;
       }
+
+      cardsToExport = normalizeSharedCardbackTargetBleed(cardsToExport);
 
       await exportProxyPagesToPdf({
         cards: cardsToExport,
