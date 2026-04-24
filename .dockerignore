@@ -39,8 +39,8 @@ dist-app
 .sisyphus
 .sidecar
 .todos
-.smoke-artifacts
-client/.smoke-artifacts
+**/.smoke-artifacts
+**/smoke-artifacts
 client/test-results
 client/playwright-report
 client/tests/e2e
