@@ -1301,7 +1301,14 @@ export function ArtworkModal() {
           {/* Settings Tab Content */}
           {activeTab === "settings" && modalCard && (
             <div className="flex flex-col flex-1 min-h-0 rounded-b-2xl overflow-hidden">
-              <ArtworkBleedSettings selectedFace={selectedFace} />
+              <ArtworkBleedSettings
+                selectedFace={selectedFace}
+                applyToAll={applyToAll}
+                setApplyToAll={setApplyToAll}
+                applyToAllCardName={
+                  selectedFace === "back" ? tabLabels.back : tabLabels.front
+                }
+              />
             </div>
           )}
         </div>
@@ -1325,6 +1332,7 @@ export function ArtworkModal() {
             handleSelectMpcArt({
               identifier,
               name,
+              rawName: name,
               smallThumbnailUrl: "",
               mediumThumbnailUrl: "",
               dpi: 0,

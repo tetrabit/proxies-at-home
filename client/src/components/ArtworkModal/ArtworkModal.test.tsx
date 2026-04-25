@@ -243,8 +243,21 @@ vi.mock('./ArtworkTabContent', () => ({
 }));
 
 vi.mock('../CardEditorModal/ArtworkBleedSettings', () => ({
-    ArtworkBleedSettings: ({ selectedFace }: { selectedFace: string }) => (
-        <div data-testid="artwork-bleed-settings" data-selected-face={selectedFace}>
+    ArtworkBleedSettings: ({
+        selectedFace,
+        applyToAll,
+        applyToAllCardName,
+    }: {
+        selectedFace: string;
+        applyToAll?: boolean;
+        applyToAllCardName?: string;
+    }) => (
+        <div
+            data-testid="artwork-bleed-settings"
+            data-selected-face={selectedFace}
+            data-apply-to-all={String(!!applyToAll)}
+            data-apply-to-all-card-name={applyToAllCardName}
+        >
             Bleed Settings
         </div>
     ),
@@ -824,6 +837,14 @@ describe('ArtworkModal', () => {
 
             const bleedSettings = screen.getByTestId('artwork-bleed-settings');
             expect(bleedSettings.getAttribute('data-selected-face')).toBe('back');
+        });
+
+        it('should pass apply-to-all card name to ArtworkBleedSettings', () => {
+            mockState.initialTab = 'settings';
+            render(<ArtworkModal />);
+
+            const bleedSettings = screen.getByTestId('artwork-bleed-settings');
+            expect(bleedSettings.getAttribute('data-apply-to-all-card-name')).toBe('Front');
         });
     });
 

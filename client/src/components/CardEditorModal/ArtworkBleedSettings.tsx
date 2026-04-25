@@ -14,9 +14,17 @@ import { Palette } from "lucide-react";
 
 interface ArtworkBleedSettingsProps {
     selectedFace: 'front' | 'back';
+    applyToAll?: boolean;
+    setApplyToAll?: (val: boolean) => void;
+    applyToAllCardName?: string;
 }
 
-export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps) {
+export function ArtworkBleedSettings({
+    selectedFace,
+    applyToAll = false,
+    setApplyToAll,
+    applyToAllCardName,
+}: ArtworkBleedSettingsProps) {
     const modalCard = useArtworkModalStore((state) => state.card);
     const closeModal = useArtworkModalStore((state) => state.closeModal);
 
@@ -123,6 +131,13 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
     // Check if we're on a back card that doesn't exist yet
     const isBackTab = selectedFace === 'back';
     const hasLinkedBack = !!linkedBackCard;
+    const showApplyToAll = !!setApplyToAll && !!activeCard && (!isBackTab || hasLinkedBack);
+    const applyToAllLabel = applyToAllCardName ?? activeCard?.name ?? "";
+    const activeEditorImage = activeImage
+        ? ("refCount" in activeImage
+            ? activeImage
+            : { ...activeImage, refCount: 0, source: "cardback" as const })
+        : null;
 
     // For back tab without linked back card, show message
     if (isBackTab && !hasLinkedBack) {
@@ -141,9 +156,17 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
         let bleedMode: 'generate' | 'none' | undefined;
         let existingBleedMm: number | undefined;
         let generateBleedMm: number | undefined;
+        const getNamedCards = async () =>
+            applyToAll && activeCard?.name
+                ? await db.cards.where('name').equals(activeCard.name).toArray()
+                : [];
 
         // If "same as front" is checked for back card, copy front card settings
         if (isBackTab && sameAsFront && modalCard) {
+            const namedCards = await getNamedCards();
+            const cardUuids = namedCards.length > 0
+                ? namedCards.map((card) => card.uuid)
+                : [activeCard!.uuid];
             const frontSettings = {
                 hasBuiltInBleed: getHasBuiltInBleed(modalCard, frontImage),
                 bleedMode: modalCard.bleedMode,
@@ -152,7 +175,7 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
             };
 
             await undoableUpdateCardBleedSettings(
-                [activeCard!.uuid],
+                cardUuids,
                 frontSettings,
                 { scope: 'selected' }
             );
@@ -185,11 +208,15 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
         }
 
         const selectedCards = useSelectionStore.getState().selectedCards;
+        const namedCards = await getNamedCards();
+
         // For back cards, only save to this specific back card (no multi-select for backs)
         // For front cards, allow multi-select
-        const cardUuids = !isBackTab && selectedCards.size > 1 && modalCard && selectedCards.has(modalCard.uuid)
-            ? Array.from(selectedCards)
-            : [activeCard!.uuid];
+        const cardUuids = namedCards.length > 0
+            ? namedCards.map((card) => card.uuid)
+            : (!isBackTab && selectedCards.size > 1 && modalCard && selectedCards.has(modalCard.uuid)
+                ? Array.from(selectedCards)
+                : [activeCard!.uuid]);
 
         const settings = {
             hasBuiltInBleed: hasBleedBuiltIn,
@@ -198,7 +225,7 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
             generateBleedMm
         };
 
-        if (isBackTab) {
+        if (isBackTab || applyToAll) {
             await undoableUpdateCardBleedSettings(cardUuids, settings, { scope: 'selected' });
         } else {
             await undoableUpdateCardBleedSettings(cardUuids, settings);
@@ -210,6 +237,17 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
     return (
         <div className="flex flex-col h-full bg-white dark:bg-gray-700 max-h-full overflow-hidden">
             <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0">
+                {showApplyToAll && (
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <Checkbox
+                            checked={applyToAll}
+                            onChange={(e) => setApplyToAll(e.target.checked)}
+                            className="size-5"
+                        />
+                        <span className="text-base dark:text-white">Apply to all cards named "{applyToAllLabel}"</span>
+                    </label>
+                )}
+
                 {/* Back Face Toggle - only for back cards */}
                 {selectedFace === 'back' && linkedBackCard && (
                     <div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded-lg border border-blue-100 dark:border-blue-800">
@@ -310,7 +348,7 @@ export function ArtworkBleedSettings({ selectedFace }: ArtworkBleedSettingsProps
                             closeModal();
                             useCardEditorModalStore.getState().openModal({
                                 card: activeCard,
-                                image: activeImage ?? null,
+                                image: activeEditorImage,
                             });
                         }}
                     >

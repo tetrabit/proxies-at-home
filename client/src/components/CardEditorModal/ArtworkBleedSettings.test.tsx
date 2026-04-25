@@ -25,6 +25,7 @@ vi.mock('@/db', () => ({
     db: {
         cards: {
             get: vi.fn(),
+            where: vi.fn(),
         },
         images: {
             get: vi.fn(),
@@ -114,6 +115,11 @@ describe('ArtworkBleedSettings', () => {
             if (id === 'back-uuid') return Promise.resolve(defaultBackCard);
             return Promise.resolve(undefined);
         });
+        (db.cards.where as Mock).mockReturnValue({
+            equals: vi.fn(() => ({
+                toArray: vi.fn().mockResolvedValue([]),
+            })),
+        });
 
         (db.images.get as Mock).mockResolvedValue({ id: 'img-1', url: 'blob:test' });
 
@@ -127,6 +133,25 @@ describe('ArtworkBleedSettings', () => {
             render(<ArtworkBleedSettings selectedFace="front" />);
             expect(screen.getByText('Bleed Settings')).toBeInTheDocument();
             expect(screen.getByText('Built-in Bleed')).toBeInTheDocument();
+        });
+
+        it('renders apply-to-all checkbox when configured', () => {
+            const setApplyToAll = vi.fn();
+
+            render(
+                <ArtworkBleedSettings
+                    selectedFace="front"
+                    applyToAll={false}
+                    setApplyToAll={setApplyToAll}
+                    applyToAllCardName="Front Card"
+                />
+            );
+
+            const checkbox = screen.getByLabelText('Apply to all cards named "Front Card"');
+            expect(checkbox).toBeInTheDocument();
+
+            fireEvent.click(checkbox);
+            expect(setApplyToAll).toHaveBeenCalledWith(true);
         });
 
         it('initializes with default values when card has no specific settings', () => {
@@ -225,6 +250,38 @@ describe('ArtworkBleedSettings', () => {
                         existingBleedMm: undefined, // Default source
                         generateBleedMm: undefined  // None target
                     })
+                );
+            });
+        });
+
+        it('applies settings to all cards with the same name when checked', async () => {
+            (db.cards.where as Mock).mockReturnValue({
+                equals: vi.fn(() => ({
+                    toArray: vi.fn().mockResolvedValue([
+                        defaultFrontCard,
+                        { ...defaultFrontCard, uuid: 'front-uuid-2' },
+                    ]),
+                })),
+            });
+
+            render(
+                <ArtworkBleedSettings
+                    selectedFace="front"
+                    applyToAll={true}
+                    setApplyToAll={vi.fn()}
+                    applyToAllCardName="Front Card"
+                />
+            );
+
+            fireEvent.click(screen.getByText('Save Settings'));
+
+            await waitFor(() => {
+                expect(undoableUpdateCardBleedSettings).toHaveBeenCalledWith(
+                    ['front-uuid', 'front-uuid-2'],
+                    expect.objectContaining({
+                        hasBuiltInBleed: false,
+                    }),
+                    { scope: 'selected' }
                 );
             });
         });
