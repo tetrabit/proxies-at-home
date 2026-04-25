@@ -1,12 +1,11 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Database file location (persists in server/data directory)
-const DB_PATH = path.join(__dirname, '..', '..', 'data', 'proxxied-cards.db');
+const DATA_DIRECTORY = path.resolve(process.env.SERVER_DATA_DIR ?? path.join(process.cwd(), 'data'));
+fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
+const DB_PATH = path.join(DATA_DIRECTORY, 'proxxied-cards.db');
 
 // Current schema version - increment when adding migrations
 const CURRENT_DB_VERSION = 6;

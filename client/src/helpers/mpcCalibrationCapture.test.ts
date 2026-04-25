@@ -76,5 +76,54 @@ describe("mpcCalibrationCapture", () => {
     expect(result.caseRecord.source.sourceArtImageUrl).toContain("/art_crop/");
     expect(result.caseRecord.candidates[0].imageUrl).toContain("size=small");
     expect(result.assets).toHaveLength(4);
+    expect(result.assetErrors).toEqual([]);
+  });
+
+  it("captures the case and skips assets that fail to fetch", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["source"], { type: "image/jpeg" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: async () => new Blob(["source-art"], { type: "image/jpeg" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+      });
+
+    const result = await captureMpcCalibrationCase({
+      datasetId: "dataset-1",
+      card,
+      imageRecord,
+      expectedIdentifier: "candidate-a",
+      candidates: [
+        {
+          identifier: "candidate-a",
+          name: "Sol Ring",
+          rawName: "Sol Ring [C21] {267}",
+          smallThumbnailUrl: "",
+          mediumThumbnailUrl: "",
+          dpi: 600,
+          tags: [],
+          sourceName: "Source A",
+          source: "source-a",
+          extension: "png",
+          size: 100,
+        },
+      ],
+    });
+
+    expect(result.caseRecord.expectedIdentifier).toBe("candidate-a");
+    expect(result.assets).toHaveLength(2);
+    expect(result.assetErrors).toEqual([
+      expect.objectContaining({
+        role: "candidate-small",
+        candidateIdentifier: "candidate-a",
+        message: "Failed to fetch calibration asset: 502",
+      }),
+    ]);
   });
 });

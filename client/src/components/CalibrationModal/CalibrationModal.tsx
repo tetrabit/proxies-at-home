@@ -171,7 +171,11 @@ export function CalibrationModal() {
         await saveMpcCalibrationCase(captured.caseRecord);
         await saveMpcCalibrationAssets(captured.assets);
         await refreshDataset(dataset.id);
-        setStatus(`Captured expected choice: ${candidate.name}`);
+        const warning =
+          captured.assetErrors.length > 0
+            ? ` (${captured.assetErrors.length} unavailable asset${captured.assetErrors.length === 1 ? "" : "s"} skipped)`
+            : "";
+        setStatus(`Captured expected choice: ${candidate.name}${warning}`);
       } catch (error) {
         setStatus(
           error instanceof Error ? error.message : "Failed to capture case"

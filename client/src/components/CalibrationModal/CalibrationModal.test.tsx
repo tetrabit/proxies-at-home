@@ -193,6 +193,7 @@ describe("CalibrationModal", () => {
         expectedIdentifier: "cand-1",
       },
       assets: [],
+      assetErrors: [],
     });
 
     mockSearchMpcAutofill.mockResolvedValue([

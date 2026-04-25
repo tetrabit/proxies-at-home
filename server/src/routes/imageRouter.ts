@@ -96,7 +96,8 @@ const imageFetchLimit = pLimit(10);
 
 const imageRouter = express.Router();
 
-const cacheDir = path.join(__dirname, "..", "..", "data", "cached-images");
+const dataDirectory = path.resolve(process.env.SERVER_DATA_DIR ?? path.join(process.cwd(), "data"));
+const cacheDir = path.join(dataDirectory, "cached-images");
 if (!fs.existsSync(cacheDir)) {
   fs.mkdirSync(cacheDir, { recursive: true });
 }

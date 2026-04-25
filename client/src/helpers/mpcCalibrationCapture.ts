@@ -1,5 +1,6 @@
 import type {
   Image,
+  MpcCalibrationAssetRole,
   MpcCalibrationAssetRecord,
   MpcCalibrationCaseRecord,
   MpcCalibrationFrozenCandidate,
@@ -22,6 +23,14 @@ export interface CaptureMpcCalibrationCaseInput {
 export interface CapturedMpcCalibrationCase {
   caseRecord: MpcCalibrationCaseRecord;
   assets: MpcCalibrationAssetRecord[];
+  assetErrors: MpcCalibrationAssetError[];
+}
+
+export interface MpcCalibrationAssetError {
+  role: MpcCalibrationAssetRole;
+  sourceUrl: string;
+  candidateIdentifier?: string;
+  message: string;
 }
 
 function createSourceSnapshot(
@@ -79,6 +88,45 @@ async function fetchAssetBlob(
   };
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function tryAppendAsset(
+  assets: MpcCalibrationAssetRecord[],
+  assetErrors: MpcCalibrationAssetError[],
+  input: {
+    datasetId: string;
+    caseId: string;
+    role: MpcCalibrationAssetRole;
+    sourceUrl: string;
+    createdAt: number;
+    candidateIdentifier?: string;
+  }
+) {
+  try {
+    const { blob, mimeType } = await fetchAssetBlob(input.sourceUrl);
+    assets.push({
+      id: crypto.randomUUID(),
+      datasetId: input.datasetId,
+      caseId: input.caseId,
+      role: input.role,
+      candidateIdentifier: input.candidateIdentifier,
+      sourceUrl: input.sourceUrl,
+      mimeType,
+      blob,
+      createdAt: input.createdAt,
+    });
+  } catch (error) {
+    assetErrors.push({
+      role: input.role,
+      candidateIdentifier: input.candidateIdentifier,
+      sourceUrl: input.sourceUrl,
+      message: getErrorMessage(error),
+    });
+  }
+}
+
 export async function captureMpcCalibrationCase(
   input: CaptureMpcCalibrationCaseInput
 ): Promise<CapturedMpcCalibrationCase> {
@@ -102,49 +150,38 @@ export async function captureMpcCalibrationCase(
   };
 
   const assets: MpcCalibrationAssetRecord[] = [];
+  const assetErrors: MpcCalibrationAssetError[] = [];
 
   if (source.sourceImageUrl) {
-    const { blob, mimeType } = await fetchAssetBlob(source.sourceImageUrl);
-    assets.push({
-      id: crypto.randomUUID(),
+    await tryAppendAsset(assets, assetErrors, {
       datasetId: input.datasetId,
       caseId,
       role: "source",
       sourceUrl: source.sourceImageUrl,
-      mimeType,
-      blob,
       createdAt,
     });
   }
 
   if (source.sourceArtImageUrl) {
-    const { blob, mimeType } = await fetchAssetBlob(source.sourceArtImageUrl);
-    assets.push({
-      id: crypto.randomUUID(),
+    await tryAppendAsset(assets, assetErrors, {
       datasetId: input.datasetId,
       caseId,
       role: "source-art",
       sourceUrl: source.sourceArtImageUrl,
-      mimeType,
-      blob,
       createdAt,
     });
   }
 
   for (const candidate of candidates) {
-    const { blob, mimeType } = await fetchAssetBlob(candidate.imageUrl);
-    assets.push({
-      id: crypto.randomUUID(),
+    await tryAppendAsset(assets, assetErrors, {
       datasetId: input.datasetId,
       caseId,
       role: "candidate-small",
       candidateIdentifier: candidate.identifier,
       sourceUrl: candidate.imageUrl,
-      mimeType,
-      blob,
       createdAt,
     });
   }
 
-  return { caseRecord, assets };
+  return { caseRecord, assets, assetErrors };
 }
