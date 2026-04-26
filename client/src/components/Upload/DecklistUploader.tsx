@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Button, Checkbox, Label, Modal, ModalBody, ModalHeader, Textarea } from "flowbite-react";
-import { ExternalLink, Search, Sparkles } from "lucide-react";
+import { ExternalLink, Search, Shuffle, Sparkles } from "lucide-react";
 import { parseDeckList } from "@/helpers/importParsers";
 import type { ImportIntent } from "@/helpers/importParsers";
 import { addRemoteImage, checkMultiFaceCardsHaveCorrectBack, countBasicLandsToRemove, moveMultiFaceCardsToEnd, removeBasicLandsFromProject } from "@/helpers/dbUtils";
@@ -10,7 +10,7 @@ import { db } from "@/db";
 import { useCardsStore, useSettingsStore, useProjectStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
 import { AdvancedSearch } from "../ArtworkModal";
-import { handleManualTokenImport } from "@/helpers/tokenImportHelper";
+import { handleManualTokenImport, handleManualTwoSidedTokenImport } from "@/helpers/tokenImportHelper";
 import { useToastStore } from "@/store/toast";
 import { useCardImport } from "@/hooks/useCardImport";
 
@@ -231,7 +231,61 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             if (err instanceof Error && err.name !== "AbortError") {
                 useToastStore.getState().showErrorToast(err.message || "Something went wrong while fetching tokens.");
             }
-        } finally{
+        } finally {
+            if (tokenToastIdRef.current) {
+                removeToast(tokenToastIdRef.current);
+                tokenToastIdRef.current = null;
+            }
+            tokenFetchController.current = null;
+        }
+    };
+
+    const handleAddTwoSidedTokens = async (silent: boolean = false) => {
+        // Prevent overlapping token fetches
+        if (tokenFetchController.current) {
+            tokenFetchController.current.abort();
+        }
+        if (tokenToastIdRef.current) {
+            removeToast(tokenToastIdRef.current);
+            tokenToastIdRef.current = null;
+        }
+        tokenFetchController.current = new AbortController();
+        if (!silent) {
+            tokenToastIdRef.current = addToast({
+                type: "processing",
+                message: "Adding two sided associated tokens...",
+                dismissible: true,
+            });
+        }
+
+        try {
+            const result = await handleManualTwoSidedTokenImport({
+                silent,
+                signal: tokenFetchController.current.signal,
+                onComplete: () => {
+                    onUploadComplete?.();
+                },
+                onNoTokens: () => {
+                    if (!silent) {
+                        setShowNoTokensModal(true);
+                    }
+                }
+            });
+
+            if (!silent && result.importedTokenCount > 0) {
+                if (result.pairedTokenCount === result.importedTokenCount) {
+                    showInfoToast(`Added ${result.pairedTokenCount} two sided associated token${result.pairedTokenCount === 1 ? "" : "s"}.`);
+                } else if (result.pairedTokenCount > 0) {
+                    showInfoToast(`Added ${result.pairedTokenCount} two sided associated token${result.pairedTokenCount === 1 ? "" : "s"}; ${result.unpairedTokenCount} could not be paired without matching itself.`);
+                } else {
+                    showInfoToast("At least two different token arts are needed to make two sided associated tokens.");
+                }
+            }
+        } catch (err: unknown) {
+            if (err instanceof Error && err.name !== "AbortError") {
+                useToastStore.getState().showErrorToast(err.message || "Something went wrong while fetching two sided tokens.");
+            }
+        } finally {
             if (tokenToastIdRef.current) {
                 removeToast(tokenToastIdRef.current);
                 tokenToastIdRef.current = null;
@@ -349,6 +403,15 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                 >
                     <Sparkles className="w-5 h-5 mr-2" />
                     Add Associated Tokens
+                </Button>
+                <Button
+                    color="purple"
+                    size="lg"
+                    onClick={() => handleAddTwoSidedTokens()}
+                    disabled={cardCount === 0 || !currentProjectId}
+                >
+                    <Shuffle className="w-5 h-5 mr-2" />
+                    Add two sided associated tokens
                 </Button>
                 <Button
                     color="gray"

@@ -58,6 +58,7 @@ vi.mock('@/helpers/importParsers', () => ({
 vi.mock('@/helpers/dbUtils', () => ({
     // Return a dummy ID for MPC image adds
     addRemoteImage: vi.fn().mockResolvedValue('mpc-id-123'),
+    createLinkedBackCardsBulk: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@/helpers/ImportOrchestrator', () => ({
@@ -272,6 +273,32 @@ describe('DecklistUploader', () => {
         await waitFor(() => {
             expect(
                 useToastStore.getState().toasts.some((t) => t.message === 'Adding associated tokens...')
+            ).toBe(false);
+        });
+    });
+
+    it('shows token progress toast immediately when Add two sided associated tokens is clicked', async () => {
+        let resolveImport: ((value: unknown[]) => void) | null = null;
+        hoistedMocks.importMissingTokens.mockImplementation(
+            () => new Promise<unknown[]>((resolve) => {
+                resolveImport = resolve;
+            })
+        );
+
+        render(<DecklistUploader cardCount={1} />);
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+
+        await waitFor(() => {
+            expect(
+                useToastStore.getState().toasts.some((t) => t.message === 'Adding two sided associated tokens...')
+            ).toBe(true);
+        });
+
+        resolveImport?.([]);
+
+        await waitFor(() => {
+            expect(
+                useToastStore.getState().toasts.some((t) => t.message === 'Adding two sided associated tokens...')
             ).toBe(false);
         });
     });
