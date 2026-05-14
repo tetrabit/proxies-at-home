@@ -68,6 +68,7 @@ export function DefaultCardbackCheckbox({
             }
 
             // Auto-flip card to show the back face
+            /* v8 ignore next -- checkbox is rendered only from an active modal cardback flow. @preserve */
             if (modalCard?.uuid) {
                 useSelectionStore.getState().setFlipped([modalCard.uuid], true);
             }

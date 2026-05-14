@@ -171,6 +171,14 @@ async function fallbackDownload(fixture: MpcPreferenceFixture): Promise<void> {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = PREFERENCE_FILENAME;
+
+  // Test teardown can remove document.body before a delayed preference sync flushes.
+  // In a live browser page the body exists, so skip only this unusable fallback path.
+  if (!document.body) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
