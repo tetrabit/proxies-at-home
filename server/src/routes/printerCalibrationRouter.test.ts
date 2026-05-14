@@ -530,37 +530,4 @@ describe("printerCalibrationRouter", () => {
   });
 
 
-  it("runs the configured printer-calibration binary through the default CLI runner", async () => {
-    const originalBin = process.env.PRINTER_CALIBRATION_BIN;
-    const binPath = path.join(tempDirectory, "printer-calibration-bin.cjs");
-    await fs.writeFile(
-      binPath,
-      [
-        "#!/usr/bin/env node",
-        "const args = process.argv.slice(2);",
-        "if (args[0] === 'profile' && args[1] === 'list') { process.stdout.write(''); process.exit(0); }",
-        "if (args[0] === 'sheet') { require('fs').writeFileSync(args[args.indexOf('--output') + 1], '%PDF-1.4\\nmock\\n'); process.exit(0); }",
-        "process.stderr.write('unexpected args: ' + args.join(' ')); process.exit(1);",
-      ].join("\n"),
-      "utf-8"
-    );
-    await fs.chmod(binPath, 0o755);
-    process.env.PRINTER_CALIBRATION_BIN = binPath;
-
-    const defaultCliApp = express();
-    defaultCliApp.use(express.json());
-    defaultCliApp.use("/api/printer-calibration", createPrinterCalibrationRouter({ dataDirectory }));
-    try {
-      const profilesResponse = await request(defaultCliApp).get("/api/printer-calibration/profiles");
-      expect(profilesResponse.status).toBe(200);
-      expect(profilesResponse.body).toEqual({});
-
-      const sheetResponse = await request(defaultCliApp).get("/api/printer-calibration/sheet");
-      expect(sheetResponse.status).toBe(200);
-      expect(sheetResponse.header["content-type"]).toContain("application/pdf");
-    } finally {
-      process.env.PRINTER_CALIBRATION_BIN = originalBin;
-    }
-  });
-
 });

@@ -144,6 +144,35 @@ describe("Stream Router", () => {
         expect(cardFoundData.imageUrls).toEqual(["valki_url", "tibalt_url"]);
     });
 
+    it("defaults to the front face when the requested face does not match", async () => {
+        const mockBatchResults = new Map();
+        mockBatchResults.set("bala ged recovery // bala ged sanctuary", {
+            name: "Bala Ged Recovery // Bala Ged Sanctuary",
+            card_faces: [
+                { name: "Bala Ged Recovery", image_uris: { png: "front_url" } },
+                { name: "Bala Ged Sanctuary", image_uris: { png: "back_url" } }
+            ],
+            colors: ["G"],
+            cmc: 2,
+            type_line: "Sorcery // Land",
+            rarity: "rare",
+            set: "znr",
+            collector_number: "180"
+        });
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(mockBatchResults);
+
+        const res = await request(app)
+            .post("/stream/cards")
+            .send({ cardQueries: [{ name: "Bala Ged Recovery // Bala Ged Sanctuary" }] })
+            .expect(200);
+
+        const events = res.text.split("\n\n").filter((e: string) => e);
+        const cardFoundEvent = events.find((e: string) => e.startsWith("event: card-found"));
+        const cardFoundData = JSON.parse(cardFoundEvent!.match(/data: (.*)/s)![1]);
+        expect(cardFoundData.name).toBe("Bala Ged Recovery");
+        expect(cardFoundData.imageUrls[0]).toBe("front_url");
+    });
+
     it("should handle a mix of found and not-found cards", async () => {
         const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => { });
 

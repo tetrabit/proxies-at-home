@@ -80,6 +80,21 @@ describe('scryfallRouter', () => {
             expect(axios.get).not.toHaveBeenCalled();
         });
 
+        it('returns cached search results without hitting upstream', async () => {
+            const cached = { object: 'list', data: [{ name: 'Cached Search' }] };
+            const { getDatabase } = await import('../db/db.js');
+            vi.mocked(getDatabase).mockReturnValueOnce({
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
+                })),
+            } as never);
+
+            const res = await request(app).get('/api/scryfall/search?q=cache-me');
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(cached);
+            expect(axios.get).not.toHaveBeenCalled();
+        });
+
         it('should return 500 on upstream error', async () => {
             vi.mocked(axios.get).mockRejectedValueOnce(new Error('Network error'));
 
@@ -114,6 +129,21 @@ describe('scryfallRouter', () => {
             expect(res.status).toBe(200);
             expect(res.body).toEqual(mockCard);
             expect(axios.get).toHaveBeenCalledWith('/cards/named', { params: { fuzzy: 'sol rng' } });
+        });
+
+        it('returns cached named results without hitting upstream', async () => {
+            const cached = { name: 'Cached Named', set: 'cmd' };
+            const { getDatabase } = await import('../db/db.js');
+            vi.mocked(getDatabase).mockReturnValueOnce({
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
+                })),
+            } as never);
+
+            const res = await request(app).get('/api/scryfall/named?exact=Cached%20Named');
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(cached);
+            expect(axios.get).not.toHaveBeenCalled();
         });
 
         it('should forward Scryfall 404 errors', async () => {
@@ -279,6 +309,21 @@ describe('scryfallRouter', () => {
             const res = await request(app).get('/api/scryfall/cards/cmd/235?lang=ja');
             expect(res.status).toBe(200);
             expect(axios.get).toHaveBeenCalledWith('/cards/cmd/235/ja');
+        });
+
+        it('returns cached card results without hitting upstream', async () => {
+            const cached = { name: 'Cached Card', set: 'cmd', collector_number: '235' };
+            const { getDatabase } = await import('../db/db.js');
+            vi.mocked(getDatabase).mockReturnValueOnce({
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
+                })),
+            } as never);
+
+            const res = await request(app).get('/api/scryfall/cards/cmd/235');
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(cached);
+            expect(axios.get).not.toHaveBeenCalled();
         });
 
 
