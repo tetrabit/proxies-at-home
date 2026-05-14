@@ -230,7 +230,8 @@ export async function exportProxyPagesToPdf({
                     });
                   } catch (e) {
                     console.error(`Failed to process page ${nextPageIndexToAdd}`, e);
-                    throw e;
+                    this.handleError(e instanceof Error ? e : new Error(String(e)));
+                    return;
                   } finally {
                     URL.revokeObjectURL(url);
                     pageImageUrls.delete(nextPageIndexToAdd);

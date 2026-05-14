@@ -175,6 +175,21 @@ describe('exportProxyPagesToPdf', () => {
   });
 
 
+
+  it('rejects image assembly failures after revoking the failed page URL', async () => {
+    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
+    vi.mocked(global.fetch).mockRejectedValueOnce(new Error('blob fetch failed'));
+    await expect(exportProxyPagesToPdf({
+      cards: [{ uuid: 'c1', name: 'One' }] as any,
+      imagesById: new Map(),
+      pdfSettings: baseSettings,
+      pagesPerPdf: 1,
+      cancellationPromise: new Promise(() => undefined),
+      returnBuffer: true,
+    })).rejects.toThrow('blob fetch failed');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:page-0');
+  });
+
   it('rejects native worker error events', async () => {
     const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
     class NativeErrorWorker extends MockWorker {
