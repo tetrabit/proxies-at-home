@@ -323,6 +323,7 @@ describe("printerCalibrationRouter", () => {
       callback?: (err?: Error) => void
     ) {
       callback?.(new Error("download failed"));
+      this.status(200).end();
       return this;
     });
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
