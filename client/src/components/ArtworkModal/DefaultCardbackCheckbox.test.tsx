@@ -74,6 +74,16 @@ describe("DefaultCardbackCheckbox", () => {
             expect(checkbox.checked).toBe(false);
         });
 
+        it("should render checkbox unchecked when usesDefaultCardback is undefined", () => {
+            render(<DefaultCardbackCheckbox
+                {...defaultProps}
+                linkedBackCard={{ ...defaultProps.linkedBackCard, usesDefaultCardback: undefined }}
+            />);
+
+            const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+            expect(checkbox.checked).toBe(false);
+        });
+
         it("should render checkbox checked when usesDefaultCardback is true", () => {
             const props = {
                 ...defaultProps,

@@ -1016,6 +1016,7 @@ describe('ArtworkModal', () => {
             const backdrop = screen.getByText('Delete Cardback?').parentElement?.parentElement;
             expect(backdrop).toBeDefined();
 
+            fireEvent.mouseDown(backdrop!);
             fireEvent.click(backdrop!);
 
             expect(screen.queryByText('Delete Cardback?')).toBeNull();
@@ -1545,6 +1546,24 @@ describe('ArtworkModal', () => {
             await waitFor(() => {
                 expect(mockSetDefaultCardbackId).toHaveBeenCalledWith('fallback-builtin');
                 expect(mockDbCardbacks.delete).toHaveBeenCalledWith('default-cardback-1');
+            });
+        });
+
+        it('should fall back to the first remaining cardback when deleting the default and no builtin exists', async () => {
+            mockGetAllCardbacks.mockResolvedValue([
+                { id: 'default-cardback-1', name: 'Default Back', source: 'custom', hasBuiltInBleed: false },
+                { id: 'fallback-uploaded', name: 'Fallback Uploaded', source: 'uploaded', hasBuiltInBleed: false },
+            ]);
+            mockDbCards.filter.mockReturnValue({ toArray: vi.fn().mockResolvedValue([]) });
+
+            render(<ArtworkModal />);
+
+            await waitFor(() => expect(mockGetAllCardbacks).toHaveBeenCalled());
+            fireEvent.click(screen.getByTestId('delete-default-cardback'));
+            fireEvent.click(screen.getByText('Yes, delete'));
+
+            await waitFor(() => {
+                expect(mockSetDefaultCardbackId).toHaveBeenCalledWith('fallback-uploaded');
             });
         });
 
