@@ -149,8 +149,13 @@ describe('ApplicationSection', () => {
                 configurable: true
             });
 
-            // Mock localStorage
-            const mockRemoveItem = vi.spyOn(Storage.prototype, 'removeItem');
+            // Mock localStorage. Node 26 exposes localStorage only behind --localstorage-file,
+            // so provide a deterministic object for this component-level reset test.
+            const mockRemoveItem = vi.fn();
+            Object.defineProperty(globalThis, 'localStorage', {
+                value: { removeItem: mockRemoveItem },
+                configurable: true,
+            });
 
             render(<ApplicationSection />);
 
