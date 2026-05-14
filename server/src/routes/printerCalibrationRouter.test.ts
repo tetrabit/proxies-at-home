@@ -358,7 +358,7 @@ describe("printerCalibrationRouter", () => {
       })
     );
     const failed = await request(failingApp).get("/api/printer-calibration/sheet");
-    expect(failed.status).toBe(500);
+    expect(failed.status).toBe(501);
     expect(failed.body.error).toBe("sheet unavailable");
   });
 
