@@ -17,6 +17,7 @@ const {
     mockFetchCardBySetAndNumber,
     mockGetAllCardbacks,
     mockDbCards,
+    mockDbImages,
     mockDbCardbacks,
     mockLiveQueryResult,
     mockUpdateCard,
@@ -50,6 +51,10 @@ const {
             update: vi.fn().mockResolvedValue(undefined),
             bulkGet: vi.fn().mockResolvedValue([]),
             filter: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([]) })),
+        },
+        mockDbImages: {
+            get: vi.fn(),
+            update: vi.fn().mockResolvedValue(undefined),
         },
         mockDbCardbacks: {
             get: vi.fn(),
@@ -124,10 +129,7 @@ vi.mock('dexie-react-hooks', () => ({
 vi.mock('@/db', () => ({
     db: {
         cards: mockDbCards,
-        images: {
-            get: vi.fn(),
-            update: vi.fn().mockResolvedValue(undefined),
-        },
+        images: mockDbImages,
         cardbacks: mockDbCardbacks,
     },
 }));
@@ -235,7 +237,7 @@ vi.mock('./ArtworkTabContent', () => ({
         onClose: () => void;
         artSource: string;
         setArtSource: (s: 'scryfall' | 'mpc') => void;
-        onSelectArtwork: (url: string) => void;
+        onSelectArtwork: (url: string, name?: string, specificPrint?: { set: string; number: string }) => void;
         onSelectMpcArt: (card: { identifier: string; name: string }) => void;
         onSelectCardback: (id: string, name: string) => void;
         onSetAsDefaultCardback: (id: string, name: string) => void;
@@ -251,6 +253,7 @@ vi.mock('./ArtworkTabContent', () => ({
                 <button data-testid="close-button" onClick={onClose}>Close</button>
                 <button data-testid="switch-to-mpc" onClick={() => setArtSource('mpc')}>Switch to MPC</button>
                 <button data-testid="select-artwork" onClick={() => onSelectArtwork('https://example.com/art.jpg')}>Select</button>
+                <button data-testid="select-specific-artwork" onClick={() => onSelectArtwork('https://example.com/specific-art.jpg', 'Specific Name', { set: 'spc', number: '7' })}>Select Specific Artwork</button>
                 <button data-testid="select-mpc-art" onClick={() => onSelectMpcArt({ identifier: 'mpc-123', name: 'MPC Card' })}>Select MPC</button>
                 <button data-testid="select-cardback" onClick={() => onSelectCardback('cardback-1', 'Custom Back')}>Select Cardback</button>
                 <button data-testid="set-default-cardback" onClick={() => onSetAsDefaultCardback('cardback-2', 'Default Back')}>Set Default</button>
@@ -555,6 +558,87 @@ describe('ArtworkModal', () => {
                 expect(mockUpdateCard).toHaveBeenCalledWith(updatedCard);
             });
         });
+
+        it('should pass specific print metadata from artwork selections to import resolution', async () => {
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-specific-artwork'));
+
+            await waitFor(() => {
+                expect(ImportOrchestrator.resolve).toHaveBeenCalledWith(
+                    expect.objectContaining({ name: 'Specific Name', set: 'spc', number: '7' }),
+                    expect.any(String)
+                );
+            });
+        });
+
+        it('should update an existing linked back card when artwork resolution returns a back task', async () => {
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id', linkedBackId: 'back-uuid' };
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{
+                    name: 'Resolved Card',
+                    set: 'abc',
+                    number: '1',
+                    imageId: 'resolved-image-id',
+                    isUserUpload: false,
+                    hasBuiltInBleed: false,
+                    needsEnrichment: false,
+                }],
+                backCardTasks: [{ backImageId: 'resolved-back', backName: 'Resolved Back', hasBleed: true }]
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-artwork'));
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('back-uuid', {
+                    imageId: 'resolved-back',
+                    name: 'Resolved Back',
+                    hasBuiltInBleed: true,
+                    usesDefaultCardback: false,
+                });
+            });
+        });
+
+        it('should create a linked back card when artwork resolution returns a back task for an unlinked card', async () => {
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{
+                    name: 'Resolved Card',
+                    set: 'abc',
+                    number: '1',
+                    imageId: 'resolved-image-id',
+                    isUserUpload: false,
+                    hasBuiltInBleed: false,
+                    needsEnrichment: false,
+                }],
+                backCardTasks: [{ backImageId: 'resolved-back', backName: 'Resolved Back' }]
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-artwork'));
+
+            await waitFor(() => {
+                expect(mockCreateLinkedBackCard).toHaveBeenCalledWith(
+                    'test-uuid',
+                    'resolved-back',
+                    'Resolved Back',
+                    { hasBuiltInBleed: false }
+                );
+            });
+        });
+
+        it('should tolerate import resolution failures when selecting artwork', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            vi.mocked(ImportOrchestrator.resolve).mockRejectedValueOnce(new Error('resolve failed'));
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-artwork'));
+
+            await waitFor(() => {
+                expect(errorSpy).toHaveBeenCalledWith('Failed to resolve artwork selection:', expect.any(Error));
+            });
+
+            errorSpy.mockRestore();
+        });
     });
 
     describe('handleSelectMpcArt', () => {
@@ -601,6 +685,84 @@ describe('ArtworkModal', () => {
                 expect(mockUpdateCard).toHaveBeenCalledWith(updatedCard);
                 expect(mockDbCards.update).toHaveBeenCalledWith('test-uuid', expect.objectContaining({ needsEnrichment: true }));
             });
+        });
+
+        it('should update an existing linked back card when MPC resolution returns a back task', async () => {
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id', linkedBackId: 'back-uuid' };
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{
+                    name: 'Resolved MPC',
+                    imageId: 'resolved-mpc',
+                    isUserUpload: false,
+                    hasBuiltInBleed: false,
+                    needsEnrichment: false,
+                }],
+                backCardTasks: [{ backImageId: 'mpc-back', backName: 'MPC Back', hasBleed: true }]
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('back-uuid', {
+                    imageId: 'mpc-back',
+                    name: 'MPC Back',
+                    hasBuiltInBleed: true,
+                    usesDefaultCardback: false,
+                });
+            });
+        });
+
+        it('should create a linked back card when MPC resolution returns a back task for an unlinked card', async () => {
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{
+                    name: 'Resolved MPC',
+                    imageId: 'resolved-mpc',
+                    isUserUpload: false,
+                    hasBuiltInBleed: false,
+                    needsEnrichment: false,
+                }],
+                backCardTasks: [{ backImageId: 'mpc-back', backName: 'MPC Back' }]
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(mockCreateLinkedBackCard).toHaveBeenCalledWith(
+                    'test-uuid',
+                    'mpc-back',
+                    'MPC Back',
+                    { hasBuiltInBleed: false }
+                );
+            });
+        });
+
+        it('should skip applying MPC art when resolution returns no image id', async () => {
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{ name: 'No Image' }],
+                backCardTasks: []
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(ImportOrchestrator.resolve).toHaveBeenCalled();
+            });
+            expect(mockChangeCardArtwork).not.toHaveBeenCalled();
+        });
+
+        it('should tolerate import resolution failures when selecting MPC art', async () => {
+            vi.mocked(ImportOrchestrator.resolve).mockRejectedValueOnce(new Error('mpc failed'));
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(ImportOrchestrator.resolve).toHaveBeenCalled();
+            });
+            expect(mockChangeCardArtwork).not.toHaveBeenCalled();
         });
     });
 
@@ -1379,6 +1541,51 @@ describe('ArtworkModal', () => {
             // Modal should render
             expect(screen.getByTestId('responsive-modal')).toBeDefined();
         });
+
+        it('should execute live queries for linked backs and image objects', async () => {
+            const { useLiveQuery } = await import('dexie-react-hooks');
+            mockState.modalCard = { uuid: 'front-uuid', name: 'Front Card', imageId: 'front-img', linkedBackId: 'back-uuid' };
+            mockDbCards.get.mockResolvedValue({ uuid: 'back-uuid', name: 'Back Card', imageId: 'back-img' });
+            mockDbImages.get.mockResolvedValue({ id: 'front-img', imageUrls: ['front-url'] });
+            vi.mocked(useLiveQuery).mockImplementation((queryFn) => {
+                if (typeof queryFn === 'function') {
+                    void queryFn();
+                }
+                return null;
+            });
+
+            render(<ArtworkModal />);
+
+            await waitFor(() => {
+                expect(mockDbCards.get).toHaveBeenCalledWith('back-uuid');
+                expect(mockDbImages.get).toHaveBeenCalledWith('front-img');
+            });
+        });
+
+        it('should create and revoke object URLs for display blobs', async () => {
+            const { useLiveQuery } = await import('dexie-react-hooks');
+            const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:processed');
+            const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+            const blob = new Blob(['processed']);
+            let call = 0;
+            vi.mocked(useLiveQuery).mockImplementation(() => {
+                call += 1;
+                return call === 2 ? { id: 'test-image-id', displayBlob: blob } : null;
+            });
+            mockState.initialFace = 'front';
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id' };
+
+            const { unmount } = render(<ArtworkModal />);
+
+            await waitFor(() => {
+                expect(createObjectURLSpy).toHaveBeenCalledWith(blob);
+            });
+            unmount();
+            expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:processed');
+
+            createObjectURLSpy.mockRestore();
+            revokeObjectURLSpy.mockRestore();
+        });
     });
 
     describe('Close search', () => {
@@ -1415,6 +1622,39 @@ describe('ArtworkModal', () => {
             // Check for filter button in header
             const header = screen.getByTestId('modal-header');
             expect(header).toBeDefined();
+        });
+    });
+
+    describe('touch zoom handling', () => {
+        beforeEach(() => {
+            mockState.isModalOpen = true;
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id' };
+        });
+
+        const touchEvent = (type: string, touches: Array<{ clientX: number; clientY: number }>) => {
+            const event = new Event(type, { bubbles: true, cancelable: true });
+            Object.defineProperty(event, 'touches', { value: touches });
+            return event;
+        };
+
+        it('should handle two-finger pinch events on modal content', () => {
+            const { unmount } = render(<ArtworkModal />);
+            const content = screen.getByTestId('modal-content').firstElementChild!;
+            const start = touchEvent('touchstart', [
+                { clientX: 0, clientY: 0 },
+                { clientX: 0, clientY: 100 },
+            ]);
+            const move = touchEvent('touchmove', [
+                { clientX: 0, clientY: 0 },
+                { clientX: 0, clientY: 200 },
+            ]);
+            const preventDefaultSpy = vi.spyOn(move, 'preventDefault');
+
+            content.dispatchEvent(start);
+            content.dispatchEvent(move);
+
+            expect(preventDefaultSpy).toHaveBeenCalled();
+            unmount();
         });
     });
 

@@ -1163,7 +1163,10 @@ export function ArtworkModal() {
         }
       >
         <div
-          ref={contentRef}
+          ref={(node) => {
+            contentRef.current = node;
+            gridRef.current = node;
+          }}
           className="flex-1 flex flex-col overflow-hidden max-lg:landscape:overflow-auto min-h-0"
         >
           {!showCardbackLibrary && (
