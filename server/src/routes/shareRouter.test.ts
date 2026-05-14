@@ -2,8 +2,18 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import express from 'express';
 import request from 'supertest';
 import { gzipSync, gunzipSync } from 'zlib';
-import crypto from 'crypto';
-import * as crypto from 'crypto';
+
+const cryptoMocks = vi.hoisted(() => ({
+    randomBytes: vi.fn(),
+}));
+
+vi.mock('crypto', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('crypto')>();
+    return {
+        ...actual,
+        randomBytes: cryptoMocks.randomBytes,
+    };
+});
 
 // Create mock database with in-memory storage for testing
 let mockShares: Map<string, { data: Buffer; created_at: number; expires_at: number }>;
@@ -221,8 +231,7 @@ describe('shareRouter', () => {
         });
 
         it('retries random share IDs on collision and fails after too many attempts', async () => {
-            const randomBytesSpy = vi.spyOn(crypto, 'randomBytes');
-            randomBytesSpy.mockReturnValue(Buffer.from('aaaaaa'));
+            cryptoMocks.randomBytes.mockReturnValue(Buffer.from('aaaaaa'));
 
             const existingId = 'YWFhYWFh';
             mockShares.set(existingId, { data: gzipSync(Buffer.from('{}')), created_at: Date.now(), expires_at: Date.now() + 1000 });
@@ -233,9 +242,9 @@ describe('shareRouter', () => {
             expect(conflict.status).toBe(500);
             expect(conflict.body.error).toBe('Failed to generate unique ID');
 
-            randomBytesSpy.mockReset();
+            cryptoMocks.randomBytes.mockReset();
             let callCount = 0;
-            randomBytesSpy.mockImplementation(() => {
+            cryptoMocks.randomBytes.mockImplementation(() => {
                 callCount++;
                 return Buffer.from(callCount === 1 ? 'bbbbbb' : 'cccccc');
             });
@@ -246,7 +255,6 @@ describe('shareRouter', () => {
                 .send({ data: { version: 2 } });
             expect(ok.status).toBe(200);
             expect(ok.body.id).toHaveLength(8);
-            randomBytesSpy.mockRestore();
         });
     });
 
