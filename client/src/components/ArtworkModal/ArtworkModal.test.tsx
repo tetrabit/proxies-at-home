@@ -492,6 +492,22 @@ describe('ArtworkModal', () => {
             expect(artworkContent.getAttribute('data-art-source')).toBe('scryfall');
         });
 
+        it('should honor initialArtSource over detected image source', () => {
+            mockState.initialArtSource = 'mpc';
+
+            render(<ArtworkModal />);
+
+            expect(screen.getByTestId('artwork-tab-content').getAttribute('data-art-source')).toBe('mpc');
+        });
+
+        it('should fall back to preferred source for custom uploads', () => {
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Custom Card', imageId: 'custom-upload-image' };
+
+            render(<ArtworkModal />);
+
+            expect(screen.getByTestId('artwork-tab-content').getAttribute('data-art-source')).toBe('scryfall');
+        });
+
         it('should show art source toggle on artwork tab', () => {
             render(<ArtworkModal />);
             expect(screen.getByTestId('toggle-mpc-scryfall')).toBeDefined();
@@ -611,6 +627,52 @@ describe('ArtworkModal', () => {
                 expect(mockCloseModal).toHaveBeenCalled();
             });
         });
+
+        it('should apply selected cardback to selected front cards in multi-select mode', async () => {
+            mockState.modalCard = { uuid: 'card-1', name: 'Card 1', imageId: 'img-1' };
+            mockSelectedCards.add('card-1');
+            mockSelectedCards.add('card-2');
+            mockSelectedCards.add('back-card');
+            mockDbCards.bulkGet.mockResolvedValue([
+                { uuid: 'card-1', name: 'Card 1', imageId: 'img-1' },
+                { uuid: 'card-2', name: 'Card 2', imageId: 'img-2' },
+                { uuid: 'back-card', name: 'Back', imageId: 'back-img', linkedFrontId: 'card-2' },
+            ]);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-cardback'));
+
+            await waitFor(() => {
+                expect(mockUndoableChangeCardback).toHaveBeenCalledWith(
+                    ['card-1', 'card-2'],
+                    'cardback-1',
+                    'Custom Back',
+                    true
+                );
+            });
+        });
+
+        it('should apply selected cardback to all front cards when apply-to-all is enabled', async () => {
+            mockDbCards.filter.mockReturnValueOnce({
+                toArray: vi.fn().mockResolvedValue([
+                    { uuid: 'front-1', name: 'Front 1' },
+                    { uuid: 'front-2', name: 'Front 2' },
+                ])
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('toggle-apply-to-all'));
+            fireEvent.click(screen.getByTestId('select-cardback'));
+
+            await waitFor(() => {
+                expect(mockUndoableChangeCardback).toHaveBeenCalledWith(
+                    ['front-1', 'front-2'],
+                    'cardback-1',
+                    'Custom Back',
+                    true
+                );
+            });
+        });
     });
 
     describe('handleSetAsDefaultCardback', () => {
@@ -724,6 +786,19 @@ describe('ArtworkModal', () => {
 
             expect(mockDbCardbacks.delete).not.toHaveBeenCalled();
         });
+
+        it('should cancel delete when clicking the confirmation backdrop', () => {
+            render(<ArtworkModal />);
+
+            fireEvent.click(screen.getByTestId('delete-cardback'));
+            const backdrop = screen.getByText('Delete Cardback?').parentElement?.parentElement;
+            expect(backdrop).toBeDefined();
+
+            fireEvent.click(backdrop!);
+
+            expect(screen.queryByText('Delete Cardback?')).toBeNull();
+            expect(mockDbCardbacks.delete).not.toHaveBeenCalled();
+        });
     });
 
     describe('handleSearch', () => {
@@ -749,6 +824,22 @@ describe('ArtworkModal', () => {
 
             await waitFor(() => {
                 expect(mockFetchCardWithPrints).toHaveBeenCalledWith('Selected Card', true, true);
+            });
+        });
+
+        it('should fetch a specific print when advanced search supplies set and number', async () => {
+            mockFetchCardBySetAndNumber.mockResolvedValue({
+                name: 'Specific Print',
+                imageUrls: ['https://example.com/specific.jpg'],
+                prints: [{ imageUrl: 'https://example.com/specific.jpg', set: 'abc', number: '123' }],
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('open-search'));
+            fireEvent.click(screen.getByTestId('select-specific-print'));
+
+            await waitFor(() => {
+                expect(mockFetchCardBySetAndNumber).toHaveBeenCalledWith('abc', '123');
             });
         });
     });
@@ -788,6 +879,22 @@ describe('ArtworkModal', () => {
             // The X button is in the header with an SVG icon
             const buttons = header.querySelectorAll('button');
             expect(buttons.length).toBeGreaterThan(0);
+        });
+
+        it('should navigate with keyboard shortcuts when multiple cards are open', () => {
+            mockState.index = 1;
+            mockState.allCards = [
+                { uuid: 'card-1', name: 'One' },
+                { uuid: 'test-uuid', name: 'Test Card' },
+                { uuid: 'card-3', name: 'Three' },
+            ];
+
+            render(<ArtworkModal />);
+            fireEvent.keyDown(document, { key: 'ArrowLeft', ctrlKey: true });
+            fireEvent.keyDown(document, { key: 'ArrowRight', metaKey: true });
+
+            expect(mockGoToPrevCard).toHaveBeenCalledTimes(1);
+            expect(mockGoToNextCard).toHaveBeenCalledTimes(1);
         });
     });
 
