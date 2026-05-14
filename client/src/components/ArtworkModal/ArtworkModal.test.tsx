@@ -394,10 +394,17 @@ vi.mock('flowbite-react', () => ({
 }));
 
 import { ArtworkModal } from './ArtworkModal';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { isCardbackId } from '@/helpers/cardbackLibrary';
+import { getCurrentCardFace, getFaceNamesFromPrints } from '@/helpers/dfcHelpers';
 
 describe('ArtworkModal', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.mocked(useLiveQuery).mockImplementation(() => null);
+        vi.mocked(isCardbackId).mockReturnValue(false);
+        vi.mocked(getFaceNamesFromPrints).mockReturnValue([]);
+        vi.mocked(getCurrentCardFace).mockReturnValue('front');
         mockState.isModalOpen = false;
         mockState.modalCard = null;
         mockState.initialTab = 'artwork';
@@ -566,7 +573,7 @@ describe('ArtworkModal', () => {
             await waitFor(() => {
                 expect(ImportOrchestrator.resolve).toHaveBeenCalledWith(
                     expect.objectContaining({ name: 'Specific Name', set: 'spc', number: '7' }),
-                    expect.any(String)
+                    null
                 );
             });
         });
@@ -1567,11 +1574,7 @@ describe('ArtworkModal', () => {
             const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:processed');
             const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
             const blob = new Blob(['processed']);
-            let call = 0;
-            vi.mocked(useLiveQuery).mockImplementation(() => {
-                call += 1;
-                return call === 2 ? { id: 'test-image-id', displayBlob: blob } : null;
-            });
+            vi.mocked(useLiveQuery).mockReturnValue({ id: 'test-image-id', displayBlob: blob });
             mockState.initialFace = 'front';
             mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id' };
 
