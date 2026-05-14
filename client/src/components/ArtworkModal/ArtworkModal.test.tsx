@@ -14,11 +14,14 @@ const {
     mockCreateLinkedBackCard,
     mockUndoableChangeCardback,
     mockFetchCardWithPrints,
+    mockFetchCardBySetAndNumber,
     mockGetAllCardbacks,
     mockDbCards,
     mockDbCardbacks,
     mockLiveQueryResult,
     mockUpdateCard,
+    mockGoToNextCard,
+    mockGoToPrevCard,
 } = vi.hoisted(() => {
     return {
         mockCloseModal: vi.fn(),
@@ -27,17 +30,20 @@ const {
         mockDefaultCardbackId: 'default-cardback-1' as string,
         mockState: {
             isModalOpen: false,
-            modalCard: null as { uuid: string; name: string; imageId?: string; linkedBackId?: string } | null,
+            modalCard: null as { uuid: string; name: string; imageId?: string; linkedBackId?: string; isUserUpload?: boolean; type_line?: string } | null,
             initialTab: 'artwork' as 'artwork' | 'settings',
             initialFace: 'front' as 'front' | 'back',
             initialArtSource: undefined as 'scryfall' | 'mpc' | undefined,
+            initialOpenAdvancedSearch: false,
             defaultCardbackId: 'default-cardback-1',
             allCards: [] as { uuid: string; name: string }[],
+            index: null as number | null,
         },
         mockChangeCardArtwork: vi.fn(),
         mockCreateLinkedBackCard: vi.fn(),
         mockUndoableChangeCardback: vi.fn(),
         mockFetchCardWithPrints: vi.fn(),
+        mockFetchCardBySetAndNumber: vi.fn(),
         mockGetAllCardbacks: vi.fn().mockResolvedValue([]),
         mockDbCards: {
             get: vi.fn(),
@@ -51,6 +57,8 @@ const {
         },
         mockLiveQueryResult: { value: null as unknown },
         mockUpdateCard: vi.fn(),
+        mockGoToNextCard: vi.fn(),
+        mockGoToPrevCard: vi.fn(),
     };
 });
 
@@ -61,9 +69,13 @@ vi.mock('@/store/artworkModal', () => {
         initialTab: mockState.initialTab,
         initialFace: mockState.initialFace,
         initialArtSource: mockState.initialArtSource,
+        initialOpenAdvancedSearch: mockState.initialOpenAdvancedSearch,
         allCards: mockState.allCards,
+        index: mockState.index,
         closeModal: mockCloseModal,
         updateCard: mockUpdateCard,
+        goToNextCard: mockGoToNextCard,
+        goToPrevCard: mockGoToPrevCard,
     });
 
     const fn = (selector: (state: ReturnType<typeof getStore>) => unknown) => {
@@ -131,6 +143,7 @@ vi.mock('@/helpers/undoableActions', () => ({
 
 vi.mock('@/helpers/scryfallApi', () => ({
     fetchCardWithPrints: mockFetchCardWithPrints,
+    fetchCardBySetAndNumber: mockFetchCardBySetAndNumber,
 }));
 
 vi.mock('@/helpers/cardbackLibrary', () => ({
@@ -166,6 +179,16 @@ vi.mock('@/helpers/dfcHelpers', () => ({
 
 vi.mock('@/helpers/imageHelper', () => ({
     parseImageIdFromUrl: vi.fn((url: string) => url),
+}));
+
+vi.mock('@/helpers/imageSourceUtils', () => ({
+    getImageSourceSync: vi.fn((imageId?: string) => {
+        if (imageId?.includes('mpc')) return 'mpc';
+        if (imageId?.includes('custom')) return 'custom';
+        return 'scryfall';
+    }),
+    isMpcSource: vi.fn((source: string) => source === 'mpc'),
+    isCustomSource: vi.fn((source: string) => source === 'custom'),
 }));
 
 vi.mock('@/helpers/ImportOrchestrator', () => ({
@@ -204,6 +227,7 @@ vi.mock('./ArtworkTabContent', () => ({
         onSetAsDefaultCardback,
         onRequestDelete,
         onGetMorePrints,
+        setApplyToAll,
         setSelectedFace,
         selectedFace,
     }: {
@@ -217,6 +241,7 @@ vi.mock('./ArtworkTabContent', () => ({
         onSetAsDefaultCardback: (id: string, name: string) => void;
         onRequestDelete: (id: string, name: string) => void;
         onGetMorePrints: () => void;
+        setApplyToAll?: (value: boolean) => void;
         setSelectedFace?: (face: 'front' | 'back') => void;
         selectedFace?: 'front' | 'back';
     }) => {
@@ -231,6 +256,7 @@ vi.mock('./ArtworkTabContent', () => ({
                 <button data-testid="set-default-cardback" onClick={() => onSetAsDefaultCardback('cardback-2', 'Default Back')}>Set Default</button>
                 <button data-testid="delete-cardback" onClick={() => onRequestDelete('cardback-1', 'Custom Back')}>Delete</button>
                 <button data-testid="get-more-prints" onClick={onGetMorePrints}>Get More</button>
+                {setApplyToAll && <button data-testid="toggle-apply-to-all" onClick={() => setApplyToAll(true)}>Apply All</button>}
                 {setSelectedFace && (
                     <div data-testid="toggle-front-back" data-value={selectedFace}>
                         <button data-testid="toggle-btn-front" onClick={() => setSelectedFace('front')}>Front</button>
@@ -271,13 +297,14 @@ vi.mock('./AdvancedSearch', () => ({
     }: {
         isOpen: boolean;
         onClose: () => void;
-        onSelectCard: (name: string, mpcUrl?: string) => void;
+        onSelectCard: (name: string, mpcUrl?: string, specificPrint?: { set: string; number: string }) => void;
     }) => (
         isOpen ? (
             <div data-testid="advanced-search">
                 <button data-testid="close-search" onClick={onClose}>Close Search</button>
                 <button data-testid="select-card" onClick={() => onSelectCard('Selected Card')}>Select Card</button>
                 <button data-testid="select-mpc-card" onClick={() => onSelectCard('MPC Card', 'https://mpc.example.com/id=abc123')}>Select MPC</button>
+                <button data-testid="select-specific-print" onClick={() => onSelectCard('Specific Print', undefined, { set: 'abc', number: '123' })}>Select Specific</button>
             </div>
         ) : null
     ),
@@ -373,6 +400,9 @@ describe('ArtworkModal', () => {
         mockState.initialTab = 'artwork';
         mockState.initialFace = 'front';
         mockState.initialArtSource = undefined;
+        mockState.initialOpenAdvancedSearch = false;
+        mockState.allCards = [];
+        mockState.index = null;
         mockSelectedCards.clear();
         mockLiveQueryResult.value = null;
     });
