@@ -475,6 +475,307 @@ describe("streamCards", () => {
     expect(result.addedCardUuids).toEqual(["placeholder-fallback"]);
   });
 
+  it("should use zero as the starting order when no existing cards are present", async () => {
+    (db.cards.orderBy as any).mockReturnValueOnce({
+      last: vi.fn().mockResolvedValue(undefined),
+    });
+    (addCards as any).mockResolvedValue([{ uuid: "missing-zero-order" }]);
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-error",
+        data: JSON.stringify({ query: { name: "Missing Zero" } }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Missing Zero" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "Missing Zero", order: 10 })],
+      undefined
+    );
+  });
+
+  it("should apply direct MPC override defaults around existing overrides", async () => {
+    const onFirstCard = vi.fn();
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "mpc-overrides" }]);
+    (addRemoteImage as any).mockResolvedValue("img-overrides");
+
+    await streamCards({
+      cardInfos: [
+        {
+          name: "MPC Overrides",
+          mpcIdentifier: "mpc-overrides",
+          overrides: { darkenMode: "multiply", saturation: 90 },
+        } as any,
+      ],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+      onFirstCard,
+    });
+
+    expect(undoableAddCards).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          overrides: expect.objectContaining({
+            darkenMode: "multiply",
+            darkenUseGlobalSettings: false,
+            saturation: 90,
+          }),
+        }),
+      ],
+      expect.anything()
+    );
+    expect(onFirstCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("should use default custom cardback bleed when the cardback omits it", async () => {
+    (db.cardbacks.toArray as any).mockResolvedValueOnce([
+      { id: "cardback-default", displayName: "Default Back" },
+    ]);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "default-back" }]);
+
+    await streamCards({
+      cardInfos: [{ name: "Default Back" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(undoableAddCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ hasBuiltInBleed: true, isFlipped: true })],
+      expect.anything()
+    );
+  });
+
+  it("should add a default-error card when SSE card-error has no matching entry", async () => {
+    (addCards as any).mockResolvedValue([{ uuid: "unknown-error" }]);
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-error",
+        data: JSON.stringify({ query: { name: "Unknown Missing" } }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Different Card" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          name: "Unknown Missing",
+          lookupError: "Card not found",
+          order: 0,
+        }),
+      ],
+      undefined
+    );
+  });
+
+  it("should continue when preferred image resolution fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "preferred-fallback" }]);
+    (addRemoteImage as any)
+      .mockResolvedValueOnce("main-preferred-fallback")
+      .mockRejectedValueOnce(new Error("preferred failed"));
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Preferred Fallback", imageUrls: ["http://main"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Preferred Fallback", preferredImageId: "http://bad" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[streamCards] Failed to resolve preferredImageId",
+      expect.any(Error)
+    );
+    expect(undoableAddCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ imageId: "main-preferred-fallback" })],
+      undefined
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("should create linked backs for MPC placeholders resolved by Scryfall DFC fallback", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "placeholder-dfc" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (addRemoteImage as any)
+      .mockResolvedValueOnce("back-placeholder-image")
+      .mockResolvedValueOnce("front-placeholder-image");
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({
+          name: "Front Placeholder",
+          imageUrls: ["http://front-placeholder"],
+          layout: "transform",
+          card_faces: [
+            { name: "Front Placeholder", imageUrl: "http://front-placeholder" },
+            { name: "Back Placeholder", imageUrl: "http://back-placeholder" },
+          ],
+        }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Front Placeholder" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+    });
+
+    expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+      {
+        frontUuid: "placeholder-dfc",
+        backImageId: "back-placeholder-image",
+        backName: "Back Placeholder",
+      },
+    ]);
+  });
+
+  it("should leave built-in custom linked back IDs unfetched and use the default back name", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "front-built-in" }]);
+    (addRemoteImage as any).mockResolvedValue("front-built-in-image");
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Built In Front", imageUrls: ["http://front"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Built In Front", linkedBackImageId: "cardback_builtin" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(addRemoteImage).toHaveBeenCalledTimes(1);
+    expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+      { frontUuid: "front-built-in", backImageId: "cardback_builtin", backName: "Back" },
+    ]);
+  });
+
+  it("should warn and continue when MPC token enrichment fetch fails", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "mpc-token-fail" }]);
+    (findBestMpcMatches as any).mockResolvedValue([
+      { info: { name: "MPC Token Fail" }, imageUrl: "http://mpc-token-fail", mpcCard: {} },
+    ]);
+    (parseMpcCardLogic as any).mockReturnValue({
+      name: "MPC Token Fail",
+      hasBuiltInBleed: true,
+      needsEnrichment: true,
+    });
+    (addRemoteImage as any).mockResolvedValue("mpc-token-fail-image");
+    (db.cards.where as any).mockReturnValue({
+      anyOf: vi.fn(() => ({
+        toArray: vi.fn().mockResolvedValue([{ uuid: "mpc-token-fail", name: "MPC Token Fail" }]),
+      })),
+    });
+    (fetchTokenParts as any).mockResolvedValue({ success: false, error: "network down" });
+
+    await streamCards({
+      cardInfos: [{ name: "MPC Token Fail" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+    });
+
+    await vi.waitFor(() =>
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[enrichMpcCardsWithTokens] Failed to fetch token parts:",
+        "network down"
+      )
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("should mark back-face imports through the DFC layout gate", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "layout-back-face" }]);
+    (addRemoteImage as any)
+      .mockResolvedValueOnce("layout-back-image")
+      .mockResolvedValueOnce("layout-front-image");
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({
+          name: "Layout Front",
+          imageUrls: ["http://layout-back"],
+          layout: "transform",
+          card_faces: [
+            { name: "Layout Front", imageUrl: "http://layout-front" },
+            { name: "Layout Back", imageUrl: "http://layout-back" },
+          ],
+        }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Layout Back" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(undoableAddCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ isFlipped: true, imageId: "layout-front-image" })],
+      undefined
+    );
+  });
+
+  it("should warn and continue when custom linked back set lookup throws", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (fetchCardBySetAndNumber as any).mockRejectedValue(new Error("lookup failed"));
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "front-lookup-fail" }]);
+    (addRemoteImage as any).mockResolvedValue("front-lookup-image");
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Front Lookup Fail", imageUrls: ["http://front"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Front Lookup Fail", linkedBackSet: "BAD", linkedBackNumber: "404" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[streamCards] Failed to resolve custom back Scryfall card",
+      expect.any(Error)
+    );
+    expect(createLinkedBackCardsBulk).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it("should handle direct MPC cards bypassing SSE", async () => {
     const options: any = {
       cardInfos: [{ name: "MPC Card", mpcIdentifier: "mpc-123", quantity: 1 }],
