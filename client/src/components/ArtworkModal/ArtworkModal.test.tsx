@@ -1311,6 +1311,23 @@ describe('ArtworkModal', () => {
             const faceToggle = screen.getByTestId('toggle-front-back');
             expect(faceToggle.getAttribute('data-value')).toBe('back');
         });
+
+        it('should switch to cardback library tab for non-library linked backs', async () => {
+            const { useLiveQuery } = await import('dexie-react-hooks');
+            vi.mocked(useLiveQuery).mockImplementation(() => ({
+                uuid: 'back-uuid',
+                name: 'Back Card',
+                imageId: 'back-art',
+                linkedFrontId: 'front-uuid',
+            }));
+
+            mockState.initialFace = 'back';
+            render(<ArtworkModal />);
+
+            fireEvent.click(screen.getByTestId('tab-btn-cardback'));
+
+            expect(screen.getByText('Choose Cardback')).toBeDefined();
+        });
     });
 
     describe('Image object from cardbacks table', () => {
