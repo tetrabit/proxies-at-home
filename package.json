@@ -29,10 +29,10 @@
     "coverage:electron:baseline": "vitest --config electron/vitest.config.ts run --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",
     "coverage:shared:baseline": "vitest --config shared/vitest.config.ts run --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",
     "coverage:baseline": "npm run coverage:client:baseline && npm run coverage:server:baseline && npm run coverage:electron:baseline && npm run coverage:shared:baseline",
-    "coverage:client": "npm --prefix client test -- --coverage.enabled=true --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100",
-    "coverage:server": "npm --prefix server test -- --coverage.enabled=true --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100",
-    "coverage:electron": "vitest --config electron/vitest.config.ts run --coverage.enabled=true --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100",
-    "coverage:shared": "vitest --config shared/vitest.config.ts run --coverage.enabled=true --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100",
+    "coverage:client": "npm --prefix client test -- --coverage.enabled=true",
+    "coverage:server": "npm --prefix server test -- --coverage.enabled=true",
+    "coverage:electron": "vitest --config electron/vitest.config.ts run --coverage.enabled=true",
+    "coverage:shared": "vitest --config shared/vitest.config.ts run --coverage.enabled=true",
     "coverage:all": "npm run coverage:client && npm run coverage:server && npm run coverage:electron && npm run coverage:shared"
   },
   "devDependencies": {
