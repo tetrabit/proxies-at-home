@@ -265,6 +265,22 @@ describe("printerCalibrationRouter", () => {
     expect(response.body.error).toBe("Missing file upload.");
   });
 
+  it("returns 400 for blank profile names on profile routes", async () => {
+    const getResponse = await request(app).get("/api/printer-calibration/profiles/%20");
+    expect(getResponse.status).toBe(400);
+    expect(getResponse.body.error).toBe("Profile name is required.");
+
+    const putResponse = await request(app)
+      .put("/api/printer-calibration/profiles/%20")
+      .send({ front_x_mm: 0, front_y_mm: 0, back_x_mm: 0, back_y_mm: 0 });
+    expect(putResponse.status).toBe(400);
+    expect(putResponse.body.error).toBe("Profile name is required.");
+
+    const deleteResponse = await request(app).delete("/api/printer-calibration/profiles/%20");
+    expect(deleteResponse.status).toBe(400);
+    expect(deleteResponse.body.error).toBe("Profile name is required.");
+  });
+
   it("returns calibrated pdfs from the apply endpoint", async () => {
     profiles.set("office", {
       name: "office",
@@ -287,6 +303,44 @@ describe("printerCalibrationRouter", () => {
     expect(applyInvocations).toHaveLength(1);
     expect(applyInvocations[0]).toContain("--page-mode");
     expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("duplex");
+  });
+
+  it("logs download callback failures when calibrated pdf delivery fails", async () => {
+    profiles.set("office", {
+      name: "office",
+      front_x_mm: 1,
+      front_y_mm: 2,
+      back_x_mm: 3,
+      back_y_mm: 4,
+      paper_size: "letter",
+      duplex_mode: "long-edge",
+    });
+
+    const downloadSpy = vi.spyOn(express.response, "download").mockImplementation(function (
+      this: express.Response,
+      _path: string,
+      _filename: string,
+      callback?: (err?: Error) => void
+    ) {
+      callback?.(new Error("download failed"));
+      return this;
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(response.status).toBe(200);
+    expect(downloadSpy).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[printer-calibration] apply download error:",
+      expect.any(Error)
+    );
+
+    downloadSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
   });
 
   it("falls back to a .bin temp extension when the upload has no extension", async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import express from 'express';
 import request from 'supertest';
 import { gzipSync, gunzipSync } from 'zlib';
+import crypto from 'crypto';
 import * as crypto from 'crypto';
 
 // Create mock database with in-memory storage for testing
@@ -120,6 +121,22 @@ describe('shareRouter', () => {
             expect(res.body.expiresAt).toBeGreaterThan(Date.now());
         });
 
+        it('should return 500 if unique random IDs keep colliding', async () => {
+            const randomBytesSpy = vi.spyOn(crypto, 'randomBytes').mockReturnValue(Buffer.from('AAAAAA'));
+            for (let i = 0; i < 11; i++) {
+                mockShares.set('QUFBQUE', { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
+            }
+
+            const response = await request(app)
+                .post('/api/share')
+                .send({ data: { v: 1 } });
+
+            expect(response.status).toBe(500);
+            expect(response.body.error).toBe('Failed to generate unique ID');
+
+            randomBytesSpy.mockRestore();
+        });
+
         it('should return 400 for missing data', async () => {
             const res = await request(app)
                 .post('/api/share')
@@ -136,6 +153,34 @@ describe('shareRouter', () => {
 
             expect(res.status).toBe(400);
             expect(res.body.error).toBe('Missing or invalid data');
+        });
+
+        it('should return 500 when persistence throws during create', async () => {
+            const prepareSpy = vi.spyOn(crypto, 'randomBytes').mockReturnValueOnce(Buffer.from('BBBBBB'));
+            const dbMock = {
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => undefined),
+                    run: vi.fn(() => { throw new Error('db exploded'); }),
+                })),
+            };
+            vi.doMock('../db/db.js', () => ({
+                getDatabase: vi.fn(() => dbMock),
+            }));
+
+            vi.resetModules();
+            const { shareRouter: isolatedShareRouter } = await import('./shareRouter.js');
+            const isolatedApp = express();
+            isolatedApp.use(express.json());
+            isolatedApp.use('/api/share', isolatedShareRouter);
+
+            const response = await request(isolatedApp)
+                .post('/api/share')
+                .send({ data: { v: 1 } });
+
+            expect(response.status).toBe(500);
+            expect(response.body.error).toBe('Failed to create share');
+
+            prepareSpy.mockRestore();
         });
 
         it('should compress the data', async () => {
