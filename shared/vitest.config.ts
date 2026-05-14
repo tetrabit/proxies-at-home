@@ -24,7 +24,6 @@ export default defineConfig({
       ],
       reportsDirectory: './coverage/shared',
       reportOnFailure: true,
-      skipFull: true,
     },
   },
 });

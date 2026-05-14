@@ -11,7 +11,6 @@ export default defineConfig({
       exclude: ['electron/*.test.ts'],
       reportsDirectory: './coverage/electron',
       reportOnFailure: true,
-      skipFull: true,
     },
   },
 });
