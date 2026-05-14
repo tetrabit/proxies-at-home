@@ -70,8 +70,9 @@ describe('retryUtils', () => {
     const exhausted = new Error('network');
     const fn = vi.fn().mockRejectedValue(exhausted);
     const promise = withRetry(fn, { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, multiplier: 1, jitterFactor: 0 });
+    const assertion = expect(promise).rejects.toBe(exhausted);
     await vi.runAllTimersAsync();
-    await expect(promise).rejects.toBe(exhausted);
+    await assertion;
     expect(fn).toHaveBeenCalledTimes(2);
   });
 });

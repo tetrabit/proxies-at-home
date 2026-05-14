@@ -46,6 +46,11 @@ describe('exportCuttingTemplate', () => {
     });
   });
 
+  it('converts inch bleed when bleed is enabled', () => {
+    const settings = settingsToCuttingTemplate(8.5, 11, 'in', 1, 1, true, 0.125, 'in', 0, 0, 0, false);
+    expect(settings.bleedMm).toBeCloseTo(3.175);
+  });
+
   it('converts millimeter bleed and emits landscape card rectangles', () => {
     const settings = settingsToCuttingTemplate(279.4, 215.9, 'mm', 1, 1, true, 2, 'mm', 0, 0, 0, false);
     const svg = generateCuttingTemplateSVG(settings);
@@ -64,26 +69,35 @@ describe('exportCuttingTemplate', () => {
   });
 
   it('downloads a named SVG and revokes the object URL later', () => {
-    const click = vi.fn();
+    const link = document.createElement('a');
+    const click = vi.spyOn(link, 'click').mockImplementation(() => undefined);
+    vi.spyOn(document, 'createElement').mockReturnValue(link);
     const append = vi.spyOn(document.body, 'appendChild');
     const remove = vi.spyOn(document.body, 'removeChild');
-    vi.spyOn(document, 'createElement').mockReturnValue({ click } as unknown as HTMLAnchorElement);
 
     downloadCuttingTemplate(base);
 
     expect(URL.createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
-    expect(append).toHaveBeenCalled();
+    expect(append).toHaveBeenCalledWith(link);
     expect(click).toHaveBeenCalled();
-    expect(remove).toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith(link);
     vi.advanceTimersByTime(1000);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
   });
 
-  it('uses custom dimensions in filenames when no common page size matches', () => {
-    const link = { click: vi.fn() } as unknown as HTMLAnchorElement;
+  it('downloads portrait filenames for portrait settings', () => {
+    const link = document.createElement('a');
+    vi.spyOn(link, 'click').mockImplementation(() => undefined);
     vi.spyOn(document, 'createElement').mockReturnValue(link);
-    vi.spyOn(document.body, 'appendChild').mockImplementation((node) => node);
-    vi.spyOn(document.body, 'removeChild').mockImplementation((node) => node);
+
+    downloadCuttingTemplate({ ...base, portrait: true });
+    expect(link.download).toBe('cutting_template_letter_landscape_2x1_3mm_bleed_portrait.svg');
+  });
+
+  it('uses custom dimensions in filenames when no common page size matches', () => {
+    const link = document.createElement('a');
+    vi.spyOn(link, 'click').mockImplementation(() => undefined);
+    vi.spyOn(document, 'createElement').mockReturnValue(link);
 
     downloadCuttingTemplate({ ...base, pageWidthMm: 123.4, pageHeightMm: 234.5 });
     expect(link.download).toBe('cutting_template_123x235mm_2x1_3mm_bleed_landscape.svg');

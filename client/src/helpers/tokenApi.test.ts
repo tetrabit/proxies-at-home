@@ -37,19 +37,32 @@ describe('tokenApi', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('retries retryable failures and wraps unknown thrown values', async () => {
+  it('retries retryable 429 failures and then succeeds', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     vi.mocked(global.fetch)
       .mockResolvedValueOnce({ ok: false, status: 429 } as Response)
-      .mockRejectedValueOnce('boom')
       .mockResolvedValueOnce({ ok: true, json: async () => [] } as Response);
 
     const promise = fetchTokenParts([{ name: 'Retry' }]);
     await vi.runAllTimersAsync();
     await expect(promise).resolves.toEqual({ success: true, data: [] });
-    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
+  });
+
+  it('wraps unknown thrown values as errors', async () => {
+    vi.mocked(global.fetch).mockRejectedValueOnce('boom');
+    const result = await fetchTokenParts([{ name: 'Unknown failure' }]);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toBe('boom');
+  });
+
+  it('handles 4xx-looking errors without a parseable status', async () => {
+    vi.mocked(global.fetch).mockRejectedValueOnce(new Error('4xx'));
+    const result = await fetchTokenParts([{ name: 'Ambiguous 4xx' }]);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toBe('4xx');
   });
 
   it('propagates AbortError without wrapping', async () => {
