@@ -253,4 +253,74 @@ describe("Stream Router", () => {
     });
 
 
+    it("streams prints mode responses and per-card errors", async () => {
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo)
+            .mockResolvedValueOnce([
+                {
+                    name: "Face A // Face B",
+                    set: "abc",
+                    collector_number: "7",
+                    rarity: "rare",
+                    card_faces: [
+                        { name: "Face A", image_uris: { png: "a.png" }, colors: ["G"], mana_cost: "{G}" },
+                        { name: "Face B", image_uris: { png: "b.png" } },
+                    ],
+                    all_parts: [{ component: "token", name: "Token" }],
+                } as never,
+            ])
+            .mockRejectedValueOnce(new Error("prints failed"));
+
+        const res = await request(app)
+            .post("/stream/cards")
+            .send({ cardArt: "prints", language: "EN", cardQueries: [{ name: "Face B" }, { name: "Bad" }] })
+            .expect(200);
+
+        const events = res.text.split("\n\n").filter(Boolean);
+        expect(events[0]).toBe('event: handshake\ndata: {"total":2,"cardArt":"prints"}');
+        const printData = JSON.parse(events.find((event: string) => event.startsWith("event: print-found"))!.match(/data: (.*)/s)![1]);
+        expect(printData.name).toBe("Face B");
+        expect(printData.imageUrls).toEqual(["b.png", "a.png"]);
+        expect(events.some((event: string) => event.includes('"printsFound":1'))).toBe(true);
+        expect(events.some((event: string) => event.startsWith("event: card-error") && event.includes("prints failed"))).toBe(true);
+        expect(events.at(-1)).toBe("event: done\ndata: {}");
+    });
+
+    it("returns metadata for batch hits, fallback hits, misses, per-card errors, empty input, and fatal failures", async () => {
+        let batchResults = new Map();
+        batchResults.set("sol ring", {
+            name: "Sol Ring",
+            image_uris: { png: "sol.png" },
+            colors: [],
+            cmc: 1,
+            type_line: "Artifact",
+            rarity: "uncommon",
+            set: "cmd",
+            collector_number: "123",
+        });
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValueOnce(batchResults);
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo)
+            .mockResolvedValueOnce([{ name: "Fallback", image_uris: { png: "fallback.png" }, set: "abc", collector_number: "1" } as never])
+            .mockRejectedValueOnce(new Error("one bad card"))
+            .mockResolvedValueOnce([]);
+
+        const response = await request(app)
+            .post("/stream/metadata")
+            .send({ cardQueries: [{ name: "Sol Ring" }, { name: "Fallback" }, { name: "Throws" }, { name: "Missing" }] })
+            .expect(200);
+
+        expect(response.body.results[0].card.name).toBe("Sol Ring");
+        expect(response.body.results[1].card.name).toBe("Fallback");
+        expect(response.body.results[2]).toMatchObject({ card: null, error: "one bad card" });
+        expect(response.body.results[3]).toMatchObject({ card: null, error: "Card not found" });
+
+        const empty = await request(app).post("/stream/metadata").send({ cardQueries: [] }).expect(200);
+        expect(empty.body).toEqual({ results: [] });
+
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockRejectedValueOnce(new Error("batch fatal"));
+        const failed = await request(app).post("/stream/metadata").send({ cardQueries: [{ name: "Boom" }] });
+        expect(failed.status).toBe(500);
+        expect(failed.body.error).toBe("An unexpected server error occurred.");
+    });
+
+
 });

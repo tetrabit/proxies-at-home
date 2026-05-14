@@ -141,4 +141,19 @@ describe('preferencesRouter', () => {
         expect([fixtureA.exportedAt, fixtureB.exportedAt]).toContain(persistedFixture.exportedAt);
         expect(() => JSON.parse(persistedPayload)).not.toThrow();
     });
+
+    it('returns 500 when preference JSON is corrupt or writes fail', async () => {
+        await fs.mkdir(dataDirectory, { recursive: true });
+        await fs.writeFile(preferencesPath, '{not-json', 'utf-8');
+        const loadResponse = await request(app).get('/api/preferences');
+        expect(loadResponse.status).toBe(500);
+        expect(loadResponse.body.error).toBe('Failed to load preferences');
+
+        await fs.rm(dataDirectory, { recursive: true, force: true });
+        await fs.writeFile(dataDirectory, 'not a directory');
+        const saveResponse = await request(app).put('/api/preferences').send(validFixture);
+        expect(saveResponse.status).toBe(500);
+        expect(saveResponse.body.error).toBe('Failed to save preferences');
+    });
+
 });
