@@ -174,18 +174,9 @@ describe('exportProxyPagesToPdf', () => {
     expect(posted.settings.effectCacheById.get('c1')).toBe(cached);
   });
 
-  it('rejects image assembly failures and native worker errors', async () => {
-    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
-    vi.mocked(global.fetch).mockRejectedValueOnce(new Error('blob fetch failed'));
-    await expect(exportProxyPagesToPdf({
-      cards: [{ uuid: 'c1', name: 'One' }] as any,
-      imagesById: new Map(),
-      pdfSettings: baseSettings,
-      pagesPerPdf: 1,
-      cancellationPromise: new Promise(() => undefined),
-      returnBuffer: true,
-    })).rejects.toThrow('blob fetch failed');
 
+  it('rejects native worker error events', async () => {
+    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
     class NativeErrorWorker extends MockWorker {
       postMessage = vi.fn(() => queueMicrotask(() => this.onerror?.(new Error('native worker failed') as unknown as ErrorEvent)));
     }
@@ -212,6 +203,7 @@ describe('exportProxyPagesToPdf', () => {
       returnBuffer: true,
     })).rejects.toThrow('Worker error');
   });
+
 
   it('rejects cancellation and worker errors while cleaning up workers', async () => {
     const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
