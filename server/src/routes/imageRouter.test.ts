@@ -279,6 +279,7 @@ describe("getWithRetry logic", () => {
 
         sendFileSpy.mockRestore();
     });
+
     describe("GET /mpc (MPC Google Drive Proxy)", () => {
         it("should return 400 if id is missing", async () => {
             const res = await request(app).get("/images/mpc");

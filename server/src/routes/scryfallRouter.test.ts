@@ -133,11 +133,11 @@ describe('scryfallRouter', () => {
 
         it('returns cached named results without hitting upstream', async () => {
             const cached = { name: 'Cached Named', set: 'cmd' };
-            vi.mocked(getDatabase).mockReturnValue({
+            vi.mocked(getDatabase).mockImplementation(() => ({
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
-            } as never);
+            }) as never);
 
             const res = await request(app).get('/api/scryfall/named?exact=Cached%20Named');
             expect(res.status).toBe(200);
@@ -312,12 +312,11 @@ describe('scryfallRouter', () => {
 
         it('returns cached card results without hitting upstream', async () => {
             const cached = { name: 'Cached Card', set: 'cmd', collector_number: '235' };
-            const { getDatabase } = await import('../db/db.js');
-            vi.mocked(getDatabase).mockReturnValueOnce({
+            vi.mocked(getDatabase).mockImplementation(() => ({
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
-            } as never);
+            }) as never);
 
             const res = await request(app).get('/api/scryfall/cards/cmd/235');
             expect(res.status).toBe(200);
