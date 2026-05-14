@@ -30,18 +30,50 @@ vi.mock('lucide-react', () => ({
     Settings: ({ className }: { className?: string }) => <span data-testid="settings-icon" className={className}>⚙️</span>,
 }));
 
+vi.mock('../common', () => ({
+    ToggleButtonGroup: ({ options, value, onChange }: { options: { id: string; label?: string }[]; value: string; onChange: (value: string) => void }) => (
+        <div data-testid={`toggle-${value}`}>
+            {options.map((option) => (
+                <button key={option.id} data-testid={`toggle-${option.id}`} onClick={() => onChange(option.id)}>
+                    {option.label ?? option.id}
+                </button>
+            ))}
+        </div>
+    ),
+    CardGrid: ({ children }: { children: React.ReactNode }) => <div data-testid="card-grid">{children}</div>,
+    ArtSourceToggle: ({ value, onChange }: { value: string; onChange: (value: 'scryfall' | 'mpc') => void }) => (
+        <div data-testid={`art-source-${value}`}>
+            <button data-testid="source-scryfall" onClick={() => onChange('scryfall')}>Scryfall</button>
+            <button data-testid="source-mpc" onClick={() => onChange('mpc')}>MPC</button>
+        </div>
+    ),
+    FloatingZoomPanel: ({ onZoomChange }: { onZoomChange: (value: number) => void }) => (
+        <button data-testid="floating-zoom-panel" onClick={() => onZoomChange(2)}>Zoom</button>
+    ),
+}));
+
 vi.mock('./CardbackLibrary', () => ({
     CardbackLibrary: () => <div data-testid="cardback-library">CardbackLibrary</div>,
 }));
 
 // Mock the CardArtContent component from its direct module path.
 vi.mock('../common/CardArtContent', () => ({
-    CardArtContent: ({ artSource, onSelectCard }: { artSource: string; onSelectCard: (name: string, url?: string) => void }) => (
-        <div
-            data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}
-            onClick={() => onSelectCard('Test Card', 'test-url')}
-        >
-            {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
+    CardArtContent: ({ artSource, onSelectCard, onSelectMpcCard, onSwitchSource, onFilterCountChange }: {
+        artSource: string;
+        onSelectCard: (name: string, url?: string) => void;
+        onSelectMpcCard?: (card: { id: string; name: string; imageUrl: string }) => void;
+        onSwitchSource?: () => void;
+        onFilterCountChange?: (count: number) => void;
+    }) => (
+        <div data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}>
+            <button data-testid={`${artSource}-select-card`} onClick={() => onSelectCard('Test Card', 'test-url')}>
+                {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
+            </button>
+            <button data-testid={`${artSource}-select-mpc-card`} onClick={() => onSelectMpcCard?.({ id: 'mpc-1', name: 'MPC Card', imageUrl: 'mpc-url' })}>
+                Select MPC object
+            </button>
+            <button data-testid={`${artSource}-switch-source`} onClick={onSwitchSource}>Switch</button>
+            <button data-testid={`${artSource}-filter-count`} onClick={() => onFilterCountChange?.(3)}>Filters</button>
         </div>
     ),
 }));
@@ -185,4 +217,66 @@ describe('ArtworkTabContent', () => {
 
     // Note: Loading state tests removed - isGettingMore prop was removed
     // CardArtContent now handles loading state internally via useScryfallPrints and useMpcSearch
+
+    describe('additional coverage paths', () => {
+    it('calls optional mobile landscape tab callbacks', () => {
+        const setSelectedFace = vi.fn();
+        const setActiveTab = vi.fn();
+        render(<ArtworkTabContent {...defaultProps} setSelectedFace={setSelectedFace} setActiveTab={setActiveTab} activeTab="artwork" />);
+
+        fireEvent.click(screen.getByTestId('toggle-back'));
+        fireEvent.click(screen.getByTestId('toggle-settings'));
+
+        expect(setSelectedFace).toHaveBeenCalledWith('back');
+        expect(setActiveTab).toHaveBeenCalledWith('settings');
+    });
+
+    it('renders the cardback library grid when requested', () => {
+        render(<ArtworkTabContent {...defaultProps} selectedFace="back" showCardbackLibrary linkedBackCard={undefined} />);
+
+        expect(screen.getByTestId('card-grid')).toBeDefined();
+        expect(screen.getByTestId('cardback-library')).toBeDefined();
+    });
+
+    it('routes scryfall and mpc card selections through the expected callbacks', () => {
+        const onSelectArtwork = vi.fn();
+        const onSelectMpcArt = vi.fn();
+        render(<ArtworkTabContent {...defaultProps} artSource="mpc" onSelectArtwork={onSelectArtwork} onSelectMpcArt={onSelectMpcArt} />);
+
+        fireEvent.click(screen.getByTestId('scryfall-select-card'));
+        fireEvent.click(screen.getByTestId('mpc-select-card'));
+        fireEvent.click(screen.getByTestId('mpc-select-mpc-card'));
+
+        expect(onSelectArtwork).toHaveBeenCalledWith('test-url', 'Test Card', undefined);
+        expect(onSelectArtwork).toHaveBeenCalledWith('test-url');
+        expect(onSelectMpcArt).toHaveBeenCalledWith({ id: 'mpc-1', name: 'MPC Card', imageUrl: 'mpc-url' });
+    });
+
+    it('switches MPC source, shows active filter badge, and calls zoom control', () => {
+        const setArtSource = vi.fn();
+        const setZoomLevel = vi.fn();
+        render(<ArtworkTabContent {...defaultProps} artSource="mpc" setArtSource={setArtSource} setZoomLevel={setZoomLevel} />);
+
+        fireEvent.click(screen.getByTestId('mpc-filter-count'));
+        expect(screen.getByText('3')).toBeDefined();
+
+        fireEvent.click(screen.getByTestId('mpc-switch-source'));
+        fireEvent.click(screen.getByTestId('floating-zoom-panel'));
+
+        expect(setArtSource).toHaveBeenCalledWith('scryfall');
+        expect(setZoomLevel).toHaveBeenCalledWith(2);
+    });
+
+    it('uses fallback modal card names when display data is empty and hides artwork for cardback ids', () => {
+        render(<ArtworkTabContent
+            {...defaultProps}
+            selectedFace="back"
+            linkedBackCard={{ uuid: 'back', name: 'Back Name', order: 1, isUserUpload: false, imageId: 'cardback-1' }}
+            displayData={{ name: undefined, imageUrls: undefined, id: undefined, selectedArtId: undefined, processedDisplayUrl: null }}
+        />);
+
+        expect(screen.getByText(/Apply to all cards named "Back"/)).toBeDefined();
+        expect(screen.getByTestId('cardback-library')).toBeDefined();
+    });
+});
 });

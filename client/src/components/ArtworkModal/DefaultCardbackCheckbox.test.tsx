@@ -146,6 +146,28 @@ describe("DefaultCardbackCheckbox", () => {
                 expect(defaultProps.onClose).toHaveBeenCalled();
             });
         });
+
+        it("should do nothing when the configured default cardback is missing", async () => {
+            render(<DefaultCardbackCheckbox {...defaultProps} cardbackOptions={[]} />);
+
+            fireEvent.click(screen.getByRole("checkbox"));
+
+            await vi.waitFor(() => {
+                expect(undoableChangeCardback).not.toHaveBeenCalled();
+                expect(defaultProps.onClose).not.toHaveBeenCalled();
+            });
+        });
+
+        it("should do nothing when no modal card can supply a front card", async () => {
+            render(<DefaultCardbackCheckbox {...defaultProps} modalCard={null} />);
+
+            fireEvent.click(screen.getByRole("checkbox"));
+
+            await vi.waitFor(() => {
+                expect(undoableChangeCardback).not.toHaveBeenCalled();
+                expect(defaultProps.onClose).not.toHaveBeenCalled();
+            });
+        });
     });
 
     describe("unchecking the checkbox (removing default)", () => {

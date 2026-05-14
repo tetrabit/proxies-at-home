@@ -156,6 +156,23 @@ describe("ArtworkGrid", () => {
                 expect(img.className).toContain("cursor-pointer");
             });
         });
+
+        it("should reveal selected overlay after selected image loads", () => {
+            const { container } = render(
+                <ArtworkGrid
+                    imageUrls={mockImageUrls}
+                    selectedId="https://example.com/image2.png"
+                    processedDisplayUrl={null}
+                    onSelectArtwork={() => { }}
+                />
+            );
+
+            const images = screen.getAllByRole("img");
+            fireEvent.load(images[1]);
+
+            expect(images[1].className).toContain("opacity-100");
+            expect(container.querySelector('[class*="bg-green-500/20"]')).toBeDefined();
+        });
     });
 
     describe("processed display URL", () => {

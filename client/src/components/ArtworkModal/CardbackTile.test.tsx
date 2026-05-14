@@ -221,6 +221,22 @@ describe("CardbackTile", () => {
             expect(onCancelEdit).toHaveBeenCalled();
         });
 
+        it("should not select the tile when clicking inside the edit input", () => {
+            const onSelect = vi.fn();
+            render(
+                <CardbackTile
+                    {...defaultProps}
+                    isEditing={true}
+                    editingName="Test"
+                    onSelect={onSelect}
+                />
+            );
+
+            fireEvent.click(screen.getByRole("textbox"));
+
+            expect(onSelect).not.toHaveBeenCalled();
+        });
+
         it("should call onCancelEdit when input loses focus without saving", () => {
             const onCancelEdit = vi.fn();
             const onSaveEdit = vi.fn();

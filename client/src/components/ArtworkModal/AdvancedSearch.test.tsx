@@ -68,12 +68,14 @@ vi.mock('../common/CardArtContent', () => ({
         onSelectCard,
         onSwitchSource,
         filtersCollapsed,
+        onFilterCountChange,
     }: {
         artSource: 'scryfall' | 'mpc';
         query: string;
         onSelectCard: (cardName: string, imageUrl?: string, specificPrint?: { set: string; number: string }) => void;
         onSwitchSource?: () => void;
         filtersCollapsed?: boolean;
+        onFilterCountChange?: (count: number) => void;
     }) => (
         <div
             data-testid={artSource === 'mpc' ? 'mpc-art-content' : 'scryfall-art-content'}
@@ -99,6 +101,15 @@ vi.mock('../common/CardArtContent', () => ({
                         onClick={() => onSelectCard('Test Card', 'https://mpc.example.com/abc123')}
                     >
                         Select MPC Card
+                    </button>
+                    <button
+                        data-testid="mpc-select-card-no-url"
+                        onClick={() => onSelectCard('Test Card')}
+                    >
+                        Select MPC Card Without URL
+                    </button>
+                    <button data-testid="mpc-set-filter-count" onClick={() => onFilterCountChange?.(2)}>
+                        Set Filter Count
                     </button>
                     <button data-testid="mpc-switch-to-scryfall" onClick={onSwitchSource}>
                         Switch to Scryfall
@@ -240,6 +251,15 @@ describe('AdvancedSearch', () => {
             expect(defaultProps.onSelectCard).toHaveBeenCalledWith('Test Card', 'https://mpc.example.com/abc123');
         });
 
+
+        it('should pass an empty MPC URL when CardArtContent omits imageUrl', () => {
+            render(<AdvancedSearch {...defaultProps} initialSource="mpc" />);
+
+            fireEvent.click(screen.getByTestId('mpc-select-card-no-url'));
+
+            expect(defaultProps.onSelectCard).toHaveBeenCalledWith('Test Card', '');
+        });
+
         it('should close modal after selection by default', () => {
             const onClose = vi.fn();
             render(<AdvancedSearch {...defaultProps} onClose={onClose} />);
@@ -327,6 +347,15 @@ describe('AdvancedSearch', () => {
             const showBtn = screen.getByTitle('Show Filters');
             fireEvent.click(showBtn);
             expect(screen.getByTestId('mpc-art-content').getAttribute('data-filters-collapsed')).toBe('false');
+        });
+
+
+        it('should render active filter count badge for MPC searches', () => {
+            render(<AdvancedSearch {...defaultProps} initialSource="mpc" />);
+
+            fireEvent.click(screen.getByTestId('mpc-set-filter-count'));
+
+            expect(screen.getByText('2')).toBeDefined();
         });
     });
 });
