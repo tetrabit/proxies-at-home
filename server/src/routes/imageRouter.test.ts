@@ -223,6 +223,71 @@ describe("getWithRetry logic", () => {
         expect(fs.writeFileSync).not.toHaveBeenCalled();
     });
 
+
+
+    it("serves subsequent proxy requests from the in-memory path cache", async () => {
+        (fs.existsSync as unknown as Mock).mockReturnValue(true);
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/jpeg").send("cached image data");
+        });
+
+        await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/memory-cache.jpg")}`);
+        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/memory-cache.jpg")}`);
+
+        expect(res.status).toBe(200);
+        expect(sendFileSpy).toHaveBeenCalledTimes(2);
+        sendFileSpy.mockRestore();
+    });
+
+    it("waits for in-progress proxy writes before serving the completed cache file", async () => {
+        let fileExists = false;
+        (fs.existsSync as unknown as Mock).mockImplementation(() => fileExists);
+        let resolveWrite: () => void = () => undefined;
+        (fs.promises.writeFile as unknown as Mock).mockImplementationOnce(async () => {
+            await new Promise<void>((resolve) => { resolveWrite = resolve; });
+            fileExists = true;
+        });
+        mockedAxios.get.mockResolvedValue({
+            status: 200,
+            data: Buffer.from("image data"),
+            headers: { "content-type": "image/jpeg" },
+        });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/jpeg").send("cached image data");
+        });
+
+        const first = request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/concurrent.jpg")}`);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const second = request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/concurrent.jpg")}`);
+        resolveWrite();
+        const [firstRes, secondRes] = await Promise.all([first, second]);
+
+        expect(firstRes.status).toBe(200);
+        expect(secondRes.status).toBe(200);
+        expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+        sendFileSpy.mockRestore();
+    });
+
+    it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
+        mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: Buffer.from("png") });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/png").send("cached image data");
+        });
+
+        const thumb = await request(app).get("/images/mpc?id=thumb-id&size=small");
+        expect(thumb.status).toBe(200);
+        expect(mockedAxios.get).toHaveBeenCalledWith("https://img.mpcautofill.com/thumb-id-small-google_drive", expect.any(Object));
+
+        mockedAxios.get
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "image/jpeg" }, data: Buffer.from("jpg") });
+        const full = await request(app).get("/images/mpc?id=fallback-id&size=full");
+        expect(full.status).toBe(200);
+        expect(fs.promises.writeFile).toHaveBeenLastCalledWith(expect.stringContaining("gdrive_fallback-id_large"), expect.any(Buffer));
+        sendFileSpy.mockRestore();
+    });
     describe("GET /mpc (MPC Google Drive Proxy)", () => {
         it("should return 400 if id is missing", async () => {
             const res = await request(app).get("/images/mpc");

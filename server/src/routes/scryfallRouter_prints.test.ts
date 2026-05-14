@@ -41,6 +41,7 @@ vi.mock("../utils/getCardImagesPaged.js", () => ({
 
 import { scryfallRouter } from "./scryfallRouter.js";
 import { getCardsWithImagesForCardInfo } from "../utils/getCardImagesPaged.js";
+import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 
 describe("scryfallRouter - /prints", () => {
   let app: express.Application;
@@ -229,4 +230,49 @@ describe("scryfallRouter - /prints", () => {
       )
     ).toBeDefined();
   });
+
+  it("validates prints inputs and supports set+number plus non-English oracle searches", async () => {
+    const missing = await request(app).get("/api/scryfall/prints");
+    expect(missing.status).toBe(400);
+
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [{ name: "Set Print", set: "abc", collector_number: "7", image_uris: { png: "set.png" } }] } } as unknown as any);
+    const bySet = await request(app).get("/api/scryfall/prints?set=ABC&number=7");
+    expect(bySet.status).toBe(200);
+    expect(bySet.body.prints[0]).toMatchObject({ imageUrl: "set.png", set: "abc", number: "7" });
+    expect(axios.get).toHaveBeenLastCalledWith('/cards/search', { params: { q: 'set:abc number:7 include:extras' } });
+
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [] } } as unknown as any);
+    const nonEnglish = await request(app).get("/api/scryfall/prints?oracle_id=oracle-fr&lang=fr");
+    expect(nonEnglish.status).toBe(200);
+    expect(axios.get).toHaveBeenLastCalledWith('/cards/search', { params: { q: 'oracleid:oracle-fr unique:prints include:extras lang:fr' } });
+  });
+
+  it("uses the microservice for English oracle-id prints when available", async () => {
+    vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+    vi.mocked(getScryfallClient).mockReturnValueOnce({
+      searchCards: vi.fn().mockResolvedValue({
+        success: true,
+        data: { data: [{ id: 'micro-print', oracle_id: 'oracle-micro', name: 'Micro', set: 'mic', collector_number: '1', image_uris: { png: 'micro.png' } }] },
+      }),
+    } as never);
+
+    const res = await request(app).get("/api/scryfall/prints?oracle_id=oracle-micro");
+    expect(res.status).toBe(200);
+    expect(res.body.prints[0].scryfall_id).toBe('micro-print');
+    expect(axios.get).not.toHaveBeenCalledWith('/cards/search', { params: { q: expect.stringContaining('oracle-micro') } });
+  });
+
+  it("forwards print axios errors and handles plain failures", async () => {
+    vi.mocked(axios.get).mockRejectedValueOnce({ isAxiosError: true, response: { status: 503, data: { error: 'upstream down' } } });
+    vi.mocked(axios.isAxiosError).mockReturnValueOnce(true);
+    const upstream = await request(app).get("/api/scryfall/prints?oracle_id=oracle-error&lang=fr");
+    expect(upstream.status).toBe(503);
+    expect(upstream.body).toEqual({ error: 'upstream down' });
+
+    vi.mocked(getCardsWithImagesForCardInfo).mockRejectedValueOnce(new Error('plain prints failure'));
+    const failed = await request(app).get("/api/scryfall/prints?name=Plain%20Failure%20Prints");
+    expect(failed.status).toBe(500);
+    expect(failed.body.error).toBe('Failed to fetch prints');
+  });
+
 });
