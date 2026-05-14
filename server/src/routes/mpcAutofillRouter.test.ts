@@ -168,4 +168,17 @@ describe('mpcAutofillRouter', () => {
     expect(plainFailure.status).toBe(502);
     expect(plainFailure.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: 'plain' });
   });
+
+  it('does not retry non-5xx card fetch failures in batch search', async () => {
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { miss: { CARD: ['id1'] } } } })
+      .mockRejectedValueOnce({ response: { status: 400 }, message: 'bad cards' });
+    mocks.isAxiosError.mockReturnValueOnce(true);
+
+    const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Miss'] });
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: 'unknown: [object Object]' });
+    expect(mocks.axiosPost).toHaveBeenCalledTimes(2);
+  });
+
 });

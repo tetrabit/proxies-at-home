@@ -37,6 +37,11 @@ describe('metricsRouter', () => {
     const response = await request(app).get('/api/metrics');
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ success: false, error: 'boom' });
+
+    getMetricsSpy.mockImplementationOnce(() => { throw 'plain'; });
+    const plain = await request(app).get('/api/metrics');
+    expect(plain.status).toBe(500);
+    expect(plain.body).toEqual({ success: false, error: 'Failed to get metrics' });
   });
 
   it('logs metrics and reports log failures', async () => {
@@ -49,6 +54,11 @@ describe('metricsRouter', () => {
     const failed = await request(app).post('/api/metrics/log');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'Failed to log metrics' });
+
+    logMetricsSpy.mockImplementationOnce(() => { throw new Error('log boom'); });
+    const errorFailed = await request(app).post('/api/metrics/log');
+    expect(errorFailed.status).toBe(500);
+    expect(errorFailed.body).toEqual({ success: false, error: 'log boom' });
   });
 
   it('resets metrics and reports reset failures', async () => {
@@ -61,6 +71,11 @@ describe('metricsRouter', () => {
     const failed = await request(app).post('/api/metrics/reset');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'cannot reset' });
+
+    resetMetricsSpy.mockImplementationOnce(() => { throw 'plain'; });
+    const plain = await request(app).post('/api/metrics/reset');
+    expect(plain.status).toBe(500);
+    expect(plain.body).toEqual({ success: false, error: 'Failed to reset metrics' });
   });
 
   it('reports healthy, degraded, and health-check failure states', async () => {
@@ -82,5 +97,10 @@ describe('metricsRouter', () => {
     const failed = await request(app).get('/api/metrics/health');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'Failed to check health' });
+
+    getMetricsSpy.mockImplementationOnce(() => { throw new Error('health boom'); });
+    const errorFailed = await request(app).get('/api/metrics/health');
+    expect(errorFailed.status).toBe(500);
+    expect(errorFailed.body).toEqual({ success: false, error: 'health boom' });
   });
 });

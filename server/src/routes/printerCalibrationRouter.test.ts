@@ -289,6 +289,26 @@ describe("printerCalibrationRouter", () => {
     expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("duplex");
   });
 
+  it("falls back to a .bin temp extension when the upload has no extension", async () => {
+    profiles.set("office", {
+      name: "office",
+      front_x_mm: 1,
+      front_y_mm: 2,
+      back_x_mm: 3,
+      back_y_mm: 4,
+      paper_size: "letter",
+      duplex_mode: "long-edge",
+    });
+
+    const response = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input");
+
+    expect(response.status).toBe(200);
+    expect(applyInvocations[0].some((arg) => arg.endsWith(".bin"))).toBe(true);
+  });
+
   it("passes back-only page mode to the apply command", async () => {
     profiles.set("office", {
       name: "office",
@@ -452,6 +472,7 @@ describe("printerCalibrationRouter", () => {
   it("rejects malformed profile output", () => {
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: nope\nfront_y_mm: 1\nback_x_mm: 2\nback_y_mm: 3")).toThrow("Invalid numeric value");
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: 1")).toThrow("Failed to parse");
+    expect(() => parsePrinterCalibrationProfileOutput("bad", "paper_size: letter\nignored line\nfront_x_mm: 1\nfront_y_mm: 2\nback_x_mm: 3\nback_y_mm: 4")).not.toThrow();
   });
 
 });

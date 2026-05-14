@@ -323,4 +323,21 @@ describe("Stream Router", () => {
     });
 
 
+
+    it("falls back to individual art search when batch lookup misses", async () => {
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(new Map());
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo).mockResolvedValueOnce([
+            { name: "Fallback Card", image_uris: { png: "fallback_url" }, set: "abc", collector_number: "1" } as never,
+        ]);
+
+        const res = await request(app)
+            .post("/stream/cards")
+            .send({ cardQueries: [{ name: "Fallback Card" }] })
+            .expect(200);
+
+        const events = res.text.split("\n\n").filter(Boolean);
+        const found = events.find((event: string) => event.startsWith("event: card-found"));
+        expect(JSON.parse(found!.match(/data: (.*)/s)![1]).imageUrls).toEqual(["fallback_url"]);
+    });
+
 });

@@ -259,6 +259,29 @@ describe("getWithRetry logic", () => {
         expect(fs.promises.writeFile).toHaveBeenLastCalledWith(expect.stringContaining("gdrive_fallback-id_large"), expect.any(Buffer));
         sendFileSpy.mockRestore();
     });
+
+    it("serves cardbacks and covers cardback validation branches", async () => {
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/png").send("cardback");
+        });
+
+        (fs.existsSync as unknown as Mock).mockImplementation((candidate: string) => {
+            if (candidate.endsWith(".png")) return true;
+            return false;
+        });
+
+        const missing = await request(app).get("/images/cardback/");
+        expect(missing.status).toBe(404);
+
+        const unknown = await request(app).get("/images/cardback/not-a-cardback");
+        expect(unknown.status).toBe(404);
+
+        const found = await request(app).get("/images/cardback/mtg");
+        expect(found.status).toBe(200);
+        expect(sendFileSpy).toHaveBeenCalled();
+
+        sendFileSpy.mockRestore();
+    });
     describe("GET /mpc (MPC Google Drive Proxy)", () => {
         it("should return 400 if id is missing", async () => {
             const res = await request(app).get("/images/mpc");

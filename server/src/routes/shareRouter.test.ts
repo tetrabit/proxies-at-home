@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import express from 'express';
 import request from 'supertest';
 import { gzipSync, gunzipSync } from 'zlib';
+import * as crypto from 'crypto';
 
 // Create mock database with in-memory storage for testing
 let mockShares: Map<string, { data: Buffer; created_at: number; expires_at: number }>;
@@ -172,6 +173,35 @@ describe('shareRouter', () => {
 
             const storedShare = mockShares.get(firstId)!;
             expect(JSON.parse(gunzipSync(storedShare.data).toString('utf-8'))).toEqual({ version: 2 });
+        });
+
+        it('retries random share IDs on collision and fails after too many attempts', async () => {
+            const randomBytesSpy = vi.spyOn(crypto, 'randomBytes');
+            randomBytesSpy.mockReturnValue(Buffer.from('aaaaaa'));
+
+            const existingId = 'YWFhYWFh';
+            mockShares.set(existingId, { data: gzipSync(Buffer.from('{}')), created_at: Date.now(), expires_at: Date.now() + 1000 });
+
+            const conflict = await request(app)
+                .post('/api/share')
+                .send({ data: { version: 1 } });
+            expect(conflict.status).toBe(500);
+            expect(conflict.body.error).toBe('Failed to generate unique ID');
+
+            randomBytesSpy.mockReset();
+            let callCount = 0;
+            randomBytesSpy.mockImplementation(() => {
+                callCount++;
+                return Buffer.from(callCount === 1 ? 'bbbbbb' : 'cccccc');
+            });
+
+            mockShares.clear();
+            const ok = await request(app)
+                .post('/api/share')
+                .send({ data: { version: 2 } });
+            expect(ok.status).toBe(200);
+            expect(ok.body.id).toHaveLength(8);
+            randomBytesSpy.mockRestore();
         });
     });
 

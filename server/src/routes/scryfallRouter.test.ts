@@ -55,14 +55,29 @@ describe('scryfallRouter', () => {
             expect(res.body).toEqual({ object: 'catalog', data: [] });
         });
 
-        it('should proxy to Scryfall for valid queries', async () => {
+    it('should proxy to Scryfall for valid queries', async () => {
             const mockResponse = { data: ['Sol Ring', 'Soltari Crusader'] };
             vi.mocked(axios.get).mockResolvedValueOnce({ data: mockResponse });
 
             const res = await request(app).get('/api/scryfall/autocomplete?q=sol');
             expect(res.status).toBe(200);
             expect(res.body).toEqual(mockResponse);
-            expect(axios.get).toHaveBeenCalledWith('/cards/autocomplete', { params: { q: 'sol' } });
+        expect(axios.get).toHaveBeenCalledWith('/cards/autocomplete', { params: { q: 'sol' } });
+    });
+
+        it('returns cached autocomplete results without hitting upstream', async () => {
+            const cached = { object: 'catalog', data: ['Cached Ring'] };
+            const { getDatabase } = await import('../db/db.js');
+            vi.mocked(getDatabase).mockReturnValueOnce({
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
+                })),
+            } as never);
+
+            const res = await request(app).get('/api/scryfall/autocomplete?q=cache-me');
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(cached);
+            expect(axios.get).not.toHaveBeenCalled();
         });
 
         it('should return 500 on upstream error', async () => {
