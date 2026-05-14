@@ -61,6 +61,12 @@ describe("PageViewFloatingControls", () => {
             expect(screen.getByTestId("undo-redo-controls")).toBeDefined();
         });
 
+        it("should not render the MPC calibration launcher as a floating control", () => {
+            render(<PageViewFloatingControls hasCards={true} mobile={false} />);
+            expect(screen.queryByTestId("open-mpc-calibration-floating")).toBeNull();
+            expect(screen.queryByLabelText("Open MPC Calibration Harness")).toBeNull();
+        });
+
         it("should position based on panel state (expanded)", () => {
             const { container } = render(<PageViewFloatingControls hasCards={true} mobile={false} />);
             // We can check if the style attribute is applied correctly, 

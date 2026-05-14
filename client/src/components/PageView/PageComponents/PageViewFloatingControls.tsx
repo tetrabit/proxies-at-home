@@ -1,9 +1,8 @@
 import { useRef, useState, useEffect } from "react";
-import { Sparkles, ZoomIn, ZoomOut } from "lucide-react";
+import { ZoomIn, ZoomOut } from "lucide-react";
 import { ZoomControls } from "../ZoomControls";
 import { UndoRedoControls } from "../UndoRedoControls";
 import { FloatingZoomPanel } from "../../common";
-import { useCalibrationModalStore } from "@/store";
 import { useSettingsStore } from "@/store/settings";
 import { usePageViewSettings } from "@/hooks/usePageViewSettings";
 import { useOnClickOutside } from "@/hooks/useOnClickOutside";
@@ -27,9 +26,6 @@ export function PageViewFloatingControls({
 
   const globalZoom = useSettingsStore((state) => state.zoom);
   const globalSetZoom = useSettingsStore((state) => state.setZoom);
-  const openCalibrationModal = useCalibrationModalStore(
-    (state) => state.openModal
-  );
 
   // Hide floating controls when CardEditorModal is open
   const isCardEditorOpen = useCardEditorModalStore((state) => state.open);
@@ -89,26 +85,6 @@ export function PageViewFloatingControls({
           <UndoRedoControls />
         </div>
       )}
-
-      <button
-        type="button"
-        className="fixed bottom-24 right-6 z-40 rounded-full bg-purple-600 p-3 text-white shadow-lg hover:bg-purple-700"
-        data-testid="open-mpc-calibration-floating"
-        onClick={() =>
-          openCalibrationModal({
-            cardUuid: "floating-calibration",
-            card: {
-              uuid: "floating-calibration",
-              name: "Calibration Session",
-              order: 0,
-              isUserUpload: false,
-            },
-          })
-        }
-        aria-label="Open MPC Calibration Harness"
-      >
-        <Sparkles className="size-5" />
-      </button>
 
       {/* Mobile Zoom Controls */}
       {mobile && (

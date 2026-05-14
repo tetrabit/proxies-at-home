@@ -9,12 +9,18 @@ const fixturePath = path.resolve(
 test("imports calibration fixture and shows x/9 score", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("open-mpc-calibration-global").click();
+  await expect(page.getByTestId("open-mpc-calibration-global")).toHaveCount(0);
+  await expect(page.getByTestId("open-mpc-calibration-floating")).toHaveCount(0);
+
+  await page.getByTestId("open-mpc-calibration-harness").click();
   await expect(page.getByTestId("mpc-calibration-modal")).toBeVisible();
 
   await page
     .getByTestId("mpc-calibration-import-input")
     .setInputFiles(fixturePath);
+  await expect(page.getByTestId("mpc-calibration-modal")).toContainText(
+    "Cases captured: 9/9"
+  );
 
   await page.getByTestId("mpc-calibration-run").click();
 

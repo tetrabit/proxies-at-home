@@ -78,38 +78,40 @@ describe("CardbackTile", () => {
         });
     });
 
-    describe("default cardback (star)", () => {
-        it("should show filled star for default cardback", () => {
+    describe("default cardback action", () => {
+        it("should show an inline default indicator for the default cardback", () => {
             render(<CardbackTile {...defaultProps} isDefault={true} />);
-            // Finding the star might depend on icon library, check for button title instead then inspect icon?
-            // Lucide star renders an svg.
-            const starButton = screen.getByTitle("Default cardback");
-            expect(starButton).toBeDefined();
-            // Check for filled class in children if needed, or rely on title change verify logic
-            const icon = starButton.querySelector("svg");
-            expect(icon?.getAttribute("class")).toContain("text-yellow-400");
+            expect(screen.getByText("Default cardback")).toBeDefined();
+            expect(screen.queryByRole("button", { name: "Set as default" })).toBeNull();
         });
 
-        it("should call onSetAsDefault when clicking star button", () => {
+        it("should call onSetAsDefault when clicking set default button", () => {
             const onSetAsDefault = vi.fn();
             render(<CardbackTile {...defaultProps} isDefault={false} onSetAsDefault={onSetAsDefault} />);
 
-            const starButton = screen.getByTitle("Set as default cardback");
-            fireEvent.click(starButton);
+            const setDefaultButton = screen.getByRole("button", { name: "Set as default" });
+            fireEvent.click(setDefaultButton);
 
             expect(onSetAsDefault).toHaveBeenCalled();
         });
 
-        it("should stop propagation when clicking star button", () => {
+        it("should stop propagation when clicking set default button", () => {
             const onSelect = vi.fn();
             const onSetAsDefault = vi.fn();
             render(<CardbackTile {...defaultProps} onSelect={onSelect} onSetAsDefault={onSetAsDefault} />);
 
-            const starButton = screen.getByTitle("Set as default cardback");
-            fireEvent.click(starButton);
+            const setDefaultButton = screen.getByRole("button", { name: "Set as default" });
+            fireEvent.click(setDefaultButton);
 
             expect(onSetAsDefault).toHaveBeenCalled();
             expect(onSelect).not.toHaveBeenCalled();
+        });
+
+        it("should not render a floating star action over the tile", () => {
+            const { container } = render(<CardbackTile {...defaultProps} />);
+
+            expect(container.querySelector("button.absolute.top-1.right-1")).toBeNull();
+            expect(container.querySelector("svg.text-yellow-400")).toBeNull();
         });
     });
 

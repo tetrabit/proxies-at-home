@@ -1,12 +1,10 @@
 import { Loader, UpdateNotification } from "@/components/common";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Sparkles } from "lucide-react";
 import { ImageProcessor } from "@/helpers/imageProcessor";
 import { useShareUrl } from "@/hooks/useShareUrl";
 
 import { db } from "@/db";
 import {
-  useCalibrationModalStore,
   useProjectStore,
   useUserPreferencesStore,
 } from "@/store";
@@ -22,9 +20,6 @@ const AboutModal = lazy(() =>
 
 function App() {
   const [showAbout, setShowAbout] = useState(false);
-  const openCalibrationModal = useCalibrationModalStore(
-    (state) => state.openModal
-  );
 
   // Detect and load shared deck from ?share=xxx URL parameter
   useShareUrl();
@@ -149,26 +144,6 @@ function App() {
       <Suspense fallback={null}>
         <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
       </Suspense>
-
-      <button
-        type="button"
-        className="fixed top-4 right-4 z-50 rounded-full bg-purple-600 p-3 text-white shadow-lg hover:bg-purple-700"
-        data-testid="open-mpc-calibration-global"
-        aria-label="Open MPC Calibration Harness"
-        onClick={() =>
-          openCalibrationModal({
-            cardUuid: "global-calibration",
-            card: {
-              uuid: "global-calibration",
-              name: "Calibration Session",
-              order: 0,
-              isUserUpload: false,
-            },
-          })
-        }
-      >
-        <Sparkles className="size-5" />
-      </button>
 
       <ProxyBuilderPage />
     </>
