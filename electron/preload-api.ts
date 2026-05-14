@@ -1,4 +1,4 @@
-import type { MpcPreferenceFixture } from '../shared/types.js';
+import type { MpcPreferenceFixture } from './mpc-preferences.js';
 
 type IpcRendererLike = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;

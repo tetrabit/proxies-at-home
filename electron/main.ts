@@ -1,209 +1,261 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, dialog, Menu, MenuItemConstructorOptions, net } from 'electron';
-import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import fs from 'fs';
-import pkg from 'electron-updater';
-import type { IpcMain } from 'electron';
-import type { MpcPreferenceFixture } from '../shared/types.js';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  dialog,
+  Menu,
+  MenuItemConstructorOptions,
+  net,
+} from "electron";
+import path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+import fs from "fs";
+import pkg from "electron-updater";
+import type { IpcMain } from "electron";
+import type { MpcPreferenceFixture } from "./mpc-preferences.js";
 const { autoUpdater } = pkg;
-import { createScryfallMicroservice, MicroserviceManager } from './microservice-manager.js';
+import {
+  createScryfallMicroservice,
+  MicroserviceManager,
+} from "./microservice-manager.js";
+
+export const electronMainRuntime = {
+  importServerModule(serverScript: string): Promise<Record<string, unknown>> {
+    return import(pathToFileURL(serverScript).href);
+  },
+};
 
 // Settings file for persistent electron-specific settings
 function getSettingsPath() {
-    return path.join(app.getPath('userData'), 'electron-settings.json');
+  return path.join(app.getPath("userData"), "electron-settings.json");
 }
 
-function loadElectronSettings(): { autoUpdateEnabled?: boolean, updateChannel?: string } {
-    try {
-        const settingsPath = getSettingsPath();
-        if (fs.existsSync(settingsPath)) {
-            return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        }
-    } catch (e) {
-        console.error('[Electron] Failed to load settings:', e);
+function loadElectronSettings(): {
+  autoUpdateEnabled?: boolean;
+  updateChannel?: string;
+} {
+  try {
+    const settingsPath = getSettingsPath();
+    if (fs.existsSync(settingsPath)) {
+      return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
     }
-    return {};
+  } catch (e) {
+    console.error("[Electron] Failed to load settings:", e);
+  }
+  return {};
 }
 
-function saveElectronSettings(settings: { autoUpdateEnabled?: boolean, updateChannel?: string }) {
-    try {
-        const settingsPath = getSettingsPath();
-        const existing = loadElectronSettings();
-        fs.writeFileSync(settingsPath, JSON.stringify({ ...existing, ...settings }, null, 2));
-    } catch (e) {
-        console.error('[Electron] Failed to save settings:', e);
-    }
+function saveElectronSettings(settings: {
+  autoUpdateEnabled?: boolean;
+  updateChannel?: string;
+}) {
+  try {
+    const settingsPath = getSettingsPath();
+    const existing = loadElectronSettings();
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ ...existing, ...settings }, null, 2)
+    );
+  } catch (e) {
+    console.error("[Electron] Failed to save settings:", e);
+  }
 }
 
-const MPC_PREFERENCES_FILENAME = 'mpc-preferences.user.json';
+const MPC_PREFERENCES_FILENAME = "mpc-preferences.user.json";
 
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
-    return value === undefined || typeof value === 'string';
+  return value === undefined || typeof value === "string";
 }
 
-function isNumberOrNullRecord(value: unknown): value is Record<string, number | null> {
-    return isRecord(value) && Object.values(value).every((item) => typeof item === 'number' || item === null);
+function isNumberOrNullRecord(
+  value: unknown
+): value is Record<string, number | null> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (item) => typeof item === "number" || item === null
+    )
+  );
 }
 
 function validateMpcPreferenceFixture(data: unknown): MpcPreferenceFixture {
-    if (!isRecord(data)) {
-        throw new Error('Invalid preference fixture: not a JSON object');
+  if (!isRecord(data)) {
+    throw new Error("Invalid preference fixture: not a JSON object");
+  }
+
+  if (typeof data.version !== "number") {
+    throw new Error("Invalid preference fixture: missing version");
+  }
+
+  if (typeof data.exportedAt !== "string") {
+    throw new Error("Invalid preference fixture: missing exportedAt");
+  }
+
+  if (!Array.isArray(data.cases)) {
+    throw new Error("Invalid preference fixture: missing cases array");
+  }
+
+  for (const testCase of data.cases) {
+    if (!isRecord(testCase) || !isRecord(testCase.source)) {
+      throw new Error("Invalid preference fixture: malformed case");
     }
 
-    if (typeof data.version !== 'number') {
-        throw new Error('Invalid preference fixture: missing version');
+    if (
+      typeof testCase.source.name !== "string" ||
+      !isOptionalString(testCase.source.set) ||
+      !isOptionalString(testCase.source.collectorNumber) ||
+      !isOptionalString(testCase.source.sourceImageUrl) ||
+      !isOptionalString(testCase.source.sourceArtImageUrl)
+    ) {
+      throw new Error("Invalid preference fixture: malformed source card");
     }
 
-    if (typeof data.exportedAt !== 'string') {
-        throw new Error('Invalid preference fixture: missing exportedAt');
+    if (!Array.isArray(testCase.candidates)) {
+      throw new Error(
+        "Invalid preference fixture: candidates must be an array"
+      );
     }
 
-    if (!Array.isArray(data.cases)) {
-        throw new Error('Invalid preference fixture: missing cases array');
+    for (const candidate of testCase.candidates) {
+      if (!isRecord(candidate)) {
+        throw new Error(
+          "Invalid preference fixture: candidate must be an object"
+        );
+      }
+
+      if (
+        typeof candidate.identifier !== "string" ||
+        typeof candidate.name !== "string" ||
+        typeof candidate.rawName !== "string" ||
+        typeof candidate.smallThumbnailUrl !== "string" ||
+        typeof candidate.mediumThumbnailUrl !== "string" ||
+        !isOptionalString(candidate.imageUrl) ||
+        typeof candidate.dpi !== "number" ||
+        !Array.isArray(candidate.tags) ||
+        !candidate.tags.every((tag) => typeof tag === "string") ||
+        typeof candidate.sourceName !== "string" ||
+        typeof candidate.source !== "string" ||
+        typeof candidate.extension !== "string" ||
+        typeof candidate.size !== "number"
+      ) {
+        throw new Error("Invalid preference fixture: malformed candidate");
+      }
     }
 
-    for (const testCase of data.cases) {
-        if (!isRecord(testCase) || !isRecord(testCase.source)) {
-            throw new Error('Invalid preference fixture: malformed case');
-        }
-
-        if (
-            typeof testCase.source.name !== 'string' ||
-            !isOptionalString(testCase.source.set) ||
-            !isOptionalString(testCase.source.collectorNumber) ||
-            !isOptionalString(testCase.source.sourceImageUrl) ||
-            !isOptionalString(testCase.source.sourceArtImageUrl)
-        ) {
-            throw new Error('Invalid preference fixture: malformed source card');
-        }
-
-        if (!Array.isArray(testCase.candidates)) {
-            throw new Error('Invalid preference fixture: candidates must be an array');
-        }
-
-        for (const candidate of testCase.candidates) {
-            if (!isRecord(candidate)) {
-                throw new Error('Invalid preference fixture: candidate must be an object');
-            }
-
-            if (
-                typeof candidate.identifier !== 'string' ||
-                typeof candidate.name !== 'string' ||
-                typeof candidate.rawName !== 'string' ||
-                typeof candidate.smallThumbnailUrl !== 'string' ||
-                typeof candidate.mediumThumbnailUrl !== 'string' ||
-                !isOptionalString(candidate.imageUrl) ||
-                typeof candidate.dpi !== 'number' ||
-                !Array.isArray(candidate.tags) ||
-                !candidate.tags.every((tag) => typeof tag === 'string') ||
-                typeof candidate.sourceName !== 'string' ||
-                typeof candidate.source !== 'string' ||
-                typeof candidate.extension !== 'string' ||
-                typeof candidate.size !== 'number'
-            ) {
-                throw new Error('Invalid preference fixture: malformed candidate');
-            }
-        }
-
-        if (!isOptionalString(testCase.expectedIdentifier) || !isOptionalString(testCase.notes)) {
-            throw new Error('Invalid preference fixture: malformed case metadata');
-        }
-
-        if (testCase.comparisonHints !== undefined) {
-            if (!isRecord(testCase.comparisonHints)) {
-                throw new Error('Invalid preference fixture: malformed comparison hints');
-            }
-
-            if (
-                (testCase.comparisonHints.fullCard !== undefined && !isNumberOrNullRecord(testCase.comparisonHints.fullCard)) ||
-                (testCase.comparisonHints.artMatch !== undefined && !isNumberOrNullRecord(testCase.comparisonHints.artMatch))
-            ) {
-                throw new Error('Invalid preference fixture: malformed comparison hints');
-            }
-        }
+    if (
+      !isOptionalString(testCase.expectedIdentifier) ||
+      !isOptionalString(testCase.notes)
+    ) {
+      throw new Error("Invalid preference fixture: malformed case metadata");
     }
 
-    return {
-        version: data.version,
-        exportedAt: data.exportedAt,
-        cases: data.cases,
-    };
+    if (testCase.comparisonHints !== undefined) {
+      if (!isRecord(testCase.comparisonHints)) {
+        throw new Error(
+          "Invalid preference fixture: malformed comparison hints"
+        );
+      }
+
+      if (
+        (testCase.comparisonHints.fullCard !== undefined &&
+          !isNumberOrNullRecord(testCase.comparisonHints.fullCard)) ||
+        (testCase.comparisonHints.artMatch !== undefined &&
+          !isNumberOrNullRecord(testCase.comparisonHints.artMatch))
+      ) {
+        throw new Error(
+          "Invalid preference fixture: malformed comparison hints"
+        );
+      }
+    }
+  }
+
+  return {
+    version: data.version,
+    exportedAt: data.exportedAt,
+    cases: data.cases,
+  };
 }
 
-export function getMpcPreferencesPath(appLike: Pick<typeof app, 'getPath'> = app): string {
-    return path.join(appLike.getPath('userData'), MPC_PREFERENCES_FILENAME);
+export function getMpcPreferencesPath(
+  appLike: Pick<typeof app, "getPath"> = app
+): string {
+  return path.join(appLike.getPath("userData"), MPC_PREFERENCES_FILENAME);
 }
 
 export async function loadMpcPreferencesFromDisk(
-    filePath: string = getMpcPreferencesPath()
+  filePath: string = getMpcPreferencesPath()
 ): Promise<MpcPreferenceFixture | null> {
-    try {
-        const payload = await fs.promises.readFile(filePath, 'utf8');
-        return validateMpcPreferenceFixture(JSON.parse(payload));
-    } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-            return null;
-        }
-
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(`[Electron] Failed to load MPC preferences: ${reason}`);
+  try {
+    const payload = await fs.promises.readFile(filePath, "utf8");
+    return validateMpcPreferenceFixture(JSON.parse(payload));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
     }
+
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`[Electron] Failed to load MPC preferences: ${reason}`);
+  }
 }
 
 let pendingMpcPreferenceWrite = Promise.resolve();
 
 async function writeMpcPreferencesAtomically(
-    filePath: string,
-    fixture: MpcPreferenceFixture
+  filePath: string,
+  fixture: MpcPreferenceFixture
 ): Promise<void> {
-    const directory = path.dirname(filePath);
-    const tempPath = path.join(
-        directory,
-        `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
-    );
-    const payload = `${JSON.stringify(fixture, null, 2)}\n`;
+  const directory = path.dirname(filePath);
+  const tempPath = path.join(
+    directory,
+    `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  const payload = `${JSON.stringify(fixture, null, 2)}\n`;
 
-    await fs.promises.mkdir(directory, { recursive: true });
+  await fs.promises.mkdir(directory, { recursive: true });
 
-    try {
-        await fs.promises.writeFile(tempPath, payload, 'utf8');
-        await fs.promises.rename(tempPath, filePath);
-    } catch (error) {
-        await fs.promises.unlink(tempPath).catch(() => undefined);
-        throw error;
-    }
+  try {
+    await fs.promises.writeFile(tempPath, payload, "utf8");
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.promises.unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function saveMpcPreferencesToDisk(
-    fixture: MpcPreferenceFixture,
-    filePath: string = getMpcPreferencesPath()
+  fixture: MpcPreferenceFixture,
+  filePath: string = getMpcPreferencesPath()
 ): Promise<void> {
-    const validatedFixture = validateMpcPreferenceFixture(fixture);
-    const writeOperation = pendingMpcPreferenceWrite.then(() =>
-        writeMpcPreferencesAtomically(filePath, validatedFixture)
-    );
+  const validatedFixture = validateMpcPreferenceFixture(fixture);
+  const writeOperation = pendingMpcPreferenceWrite.then(() =>
+    writeMpcPreferencesAtomically(filePath, validatedFixture)
+  );
 
-    pendingMpcPreferenceWrite = writeOperation.catch(() => undefined);
-    await writeOperation;
+  pendingMpcPreferenceWrite = writeOperation.catch(() => undefined);
+  await writeOperation;
 }
 
 export function registerMpcPreferenceIpcHandlers(
-    ipcMainLike: Pick<IpcMain, 'handle'>,
-    appLike: Pick<typeof app, 'getPath'> = app
+  ipcMainLike: Pick<IpcMain, "handle">,
+  appLike: Pick<typeof app, "getPath"> = app
 ): void {
-    ipcMainLike.handle('mpc-preferences:load', async () => {
-        return loadMpcPreferencesFromDisk(getMpcPreferencesPath(appLike));
-    });
+  ipcMainLike.handle("mpc-preferences:load", async () => {
+    return loadMpcPreferencesFromDisk(getMpcPreferencesPath(appLike));
+  });
 
-    ipcMainLike.handle('mpc-preferences:save', async (_event, fixture: MpcPreferenceFixture) => {
-        await saveMpcPreferencesToDisk(fixture, getMpcPreferencesPath(appLike));
-    });
+  ipcMainLike.handle(
+    "mpc-preferences:save",
+    async (_event, fixture: MpcPreferenceFixture) => {
+      await saveMpcPreferencesToDisk(fixture, getMpcPreferencesPath(appLike));
+    }
+  );
 }
 
 // Handle ESM imports for __dirname
@@ -211,17 +263,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Global error handlers to catch silent crashes
-process.on('uncaughtException', (error) => {
-    const logPath = path.join(app.getPath('userData'), 'crash.log');
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Uncaught Exception: ${error.stack || error}\n`);
-    console.error('Uncaught Exception:', error);
-    dialog.showErrorBox('Uncaught Exception', error.stack || error.toString());
+process.on("uncaughtException", (error) => {
+  const logPath = path.join(app.getPath("userData"), "crash.log");
+  fs.appendFileSync(
+    logPath,
+    `[${new Date().toISOString()}] Uncaught Exception: ${error.stack || error}\n`
+  );
+  console.error("Uncaught Exception:", error);
+  dialog.showErrorBox("Uncaught Exception", error.stack || error.toString());
 });
 
-process.on('unhandledRejection', (reason) => {
-    const logPath = path.join(app.getPath('userData'), 'crash.log');
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] Unhandled Rejection: ${reason}\n`);
-    console.error('Unhandled Rejection:', reason);
+process.on("unhandledRejection", (reason) => {
+  const logPath = path.join(app.getPath("userData"), "crash.log");
+  fs.appendFileSync(
+    logPath,
+    `[${new Date().toISOString()}] Unhandled Rejection: ${reason}\n`
+  );
+  console.error("Unhandled Rejection:", reason);
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -235,315 +293,360 @@ autoUpdater.logger = console;
 // Configure update channel based on user preference or version
 // Users can choose: 'latest' (all updates) or 'stable' (major versions only)
 function configureUpdateChannel() {
-    const settings = loadElectronSettings();
+  const settings = loadElectronSettings();
 
-    // Check if user has set a specific channel
-    if (settings.updateChannel === 'stable' || settings.updateChannel === 'latest') {
-        autoUpdater.channel = settings.updateChannel;
-        console.log(`[Electron] Update channel: ${settings.updateChannel} (user preference)`);
-        return;
-    }
+  // Check if user has set a specific channel
+  if (
+    settings.updateChannel === "stable" ||
+    settings.updateChannel === "latest"
+  ) {
+    autoUpdater.channel = settings.updateChannel;
+    console.log(
+      `[Electron] Update channel: ${settings.updateChannel} (user preference)`
+    );
+    return;
+  }
 
-    // Default to 'latest' channel for all users
-    autoUpdater.channel = 'latest';
-    console.log('[Electron] Update channel: latest (default)');
+  // Default to 'latest' channel for all users
+  autoUpdater.channel = "latest";
+  console.log("[Electron] Update channel: latest (default)");
 }
 
 function createWindow() {
-    const isDev = !app.isPackaged;
+  const isDev = !app.isPackaged;
 
-    // In production, most files are inside app.asar
-    // Use path.join(__dirname, ...) for asar-packed files
-    // Use process.resourcesPath for extraResources (unpacked files)
-    const iconPath = isDev
-        ? path.join(__dirname, '../../client/public/pwa-512x512.png')
-        : path.join(process.resourcesPath, 'app.asar', 'client', 'dist', 'pwa-512x512.png');
+  // In production, most files are inside app.asar
+  // Use path.join(__dirname, ...) for asar-packed files
+  // Use process.resourcesPath for extraResources (unpacked files)
+  const iconPath = isDev
+    ? path.join(__dirname, "../../client/public/pwa-512x512.png")
+    : path.join(
+        process.resourcesPath,
+        "app.asar",
+        "client",
+        "dist",
+        "pwa-512x512.png"
+      );
 
-    mainWindow = new BrowserWindow({
-        width: 1400,
-        height: 900,
-        icon: iconPath,
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.cjs'),
-            nodeIntegration: false,
-            contextIsolation: true,
-        },
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    icon: iconPath,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  // Force system theme
+  nativeTheme.themeSource = "system";
+
+  if (isDev) {
+    const url = `http://localhost:5173?serverPort=${serverPort}`;
+    mainWindow.loadURL(url);
+  } else {
+    // In prod with asar, __dirname is electron/dist/, need ../../ to reach root
+    const indexPath = path.join(__dirname, "../../client/dist/index.html");
+    console.log("[Electron] Loading index from:", indexPath);
+    mainWindow.loadFile(indexPath, {
+      query: { serverPort: serverPort.toString() },
     });
+  }
 
-    // Force system theme
-    nativeTheme.themeSource = 'system';
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
 
-    if (isDev) {
-        const url = `http://localhost:5173?serverPort=${serverPort}`;
-        mainWindow.loadURL(url);
-    } else {
-        // In prod with asar, __dirname is electron/dist/, need ../../ to reach root
-        const indexPath = path.join(__dirname, '../../client/dist/index.html');
-        console.log('[Electron] Loading index from:', indexPath);
-        mainWindow.loadFile(indexPath, {
-            query: { serverPort: serverPort.toString() }
-        });
-    }
-
-    if (isDev) {
-        mainWindow.webContents.openDevTools();
-    }
-
-    // Create Menu
-    const template: MenuItemConstructorOptions[] = [
+  // Create Menu
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: "File",
+      submenu: [{ role: "quit" }],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "delete" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: "Help",
+      submenu: [
         {
-            label: 'File',
-            submenu: [
-                { role: 'quit' }
-            ]
+          label: "About Proxxied",
+          click: () => {
+            mainWindow?.webContents.send("show-about");
+          },
         },
+        { type: "separator" },
         {
-            label: 'Edit',
-            submenu: [
-                { role: 'undo' },
-                { role: 'redo' },
-                { type: 'separator' },
-                { role: 'cut' },
-                { role: 'copy' },
-                { role: 'paste' },
-                { role: 'delete' },
-                { role: 'selectAll' }
-            ]
-        },
-        {
-            label: 'View',
-            submenu: [
-                { role: 'reload' },
-                { role: 'forceReload' },
-                { role: 'toggleDevTools' },
-                { type: 'separator' },
-                { role: 'resetZoom' },
-                { role: 'zoomIn' },
-                { role: 'zoomOut' },
-                { type: 'separator' },
-                { role: 'togglefullscreen' }
-            ]
-        },
-        {
-            label: 'Help',
-            submenu: [
-                {
-                    label: 'About Proxxied',
-                    click: () => {
-                        mainWindow?.webContents.send('show-about');
-                    }
-                },
-                { type: 'separator' },
-                {
-                    label: 'Check for Updates',
-                    click: () => {
-                        autoUpdater.checkForUpdatesAndNotify();
-                    }
-                }
-            ]
-        }
-    ];
-    const menu = Menu.buildFromTemplate(template);
-    Menu.setApplicationMenu(menu);
-
-    // Check for updates on startup (if enabled)
-    if (app.isPackaged) {
-        configureUpdateChannel();
-        const settings = loadElectronSettings();
-        if (settings.autoUpdateEnabled !== false) { // Default to enabled
+          label: "Check for Updates",
+          click: () => {
             autoUpdater.checkForUpdatesAndNotify();
-        } else {
-            console.log('[Electron] Auto-update check disabled by user');
-        }
-    }
+          },
+        },
+      ],
+    },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 
-    mainWindow.on('closed', () => {
-        mainWindow = null;
-    });
+  // Check for updates on startup (if enabled)
+  if (app.isPackaged) {
+    configureUpdateChannel();
+    const settings = loadElectronSettings();
+    if (settings.autoUpdateEnabled !== false) {
+      // Default to enabled
+      autoUpdater.checkForUpdatesAndNotify();
+    } else {
+      console.log("[Electron] Auto-update check disabled by user");
+    }
+  }
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 }
 
 // IPC Handlers for Auto-Updater
-ipcMain.handle('check-for-updates', () => {
-    if (app.isPackaged) {
-        return autoUpdater.checkForUpdatesAndNotify();
-    }
-    return null;
+ipcMain.handle("check-for-updates", () => {
+  if (app.isPackaged) {
+    return autoUpdater.checkForUpdatesAndNotify();
+  }
+  return null;
 });
 
-ipcMain.handle('download-update', () => {
-    return autoUpdater.downloadUpdate();
+ipcMain.handle("download-update", () => {
+  return autoUpdater.downloadUpdate();
 });
 
-ipcMain.handle('install-update', () => {
-    return autoUpdater.quitAndInstall();
+ipcMain.handle("install-update", () => {
+  return autoUpdater.quitAndInstall();
 });
 
 // Forward auto-updater events to renderer
-autoUpdater.on('checking-for-update', () => {
-    mainWindow?.webContents.send('update-status', 'checking');
+autoUpdater.on("checking-for-update", () => {
+  mainWindow?.webContents.send("update-status", "checking");
 });
 
-autoUpdater.on('update-available', (info: unknown) => {
-    mainWindow?.webContents.send('update-status', 'available', info);
+autoUpdater.on("update-available", (info: unknown) => {
+  mainWindow?.webContents.send("update-status", "available", info);
 });
 
-autoUpdater.on('update-not-available', (info: unknown) => {
-    mainWindow?.webContents.send('update-status', 'not-available', info);
+autoUpdater.on("update-not-available", (info: unknown) => {
+  mainWindow?.webContents.send("update-status", "not-available", info);
 });
 
-autoUpdater.on('error', (err: Error) => {
-    mainWindow?.webContents.send('update-status', 'error', err.toString());
+autoUpdater.on("error", (err: Error) => {
+  mainWindow?.webContents.send("update-status", "error", err.toString());
 });
 
-autoUpdater.on('download-progress', (progressObj: unknown) => {
-    mainWindow?.webContents.send('update-status', 'downloading', progressObj);
+autoUpdater.on("download-progress", (progressObj: unknown) => {
+  mainWindow?.webContents.send("update-status", "downloading", progressObj);
 });
 
-autoUpdater.on('update-downloaded', (info: unknown) => {
-    mainWindow?.webContents.send('update-status', 'downloaded', info);
+autoUpdater.on("update-downloaded", (info: unknown) => {
+  mainWindow?.webContents.send("update-status", "downloaded", info);
 });
 
 app.whenReady().then(async () => {
-    const isDev = !app.isPackaged;
+  const isDev = !app.isPackaged;
 
-    // Start Scryfall microservice first
-    try {
-        microserviceManager = createScryfallMicroservice();
-        microservicePort = await microserviceManager.start();
-        console.log('[Electron] Scryfall microservice started on port:', microservicePort);
-    } catch (err: unknown) {
-        console.error('[Electron] Failed to start microservice:', err);
-        const errorMessage = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
-        dialog.showErrorBox('Microservice Error', `Failed to start Scryfall microservice:\n${errorMessage}`);
-    }
+  // Start Scryfall microservice first
+  try {
+    microserviceManager = createScryfallMicroservice();
+    microservicePort = await microserviceManager.start();
+    console.log(
+      "[Electron] Scryfall microservice started on port:",
+      microservicePort
+    );
+  } catch (err: unknown) {
+    console.error("[Electron] Failed to start microservice:", err);
+    const errorMessage =
+      err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+    dialog.showErrorBox(
+      "Microservice Error",
+      `Failed to start Scryfall microservice:\n${errorMessage}`
+    );
+  }
 
-    // Start the Express server inside Electron's process
-    // This makes the app standalone (no Node.js required on user machine)
+  // Start the Express server inside Electron's process
+  // This makes the app standalone (no Node.js required on user machine)
 
-    // In dev, use relative path from electron/dist/
-    // In production, server is in extraResources (resources/server/)
-    let serverDir: string;
-    let serverScript: string;
-    if (isDev) {
-        serverDir = path.join(__dirname, '../../server');
-        serverScript = path.join(serverDir, 'dist/server/src/index.js');
+  // In dev, use relative path from electron/dist/
+  // In production, server is in extraResources (resources/server/)
+  let serverDir: string;
+  let serverScript: string;
+  if (isDev) {
+    serverDir = path.join(__dirname, "../../server");
+    serverScript = path.join(serverDir, "dist/server/src/index.js");
+  } else {
+    // extraResources are copied to the resources folder
+    serverDir = path.join(process.resourcesPath, "server");
+    serverScript = path.join(serverDir, "dist/server/src/index.js");
+  }
+
+  // Log paths for debugging
+  console.log("[Electron] Server dir:", serverDir);
+  console.log("[Electron] Server script:", serverScript);
+  console.log("[Electron] Script exists:", fs.existsSync(serverScript));
+
+  try {
+    // Dynamic import to run server in Electron's process
+    const serverModule =
+      await electronMainRuntime.importServerModule(serverScript);
+    console.log("[Electron] Server Module Keys:", Object.keys(serverModule));
+    const startServer = serverModule.startServer;
+
+    if (typeof startServer === "function") {
+      serverPort = await startServer(0); // 0 = random available port
+      console.log("[Electron] Server started on port:", serverPort);
     } else {
-        // extraResources are copied to the resources folder
-        serverDir = path.join(process.resourcesPath, 'server');
-        serverScript = path.join(serverDir, 'dist/server/src/index.js');
+      console.error(
+        "[Electron] startServer function not found in server module"
+      );
     }
+  } catch (err: unknown) {
+    console.error("[Electron] Failed to start server:", err);
+    const errorMessage =
+      err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+    dialog.showErrorBox(
+      "Server Error",
+      `Failed to start server:\n${errorMessage}`
+    );
+  }
 
-    // Log paths for debugging
-    console.log('[Electron] Server dir:', serverDir);
-    console.log('[Electron] Server script:', serverScript);
-    console.log('[Electron] Script exists:', fs.existsSync(serverScript));
+  ipcMain.handle("get-server-url", () => `http://localhost:${serverPort}`);
+  ipcMain.handle(
+    "get-microservice-url",
+    () => `http://localhost:${microservicePort}`
+  );
+  ipcMain.handle("get-app-version", () => app.getVersion());
+  ipcMain.handle("get-update-channel", () => autoUpdater.channel || "latest");
+  ipcMain.handle("set-update-channel", (_event, channel: string) => {
+    if (channel === "stable" || channel === "latest") {
+      autoUpdater.channel = channel;
+      saveElectronSettings({ updateChannel: channel });
+      console.log(`[Electron] Update channel changed to: ${channel}`);
+      return true;
+    }
+    return false;
+  });
+  ipcMain.handle("get-auto-update-enabled", () => {
+    const settings = loadElectronSettings();
+    return settings.autoUpdateEnabled !== false; // Default to true
+  });
+  ipcMain.handle("set-auto-update-enabled", (_event, enabled: boolean) => {
+    saveElectronSettings({ autoUpdateEnabled: enabled });
+    console.log(`[Electron] Auto-update enabled: ${enabled}`);
+    return true;
+  });
+  registerMpcPreferenceIpcHandlers(ipcMain, app);
+
+  // Moxfield deck fetch handler - uses Chromium's network stack to bypass Cloudflare
+  ipcMain.handle("fetch-moxfield-deck", async (_event, deckId: string) => {
+    const MOXFIELD_API = "https://api2.moxfield.com/v2";
+    const url = `${MOXFIELD_API}/decks/all/${deckId}`;
+
+    console.log(`[Electron/Moxfield] Fetching deck: ${deckId}`);
+    console.log(`[Electron/Moxfield] URL: ${url}`);
 
     try {
-        // Dynamic import to run server in Electron's process
-        const serverModule = await import(pathToFileURL(serverScript).href);
-        console.log('[Electron] Server Module Keys:', Object.keys(serverModule));
-        const startServer = serverModule.startServer;
+      // Use net.fetch which goes through Chromium's network stack
+      // This gives us authentic browser TLS fingerprints that Cloudflare accepts
+      console.log(
+        "[Electron/Moxfield] Using net.fetch (Chromium network stack)"
+      );
 
-        if (startServer) {
-            serverPort = await startServer(0); // 0 = random available port
-            console.log('[Electron] Server started on port:', serverPort);
-        } else {
-            console.error('[Electron] startServer function not found in server module');
+      const response = await net.fetch(url, {
+        headers: {
+          Accept: "application/json",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+
+      console.log(`[Electron/Moxfield] Response status: ${response.status}`);
+      console.log(
+        `[Electron/Moxfield] Response headers:`,
+        Object.fromEntries(response.headers.entries())
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(
+          `[Electron/Moxfield] Error response body: ${errorText.substring(0, 500)}`
+        );
+
+        if (response.status === 404) {
+          throw new Error("Deck not found. It may be private or deleted.");
         }
-    } catch (err: unknown) {
-        console.error('[Electron] Failed to start server:', err);
-        const errorMessage = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
-        dialog.showErrorBox('Server Error', `Failed to start server:\n${errorMessage}`);
+        if (response.status === 403) {
+          console.error(
+            "[Electron/Moxfield] Got 403 - Cloudflare may still be blocking"
+          );
+          throw new Error(
+            "Access denied by Cloudflare. Please try again later."
+          );
+        }
+        throw new Error(
+          `Moxfield API error: ${response.status} ${response.statusText}`
+        );
+      }
+
+      const data = await response.json();
+      console.log(
+        `[Electron/Moxfield] Successfully fetched deck: ${data.name || deckId}`
+      );
+      console.log(
+        `[Electron/Moxfield] Card counts - Mainboard: ${data.mainboardCount}, Sideboard: ${data.sideboardCount}`
+      );
+
+      return data;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error(`[Electron/Moxfield] Fetch failed: ${errorMessage}`);
+      if (error instanceof Error && error.stack) {
+        console.error(`[Electron/Moxfield] Stack: ${error.stack}`);
+      }
+      throw error;
     }
+  });
+  createWindow();
 
-    ipcMain.handle('get-server-url', () => `http://localhost:${serverPort}`);
-    ipcMain.handle('get-microservice-url', () => `http://localhost:${microservicePort}`);
-    ipcMain.handle('get-app-version', () => app.getVersion());
-    ipcMain.handle('get-update-channel', () => autoUpdater.channel || 'latest');
-    ipcMain.handle('set-update-channel', (_event, channel: string) => {
-        if (channel === 'stable' || channel === 'latest') {
-            autoUpdater.channel = channel;
-            saveElectronSettings({ updateChannel: channel });
-            console.log(`[Electron] Update channel changed to: ${channel}`);
-            return true;
-        }
-        return false;
-    });
-    ipcMain.handle('get-auto-update-enabled', () => {
-        const settings = loadElectronSettings();
-        return settings.autoUpdateEnabled !== false; // Default to true
-    });
-    ipcMain.handle('set-auto-update-enabled', (_event, enabled: boolean) => {
-        saveElectronSettings({ autoUpdateEnabled: enabled });
-        console.log(`[Electron] Auto-update enabled: ${enabled}`);
-        return true;
-    });
-    registerMpcPreferenceIpcHandlers(ipcMain, app);
-
-    // Moxfield deck fetch handler - uses Chromium's network stack to bypass Cloudflare
-    ipcMain.handle('fetch-moxfield-deck', async (_event, deckId: string) => {
-        const MOXFIELD_API = 'https://api2.moxfield.com/v2';
-        const url = `${MOXFIELD_API}/decks/all/${deckId}`;
-
-        console.log(`[Electron/Moxfield] Fetching deck: ${deckId}`);
-        console.log(`[Electron/Moxfield] URL: ${url}`);
-
-        try {
-            // Use net.fetch which goes through Chromium's network stack
-            // This gives us authentic browser TLS fingerprints that Cloudflare accepts
-            console.log('[Electron/Moxfield] Using net.fetch (Chromium network stack)');
-
-            const response = await net.fetch(url, {
-                headers: {
-                    'Accept': 'application/json',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-            });
-
-            console.log(`[Electron/Moxfield] Response status: ${response.status}`);
-            console.log(`[Electron/Moxfield] Response headers:`, Object.fromEntries(response.headers.entries()));
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error(`[Electron/Moxfield] Error response body: ${errorText.substring(0, 500)}`);
-
-                if (response.status === 404) {
-                    throw new Error('Deck not found. It may be private or deleted.');
-                }
-                if (response.status === 403) {
-                    console.error('[Electron/Moxfield] Got 403 - Cloudflare may still be blocking');
-                    throw new Error('Access denied by Cloudflare. Please try again later.');
-                }
-                throw new Error(`Moxfield API error: ${response.status} ${response.statusText}`);
-            }
-
-            const data = await response.json();
-            console.log(`[Electron/Moxfield] Successfully fetched deck: ${data.name || deckId}`);
-            console.log(`[Electron/Moxfield] Card counts - Mainboard: ${data.mainboardCount}, Sideboard: ${data.sideboardCount}`);
-
-            return data;
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error(`[Electron/Moxfield] Fetch failed: ${errorMessage}`);
-            if (error instanceof Error && error.stack) {
-                console.error(`[Electron/Moxfield] Stack: ${error.stack}`);
-            }
-            throw error;
-        }
-    });
-    createWindow();
-
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
 });
 
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
 });
 
-app.on('before-quit', async () => {
-    if (microserviceManager) {
-        await microserviceManager.stop();
-    }
+app.on("before-quit", async () => {
+  if (microserviceManager) {
+    await microserviceManager.stop();
+  }
 });

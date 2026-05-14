@@ -16,7 +16,8 @@
     "include": [
         "main.ts",
         "preload.cts",
-        "preload-api.ts"
+        "preload-api.ts",
+        "mpc-preferences.ts"
     ],
     "exclude": [
         "node_modules",
