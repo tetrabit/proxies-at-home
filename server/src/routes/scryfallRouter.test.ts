@@ -83,14 +83,21 @@ describe('scryfallRouter', () => {
 
         it('returns cached search results without hitting upstream', async () => {
             const cached = { object: 'list', data: [{ name: 'Cached Search' }] };
-            const { getDatabase } = await import('../db/db.js');
-            vi.mocked(getDatabase).mockReturnValueOnce({
+            const dbMock = {
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
-            } as never);
+            };
+            vi.doMock('../db/db.js', () => ({
+                getDatabase: vi.fn(() => dbMock),
+            }));
 
-            const res = await request(app).get('/api/scryfall/search?q=cache-me');
+            vi.resetModules();
+            const { scryfallRouter: isolatedScryfallRouter } = await import('./scryfallRouter.js');
+            const isolatedApp = express();
+            isolatedApp.use('/api/scryfall', isolatedScryfallRouter);
+
+            const res = await request(isolatedApp).get('/api/scryfall/search?q=cache-me');
             expect(res.status).toBe(200);
             expect(res.body).toEqual(cached);
             expect(axios.get).not.toHaveBeenCalled();
