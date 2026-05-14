@@ -19,7 +19,7 @@
     "@tetrabit/scryfall-cache-client": "file:../shared/scryfall-client",
     "axios": "^1.11.0",
     "axios-retry": "^4.5.0",
-    "better-sqlite3": "^12.5.0",
+    "better-sqlite3": "^12.10.0",
     "bottleneck": "^2.19.5",
     "cheerio": "^1.1.2",
     "compression": "^1.8.1",
