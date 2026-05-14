@@ -694,6 +694,44 @@ describe('ArtworkModal', () => {
             });
         });
 
+        it('should mark each selected front card for enrichment in multi-select mode', async () => {
+            mockState.modalCard = { uuid: 'card-1', name: 'Card 1', imageId: 'img-1' };
+            mockSelectedCards.add('card-1');
+            mockSelectedCards.add('card-2');
+            mockDbCards.bulkGet.mockResolvedValue([
+                { uuid: 'card-1', name: 'Card 1', imageId: 'img-1' },
+                { uuid: 'card-2', name: 'Card 2', imageId: 'img-2' },
+            ]);
+            vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
+                cardsToAdd: [{
+                    name: 'Resolved MPC',
+                    imageId: 'resolved-mpc',
+                    needsEnrichment: true,
+                    hasBuiltInBleed: false,
+                }],
+                backCardTasks: []
+            });
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('card-1', { needsEnrichment: true });
+                expect(mockDbCards.update).toHaveBeenCalledWith('card-2', { needsEnrichment: true });
+            });
+        });
+
+        it('should return early when selecting MPC art without an active card', async () => {
+            mockState.modalCard = null;
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+
+            await waitFor(() => {
+                expect(ImportOrchestrator.resolve).not.toHaveBeenCalled();
+            });
+        });
+
         it('should update an existing linked back card when MPC resolution returns a back task', async () => {
             mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id', linkedBackId: 'back-uuid' };
             vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
@@ -822,12 +860,15 @@ describe('ArtworkModal', () => {
         });
 
         it('should apply selected cardback to all front cards when apply-to-all is enabled', async () => {
-            mockDbCards.filter.mockReturnValueOnce({
+            mockDbCards.filter.mockImplementationOnce((predicate) => {
+                predicate({ uuid: 'front-1' });
+                predicate({ uuid: 'back-1', linkedFrontId: 'front-1' });
+                return {
                 toArray: vi.fn().mockResolvedValue([
                     { uuid: 'front-1', name: 'Front 1' },
                     { uuid: 'front-2', name: 'Front 2' },
                 ])
-            });
+            }});
 
             render(<ArtworkModal />);
             fireEvent.click(screen.getByTestId('toggle-apply-to-all'));
