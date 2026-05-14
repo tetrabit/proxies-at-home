@@ -11,6 +11,7 @@ vi.mock('@/store', () => ({
         };
         return selector(state);
     }),
+    useUserPreferencesStore: vi.fn((selector) => selector({ preferences: null })),
 }));
 
 vi.mock('flowbite-react', () => ({
@@ -33,21 +34,17 @@ vi.mock('./CardbackLibrary', () => ({
     CardbackLibrary: () => <div data-testid="cardback-library">CardbackLibrary</div>,
 }));
 
-// Mock the CardArtContent component from common
-vi.mock('../common', async (importOriginal) => {
-    const actual = await importOriginal();
-    return {
-        ...actual as object,
-        CardArtContent: ({ artSource, onSelectCard }: { artSource: string; onSelectCard: (name: string, url?: string) => void }) => (
-            <div
-                data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}
-                onClick={() => onSelectCard('Test Card', 'test-url')}
-            >
-                {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
-            </div>
-        ),
-    };
-});
+// Mock the CardArtContent component from its direct module path.
+vi.mock('../common/CardArtContent', () => ({
+    CardArtContent: ({ artSource, onSelectCard }: { artSource: string; onSelectCard: (name: string, url?: string) => void }) => (
+        <div
+            data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}
+            onClick={() => onSelectCard('Test Card', 'test-url')}
+        >
+            {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
+        </div>
+    ),
+}));
 
 vi.mock('@/helpers/cardbackLibrary', () => ({
     isCardbackId: (id: string) => id?.startsWith('cardback-'),

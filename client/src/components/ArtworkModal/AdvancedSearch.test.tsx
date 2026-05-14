@@ -59,6 +59,9 @@ vi.mock('../common', () => ({
         ) : null
     ),
     FloatingZoomPanel: () => <div data-testid="floating-zoom-panel" />,
+}));
+
+vi.mock('../common/CardArtContent', () => ({
     CardArtContent: ({
         artSource,
         query,
