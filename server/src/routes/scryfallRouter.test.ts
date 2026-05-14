@@ -34,6 +34,7 @@ vi.mock('../services/scryfallMicroserviceClient.js', () => ({
 
 import { scryfallRouter } from './scryfallRouter.js';
 import axios from 'axios';
+import { getDatabase } from '../db/db.js';
 import { getScryfallClient, isMicroserviceAvailable } from '../services/scryfallMicroserviceClient.js';
 
 describe('scryfallRouter', () => {
@@ -68,8 +69,7 @@ describe('scryfallRouter', () => {
 
         it('returns cached autocomplete results without hitting upstream', async () => {
             const cached = { object: 'catalog', data: ['Cached Ring'] };
-            const { getDatabase } = await import('../db/db.js');
-            vi.mocked(getDatabase).mockReturnValueOnce({
+            vi.mocked(getDatabase).mockReturnValue({
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
@@ -83,21 +83,13 @@ describe('scryfallRouter', () => {
 
         it('returns cached search results without hitting upstream', async () => {
             const cached = { object: 'list', data: [{ name: 'Cached Search' }] };
-            const dbMock = {
+            vi.mocked(getDatabase).mockReturnValue({
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
-            };
-            vi.doMock('../db/db.js', () => ({
-                getDatabase: vi.fn(() => dbMock),
-            }));
+            } as never);
 
-            vi.resetModules();
-            const { scryfallRouter: isolatedScryfallRouter } = await import('./scryfallRouter.js');
-            const isolatedApp = express();
-            isolatedApp.use('/api/scryfall', isolatedScryfallRouter);
-
-            const res = await request(isolatedApp).get('/api/scryfall/search?q=cache-me');
+            const res = await request(app).get('/api/scryfall/search?q=cache-me');
             expect(res.status).toBe(200);
             expect(res.body).toEqual(cached);
             expect(axios.get).not.toHaveBeenCalled();
@@ -141,8 +133,7 @@ describe('scryfallRouter', () => {
 
         it('returns cached named results without hitting upstream', async () => {
             const cached = { name: 'Cached Named', set: 'cmd' };
-            const { getDatabase } = await import('../db/db.js');
-            vi.mocked(getDatabase).mockReturnValueOnce({
+            vi.mocked(getDatabase).mockReturnValue({
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
