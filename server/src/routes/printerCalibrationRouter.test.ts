@@ -340,4 +340,118 @@ describe("printerCalibrationRouter", () => {
     );
     expect(response.status).toBe(501);
   });
+
+  it("downloads calibration sheets and reports sheet errors", async () => {
+    const ok = await request(app).get("/api/printer-calibration/sheet");
+    expect(ok.status).toBe(200);
+    expect(ok.header["content-type"]).toContain("application/pdf");
+
+    const failingApp = express();
+    failingApp.use(express.json());
+    failingApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async () => {
+          throw new Error("sheet unavailable");
+        },
+      })
+    );
+    const failed = await request(failingApp).get("/api/printer-calibration/sheet");
+    expect(failed.status).toBe(500);
+    expect(failed.body.error).toBe("sheet unavailable");
+  });
+
+  it("maps profile route errors to 400, 404, 500, and 501 statuses", async () => {
+    const missingGet = await request(app).get("/api/printer-calibration/profiles/missing");
+    expect(missingGet.status).toBe(404);
+
+    const invalidPut = await request(app)
+      .put("/api/printer-calibration/profiles/bad")
+      .send({ front_x_mm: "nope", front_y_mm: 0, back_x_mm: 0, back_y_mm: 0 });
+    expect(invalidPut.status).toBe(400);
+
+    const missingDelete = await request(app).delete("/api/printer-calibration/profiles/missing");
+    expect(missingDelete.status).toBe(404);
+
+    const badShowApp = express();
+    badShowApp.use(express.json());
+    badShowApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async (args: string[]) => {
+          if (args[0] === "profile" && args[1] === "list") return { stdout: "bad\n", stderr: "" };
+          if (args[0] === "profile" && args[1] === "show") throw new Error("show exploded");
+          return { stdout: "", stderr: "" };
+        },
+      })
+    );
+    const listFailure = await request(badShowApp).get("/api/printer-calibration/profiles");
+    expect(listFailure.status).toBe(500);
+    expect(listFailure.body.error).toBe("show exploded");
+
+    const missingToolApp = express();
+    missingToolApp.use(express.json());
+    missingToolApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async () => {
+          throw new Error("PRINTER_CALIBRATION_BIN does not exist: /missing");
+        },
+      })
+    );
+    const unavailable = await request(missingToolApp).delete("/api/printer-calibration/profiles/office");
+    expect(unavailable.status).toBe(501);
+  });
+
+  it("returns apply validation and execution errors", async () => {
+    const missingProfile = await request(app)
+      .post("/api/printer-calibration/apply")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+    expect(missingProfile.status).toBe(400);
+    expect(missingProfile.body.error).toBe("Missing profileName.");
+
+    const notFoundApp = express();
+    notFoundApp.use(express.json());
+    notFoundApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async () => {
+          throw new Error("Profile 'office' not found");
+        },
+      })
+    );
+    const notFound = await request(notFoundApp)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+    expect(notFound.status).toBe(404);
+
+    const failingApp = express();
+    failingApp.use(express.json());
+    failingApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async () => {
+          throw "plain failure";
+        },
+      })
+    );
+    const failed = await request(failingApp)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+    expect(failed.status).toBe(500);
+    expect(failed.body.error).toBe("plain failure");
+  });
+
+  it("rejects malformed profile output", () => {
+    expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: nope\nfront_y_mm: 1\nback_x_mm: 2\nback_y_mm: 3")).toThrow("Invalid numeric value");
+    expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: 1")).toThrow("Failed to parse");
+  });
+
 });
