@@ -9,11 +9,53 @@ if (!globalThis.crypto) {
 }
 
 // Node 26 exposes an experimental process-level localStorage that throws unless
-// --localstorage-file is provided. Tests run in jsdom, so route unqualified
-// localStorage access to jsdom's Storage implementation instead.
-if (typeof window !== 'undefined' && window.localStorage) {
+// --localstorage-file is provided. Tests run in jsdom, so provide a stable
+// jsdom-scoped Storage implementation for unqualified localStorage access.
+if (typeof window !== 'undefined') {
+  const entries = new Map<string, string>();
+  const storagePrototype =
+    typeof Storage !== 'undefined' ? Storage.prototype : Object.prototype;
+  const testLocalStorage = Object.create(storagePrototype) as Storage;
+
+  Object.defineProperties(storagePrototype, {
+    getItem: {
+      value: (key: string) => entries.get(String(key)) ?? null,
+      configurable: true,
+    },
+    setItem: {
+      value: (key: string, value: string) => {
+        entries.set(String(key), String(value));
+      },
+      configurable: true,
+    },
+    removeItem: {
+      value: (key: string) => {
+        entries.delete(String(key));
+      },
+      configurable: true,
+    },
+    clear: {
+      value: () => {
+        entries.clear();
+      },
+      configurable: true,
+    },
+    key: {
+      value: (index: number) => Array.from(entries.keys())[index] ?? null,
+      configurable: true,
+    },
+    length: {
+      get: () => entries.size,
+      configurable: true,
+    },
+  });
+
   Object.defineProperty(globalThis, 'localStorage', {
-    value: window.localStorage,
+    value: testLocalStorage,
+    configurable: true,
+  });
+  Object.defineProperty(window, 'localStorage', {
+    value: testLocalStorage,
     configurable: true,
   });
 }
