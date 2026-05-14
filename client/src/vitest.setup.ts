@@ -8,6 +8,16 @@ if (!globalThis.crypto) {
   globalThis.crypto = webcrypto as unknown as Crypto;
 }
 
+// Node 26 exposes an experimental process-level localStorage that throws unless
+// --localstorage-file is provided. Tests run in jsdom, so route unqualified
+// localStorage access to jsdom's Storage implementation instead.
+if (typeof window !== 'undefined' && window.localStorage) {
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: window.localStorage,
+    configurable: true,
+  });
+}
+
 // JSDOM doesn't implement Blob.arrayBuffer(), so this polyfills it.
 if (!Blob.prototype.arrayBuffer) {
   Blob.prototype.arrayBuffer = function () {
