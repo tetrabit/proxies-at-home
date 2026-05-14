@@ -58,12 +58,22 @@ vi.mock('./CardbackLibrary', () => ({
 
 // Mock the CardArtContent component from its direct module path.
 vi.mock('../common/CardArtContent', () => ({
-    CardArtContent: ({ artSource, onSelectCard }: { artSource: string; onSelectCard: (name: string, url?: string) => void }) => (
-        <div
-            data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}
-            onClick={() => onSelectCard('Test Card', 'test-url')}
-        >
-            {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
+    CardArtContent: ({ artSource, onSelectCard, onSelectMpcCard, onSwitchSource, onFilterCountChange }: {
+        artSource: string;
+        onSelectCard: (name: string, url?: string) => void;
+        onSelectMpcCard?: (card: { id: string; name: string; imageUrl: string }) => void;
+        onSwitchSource?: () => void;
+        onFilterCountChange?: (count: number) => void;
+    }) => (
+        <div data-testid={artSource === 'scryfall' ? 'scryfall-art-content' : 'mpc-art-content'}>
+            <button data-testid={`${artSource}-select-card`} onClick={() => onSelectCard('Test Card', 'test-url')}>
+                {artSource === 'scryfall' ? 'CardArtContent-Scryfall' : 'CardArtContent-MPC'}
+            </button>
+            <button data-testid={`${artSource}-select-mpc-card`} onClick={() => onSelectMpcCard?.({ id: 'mpc-1', name: 'MPC Card', imageUrl: 'mpc-url' })}>
+                Select MPC object
+            </button>
+            <button data-testid={`${artSource}-switch-source`} onClick={onSwitchSource}>Switch</button>
+            <button data-testid={`${artSource}-filter-count`} onClick={() => onFilterCountChange?.(3)}>Filters</button>
         </div>
     ),
 }));
