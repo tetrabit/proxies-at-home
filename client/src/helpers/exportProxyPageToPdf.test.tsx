@@ -305,6 +305,41 @@ describe("exportProxyPagesToPdf", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:page-0");
   });
 
+  it("ignores non-result worker messages and result messages without URLs", async () => {
+    class NoisyWorker extends MockWorker {
+      postMessage = vi.fn((message) => {
+        queueMicrotask(async () => {
+          await this.onmessage?.({
+            data: { type: "noop", pageIndex: message.pageIndex },
+          } as MessageEvent);
+          await this.onmessage?.({
+            data: { type: "result", pageIndex: message.pageIndex },
+          } as MessageEvent);
+          await this.onmessage?.({
+            data: {
+              type: "result",
+              pageIndex: message.pageIndex,
+              url: `blob:page-${message.pageIndex}`,
+            },
+          } as MessageEvent);
+        });
+      });
+    }
+    vi.stubGlobal("Worker", NoisyWorker);
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards: [{ uuid: "c1", name: "One" }] as any,
+        imagesById: new Map(),
+        pdfSettings: baseSettings,
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).resolves.toEqual(new Uint8Array([1, 2, 3]));
+  });
+
   it("rejects native worker error events", async () => {
     const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
     class NativeErrorWorker extends MockWorker {
