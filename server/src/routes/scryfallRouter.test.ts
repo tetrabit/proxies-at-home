@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { createHash } from 'crypto';
 
 // Mock dependencies before importing router
 vi.mock('../db/db.js', () => ({
@@ -250,6 +249,24 @@ describe('scryfallRouter', () => {
             const res = await request(app).get('/api/scryfall/search?q=t:legend');
             expect(res.status).toBe(200);
             expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 't:legend' } });
+        });
+
+        it('should convert known tokens into include:extras search syntax', async () => {
+            const mockResponse = { data: [{ name: 'Treasure' }] };
+            vi.mocked(axios.get).mockResolvedValueOnce({ data: mockResponse });
+
+            const res = await request(app).get('/api/scryfall/search?q=treasure');
+            expect(res.status).toBe(200);
+            expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 'treasure include:extras' } });
+        });
+
+        it('should treat known-token prefix phrases as token searches', async () => {
+            const mockResponse = { data: [{ name: 'Treasure Chest' }] };
+            vi.mocked(axios.get).mockResolvedValueOnce({ data: mockResponse });
+
+            const res = await request(app).get('/api/scryfall/search?q=treasure%20chest');
+            expect(res.status).toBe(200);
+            expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 'treasure chest type:token' } });
         });
     });
 

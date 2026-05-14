@@ -467,6 +467,28 @@ describe("getWithRetry logic", () => {
             expect(missing.status).toBe(404);
             sendFileSpy.mockRestore();
         });
+
+        it("covers cardback directory resolution fallbacks via helper export", async () => {
+            vi.resetModules();
+            const fsMock = {
+                ...fs,
+                existsSync: vi.fn(() => true),
+                readdirSync: vi.fn(() => []),
+            };
+            vi.doMock("fs", () => ({ ...fsMock, default: fsMock }));
+
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+            const { resolveCardbacksDir } = await import("./imageRouter.js");
+
+            const resolved = resolveCardbacksDir();
+            expect(resolved).toContain("cardbacks");
+            expect(warnSpy).toHaveBeenCalled();
+            expect(errorSpy).toHaveBeenCalled();
+
+            warnSpy.mockRestore();
+            errorSpy.mockRestore();
+        });
     });
 
 });

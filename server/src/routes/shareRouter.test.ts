@@ -297,7 +297,7 @@ describe('shareRouter', () => {
     });
 
     describe('cleanupExpiredShares', () => {
-        it('should remove expired shares', () => {
+        it('should remove expired shares and log when anything is cleaned up', () => {
             const now = Date.now();
             const compressed = gzipSync(Buffer.from('{}', 'utf-8'));
 
@@ -308,11 +308,12 @@ describe('shareRouter', () => {
 
             expect(mockShares.size).toBe(2);
 
+            const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
             const cleaned = cleanupExpiredShares();
 
-            // Note: Due to mock implementation, cleanup happens but count may vary
-            // Just verify the function runs without error
-            expect(cleaned).toBeGreaterThanOrEqual(0);
+            expect(cleaned).toBeGreaterThan(0);
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('[Share] Cleaned up'));
+            logSpy.mockRestore();
         });
     });
 

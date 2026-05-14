@@ -646,7 +646,7 @@ const CARDBACK_MAP: Record<string, string> = {
 
 const cardbacksDir = resolveCardbacksDir();
 
-function resolveCardbacksDir(): string {
+export function resolveCardbacksDir(): string {
   const candidates = [
     // 1. Standard structure (src/routes -> src -> server -> cardbacks)
     path.join(__dirname, "..", "..", "cardbacks"),
