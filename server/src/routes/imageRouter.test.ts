@@ -265,10 +265,7 @@ describe("getWithRetry logic", () => {
             this.type("image/png").send("cardback");
         });
 
-        (fs.existsSync as unknown as Mock).mockImplementation((candidate: string) => {
-            if (candidate.endsWith(".png")) return true;
-            return false;
-        });
+        (fs.existsSync as unknown as Mock).mockReturnValue(true);
 
         const missing = await request(app).get("/images/cardback/");
         expect(missing.status).toBe(404);

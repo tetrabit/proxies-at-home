@@ -17,6 +17,7 @@ vi.mock('crypto', async (importOriginal) => {
 
 // Create mock database with in-memory storage for testing
 let mockShares: Map<string, { data: Buffer; created_at: number; expires_at: number }>;
+let throwOnInsert = false;
 
 // Initialize mockShares before vi.mock runs
 beforeAll(() => {
@@ -46,6 +47,9 @@ vi.mock('../db/db.js', () => ({
             if (sql.includes('INSERT INTO shares')) {
                 return {
                     run: vi.fn((id: string, data: Buffer, created_at: number, expires_at: number) => {
+                        if (throwOnInsert) {
+                            throw new Error('db exploded');
+                        }
                         mockShares.set(id, { data, created_at, expires_at });
                     }),
                 };
@@ -133,6 +137,7 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 if unique random IDs keep colliding', async () => {
+            cryptoMocks.randomBytes.mockReturnValue(Buffer.from('qwerty'));
             const collidingId = Buffer.from('qwerty').toString('base64url');
             for (let i = 0; i < 11; i++) {
                 mockShares.set(collidingId, { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
@@ -165,26 +170,12 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 when persistence throws during create', async () => {
-            const dbMock = {
-                prepare: vi.fn(() => ({
-                    get: vi.fn(() => undefined),
-                    run: vi.fn(() => { throw new Error('db exploded'); }),
-                })),
-            };
-            vi.doMock('../db/db.js', () => ({
-                getDatabase: vi.fn(() => dbMock),
-            }));
-
-            vi.resetModules();
-            const { shareRouter: isolatedShareRouter } = await import('./shareRouter.js');
-            const isolatedApp = express();
-            isolatedApp.use(express.json());
-            isolatedApp.use('/api/share', isolatedShareRouter);
-
-            const response = await request(isolatedApp)
+            throwOnInsert = true;
+            const response = await request(app)
                 .post('/api/share')
                 .send({ data: { v: 1 } });
 
+            throwOnInsert = false;
             expect(response.status).toBe(500);
             expect(response.body.error).toBe('Failed to create share');
         });
