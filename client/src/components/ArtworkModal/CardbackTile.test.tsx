@@ -221,6 +221,25 @@ describe("CardbackTile", () => {
             expect(onCancelEdit).toHaveBeenCalled();
         });
 
+        it("should ignore non-commit edit keys", () => {
+            const onCancelEdit = vi.fn();
+            const onSaveEdit = vi.fn();
+            render(
+                <CardbackTile
+                    {...defaultProps}
+                    isEditing={true}
+                    editingName="Test"
+                    onCancelEdit={onCancelEdit}
+                    onSaveEdit={onSaveEdit}
+                />
+            );
+
+            fireEvent.keyDown(screen.getByRole("textbox"), { key: "Tab" });
+
+            expect(onCancelEdit).not.toHaveBeenCalled();
+            expect(onSaveEdit).not.toHaveBeenCalled();
+        });
+
         it("should not select the tile when clicking inside the edit input", () => {
             const onSelect = vi.fn();
             render(

@@ -196,6 +196,14 @@ describe("CardbackLibrary", () => {
             expect(defaultProps.onRequestDelete).toHaveBeenCalledWith("cb-2", "Custom Back");
         });
 
+        it("should use Unknown when deleting a cardback without a display name", () => {
+            render(<CardbackLibrary {...defaultProps} cardbackOptions={[{ ...mockCardbackOptions[0], id: "missing-id", name: "" }]} />);
+
+            fireEvent.click(screen.getByTestId("delete-missing-id"));
+
+            expect(defaultProps.onRequestDelete).toHaveBeenCalledWith("missing-id", "Unknown");
+        });
+
         it("should call onExecuteDelete when skipConfirmation is true", async () => {
             localStorage.setItem("cardback-delete-confirm-disabled", "true");
 

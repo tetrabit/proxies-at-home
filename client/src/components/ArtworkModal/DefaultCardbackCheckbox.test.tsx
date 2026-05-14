@@ -131,6 +131,24 @@ describe("DefaultCardbackCheckbox", () => {
             });
         });
 
+        it("should pass false when the default cardback has no built-in bleed flag", async () => {
+            render(<DefaultCardbackCheckbox
+                {...defaultProps}
+                cardbackOptions={[{ id: "default-cb-id", name: "Default Cardback", imageUrl: "", source: "builtin" as const }]}
+            />);
+
+            fireEvent.click(screen.getByRole("checkbox"));
+
+            await vi.waitFor(() => {
+                expect(undoableChangeCardback).toHaveBeenCalledWith(
+                    ["front-uuid"],
+                    "default-cb-id",
+                    "Default Cardback",
+                    false
+                );
+            });
+        });
+
         it("should call onClose after switching to default", async () => {
             (db.cards.get as ReturnType<typeof vi.fn>).mockResolvedValue({
                 uuid: "front-uuid",
@@ -258,6 +276,30 @@ describe("DefaultCardbackCheckbox", () => {
                     { key: "back-uuid-2", changes: { usesDefaultCardback: false } }
                 ]);
             });
+        });
+
+        it("should skip bulk update when unchecked selected cards have no linked backs", async () => {
+            (useSelectionStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
+                selectedCards: new Set(["front-uuid", "front-uuid-2"]),
+                setFlipped: vi.fn(),
+            });
+            (db.cards.bulkGet as ReturnType<typeof vi.fn>).mockResolvedValue([
+                { uuid: "front-uuid" },
+                { uuid: "front-uuid-2" }
+            ]);
+
+            const props = {
+                ...defaultProps,
+                linkedBackCard: { ...defaultProps.linkedBackCard, usesDefaultCardback: true },
+            };
+            render(<DefaultCardbackCheckbox {...props} />);
+
+            fireEvent.click(screen.getByRole("checkbox"));
+
+            await vi.waitFor(() => {
+                expect(db.cards.bulkGet).toHaveBeenCalled();
+            });
+            expect(db.cards.bulkUpdate).not.toHaveBeenCalled();
         });
 
         it("should handle mixed selection properly", async () => {

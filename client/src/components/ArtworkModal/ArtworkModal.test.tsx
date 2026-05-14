@@ -258,6 +258,7 @@ vi.mock('./ArtworkTabContent', () => ({
                 <button data-testid="select-cardback" onClick={() => onSelectCardback('cardback-1', 'Custom Back')}>Select Cardback</button>
                 <button data-testid="set-default-cardback" onClick={() => onSetAsDefaultCardback('cardback-2', 'Default Back')}>Set Default</button>
                 <button data-testid="delete-cardback" onClick={() => onRequestDelete('cardback-1', 'Custom Back')}>Delete</button>
+                <button data-testid="delete-default-cardback" onClick={() => onRequestDelete('default-cardback-1', 'Default Back')}>Delete Default</button>
                 <button data-testid="get-more-prints" onClick={onGetMorePrints}>Get More</button>
                 {setApplyToAll && <button data-testid="toggle-apply-to-all" onClick={() => setApplyToAll(true)}>Apply All</button>}
                 {setSelectedFace && (
@@ -405,6 +406,12 @@ describe('ArtworkModal', () => {
         vi.mocked(isCardbackId).mockReturnValue(false);
         vi.mocked(getFaceNamesFromPrints).mockReturnValue([]);
         vi.mocked(getCurrentCardFace).mockReturnValue('front');
+        mockDbCards.filter.mockImplementation(() => ({ toArray: vi.fn().mockResolvedValue([]) }));
+        mockDbCards.bulkGet.mockResolvedValue([]);
+        mockDbCards.get.mockResolvedValue(undefined);
+        mockDbImages.get.mockResolvedValue(undefined);
+        mockDbCardbacks.get.mockResolvedValue(undefined);
+        mockGetAllCardbacks.mockResolvedValue([]);
         mockState.isModalOpen = false;
         mockState.modalCard = null;
         mockState.initialTab = 'artwork';
@@ -892,6 +899,11 @@ describe('ArtworkModal', () => {
         });
 
         it('should call setDefaultCardbackId', async () => {
+            mockDbCards.filter.mockImplementation((predicate) => {
+                predicate({ uuid: 'front-1' });
+                predicate({ uuid: 'back-1', linkedFrontId: 'front-1', usesDefaultCardback: true });
+                return { toArray: vi.fn().mockResolvedValue([]) };
+            });
             render(<ArtworkModal />);
             fireEvent.click(screen.getByTestId('set-default-cardback'));
 
@@ -1009,6 +1021,19 @@ describe('ArtworkModal', () => {
             expect(screen.queryByText('Delete Cardback?')).toBeNull();
             expect(mockDbCardbacks.delete).not.toHaveBeenCalled();
         });
+
+        it('should keep delete dialog open when interacting inside the confirmation panel', () => {
+            render(<ArtworkModal />);
+
+            fireEvent.click(screen.getByTestId('delete-cardback'));
+            const panel = screen.getByText('Delete Cardback?').parentElement!;
+
+            fireEvent.mouseDown(panel);
+            fireEvent.click(panel);
+
+            expect(screen.getByText('Delete Cardback?')).toBeDefined();
+            expect(mockDbCardbacks.delete).not.toHaveBeenCalled();
+        });
     });
 
     describe('handleSearch', () => {
@@ -1051,6 +1076,31 @@ describe('ArtworkModal', () => {
             await waitFor(() => {
                 expect(mockFetchCardBySetAndNumber).toHaveBeenCalledWith('abc', '123');
             });
+        });
+
+        it('should handle searches with no results', async () => {
+            mockFetchCardWithPrints.mockResolvedValue(null);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('open-search'));
+            fireEvent.click(screen.getByTestId('select-card'));
+
+            await waitFor(() => {
+                expect(mockFetchCardWithPrints).toHaveBeenCalledWith('Selected Card', true, true);
+            });
+        });
+
+        it('should handle failed searches without closing the modal', async () => {
+            mockFetchCardWithPrints.mockRejectedValue(new Error('search failed'));
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('open-search'));
+            fireEvent.click(screen.getByTestId('select-card'));
+
+            await waitFor(() => {
+                expect(mockFetchCardWithPrints).toHaveBeenCalled();
+            });
+            expect(screen.getByTestId('responsive-modal')).toBeDefined();
         });
     });
 
@@ -1444,11 +1494,14 @@ describe('ArtworkModal', () => {
                 { id: 'default-cardback-1', name: 'Default Back', source: 'builtin', hasBuiltInBleed: true },
                 { id: 'cardback-1', name: 'Custom Back', source: 'custom', hasBuiltInBleed: false },
             ]);
-            mockDbCards.filter.mockReturnValueOnce({
+            mockDbCards.filter.mockImplementationOnce((predicate) => {
+                predicate({ uuid: 'back-using-custom', imageId: 'cardback-1', linkedFrontId: 'front-1' });
+                predicate({ uuid: 'other-back', imageId: 'other', linkedFrontId: undefined });
+                return {
                 toArray: vi.fn().mockResolvedValue([
                     { uuid: 'back-using-custom', name: 'Old Back', imageId: 'cardback-1', linkedFrontId: 'front-1' },
                 ])
-            });
+            }});
 
             render(<ArtworkModal />);
 
@@ -1465,6 +1518,33 @@ describe('ArtworkModal', () => {
                     hasBuiltInBleed: true,
                 });
                 expect(mockDbCardbacks.delete).toHaveBeenCalledWith('cardback-1');
+            });
+        });
+
+        it('should assign a fallback default when deleting the current default cardback', async () => {
+            mockGetAllCardbacks.mockResolvedValue([
+                { id: 'default-cardback-1', name: 'Default Back', source: 'custom', hasBuiltInBleed: false },
+                { id: 'fallback-builtin', name: 'Fallback Builtin', source: 'builtin', hasBuiltInBleed: true },
+            ]);
+            mockDbCards.filter.mockImplementation((predicate) => {
+                predicate({ uuid: 'front-no-back' });
+                predicate({ uuid: 'back-default', imageId: 'default-cardback-1', linkedFrontId: 'front-1', usesDefaultCardback: true });
+                return {
+                    toArray: vi.fn().mockResolvedValue([
+                        { uuid: 'back-default', name: 'Old Default Back', imageId: 'default-cardback-1', linkedFrontId: 'front-1' },
+                    ])
+                };
+            });
+
+            render(<ArtworkModal />);
+
+            await waitFor(() => expect(mockGetAllCardbacks).toHaveBeenCalled());
+            fireEvent.click(screen.getByTestId('delete-default-cardback'));
+            fireEvent.click(screen.getByText('Yes, delete'));
+
+            await waitFor(() => {
+                expect(mockSetDefaultCardbackId).toHaveBeenCalledWith('fallback-builtin');
+                expect(mockDbCardbacks.delete).toHaveBeenCalledWith('default-cardback-1');
             });
         });
 
@@ -1551,6 +1631,22 @@ describe('ArtworkModal', () => {
             expect(faceToggle.getAttribute('data-value')).toBe('back');
         });
 
+        it('should switch to MPC source when a linked back card uses MPC artwork', async () => {
+            vi.mocked(useLiveQuery).mockImplementation(() => ({
+                uuid: 'back-uuid',
+                name: 'Back Card',
+                imageId: 'mpc-linked-back',
+                linkedFrontId: 'front-uuid',
+            }));
+
+            mockState.initialFace = 'back';
+            render(<ArtworkModal />);
+
+            await waitFor(() => {
+                expect(screen.getByTestId('artwork-tab-content').getAttribute('data-art-source')).toBe('mpc');
+            });
+        });
+
         it('should switch to cardback library tab for non-library linked backs', async () => {
             const { useLiveQuery } = await import('dexie-react-hooks');
             const { isCardbackId } = await import('@/helpers/cardbackLibrary');
@@ -1570,6 +1666,11 @@ describe('ArtworkModal', () => {
             fireEvent.click(screen.getByTestId('tab-btn-cardback'));
 
             expect(screen.getByText('Choose Cardback')).toBeDefined();
+
+            const header = screen.getByTestId('modal-header');
+            fireEvent.click(header.querySelectorAll('button')[1]);
+
+            expect(screen.queryByText('Choose Cardback')).toBeNull();
         });
     });
 
@@ -1583,11 +1684,18 @@ describe('ArtworkModal', () => {
         it('should query cardbacks table for cardback imageId', async () => {
             const { isCardbackId } = await import('@/helpers/cardbackLibrary');
             vi.mocked(isCardbackId).mockReturnValue(true);
+            vi.mocked(useLiveQuery).mockImplementation((queryFn) => {
+                if (typeof queryFn === 'function') {
+                    void queryFn();
+                }
+                return null;
+            });
 
             render(<ArtworkModal />);
 
-            // Modal should render
-            expect(screen.getByTestId('responsive-modal')).toBeDefined();
+            await waitFor(() => {
+                expect(mockDbCardbacks.get).toHaveBeenCalledWith('cardback:custom-1');
+            });
         });
 
         it('should execute live queries for linked backs and image objects', async () => {
@@ -1649,6 +1757,7 @@ describe('ArtworkModal', () => {
             fireEvent.click(screen.getByTestId('close-search'));
             expect(screen.queryByTestId('advanced-search')).toBeNull();
         });
+
     });
 
     describe('MPC filters toggle', () => {
@@ -1721,6 +1830,26 @@ describe('ArtworkModal', () => {
                 expect(mockDbCards.update).toHaveBeenCalledWith('custom-uuid', { name: 'Renamed Custom' });
                 expect(mockUpdateCard).toHaveBeenCalledWith(updatedCard);
             });
+        });
+
+        it('should save custom upload names on Enter and cancel editing on Escape', async () => {
+            mockDbCards.get.mockResolvedValue({ uuid: 'custom-uuid', name: 'Enter Name', imageId: 'custom-upload-image' });
+
+            const { rerender } = render(<ArtworkModal />);
+            fireEvent.click(screen.getByTitle('Edit card name'));
+            fireEvent.change(screen.getByDisplayValue('Original Custom'), { target: { value: 'Enter Name' } });
+            fireEvent.keyDown(screen.getByDisplayValue('Enter Name'), { key: 'Enter' });
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('custom-uuid', { name: 'Enter Name' });
+            });
+
+            mockState.modalCard = { uuid: 'custom-uuid-2', name: 'Second Custom', imageId: 'custom-upload-image-2' };
+            rerender(<ArtworkModal />);
+            fireEvent.click(screen.getByTitle('Edit card name'));
+            fireEvent.keyDown(screen.getByDisplayValue('Second Custom'), { key: 'Escape' });
+
+            expect(screen.queryByDisplayValue('Second Custom')).toBeNull();
         });
     });
 

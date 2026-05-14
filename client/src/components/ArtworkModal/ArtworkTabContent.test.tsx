@@ -257,6 +257,7 @@ describe('ArtworkTabContent', () => {
         const setZoomLevel = vi.fn();
         render(<ArtworkTabContent {...defaultProps} artSource="mpc" setArtSource={setArtSource} setZoomLevel={setZoomLevel} />);
 
+        fireEvent.click(screen.getByTitle('Hide Filters'));
         fireEvent.click(screen.getByTestId('mpc-filter-count'));
         expect(screen.getByText('3')).toBeDefined();
 
