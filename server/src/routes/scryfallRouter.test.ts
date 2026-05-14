@@ -5,8 +5,12 @@ import request from 'supertest';
 // Mock dependencies before importing router
 vi.mock('../db/db.js', () => ({
     getDatabase: vi.fn(() => ({
-        prepare: vi.fn(() => ({
-            get: vi.fn(() => undefined),
+        prepare: vi.fn((sql: string) => ({
+            get: vi.fn((name?: string) =>
+                sql.includes('token_names') && ['treasure', 'treasure chest'].includes(String(name))
+                    ? { 1: 1 }
+                    : undefined
+            ),
             run: vi.fn(),
         })),
     })),
@@ -46,6 +50,12 @@ describe('scryfallRouter', () => {
     });
 
     afterEach(() => {
+        vi.mocked(getDatabase).mockReturnValue({
+            prepare: vi.fn(() => ({
+                get: vi.fn(() => undefined),
+                run: vi.fn(),
+            })),
+        } as never);
         vi.resetAllMocks();
     });
 
@@ -266,7 +276,7 @@ describe('scryfallRouter', () => {
 
             const res = await request(app).get('/api/scryfall/search?q=treasure%20chest');
             expect(res.status).toBe(200);
-            expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 'treasure chest type:token' } });
+            expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 'treasure chest include:extras' } });
         });
     });
 
