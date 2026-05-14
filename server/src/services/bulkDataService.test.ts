@@ -9,6 +9,12 @@ const batchInsertCardTypes = vi.fn();
 const batchInsertTokenNames = vi.fn();
 const getCardCount = vi.fn();
 
+vi.mock('axios', () => ({
+  default: {
+    get: vi.fn(),
+  },
+}));
+
 vi.mock('../db/db.js', () => ({
   getDatabase: () => ({
     prepare: vi.fn((sql: string) => ({
