@@ -306,6 +306,37 @@ describe("printerCalibrationRouter", () => {
     expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("duplex");
   });
 
+  it("uses the default runner path when no CLI is injected", async () => {
+    const okProc = {
+      stdout: {
+        setEncoding: vi.fn(),
+        on: vi.fn((_event: string, cb: (data: string) => void) => {
+          cb("%PDF-1.4\nmock sheet\n");
+        }),
+      },
+      stderr: {
+        setEncoding: vi.fn(),
+        on: vi.fn(),
+      },
+      on: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === "close") cb(0);
+      }),
+      kill: vi.fn(),
+    };
+    childProcessMocks.spawn.mockReturnValue(okProc as never);
+
+    const defaultApp = express();
+    defaultApp.use(express.json());
+    defaultApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({ dataDirectory })
+    );
+
+    const response = await request(defaultApp).get("/api/printer-calibration/sheet");
+    expect(response.status).toBe(200);
+    expect(childProcessMocks.spawn).toHaveBeenCalled();
+  });
+
   it("logs download callback failures when calibrated pdf delivery fails", async () => {
     profiles.set("office", {
       name: "office",
