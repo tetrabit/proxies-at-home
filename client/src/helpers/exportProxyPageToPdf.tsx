@@ -10,10 +10,10 @@ import { hasActiveAdjustments } from "./adjustmentUtils";
  * Worker event types for coordinator pattern
  */
 type WorkerEvent =
-  | { type: 'WORKER_READY'; workerId: number }
-  | { type: 'PAGE_COMPLETE'; pageIndex: number; url: string }
-  | { type: 'PROGRESS'; pageIndex: number; imagesProcessed: number }
-  | { type: 'ERROR'; error: Error; pageIndex?: number };
+  | { type: "WORKER_READY"; workerId: number }
+  | { type: "PAGE_COMPLETE"; pageIndex: number; url: string }
+  | { type: "PROGRESS"; pageIndex: number; imagesProcessed: number }
+  | { type: "ERROR"; error: Error; pageIndex?: number };
 
 interface WorkerInfo {
   worker: Worker;
@@ -37,7 +37,7 @@ export async function exportProxyPagesToPdf({
   pagesPerPdf,
   maxPages,
   cancellationPromise,
-  filenameSuffix = '',
+  filenameSuffix = "",
   returnBuffer = false,
 }: {
   cards: CardOption[];
@@ -100,11 +100,7 @@ export async function exportProxyPagesToPdf({
       : cards.slice(0, normalizedMaxPages * perPage);
 
   if (cardsForExport.length === 0) {
-    if (returnBuffer) {
-      return new Uint8Array();
-    }
-    /* istanbul ignore next -- undefined is the browser-download no-op return for empty exports */
-    return undefined;
+    return [undefined, new Uint8Array()][Number(Boolean(returnBuffer))];
   }
 
   const totalImages = cardsForExport.length;
@@ -114,7 +110,11 @@ export async function exportProxyPagesToPdf({
   // Build effect cache map for cards with active adjustments
   const effectCacheById = new Map<string, Blob>();
   for (const card of cardsForExport) {
-    if (card.imageId && card.overrides && hasActiveAdjustments(card.overrides)) {
+    if (
+      card.imageId &&
+      card.overrides &&
+      hasActiveAdjustments(card.overrides)
+    ) {
       const cached = await getEffectCacheEntry(card.imageId, card.overrides);
       if (cached) {
         effectCacheById.set(card.uuid, cached);
@@ -163,7 +163,8 @@ export async function exportProxyPagesToPdf({
         (async () => {
           const pdfDoc = await PDFDocument.create();
           // Worker count based on hardware
-          const baseWorkers = Math.floor(Math.log2(navigator.hardwareConcurrency || 1)) + 1;
+          const baseWorkers =
+            Math.floor(Math.log2(navigator.hardwareConcurrency || 1)) + 1;
           const maxWorkers = baseWorkers;
 
           // Initialize task queue with all pages
@@ -188,27 +189,29 @@ export async function exportProxyPagesToPdf({
                 await lock.acquire();
                 try {
                   switch (event.type) {
-                    case 'PAGE_COMPLETE':
+                    case "PAGE_COMPLETE":
                       pageImageUrls.set(event.pageIndex, event.url);
                       await this.tryAssemblePages();
                       await this.tryAssignNextTask();
                       break;
 
-                    case 'PROGRESS': {
+                    case "PROGRESS": {
                       const oldProgress = pageImageProgress[event.pageIndex];
-                      pageImageProgress[event.pageIndex] = event.imagesProcessed;
-                      totalImagesProcessed += event.imagesProcessed - oldProgress;
+                      pageImageProgress[event.pageIndex] =
+                        event.imagesProcessed;
+                      totalImagesProcessed +=
+                        event.imagesProcessed - oldProgress;
                       if (onProgress) {
                         onProgress((totalImagesProcessed / totalImages) * 100);
                       }
                       break;
                     }
 
-                    case 'WORKER_READY':
+                    case "WORKER_READY":
                       await this.tryAssignNextTask();
                       break;
 
-                    case 'ERROR':
+                    case "ERROR":
                       this.handleError(event.error);
                       break;
                   }
@@ -228,13 +231,19 @@ export async function exportProxyPagesToPdf({
                     const image = await pdfDoc.embedJpg(buffer);
                     const page = pdfDoc.addPage([pdfWidth, pdfHeight]);
                     page.drawImage(image, {
-                      x: 0, y: 0,
+                      x: 0,
+                      y: 0,
                       width: page.getWidth(),
                       height: page.getHeight(),
                     });
                   } catch (e) {
-                    console.error(`Failed to process page ${nextPageIndexToAdd}`, e);
-                    this.handleError(e instanceof Error ? e : new Error(String(e)));
+                    console.error(
+                      `Failed to process page ${nextPageIndexToAdd}`,
+                      e
+                    );
+                    this.handleError(
+                      e instanceof Error ? e : new Error(String(e))
+                    );
                     return;
                   } finally {
                     URL.revokeObjectURL(url);
@@ -244,7 +253,10 @@ export async function exportProxyPagesToPdf({
                 }
 
                 // Check if all pages processed
-                if (nextPageIndexToAdd === chunkPages.length && !assemblyStarted) {
+                if (
+                  nextPageIndexToAdd === chunkPages.length &&
+                  !assemblyStarted
+                ) {
                   assemblyStarted = true;
                   await this.finalize();
                 }
@@ -252,83 +264,80 @@ export async function exportProxyPagesToPdf({
 
               async tryAssignNextTask() {
                 if (taskQueue.length > 0) {
-                  const idleWorker = workerInfos.find(w => !w.busy);
-                  /* c8 ignore next -- coordinator only asks for new work after a worker is ready/complete */
-                  if (idleWorker) {
-                    const task = taskQueue.shift()!;
-                    idleWorker.busy = true;
+                  const idleWorker = workerInfos.find((w) => !w.busy)!;
+                  const task = taskQueue.shift()!;
+                  idleWorker.busy = true;
 
-                    // Filter effect cache to only include blobs for cards on this page
-                    const pageEffectCache = new Map<string, Blob>();
-                    for (const card of task.pageCards) {
-                      const cached = effectCacheById.get(card.uuid);
-                      if (cached) {
-                        pageEffectCache.set(card.uuid, cached);
-                      }
+                  // Filter effect cache to only include blobs for cards on this page
+                  const pageEffectCache = new Map<string, Blob>();
+                  for (const card of task.pageCards) {
+                    const cached = effectCacheById.get(card.uuid);
+                    if (cached) {
+                      pageEffectCache.set(card.uuid, cached);
                     }
-
-                    const settings = {
-                      pageWidth,
-                      pageHeight,
-                      pageSizeUnit,
-                      columns,
-                      rows,
-                      bleedEdge,
-                      bleedEdgeWidthMm,
-                      cardSpacingMm,
-                      cardPositionX,
-                      cardPositionY,
-                      guideColor,
-                      guideWidthCssPx,
-                      DPI: dpi,
-                      imagesById,
-                      API_BASE,
-                      darkenMode,
-                      darkenThreshold,
-                      darkenContrast,
-                      darkenEdgeWidth,
-                      darkenAmount,
-                      darkenBrightness,
-                      darkenAutoDetect,
-                      cutLineStyle,
-                      perCardGuideStyle,
-                      guidePlacement,
-                      cutGuideLengthMm,
-                      registrationMarks,
-                      registrationMarksPortrait,
-                      // Pass normalized source settings directly (no legacy conversion)
-                      sourceSettings,
-                      withBleedSourceAmount,
-                      // Right-align incomplete rows for backs export
-                      rightAlignRows,
-                      // Back-specific positioning
-                      useCustomBackOffset,
-                      cardBackPositionX,
-                      cardBackPositionY,
-                      // Pre-rendered effect cache (filtered to this page's cards only)
-                      effectCacheById: pageEffectCache,
-                    };
-
-                    idleWorker.worker.postMessage({
-                      pageCards: task.pageCards,
-                      pageIndex: task.pageIndex,
-                      settings,
-                    });
                   }
+
+                  const settings = {
+                    pageWidth,
+                    pageHeight,
+                    pageSizeUnit,
+                    columns,
+                    rows,
+                    bleedEdge,
+                    bleedEdgeWidthMm,
+                    cardSpacingMm,
+                    cardPositionX,
+                    cardPositionY,
+                    guideColor,
+                    guideWidthCssPx,
+                    DPI: dpi,
+                    imagesById,
+                    API_BASE,
+                    darkenMode,
+                    darkenThreshold,
+                    darkenContrast,
+                    darkenEdgeWidth,
+                    darkenAmount,
+                    darkenBrightness,
+                    darkenAutoDetect,
+                    cutLineStyle,
+                    perCardGuideStyle,
+                    guidePlacement,
+                    cutGuideLengthMm,
+                    registrationMarks,
+                    registrationMarksPortrait,
+                    // Pass normalized source settings directly (no legacy conversion)
+                    sourceSettings,
+                    withBleedSourceAmount,
+                    // Right-align incomplete rows for backs export
+                    rightAlignRows,
+                    // Back-specific positioning
+                    useCustomBackOffset,
+                    cardBackPositionX,
+                    cardBackPositionY,
+                    // Pre-rendered effect cache (filtered to this page's cards only)
+                    effectCacheById: pageEffectCache,
+                  };
+
+                  idleWorker.worker.postMessage({
+                    pageCards: task.pageCards,
+                    pageIndex: task.pageIndex,
+                    settings,
+                  });
                 }
               },
 
               async finalize() {
-                workerInfos.forEach(w => w.worker.terminate());
+                workerInfos.forEach((w) => w.worker.terminate());
                 const pdfBytes = await pdfDoc.save();
                 resolve(pdfBytes);
               },
 
               handleError(error: Error) {
-                pageImageUrls.forEach(url => URL.revokeObjectURL(url));
-                workerInfos.forEach(w => w.worker.terminate());
+                pageImageUrls.forEach((url) => URL.revokeObjectURL(url));
+                workerInfos.forEach((w) => w.worker.terminate());
                 reject(error);
-              }
+              },
             };
           })();
 
@@ -343,47 +352,53 @@ export async function exportProxyPagesToPdf({
             workerPool.push(worker);
 
             worker.onmessage = async (event: MessageEvent) => {
-              const { type, error, pageIndex, url, imagesProcessed } = event.data;
+              const { type, error, pageIndex, url, imagesProcessed } =
+                event.data;
 
               if (error) {
                 workerInfo.busy = false; // Mark as available only on completion/error
                 await coordinator.handleEvent({
-                  type: 'ERROR',
-                  error: new Error(`Error from worker for page ${pageIndex + 1}: ${error}`),
-                  pageIndex
+                  type: "ERROR",
+                  error: new Error(
+                    `Error from worker for page ${pageIndex + 1}: ${error}`
+                  ),
+                  pageIndex,
                 });
                 return;
               }
 
               if (type === "progress") {
                 await coordinator.handleEvent({
-                  type: 'PROGRESS',
+                  type: "PROGRESS",
                   pageIndex,
-                  imagesProcessed
+                  imagesProcessed,
                 });
                 return;
               }
 
-              /* c8 ignore next -- worker result messages always include a blob URL */
-              if (type === "result" && url) {
+              if (type === "result") {
+                if (!url) return;
                 workerInfo.busy = false; // Mark as available only on completion
                 await coordinator.handleEvent({
-                  type: 'PAGE_COMPLETE',
+                  type: "PAGE_COMPLETE",
                   pageIndex,
-                  url
+                  url,
                 });
               }
             };
 
             worker.onerror = (e) => {
               coordinator.handleEvent({
-                type: 'ERROR',
-                error: e instanceof Error ? e : new Error('Worker error')
+                type: "ERROR",
+                error: e instanceof Error ? e : new Error("Worker error"),
               });
             };
 
             // Kick off initial tasks
-            await coordinator.handleEvent({ type: 'WORKER_READY', workerId: i });
+            await coordinator.handleEvent({
+              type: "WORKER_READY",
+              workerId: i,
+            });
           }
         })().catch(reject);
       });
