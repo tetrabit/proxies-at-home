@@ -200,6 +200,7 @@ describe('scryfallRouter', () => {
             expect(upstream.status).toBe(429);
             expect(upstream.body).toEqual({ error: 'rate' });
         });
+    });
 
     describe('GET /search', () => {
         it('should return 400 when no q param', async () => {
@@ -276,9 +277,6 @@ describe('scryfallRouter', () => {
             expect(res.status).toBe(200);
             expect(axios.get).toHaveBeenCalledWith('/cards/search', { params: { q: 'treasure chest include:extras' } });
         });
-    });
-
-
 
         it('converts token search syntax and page_size for direct Scryfall', async () => {
             vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [] } });
