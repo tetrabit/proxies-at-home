@@ -480,13 +480,15 @@ describe("streamCards", () => {
       last: vi.fn().mockResolvedValue(undefined),
     });
     (addCards as any).mockResolvedValue([{ uuid: "missing-zero-order" }]);
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-error",
-        data: JSON.stringify({ query: { name: "Missing Zero" } }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-error",
+          data: JSON.stringify({ query: { name: "Missing Zero" } }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
       cardInfos: [{ name: "Missing Zero" }],
@@ -556,13 +558,15 @@ describe("streamCards", () => {
 
   it("should add a default-error card when SSE card-error has no matching entry", async () => {
     (addCards as any).mockResolvedValue([{ uuid: "unknown-error" }]);
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-error",
-        data: JSON.stringify({ query: { name: "Unknown Missing" } }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-error",
+          data: JSON.stringify({ query: { name: "Unknown Missing" } }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
       cardInfos: [{ name: "Different Card" }],
@@ -584,21 +588,32 @@ describe("streamCards", () => {
   });
 
   it("should continue when preferred image resolution fails", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    (undoableAddCards as any).mockResolvedValue([{ uuid: "preferred-fallback" }]);
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    (undoableAddCards as any).mockResolvedValue([
+      { uuid: "preferred-fallback" },
+    ]);
     (addRemoteImage as any)
       .mockResolvedValueOnce("main-preferred-fallback")
       .mockRejectedValueOnce(new Error("preferred failed"));
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-found",
-        data: JSON.stringify({ name: "Preferred Fallback", imageUrls: ["http://main"] }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "Preferred Fallback",
+            imageUrls: ["http://main"],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
-      cardInfos: [{ name: "Preferred Fallback", preferredImageId: "http://bad" }],
+      cardInfos: [
+        { name: "Preferred Fallback", preferredImageId: "http://bad" },
+      ],
       language: "en",
       importType: "deck",
       signal: new AbortController().signal,
@@ -621,21 +636,26 @@ describe("streamCards", () => {
     (addRemoteImage as any)
       .mockResolvedValueOnce("back-placeholder-image")
       .mockResolvedValueOnce("front-placeholder-image");
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-found",
-        data: JSON.stringify({
-          name: "Front Placeholder",
-          imageUrls: ["http://front-placeholder"],
-          layout: "transform",
-          card_faces: [
-            { name: "Front Placeholder", imageUrl: "http://front-placeholder" },
-            { name: "Back Placeholder", imageUrl: "http://back-placeholder" },
-          ],
-        }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "Front Placeholder",
+            imageUrls: ["http://front-placeholder"],
+            layout: "transform",
+            card_faces: [
+              {
+                name: "Front Placeholder",
+                imageUrl: "http://front-placeholder",
+              },
+              { name: "Back Placeholder", imageUrl: "http://back-placeholder" },
+            ],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
       cardInfos: [{ name: "Front Placeholder" }],
@@ -657,16 +677,23 @@ describe("streamCards", () => {
   it("should leave built-in custom linked back IDs unfetched and use the default back name", async () => {
     (undoableAddCards as any).mockResolvedValue([{ uuid: "front-built-in" }]);
     (addRemoteImage as any).mockResolvedValue("front-built-in-image");
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-found",
-        data: JSON.stringify({ name: "Built In Front", imageUrls: ["http://front"] }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "Built In Front",
+            imageUrls: ["http://front"],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
-      cardInfos: [{ name: "Built In Front", linkedBackImageId: "cardback_builtin" }],
+      cardInfos: [
+        { name: "Built In Front", linkedBackImageId: "cardback_builtin" },
+      ],
       language: "en",
       importType: "deck",
       signal: new AbortController().signal,
@@ -674,15 +701,25 @@ describe("streamCards", () => {
 
     expect(addRemoteImage).toHaveBeenCalledTimes(1);
     expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
-      { frontUuid: "front-built-in", backImageId: "cardback_builtin", backName: "Back" },
+      {
+        frontUuid: "front-built-in",
+        backImageId: "cardback_builtin",
+        backName: "Back",
+      },
     ]);
   });
 
   it("should warn and continue when MPC token enrichment fetch fails", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
     (undoableAddCards as any).mockResolvedValue([{ uuid: "mpc-token-fail" }]);
     (findBestMpcMatches as any).mockResolvedValue([
-      { info: { name: "MPC Token Fail" }, imageUrl: "http://mpc-token-fail", mpcCard: {} },
+      {
+        info: { name: "MPC Token Fail" },
+        imageUrl: "http://mpc-token-fail",
+        mpcCard: {},
+      },
     ]);
     (parseMpcCardLogic as any).mockReturnValue({
       name: "MPC Token Fail",
@@ -692,10 +729,17 @@ describe("streamCards", () => {
     (addRemoteImage as any).mockResolvedValue("mpc-token-fail-image");
     (db.cards.where as any).mockReturnValue({
       anyOf: vi.fn(() => ({
-        toArray: vi.fn().mockResolvedValue([{ uuid: "mpc-token-fail", name: "MPC Token Fail" }]),
+        toArray: vi
+          .fn()
+          .mockResolvedValue([
+            { uuid: "mpc-token-fail", name: "MPC Token Fail" },
+          ]),
       })),
     });
-    (fetchTokenParts as any).mockResolvedValue({ success: false, error: "network down" });
+    (fetchTokenParts as any).mockResolvedValue({
+      success: false,
+      error: "network down",
+    });
 
     await streamCards({
       cardInfos: [{ name: "MPC Token Fail" }],
@@ -719,21 +763,23 @@ describe("streamCards", () => {
     (addRemoteImage as any)
       .mockResolvedValueOnce("layout-back-image")
       .mockResolvedValueOnce("layout-front-image");
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-found",
-        data: JSON.stringify({
-          name: "Layout Front",
-          imageUrls: ["http://layout-back"],
-          layout: "transform",
-          card_faces: [
-            { name: "Layout Front", imageUrl: "http://layout-front" },
-            { name: "Layout Back", imageUrl: "http://layout-back" },
-          ],
-        }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "Layout Front",
+            imageUrls: ["http://layout-back"],
+            layout: "transform",
+            card_faces: [
+              { name: "Layout Front", imageUrl: "http://layout-front" },
+              { name: "Layout Back", imageUrl: "http://layout-back" },
+            ],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
       cardInfos: [{ name: "Layout Back" }],
@@ -743,26 +789,48 @@ describe("streamCards", () => {
     });
 
     expect(undoableAddCards).toHaveBeenCalledWith(
-      [expect.objectContaining({ isFlipped: true, imageId: "layout-front-image" })],
+      [
+        expect.objectContaining({
+          isFlipped: true,
+          imageId: "layout-front-image",
+        }),
+      ],
       undefined
     );
   });
 
   it("should warn and continue when custom linked back set lookup throws", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    (fetchCardBySetAndNumber as any).mockRejectedValue(new Error("lookup failed"));
-    (undoableAddCards as any).mockResolvedValue([{ uuid: "front-lookup-fail" }]);
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    (fetchCardBySetAndNumber as any).mockRejectedValue(
+      new Error("lookup failed")
+    );
+    (undoableAddCards as any).mockResolvedValue([
+      { uuid: "front-lookup-fail" },
+    ]);
     (addRemoteImage as any).mockResolvedValue("front-lookup-image");
-    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
-      await opts.onmessage({
-        event: "card-found",
-        data: JSON.stringify({ name: "Front Lookup Fail", imageUrls: ["http://front"] }),
-      });
-      opts.onmessage({ event: "done", data: "" });
-    });
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "Front Lookup Fail",
+            imageUrls: ["http://front"],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
 
     await streamCards({
-      cardInfos: [{ name: "Front Lookup Fail", linkedBackSet: "BAD", linkedBackNumber: "404" }],
+      cardInfos: [
+        {
+          name: "Front Lookup Fail",
+          linkedBackSet: "BAD",
+          linkedBackNumber: "404",
+        },
+      ],
       language: "en",
       importType: "deck",
       signal: new AbortController().signal,
