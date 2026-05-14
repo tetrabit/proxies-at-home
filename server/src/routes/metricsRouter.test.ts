@@ -2,19 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-const serviceMocks = vi.hoisted(() => ({
-  getMicroserviceMetrics: vi.fn(),
-  logMicroserviceMetrics: vi.fn(),
-  resetMicroserviceMetrics: vi.fn(),
-}));
-const { getMicroserviceMetrics, logMicroserviceMetrics, resetMicroserviceMetrics } = serviceMocks;
-
-vi.mock('../services/scryfallMicroserviceClient.ts', () => ({
-  getMicroserviceMetrics: serviceMocks.getMicroserviceMetrics,
-  logMicroserviceMetrics: serviceMocks.logMicroserviceMetrics,
-  resetMicroserviceMetrics: serviceMocks.resetMicroserviceMetrics,
+vi.mock('@tetrabit/scryfall-cache-client', () => ({
+  ScryfallCacheClient: class {
+    health = vi.fn();
+  },
 }));
 
+const service = await import('../services/scryfallMicroserviceClient.js');
+const getMetricsSpy = vi.spyOn(service, 'getMicroserviceMetrics');
+const logMetricsSpy = vi.spyOn(service, 'logMicroserviceMetrics');
+const resetMetricsSpy = vi.spyOn(service, 'resetMicroserviceMetrics');
 const { default: metricsRouter } = await import('./metricsRouter.js');
 
 const app = express();
@@ -24,7 +21,7 @@ describe('metricsRouter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    getMicroserviceMetrics.mockReturnValue({ averageResponseTime: 100, errorRate: 1, requests: 3 });
+    getMetricsSpy.mockReturnValue({ averageResponseTime: 100, errorRate: 1, requests: 3 } as never);
   });
 
   it('returns metrics with a timestamp', async () => {
@@ -36,7 +33,7 @@ describe('metricsRouter', () => {
   });
 
   it('reports metric read failures', async () => {
-    getMicroserviceMetrics.mockImplementationOnce(() => { throw new Error('boom'); });
+    getMetricsSpy.mockImplementationOnce(() => { throw new Error('boom'); });
     const response = await request(app).get('/api/metrics');
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ success: false, error: 'boom' });
@@ -46,9 +43,9 @@ describe('metricsRouter', () => {
     const ok = await request(app).post('/api/metrics/log');
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ success: true, message: 'Metrics logged to console' });
-    expect(logMicroserviceMetrics).toHaveBeenCalledOnce();
+    expect(logMetricsSpy).toHaveBeenCalledOnce();
 
-    logMicroserviceMetrics.mockImplementationOnce(() => { throw 'nope'; });
+    logMetricsSpy.mockImplementationOnce(() => { throw 'nope'; });
     const failed = await request(app).post('/api/metrics/log');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'Failed to log metrics' });
@@ -58,9 +55,9 @@ describe('metricsRouter', () => {
     const ok = await request(app).post('/api/metrics/reset');
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ success: true, message: 'Metrics reset successfully' });
-    expect(resetMicroserviceMetrics).toHaveBeenCalledOnce();
+    expect(resetMetricsSpy).toHaveBeenCalledOnce();
 
-    resetMicroserviceMetrics.mockImplementationOnce(() => { throw new Error('cannot reset'); });
+    resetMetricsSpy.mockImplementationOnce(() => { throw new Error('cannot reset'); });
     const failed = await request(app).post('/api/metrics/reset');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'cannot reset' });
@@ -72,16 +69,16 @@ describe('metricsRouter', () => {
     expect(healthy.body.data.status).toBe('healthy');
     expect(healthy.body.data.degraded).toBe(false);
 
-    getMicroserviceMetrics.mockReturnValueOnce({ averageResponseTime: 2500, errorRate: 1 });
+    getMetricsSpy.mockReturnValueOnce({ averageResponseTime: 2500, errorRate: 1 } as never);
     const slow = await request(app).get('/api/metrics/health');
     expect(slow.body.data.status).toBe('degraded');
     expect(slow.body.data.recommendation).toContain('degraded');
 
-    getMicroserviceMetrics.mockReturnValueOnce({ averageResponseTime: 100, errorRate: 6 });
+    getMetricsSpy.mockReturnValueOnce({ averageResponseTime: 100, errorRate: 6 } as never);
     const errorRate = await request(app).get('/api/metrics/health');
     expect(errorRate.body.data.status).toBe('degraded');
 
-    getMicroserviceMetrics.mockImplementationOnce(() => { throw 'bad'; });
+    getMetricsSpy.mockImplementationOnce(() => { throw 'bad'; });
     const failed = await request(app).get('/api/metrics/health');
     expect(failed.status).toBe(500);
     expect(failed.body).toEqual({ success: false, error: 'Failed to check health' });
