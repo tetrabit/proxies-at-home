@@ -53,6 +53,10 @@ describe('imageSourceUtils', () => {
             expect(inferImageSource('https://cards.scryfall.io/png/front/a/1/abc.png')).toBe('scryfall');
         });
 
+        it('should detect UUID as scryfall', () => {
+            expect(inferImageSource('c83ed3e0-82d0-4410-a6ca-b0f923eadf83')).toBe('scryfall');
+        });
+
         it('should detect MPC URL', () => {
             expect(inferImageSource('/api/cards/images/mpc?id=abc123')).toBe('mpc');
         });

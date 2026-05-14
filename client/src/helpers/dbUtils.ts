@@ -11,6 +11,7 @@ import {
   getImageSourceSync,
   isCustomSource,
 } from "./imageSourceUtils";
+import { fetchCardsMetadataBatch } from "./scryfallApi";
 import { API_BASE } from "@/constants";
 
 /**
@@ -269,30 +270,97 @@ export async function resetCardsToOriginalImages(
   if (!projectId) return result;
 
   const cards = await db.cards.where("projectId").equals(projectId).toArray();
-  const imageIds = Array.from(
-    new Set(cards.map((card) => card.imageId).filter(Boolean))
-  ) as string[];
-  const images = await db.images.bulkGet(imageIds);
-  const imagesById = new Map(
-    imageIds.map((imageId, index) => [imageId, images[index]])
-  );
 
-  for (const card of cards) {
+  const resettableCards = cards.filter((card) => {
     if (!card.imageId) {
       result.skipped += 1;
-      continue;
+      return false;
     }
 
-    const image = imagesById.get(card.imageId);
-    const source = getImageSourceSync(card.imageId, image?.source);
-
+    // Skip cards that are already using Scryfall art
+    const source = getImageSourceSync(card.imageId);
     if (source === "scryfall") {
       result.alreadyOriginal += 1;
-      continue;
+      return false;
+    }
+
+    // We can only reset if we have enough metadata to find it again
+    if (card.scryfall_id || (card.set && card.number) || card.name) {
+      return true;
     }
 
     result.legacy += 1;
-  }
+    return false;
+  });
+
+  if (resettableCards.length === 0) return result;
+
+  // Batch fetch metadata for all resettable cards
+  const queries = resettableCards.map((c) => ({
+    name: c.name,
+    set: c.set,
+    number: c.number,
+    scryfallId: c.scryfall_id,
+  }));
+
+  const metadata = await fetchCardsMetadataBatch(queries);
+
+  // Apply resets in a transaction
+  await db.transaction("rw", db.cards, db.images, async () => {
+    for (const card of resettableCards) {
+      // Try to find metadata by various keys
+      let scryCard = card.scryfall_id ? metadata.get(card.scryfall_id.toLowerCase()) : null;
+      if (!scryCard && card.set && card.number) {
+        scryCard = metadata.get(`${card.set.toLowerCase()}|${card.number.toLowerCase()}`);
+      }
+      if (!scryCard) {
+        scryCard = metadata.get(card.name.toLowerCase());
+      }
+
+      if (!scryCard || !scryCard.imageUrls || scryCard.imageUrls.length === 0) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Re-add Scryfall image to get original imageId
+      // This handles deduplication and ensures it's in db.images
+      const newImageId = await addRemoteImage(
+        scryCard.imageUrls,
+        1,
+        scryCard.prints
+      );
+
+      if (newImageId) {
+        const oldImageId = card.imageId!;
+
+        await db.cards.update(card.uuid, {
+          imageId: newImageId,
+          isUserUpload: false,
+          hasBuiltInBleed: false, // Scryfall images usually don't have built-in bleed
+        });
+
+        // Decrement old image ref count
+        await _removeImageRef_transactional(oldImageId);
+
+        // Handle DFCs: if there's a linked back card, reset its image too
+        if (card.linkedBackId && scryCard.imageUrls.length > 1) {
+          const backCard = await db.cards.get(card.linkedBackId);
+          if (backCard) {
+            const backImageId = await addRemoteImage([scryCard.imageUrls[1]], 1);
+            if (backImageId) {
+              const oldBackImageId = backCard.imageId!;
+              await db.cards.update(backCard.uuid, { imageId: backImageId });
+              await _removeImageRef_transactional(oldBackImageId);
+            }
+          }
+        }
+
+        result.reset += 1;
+      } else {
+        result.skipped += 1;
+      }
+    }
+  });
 
   return result;
 }

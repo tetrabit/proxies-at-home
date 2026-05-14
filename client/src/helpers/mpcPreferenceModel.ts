@@ -24,12 +24,18 @@ export interface MpcBootstrappedSourceExample {
 export interface MpcPreferenceModel {
   bias: number;
   sourceWeights: Record<string, number>;
+  sourceStats?: Record<string, { selections: number; appearances: number }>;
   tagWeights: Record<string, number>;
   formatWeights: {
     hasBracketSet: number;
     hasParenText: number;
     plainName: number;
     dpi: number;
+  };
+  ensembleWeights?: {
+    metadata: number;
+    visual: number;
+    preference: number;
   };
   trainingCaseCount: number;
 }
@@ -47,6 +53,19 @@ function ensureWeight(map: Record<string, number>, key: string): number {
 
 function addWeight(map: Record<string, number>, key: string, delta: number) {
   map[key] = ensureWeight(map, key) + delta;
+}
+
+/**
+ * Bayesian estimate of source reliability using Laplace smoothing.
+ * W = (selections + alpha) / (appearances + alpha + beta)
+ */
+function calculateBayesianWeight(
+  selections: number,
+  appearances: number,
+  alpha = 1,
+  beta = 2
+): number {
+  return (selections + alpha) / (appearances + alpha + beta);
 }
 
 export function buildBootstrappedSourcePreferenceDataset(
@@ -131,15 +150,22 @@ export function trainMpcPreferenceModel(
     return null;
   }
 
+  const sourceStats: Record<string, { selections: number; appearances: number }> = {};
   const model: MpcPreferenceModel = {
     bias: 0,
     sourceWeights: {},
+    sourceStats,
     tagWeights: {},
     formatWeights: {
       hasBracketSet: 0,
       hasParenText: 0,
       plainName: 0,
       dpi: 0,
+    },
+    ensembleWeights: {
+      metadata: 0.4,
+      visual: 0.3,
+      preference: 0.3,
     },
     trainingCaseCount: labeledCases.length,
   };
@@ -149,6 +175,17 @@ export function trainMpcPreferenceModel(
       (candidate) => candidate.identifier === calibrationCase.expectedIdentifier
     );
     if (!expected) continue;
+
+    // Track global source reliability
+    for (const candidate of calibrationCase.candidates) {
+      if (!candidate.sourceName) continue;
+      const stats = sourceStats[candidate.sourceName] || { selections: 0, appearances: 0 };
+      stats.appearances += 1;
+      if (candidate.identifier === expected.identifier) {
+        stats.selections += 1;
+      }
+      sourceStats[candidate.sourceName] = stats;
+    }
 
     for (const other of calibrationCase.candidates) {
       if (other.identifier === expected.identifier) continue;
@@ -181,6 +218,13 @@ export function trainMpcPreferenceModel(
         (delta.expectedPlain ? 1 : 0) - (delta.otherPlain ? 1 : 0);
       model.formatWeights.dpi += delta.dpiDelta;
     }
+  }
+
+  // Convert stats to Bayesian weights
+  for (const [source, stats] of Object.entries(sourceStats)) {
+    const reliability = calculateBayesianWeight(stats.selections, stats.appearances);
+    // Amplify reliability score to be significant alongside other weights
+    model.sourceWeights[source] = (model.sourceWeights[source] || 0) + reliability * 50;
   }
 
   return model;

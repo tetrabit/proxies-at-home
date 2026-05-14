@@ -9,6 +9,23 @@ import {
   countBasicLandsToRemove,
   removeBasicLandsFromProject,
 } from "./dbUtils";
+import { fetchCardsMetadataBatch } from "./scryfallApi";
+
+// Mock Scryfall API
+vi.mock("./scryfallApi", () => ({
+  fetchCardsMetadataBatch: vi.fn(async (queries) => {
+    const results = new Map();
+    for (const q of queries) {
+      if (q.name === "Lightning Bolt") {
+        results.set("lightning bolt", {
+          name: "Lightning Bolt",
+          imageUrls: ["https://cards.scryfall.io/normal/bolt.jpg"],
+        });
+      }
+    }
+    return results;
+  }),
+}));
 
 describe("dbUtils", () => {
   const originalFetch = global.fetch;
@@ -107,11 +124,68 @@ describe("dbUtils", () => {
       const result = await resetCardsToOriginalImages(projectId);
 
       expect(result).toEqual({
-        reset: 0,
-        skipped: 1,
+        reset: 1,
+        skipped: 2,
         alreadyOriginal: 1,
-        legacy: 2,
+        legacy: 0,
       });
+
+      // Verify Lightning Bolt was updated
+      const bolt = await db.cards.get("mpc-card");
+      expect(bolt?.imageId).toBe("https://cards.scryfall.io/normal/bolt.jpg");
+    });
+
+    it("resets double-faced cards correctly", async () => {
+      const projectId = "dfc-reset";
+
+      // Mock DFC metadata
+      vi.mocked(fetchCardsMetadataBatch).mockImplementationOnce(async () => {
+        const results = new Map();
+        results.set("invasion of zendikar", {
+          name: "Invasion of Zendikar",
+          imageUrls: [
+            "https://cards.scryfall.io/front/zendikar.jpg",
+            "https://cards.scryfall.io/back/zendikar.jpg",
+          ],
+        });
+        return results;
+      });
+
+      await db.cards.bulkAdd([
+        {
+          uuid: "dfc-front",
+          name: "Invasion of Zendikar",
+          order: 10,
+          isUserUpload: false,
+          projectId,
+          imageId: "mpc-front",
+          linkedBackId: "dfc-back",
+        },
+        {
+          uuid: "dfc-back",
+          name: "Awakened Skyclave",
+          order: 11,
+          isUserUpload: false,
+          projectId,
+          imageId: "mpc-back",
+          linkedFrontId: "dfc-front",
+        },
+      ]);
+
+      await db.images.bulkAdd([
+        { id: "mpc-front", refCount: 1, source: "mpc" },
+        { id: "mpc-back", refCount: 1, source: "mpc" },
+      ]);
+
+      const result = await resetCardsToOriginalImages(projectId);
+
+      expect(result.reset).toBe(1); // One front card reset (which triggers back reset)
+
+      const front = await db.cards.get("dfc-front");
+      const back = await db.cards.get("dfc-back");
+
+      expect(front?.imageId).toBe("https://cards.scryfall.io/front/zendikar.jpg");
+      expect(back?.imageId).toBe("https://cards.scryfall.io/back/zendikar.jpg");
     });
 
     it("returns zero counts when projectId is missing", async () => {

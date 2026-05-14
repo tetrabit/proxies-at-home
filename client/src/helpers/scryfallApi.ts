@@ -377,18 +377,18 @@ export async function fetchCardBySetAndNumber(set: string, number: string, signa
  * Much faster than calling fetchCardWithPrints for each card individually.
  */
 export async function fetchCardsMetadataBatch(
-    cardNames: string[],
+    cardQueries: Array<{ name: string; set?: string; number?: string; scryfallId?: string }>,
     signal?: AbortSignal
 ): Promise<Map<string, ScryfallCard>> {
     const results = new Map<string, ScryfallCard>();
-    if (cardNames.length === 0) return results;
+    if (cardQueries.length === 0) return results;
 
     try {
         const response = await fetch(`${API_BASE}/api/stream/metadata`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                cardQueries: cardNames.map(name => ({ name })),
+                cardQueries,
             }),
             signal,
         });
@@ -399,13 +399,20 @@ export async function fetchCardsMetadataBatch(
         }
 
         const data = await response.json() as {
-            results: Array<{ query: { name: string }; card: ScryfallCard | null; error?: string }>;
+            results: Array<{ query: { name: string; set?: string; number?: string }; card: ScryfallCard | null; error?: string }>;
         };
 
         for (const item of data.results) {
             if (item.card) {
-                // Store by both query name and canonical name for reliable lookup
-                results.set(item.query.name.toLowerCase(), item.card);
+                // Store by multiple keys for reliable lookup
+                const nameKey = item.query.name.toLowerCase();
+                results.set(nameKey, item.card);
+                
+                if (item.query.set && item.query.number) {
+                    const setNumKey = `${item.query.set.toLowerCase()}|${item.query.number.toLowerCase()}`;
+                    results.set(setNumKey, item.card);
+                }
+
                 if (item.card.name) {
                     results.set(item.card.name.toLowerCase(), item.card);
                 }

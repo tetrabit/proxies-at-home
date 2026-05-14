@@ -1161,12 +1161,60 @@ async function rankWithinBucket(
     );
 }
 
+function scoreCandidateEnsemble(
+  card: MpcAutofillCard,
+  input: MatcherInput,
+  ssimScore?: number
+): number {
+  // 1. Metadata Score (Bucket Match)
+  let metadataScore = 400; // Base for name-only match
+  const parsed = parseMpcSetCollector(card.rawName || card.name);
+  if (parsed) {
+    const normalizedSet = input.set?.toUpperCase();
+    const normalizedCN = input.collectorNumber
+      ? normalizeCollectorNumberForMatch(input.collectorNumber)
+      : "";
+    const parsedCN = normalizeCollectorNumberForMatch(parsed.collectorNumber);
+
+    if (normalizedSet && normalizedCN && parsed.set === normalizedSet && parsedCN === normalizedCN) {
+      metadataScore = 600; // Perfect match
+    } else if (normalizedSet && parsed.set === normalizedSet) {
+      metadataScore = 500;  // Set match
+    }
+  }
+
+  // 2. Visual Score (SSIM)
+  const visualScore = ssimScore ? (ssimScore * 1000) : 0;
+
+  // 3. Preference Score (Source Reliability + Model + Calibration Replay)
+  let prefScore = 0;
+  const rawUnseen = input.unseenPreferenceScores?.[card.identifier] ?? 0;
+  if (rawUnseen > 0) {
+    // Large bonus to ensure user-preferred art overrides metadata buckets
+    prefScore += 1000 + (rawUnseen * 2.5);
+  }
+
+  if (input.preferenceProfile) {
+    const replayScore = scoreCalibrationPreference(card, input.preferenceProfile);
+    if (replayScore > 0) {
+      // Large bonus for art matching a stored calibration replay
+      prefScore += 1000 + (replayScore * 2.5);
+    }
+  }
+
+  // 4. DPI Score (Tie-breaker)
+  const dpiScore = (card.dpi || 0) / 100;
+
+  return metadataScore + visualScore + prefScore + dpiScore;
+}
+
 export async function selectBestCandidate(
   input: MatcherInput
 ): Promise<MatchResult | null> {
   const { candidates, preferredIdentifier } = input;
   if (candidates.length === 0) return null;
 
+  // User-pinned favorite always wins immediately
   if (preferredIdentifier) {
     const preferredCard = candidates.find(
       (candidate) => candidate.identifier === preferredIdentifier
@@ -1176,23 +1224,93 @@ export async function selectBestCandidate(
     }
   }
 
-  const ranked = await rankCandidates(input);
-  const top = ranked.fullProcess[0];
-  if (!top) return null;
+  // Determine which bucket we are working in
+  const setCollectorBucket = bucketBySetCollector(candidates, input.set, input.collectorNumber);
+  const setOnlyBucket = input.set ? bucketBySetOnly(candidates, input.set) : [];
+  
+  // The committee considers the union of the best metadata bucket AND any 
+  // candidates that match the user's stored preference profile. This allows
+  // preferred art to override an exact set match.
+  const bestMetadataBucket = setCollectorBucket.length > 0 
+    ? setCollectorBucket 
+    : (setOnlyBucket.length > 0 ? setOnlyBucket : candidates);
 
-  // When the top two SSIM scores are within SSIM_MIN_MARGIN, the match is
-  // inconclusive — fall back to DPI ordering to preserve pre-refactor behavior.
-  const second = ranked.fullProcess[1];
-  if (
-    top.score !== undefined &&
-    second?.score !== undefined &&
-    top.score - second.score < SSIM_MIN_MARGIN
-  ) {
-    const bucket = ranked.fullProcess.map((r) => r.card);
-    const byDpi = sortByDpiThenId(bucket);
-    const reason = `${top.bucket ?? "name"}_dpi_fallback` as MatchReason;
-    return { card: byDpi[0], reason };
+  const preferredCandidates = candidates.filter(c => 
+    (input.preferenceProfile && scoreCalibrationPreference(c, input.preferenceProfile) > 0) ||
+    (input.unseenPreferenceScores && (input.unseenPreferenceScores[c.identifier] ?? 0) > 0)
+  );
+
+  const activeBucketSet = new Set([...bestMetadataBucket, ...preferredCandidates]);
+  const activeBucket = Array.from(activeBucketSet);
+
+  // 1. Run SSIM for top candidates in the bucket
+  let scoredSsim: ScoredCandidate[] = [];
+  if (input.sourceImageUrl && input.ssimCompare && input.getMpcImageUrl) {
+    try {
+      scoredSsim = await scoreCandidatesBySsim(
+        activeBucket,
+        input.sourceImageUrl,
+        input.ssimCompare,
+        input.getMpcImageUrl,
+        input.signal
+      );
+    } catch {
+      // SSIM failed
+    }
   }
 
-  return { card: top.card, reason: top.reason };
+  const ssimMap = new Map<string, number>();
+  for (const sc of scoredSsim) {
+    if (sc.score >= SSIM_MIN_SCORE) {
+      ssimMap.set(sc.card.identifier, sc.score);
+    }
+  }
+
+  // 2. Compute full Ensemble Score
+  const ensembleResults = activeBucket.map(card => ({
+    card,
+    ensembleScore: scoreCandidateEnsemble(card, input, ssimMap.get(card.identifier))
+  })).sort((a, b) => 
+    b.ensembleScore - a.ensembleScore ||
+    (b.card.dpi || 0) - (a.card.dpi || 0) ||
+    a.card.identifier.localeCompare(b.card.identifier)
+  );
+
+  const top = ensembleResults[0];
+  if (!top) return null;
+
+  // Determine the reason for the match based on the best bucket the winning 
+  // card belongs to.
+  let prefix: "set_collector" | "set" | "name" = "name";
+  if (setCollectorBucket.some(c => c.identifier === top.card.identifier)) {
+    prefix = "set_collector";
+  } else if (setOnlyBucket.some(c => c.identifier === top.card.identifier)) {
+    prefix = "set";
+  }
+
+  // Check for decisive winner
+  const second = ensembleResults[1];
+
+  // If both top candidates were scored by SSIM, we require a minimum margin
+  // to be considered decisive (preserving the old "inconclusive" behavior).
+  // For other factors (metadata, preference), we accept smaller margins.
+  const topHasSsim = ssimMap.has(top.card.identifier);
+  const secondHasSsim = second && ssimMap.has(second.card.identifier);
+  
+  // Restore the original SSIM margin (scaled to the ensemble range: 0.01 * 1000 = 10)
+  const marginNeeded = (topHasSsim && secondHasSsim) ? (SSIM_MIN_MARGIN * 1000) : 0.1;
+
+  const decisive = !second || (top.ensembleScore - second.ensembleScore) >= marginNeeded;
+
+  if (!decisive) {
+    // Fall back to strict DPI ordering of the whole bucket for stability when ensemble is too close
+    const byDpi = sortByDpiThenId(activeBucket);
+    return { card: byDpi[0], reason: `${prefix}_dpi_fallback` as MatchReason };
+  }
+
+  const reason: MatchReason = ssimMap.has(top.card.identifier)
+    ? `${prefix}_ssim` as MatchReason
+    : (activeBucket.length === 1 ? `${prefix}_only` as MatchReason : `${prefix}_dpi_fallback` as MatchReason);
+
+  return { card: top.card, reason };
 }

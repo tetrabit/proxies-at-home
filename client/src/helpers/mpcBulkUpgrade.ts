@@ -3,6 +3,7 @@ import type { CardOption } from "@/types";
 import { inferImageSource, inferSourceFromUrl } from "./imageSourceUtils";
 import { searchMpcAutofill, getMpcAutofillImageUrl } from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
+import { normalizeDfcName } from "../../../shared/cardNameUtils";
 import {
   createSsimCompare,
   FULL_CARD_NORMALIZED_SIZE,
@@ -17,6 +18,7 @@ import {
 import {
   buildMpcPreferenceScoreMap,
   trainMpcPreferenceModel,
+  type MpcPreferenceModel,
 } from "./mpcPreferenceModel";
 import { hydrateMpcPreferences } from "./mpcPreferenceBootstrap";
 import {
@@ -26,7 +28,9 @@ import {
 import {
   buildMpcSourceVisualProfiles,
   buildMpcVisualPreferenceScoreMap,
+  type MpcSourceVisualProfile,
 } from "./mpcVisualPreference";
+import type { MpcCalibrationCaseRecord } from "@/db";
 
 export type BulkMpcUpgradeSummary = {
   totalCards: number;
@@ -56,6 +60,45 @@ export type BulkUpgradeOptions = {
   signal?: AbortSignal;
 };
 
+/**
+ * Shared state for the duration of a bulk upgrade to avoid redundant
+ * DB lookups and bootstrap harvesting.
+ */
+interface PreferenceContext {
+  calibrationCases: MpcCalibrationCaseRecord[];
+  model: MpcPreferenceModel | null;
+  profiles: Record<string, MpcSourceVisualProfile>;
+}
+
+/**
+ * Prepares the preference context (trained model and visual profiles)
+ * used to score candidates when no explicit user replay exists.
+ */
+async function preparePreferenceContext(
+  signal?: AbortSignal
+): Promise<PreferenceContext> {
+  await hydrateMpcPreferences();
+  const calibrationCases = await listDefaultMpcCalibrationCases();
+
+  const model = trainMpcPreferenceModel(calibrationCases, {
+    emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+  });
+
+  if (!model) {
+    return { calibrationCases, model: null, profiles: {} };
+  }
+
+  const harvested = await harvestSourcePreferenceCandidates(
+    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+    async (name) => searchMpcAutofill(name, "CARD", true),
+    ["Hathwellcrisping", "Chilli_Axe"]
+  );
+
+  const profiles = await buildMpcSourceVisualProfiles(harvested);
+
+  return { calibrationCases, model, profiles };
+}
+
 // ── Main bulk upgrade ────────────────────────────────────────────────────
 
 /**
@@ -70,6 +113,7 @@ async function processImageGroup(
     { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined
   >,
   ssimCompare: ReturnType<typeof createSsimCompare>,
+  prefContext: PreferenceContext,
   signal?: AbortSignal
 ): Promise<{ upgraded: number; skipped: number; errors: number }> {
   const result = { upgraded: 0, skipped: 0, errors: 0 };
@@ -79,62 +123,52 @@ async function processImageGroup(
     imageRecord?.source ??
     inferSourceFromUrl(imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0]) ??
     inferImageSource(imageId);
+
   if (source !== "scryfall") {
-    console.debug(
-      `[MPC Bulk Upgrade] Skipping "${group[0].name}": source is "${source}", not scryfall`
-    );
     result.skipped = group.length;
     return result;
   }
 
   const representative = group[0];
-  const cardType = representative.isToken ? "TOKEN" : "CARD";
-  const results = await searchMpcAutofill(representative.name, cardType, true);
+  const normalizedName = normalizeDfcName(representative.name);
+  const cardType =
+    representative.isToken ||
+    (representative.type_line &&
+      representative.type_line.toLowerCase().includes("token"))
+      ? "TOKEN"
+      : "CARD";
+  const results = await searchMpcAutofill(normalizedName, cardType, true);
   const exactMatches = results
-    ? filterByExactName(results, representative.name)
+    ? filterByExactName(results, normalizedName)
     : [];
   if (!results || results.length === 0 || exactMatches.length === 0) {
-    console.debug(
-      `[MPC Bulk Upgrade] Skipping "${representative.name}": no MPC results (searched=${results?.length ?? 0}, exactMatches=${exactMatches.length})`
-    );
     result.skipped = group.length;
     return result;
   }
 
   // ── Find best candidate via matcher ──
-  await hydrateMpcPreferences();
   const preferenceInput = {
     name: representative.name,
     set: representative.set,
     collectorNumber: representative.number,
   };
-  const [preferredIdentifier, preferenceProfile, calibrationCases] =
-    await Promise.all([
-      getMpcCalibrationPreferredIdentifier(preferenceInput),
-      getMpcCalibrationPreferenceProfile(preferenceInput),
-      listDefaultMpcCalibrationCases(),
-    ]);
+  const [preferredIdentifier, preferenceProfile] = await Promise.all([
+    getMpcCalibrationPreferredIdentifier(preferenceInput),
+    getMpcCalibrationPreferenceProfile(preferenceInput),
+  ]);
+
   const unseenPreferenceScores =
-    preferredIdentifier || preferenceProfile
+    preferredIdentifier || preferenceProfile || !prefContext.model
       ? undefined
       : await (async () => {
-          const model = trainMpcPreferenceModel(calibrationCases, {
-            emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
-          });
-          if (!model) {
-            return undefined;
-          }
+          const { model, profiles } = prefContext;
+          if (!model) return undefined;
 
           const metadataScores = buildMpcPreferenceScoreMap(
             model,
             exactMatches
           );
-          const harvested = await harvestSourcePreferenceCandidates(
-            BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-            async (name) => searchMpcAutofill(name, "CARD", true),
-            ["Hathwellcrisping", "Chilli_Axe"]
-          );
-          const profiles = await buildMpcSourceVisualProfiles(harvested);
+
           const visualScores = await buildMpcVisualPreferenceScoreMap(
             exactMatches,
             profiles,
@@ -150,6 +184,7 @@ async function processImageGroup(
             ])
           );
         })();
+
   const matchResult = await selectBestCandidate({
     candidates: exactMatches,
     set: representative.set,
@@ -226,6 +261,10 @@ export async function bulkUpgradeToMpcAutofill(
   options: BulkUpgradeOptions = {}
 ): Promise<BulkMpcUpgradeSummary> {
   const { projectId, onProgress, signal } = options;
+
+  // Prepare preference context once before starting the loop
+  const prefContext = await preparePreferenceContext(signal);
+
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
@@ -293,8 +332,10 @@ export async function bulkUpgradeToMpcAutofill(
       group,
       imageById,
       ssimCompare,
+      prefContext,
       signal
     );
+
     summary.upgraded += result.upgraded;
     summary.skipped += result.skipped;
     summary.errors += result.errors;
@@ -311,3 +352,4 @@ export async function bulkUpgradeToMpcAutofill(
 
   return summary;
 }
+

@@ -13,6 +13,9 @@ export function inferImageSource(imageId?: string): ImageSource | null {
     if (imageId.startsWith('cardback_')) return 'cardback';
     if (imageId.startsWith('scryfall_') || imageId.startsWith('local_')) return 'scryfall';
 
+    // Check for UUID pattern (typical for Scryfall IDs used as image IDs)
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(imageId)) return 'scryfall';
+
     // Check for SHA-256 hash pattern (custom uploads) - with optional suffix
     if (/^[a-f0-9]{64}(-[a-z]+)?$/i.test(imageId)) return 'custom';
 
