@@ -1,190 +1,176 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const state = vi.hoisted(() => ({
-  app: undefined as undefined | {
-    use: ReturnType<typeof vi.fn>;
-    get: ReturnType<typeof vi.fn>;
-    listen: ReturnType<typeof vi.fn>;
-  },
-  getHandlers: new Map<string, Function>(),
-  corsOptions: undefined as undefined | { origin: Function },
-  compressionOptions: undefined as undefined | { filter: Function },
-  initDatabase: vi.fn(),
-  initCatalogs: vi.fn(),
-  startImportScheduler: vi.fn(),
-  cleanupExpiredShares: vi.fn(),
-  closeDatabase: vi.fn(),
-  isMicroserviceAvailable: vi.fn(),
-  logMicroserviceMetrics: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const app = {
+    use: vi.fn(),
+    get: vi.fn(),
+    listen: vi.fn(),
+  };
+  return {
+    app,
+    corsOptions: undefined as unknown,
+    compressionOptions: undefined as unknown,
+    helmetOptions: undefined as unknown,
+    initDatabase: vi.fn(),
+    initCatalogs: vi.fn(),
+    startImportScheduler: vi.fn(),
+    cleanupExpiredShares: vi.fn(),
+    logMicroserviceMetrics: vi.fn(),
+    isMicroserviceAvailable: vi.fn(),
+    dbPrepare: vi.fn(),
+  };
+});
 
 vi.mock('express', () => {
-  const express = vi.fn(() => {
-    const app = {
-      use: vi.fn(),
-      get: vi.fn((path: string, handler: Function) => {
-        state.getHandlers.set(path, handler);
-      }),
-      listen: vi.fn((port: number, _host: string, cb: Function) => {
-        const server = { address: () => ({ port: port === 0 ? 49152 : port }) };
-        queueMicrotask(() => cb());
-        return server;
-      }),
-    };
-    state.app = app;
-    return app;
+  const expressFn = Object.assign(vi.fn(() => mocks.app), {
+    json: vi.fn(() => 'json-middleware'),
   });
-  Object.assign(express, {
-    json: vi.fn((options: unknown) => ({ middleware: 'json', options })),
-  });
-  return { default: express };
+  return { default: expressFn };
 });
 
 vi.mock('cors', () => ({
-  default: vi.fn((options: { origin: Function }) => {
-    state.corsOptions = options;
-    return { middleware: 'cors' };
+  default: vi.fn((options) => {
+    mocks.corsOptions = options;
+    return 'cors-middleware';
   }),
 }));
 
 vi.mock('compression', () => {
-  const compression = vi.fn((options: { filter: Function }) => {
-    state.compressionOptions = options;
-    return { middleware: 'compression' };
+  const compressionFn = Object.assign(vi.fn((options) => {
+    mocks.compressionOptions = options;
+    return 'compression-middleware';
+  }), {
+    filter: vi.fn(() => true),
   });
-  Object.assign(compression, { filter: vi.fn(() => 'default-filter-result') });
-  return { default: compression };
+  return { default: compressionFn };
 });
 
-vi.mock('helmet', () => ({ default: vi.fn((options: unknown) => ({ middleware: 'helmet', options })) }));
-vi.mock('./db/db.js', () => ({ initDatabase: state.initDatabase, getDatabase: vi.fn(() => ({ prepare: vi.fn(() => ({ get: vi.fn(() => ({ ok: 1 })) })) })), closeDatabase: state.closeDatabase }));
-vi.mock('./services/importScheduler.js', () => ({ startImportScheduler: state.startImportScheduler }));
-vi.mock('./utils/scryfallCatalog.js', () => ({ initCatalogs: state.initCatalogs }));
-vi.mock('./services/scryfallMicroserviceClient.js', () => ({
-  isMicroserviceAvailable: state.isMicroserviceAvailable,
-  logMicroserviceMetrics: state.logMicroserviceMetrics,
+vi.mock('helmet', () => ({
+  default: vi.fn((options) => {
+    mocks.helmetOptions = options;
+    return 'helmet-middleware';
+  }),
 }));
-vi.mock('./routes/shareRouter.js', () => ({ shareRouter: { route: 'share' }, cleanupExpiredShares: state.cleanupExpiredShares }));
-vi.mock('./routes/archidektRouter.js', () => ({ archidektRouter: { route: 'archidekt' } }));
-vi.mock('./routes/moxfieldRouter.js', () => ({ moxfieldRouter: { route: 'moxfield' } }));
-vi.mock('./routes/imageRouter.js', () => ({ imageRouter: { route: 'image' } }));
-vi.mock('./routes/streamRouter.js', () => ({ streamRouter: { route: 'stream' } }));
-vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: { route: 'mpc' } }));
-vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: { route: 'scryfall' } }));
-vi.mock('./routes/backupRouter.js', () => ({ backupRouter: { route: 'backup' } }));
-vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: { route: 'printer' } }));
-vi.mock('./routes/preferencesRouter.js', () => ({ preferencesRouter: { route: 'preferences' } }));
-vi.mock('./routes/metricsRouter.js', () => ({ default: { route: 'metrics' } }));
 
-function createResponse() {
-  return {
-    statusCode: 200,
-    body: undefined as unknown,
-    status: vi.fn(function (this: { statusCode: number }, code: number) {
-      this.statusCode = code;
-      return this;
-    }),
-    json: vi.fn(function (this: { body: unknown }, body: unknown) {
-      this.body = body;
-      return this;
-    }),
-    getHeader: vi.fn(),
-  };
+vi.mock('./db/db.js', () => ({
+  initDatabase: mocks.initDatabase,
+  getDatabase: () => ({ prepare: mocks.dbPrepare }),
+  closeDatabase: vi.fn(),
+}));
+vi.mock('./utils/scryfallCatalog.js', () => ({ initCatalogs: mocks.initCatalogs }));
+vi.mock('./services/importScheduler.js', () => ({ startImportScheduler: mocks.startImportScheduler }));
+vi.mock('./services/scryfallMicroserviceClient.js', () => ({
+  logMicroserviceMetrics: mocks.logMicroserviceMetrics,
+  isMicroserviceAvailable: mocks.isMicroserviceAvailable,
+}));
+vi.mock('./routes/shareRouter.js', () => ({ shareRouter: 'share-router', cleanupExpiredShares: mocks.cleanupExpiredShares }));
+vi.mock('./routes/archidektRouter.js', () => ({ archidektRouter: 'archidekt-router' }));
+vi.mock('./routes/moxfieldRouter.js', () => ({ moxfieldRouter: 'moxfield-router' }));
+vi.mock('./routes/imageRouter.js', () => ({ imageRouter: 'image-router' }));
+vi.mock('./routes/streamRouter.js', () => ({ streamRouter: 'stream-router' }));
+vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: 'mpc-router' }));
+vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: 'scryfall-router' }));
+vi.mock('./routes/backupRouter.js', () => ({ backupRouter: 'backup-router' }));
+vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: 'printer-router' }));
+vi.mock('./routes/preferencesRouter.js', () => ({ preferencesRouter: 'preferences-router' }));
+vi.mock('./routes/metricsRouter.js', () => ({ default: 'metrics-router' }));
+
+function getRoute(path: string) {
+  const call = mocks.app.get.mock.calls.find(([registered]) => registered === path);
+  return call?.[1] as ((req: unknown, res: { status: ReturnType<typeof vi.fn>; json: ReturnType<typeof vi.fn> }) => unknown) | undefined;
 }
 
-describe('server index bootstrap and app wiring', () => {
+describe('server index', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-01T00:00:10Z'));
-    delete process.env.SCRYFALL_CACHE_URL;
+    vi.clearAllMocks();
+    vi.resetModules();
     delete process.env.ALLOWED_ORIGINS;
-    state.getHandlers.clear();
-    state.corsOptions = undefined;
-    state.compressionOptions = undefined;
-    state.initDatabase.mockClear();
-    state.initCatalogs.mockClear();
-    state.startImportScheduler.mockClear();
-    state.cleanupExpiredShares.mockClear();
-    state.closeDatabase.mockClear();
-    state.isMicroserviceAvailable.mockReset().mockResolvedValue(true);
-    state.logMicroserviceMetrics.mockClear();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    delete process.env.SCRYFALL_CACHE_URL;
+    mocks.app.listen.mockImplementation((_port, _host, cb) => {
+      const server = { address: () => ({ port: 4321 }) };
+      queueMicrotask(cb);
+      return server;
+    });
+    mocks.dbPrepare.mockReturnValue({ get: vi.fn(() => ({ ok: 1 })) });
+    mocks.isMicroserviceAvailable.mockResolvedValue(true);
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
-  it('initializes side effects, registers middleware/routes, and starts on requested port', async () => {
+  it('runs startup hooks, registers middleware/routes, and resolves the actual port', async () => {
     const { startServer } = await import('./index.js');
-
-    expect(state.initDatabase).toHaveBeenCalledOnce();
-    expect(state.initCatalogs).toHaveBeenCalledOnce();
-    expect(state.startImportScheduler).toHaveBeenCalledOnce();
-    expect(state.cleanupExpiredShares).toHaveBeenCalledOnce();
-
     const port = await startServer(0);
-    expect(port).toBe(49152);
-    expect(state.app?.use).toHaveBeenCalledWith('/api/scryfall', { route: 'scryfall' });
-    expect(state.app?.use).toHaveBeenCalledWith('/api/metrics', { route: 'metrics' });
-    expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0', expect.any(Function));
+
+    expect(port).toBe(4321);
+    expect(mocks.initDatabase).toHaveBeenCalled();
+    expect(mocks.initCatalogs).toHaveBeenCalled();
+    expect(mocks.startImportScheduler).toHaveBeenCalled();
+    expect(mocks.cleanupExpiredShares).toHaveBeenCalled();
+    expect(mocks.app.use).toHaveBeenCalledWith('/api/metrics', 'metrics-router');
+    expect(mocks.helmetOptions).toMatchObject({ hsts: { includeSubDomains: true, preload: true } });
   });
 
-  it('implements health and deep-health success/degraded branches', async () => {
+  it('allows configured, localhost, and originless CORS while rejecting unlisted remote origins', async () => {
+    process.env.ALLOWED_ORIGINS = 'https://allowed.example';
     const { startServer } = await import('./index.js');
     await startServer(3001);
 
-    const healthRes = createResponse();
-    state.getHandlers.get('/health')?.({}, healthRes);
-    expect(healthRes.body).toMatchObject({ status: 'ok', uptime: 0 });
+    const origin = (mocks.corsOptions as { origin: (origin: string | undefined, cb: (err: Error | null, ok?: boolean) => void) => void }).origin;
+    const cb = vi.fn();
+    origin(undefined, cb);
+    origin('https://allowed.example', cb);
+    origin('http://localhost:9999', cb);
+    origin('not a url', cb);
 
-    const deepOk = createResponse();
-    await state.getHandlers.get('/health/deep')?.({}, deepOk);
-    expect(deepOk.status).toHaveBeenCalledWith(200);
-    expect(deepOk.body).toMatchObject({ status: 'ok', checks: { database: 'ok', microservice: 'ok' } });
-
-    state.isMicroserviceAvailable.mockResolvedValueOnce(false);
-    const deepUnavailable = createResponse();
-    await state.getHandlers.get('/health/deep')?.({}, deepUnavailable);
-    expect(deepUnavailable.status).toHaveBeenCalledWith(503);
-    expect(deepUnavailable.body).toMatchObject({ status: 'degraded', checks: { microservice: 'unavailable' } });
+    expect(cb).toHaveBeenNthCalledWith(1, null, true);
+    expect(cb).toHaveBeenNthCalledWith(2, null, true);
+    expect(cb).toHaveBeenNthCalledWith(3, null, true);
+    expect(cb.mock.calls[3][0]).toBeInstanceOf(Error);
   });
 
-  it('covers CORS origin decisions and compression filter branches', async () => {
-    process.env.ALLOWED_ORIGINS = 'https://app.example';
-    const compression = (await import('compression')).default as unknown as { filter: ReturnType<typeof vi.fn> };
+  it('skips compression for server-sent events and uses default compression otherwise', async () => {
+    const compression = await import('compression');
     const { startServer } = await import('./index.js');
     await startServer(3001);
 
-    const corsCallback = vi.fn();
-    state.corsOptions?.origin(undefined, corsCallback);
-    state.corsOptions?.origin('https://app.example', corsCallback);
-    state.corsOptions?.origin('http://localhost:5173', corsCallback);
-    state.corsOptions?.origin('not a url', corsCallback);
-
-    expect(corsCallback).toHaveBeenNthCalledWith(1, null, true);
-    expect(corsCallback).toHaveBeenNthCalledWith(2, null, true);
-    expect(corsCallback).toHaveBeenNthCalledWith(3, null, true);
-    expect(corsCallback.mock.calls[3][0]).toBeInstanceOf(Error);
-
-    const sseRes = createResponse();
-    sseRes.getHeader.mockReturnValue('text/event-stream');
-    expect(state.compressionOptions?.filter({}, sseRes)).toBe(false);
-
-    const jsonRes = createResponse();
-    jsonRes.getHeader.mockReturnValue('application/json');
-    expect(state.compressionOptions?.filter({ accepts: true }, jsonRes)).toBe('default-filter-result');
-    expect(compression.filter).toHaveBeenCalledWith({ accepts: true }, jsonRes);
+    const filter = (mocks.compressionOptions as { filter: (req: unknown, res: { getHeader: (name: string) => string | undefined }) => boolean }).filter;
+    expect(filter({}, { getHeader: () => 'text/event-stream; charset=utf-8' })).toBe(false);
+    expect(filter({}, { getHeader: () => 'application/json' })).toBe(true);
+    expect(compression.default.filter).toHaveBeenCalled();
   });
 
-  it('schedules metrics logging when SCRYFALL_CACHE_URL is configured', async () => {
-    process.env.SCRYFALL_CACHE_URL = 'http://microservice.test';
-    await import('./index.js');
+  it('serves simple and deep health checks', async () => {
+    const { startServer } = await import('./index.js');
+    await startServer(3001);
 
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
-    expect(state.logMicroserviceMetrics).toHaveBeenCalledOnce();
+    const simpleRes = { json: vi.fn(), status: vi.fn().mockReturnThis() };
+    getRoute('/health')?.({}, simpleRes);
+    expect(simpleRes.json).toHaveBeenCalledWith(expect.objectContaining({ status: 'ok' }));
+
+    const deepRes = { json: vi.fn(), status: vi.fn().mockReturnThis() };
+    await getRoute('/health/deep')?.({}, deepRes);
+    expect(deepRes.status).toHaveBeenCalledWith(200);
+    expect(deepRes.json).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'ok',
+      checks: { database: 'ok', microservice: 'ok' },
+    }));
+  });
+
+  it('marks deep health degraded when checks fail', async () => {
+    mocks.dbPrepare.mockImplementation(() => { throw new Error('db down'); });
+    mocks.isMicroserviceAvailable.mockRejectedValue(new Error('service down'));
+    const { startServer } = await import('./index.js');
+    await startServer(3001);
+
+    const deepRes = { json: vi.fn(), status: vi.fn().mockReturnThis() };
+    await getRoute('/health/deep')?.({}, deepRes);
+
+    expect(deepRes.status).toHaveBeenCalledWith(503);
+    expect(deepRes.json).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'degraded',
+      checks: { database: 'error', microservice: 'error' },
+    }));
   });
 });

@@ -25,7 +25,10 @@ describe('microserviceMetrics additional coverage', () => {
     expect(summary.cacheHitRate).toBe(50);
     expect(summary.errorRate).toBe(50);
     expect(summary.topErrors).toEqual([{ type: 'TimeoutError', count: 2 }]);
-    expect(summary.endpointStats[0]).toMatchObject({ endpoint: '/cards/search', count: 1, avgTime: 300 });
+    expect(summary.endpointStats).toEqual(expect.arrayContaining([
+      expect.objectContaining({ endpoint: '/cards/search', count: 1, avgTime: 300 }),
+      expect.objectContaining({ endpoint: '/cards/named', count: 1, avgTime: 100 }),
+    ]));
     expect(metricsCollector.isPerformanceDegraded()).toBe(true);
     expect(metricsCollector.getRawMetrics().failedRequests).toBe(2);
   });
