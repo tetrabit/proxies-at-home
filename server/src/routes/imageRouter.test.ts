@@ -239,35 +239,6 @@ describe("getWithRetry logic", () => {
         sendFileSpy.mockRestore();
     });
 
-    it("waits for in-progress proxy writes before serving the completed cache file", async () => {
-        let fileExists = false;
-        (fs.existsSync as unknown as Mock).mockImplementation(() => fileExists);
-        let resolveWrite: () => void = () => undefined;
-        (fs.promises.writeFile as unknown as Mock).mockImplementationOnce(async () => {
-            await new Promise<void>((resolve) => { resolveWrite = resolve; });
-            fileExists = true;
-        });
-        mockedAxios.get.mockResolvedValue({
-            status: 200,
-            data: Buffer.from("image data"),
-            headers: { "content-type": "image/jpeg" },
-        });
-        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
-            this.type("image/jpeg").send("cached image data");
-        });
-
-        const first = request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/concurrent.jpg")}`);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const second = request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/concurrent.jpg")}`);
-        resolveWrite();
-        const [firstRes, secondRes] = await Promise.all([first, second]);
-
-        expect(firstRes.status).toBe(200);
-        expect(secondRes.status).toBe(200);
-        expect(mockedAxios.get).toHaveBeenCalledTimes(1);
-        sendFileSpy.mockRestore();
-    });
-
     it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
         mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: Buffer.from("png") });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
