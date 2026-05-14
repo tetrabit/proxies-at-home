@@ -166,9 +166,7 @@ describe('scryfallRouter', () => {
             expect(res.status).toBe(404);
         });
     });
-
-
-
+    describe('named extras', () => {
         it('redirects image format named requests directly to Scryfall', async () => {
             const res = await request(app).get('/api/scryfall/named?exact=Sol%20Ring&format=image&version=normal');
             expect(res.status).toBe(302);
@@ -316,6 +314,7 @@ describe('scryfallRouter', () => {
             expect(plain.status).toBe(500);
             expect(plain.body.error).toBe('Failed to search cards');
         });
+    });
 
     describe('GET /cards/:set/:number', () => {
         it('should proxy card lookup to Scryfall', async () => {

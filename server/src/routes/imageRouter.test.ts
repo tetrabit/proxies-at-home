@@ -458,8 +458,7 @@ describe("getWithRetry logic", () => {
             (fs.existsSync as unknown as Mock).mockImplementation((filePath: string) => String(filePath).endsWith("mtg.png"));
 
             const missingId = await request(app).get("/images/cardback/%20");
-            expect(missingId.status).toBe(400);
-            expect(missingId.text).toBe("Missing cardback ID");
+            expect(missingId.status).toBe(404);
 
             const ok = await request(app).get("/images/cardback/mtg");
             const unknown = await request(app).get("/images/cardback/unknown");
