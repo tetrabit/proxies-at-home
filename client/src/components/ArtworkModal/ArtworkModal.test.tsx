@@ -1343,6 +1343,10 @@ describe('ArtworkModal', () => {
 
         it('should switch to cardback library tab for non-library linked backs', async () => {
             const { useLiveQuery } = await import('dexie-react-hooks');
+            const { isCardbackId } = await import('@/helpers/cardbackLibrary');
+            const { getFaceNamesFromPrints } = await import('@/helpers/dfcHelpers');
+            vi.mocked(isCardbackId).mockReturnValue(false);
+            vi.mocked(getFaceNamesFromPrints).mockReturnValue([]);
             vi.mocked(useLiveQuery).mockImplementation(() => ({
                 uuid: 'back-uuid',
                 name: 'Back Card',
