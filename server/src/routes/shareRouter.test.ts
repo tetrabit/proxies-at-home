@@ -38,6 +38,17 @@ vi.mock('../db/db.js', () => ({
                     }),
                 };
             }
+            if (sql.includes('UPDATE shares SET data')) {
+                return {
+                    run: vi.fn((data: Buffer, expires_at: number, id: string) => {
+                        const share = mockShares.get(id);
+                        if (share) {
+                            share.data = data;
+                            share.expires_at = expires_at;
+                        }
+                    }),
+                };
+            }
             if (sql.includes('UPDATE shares SET expires_at')) {
                 return {
                     run: vi.fn((expires_at: number, id: string) => {
@@ -143,6 +154,25 @@ describe('shareRouter', () => {
             const decompressed = gunzipSync(storedShare!.data).toString('utf-8');
             expect(JSON.parse(decompressed)).toEqual(testData);
         });
+
+
+        it('creates and updates stable projectId shares', async () => {
+            const first = await request(app)
+                .post('/api/share')
+                .send({ projectId: 'project-alpha', data: { version: 1 } });
+            expect(first.status).toBe(200);
+            expect(first.body.id).toHaveLength(8);
+            const firstId = first.body.id;
+
+            const second = await request(app)
+                .post('/api/share')
+                .send({ projectId: 'project-alpha', data: { version: 2 } });
+            expect(second.status).toBe(200);
+            expect(second.body.id).toBe(firstId);
+
+            const storedShare = mockShares.get(firstId)!;
+            expect(JSON.parse(gunzipSync(storedShare.data).toString('utf-8'))).toEqual({ version: 2 });
+        });
     });
 
     describe('GET /api/share/:id', () => {
@@ -199,6 +229,15 @@ describe('shareRouter', () => {
 
             expect(res.status).toBe(404);
             expect(res.body.error).toBe('Share not found or expired');
+        });
+
+
+        it('returns 500 when stored compressed data is corrupt', async () => {
+            const now = Date.now();
+            mockShares.set('badData1', { data: Buffer.from('not gzip'), created_at: now, expires_at: now + 1000000 });
+            const res = await request(app).get('/api/share/badData1');
+            expect(res.status).toBe(500);
+            expect(res.body.error).toBe('Failed to retrieve share');
         });
     });
 
