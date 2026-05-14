@@ -28,8 +28,8 @@ describe('AutoTooltip', () => {
     render(<AutoTooltip content="Helpful" tooltipClassName="tip" />);
 
     const tooltip = screen.getByTestId('desktop-tooltip');
-    expect(tooltip).toHaveAttribute('data-content', 'Helpful');
-    expect(tooltip).toHaveClass('tip');
+    expect(tooltip.getAttribute('data-content')).toBe('Helpful');
+    expect(tooltip.className).toContain('tip');
     expect(tooltip.querySelector('svg')).toBeTruthy();
   });
 
@@ -48,7 +48,7 @@ describe('AutoTooltip', () => {
 
     fireEvent.click(screen.getByText('?'));
     const tooltip = screen.getByRole('tooltip');
-    expect(tooltip).toHaveTextContent('Tap help');
+    expect(tooltip.textContent).toContain('Tap help');
     expect(tooltip.className).toContain(expectedClass);
 
     act(() => vi.advanceTimersByTime(100));

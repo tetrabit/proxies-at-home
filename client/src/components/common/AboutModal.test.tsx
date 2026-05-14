@@ -24,7 +24,7 @@ describe('AboutModal', () => {
     render(<AboutModal isOpen onClose={vi.fn()} />);
 
     expect(screen.getByRole('dialog')).toBeDefined();
-    expect(screen.getByAltText('Proxxied')).toHaveAttribute('src', 'logo.svg');
+    expect(screen.getByAltText('Proxxied').getAttribute('src')).toBe('logo.svg');
     expect(screen.queryByText('Version')).toBeNull();
 
     fireEvent.click(screen.getByText('View on GitHub'));

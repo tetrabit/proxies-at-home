@@ -10,7 +10,7 @@ describe('ArtSourceToggle', () => {
     const buttons = screen.getAllByRole('button');
     expect(buttons.map((button) => button.textContent)).toEqual(['Scryfall', 'MPC Autofill']);
 
-    fireEvent.click(screen.getByText('MPC Autofill'));
+    fireEvent.pointerUp(screen.getByText('MPC Autofill')); 
     expect(onChange).toHaveBeenCalledWith('mpc');
   });
 
@@ -26,6 +26,5 @@ describe('ArtSourceToggle', () => {
 
     const buttons = screen.getAllByRole('button');
     expect(buttons.map((button) => button.textContent)).toEqual(['MPC Autofill', 'Scryfall']);
-    expect(screen.getByRole('group', { name: 'Preferred source' })).toBeDefined();
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { CardImageSvg } from './CardImageSvg';
 
 class MockIntersectionObserver {
@@ -32,7 +32,7 @@ describe('CardImageSvg', () => {
     const svg = screen.getByRole('img', { name: 'Card image for card-1' });
 
     expect(container.querySelector('image')).toBeNull();
-    MockIntersectionObserver.instances[0].intersect(svg);
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
 
     const image = container.querySelector('image')!;
     expect(image.getAttribute('href')).toBe('front.png');
@@ -53,13 +53,13 @@ describe('CardImageSvg', () => {
       />
     );
     const svg = screen.getByRole('img', { name: 'Card image for bleed-card' });
-    expect(svg).toHaveAttribute('viewBox', '3 3 63 88');
+    expect(svg.getAttribute('viewBox')).toBe('3 3 63 88');
     expect(container.querySelector('clipPath')).toBeNull();
 
-    MockIntersectionObserver.instances[0].intersect(svg);
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
     const image = container.querySelector('image')!;
-    expect(image).toHaveAttribute('width', '69');
-    expect(image).toHaveAttribute('height', '94');
+    expect(image.getAttribute('width')).toBe('69');
+    expect(image.getAttribute('height')).toBe('94');
     expect(image.getAttribute('clip-path') ?? image.getAttribute('clipPath')).toBeNull();
 
     fireEvent.error(image);
@@ -71,13 +71,13 @@ describe('CardImageSvg', () => {
   it('resets load state when the URL changes', () => {
     const { container, rerender } = render(<CardImageSvg id="card-2" url="one.png" />);
     const svg = screen.getByRole('img', { name: 'Card image for card-2' });
-    MockIntersectionObserver.instances[0].intersect(svg);
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
     fireEvent.load(container.querySelector('image')!);
 
     rerender(<CardImageSvg id="card-2" url="two.png" />);
 
     expect(container.querySelector('rect')).toBeTruthy();
-    MockIntersectionObserver.instances.at(-1)!.intersect(svg);
+    act(() => MockIntersectionObserver.instances.at(-1)!.intersect(svg));
     expect(container.querySelector('image')!.getAttribute('href')).toBe('two.png');
   });
 });

@@ -28,7 +28,7 @@ describe('UpdateChannelSelector', () => {
 
   it('renders nothing outside Electron', () => {
     const { container } = render(<UpdateChannelSelector />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.textContent).toBe('');
   });
 
   it('loads update state and changes channel/auto-update settings', async () => {
@@ -44,7 +44,7 @@ describe('UpdateChannelSelector', () => {
     render(<UpdateChannelSelector />);
 
     await waitFor(() => expect(screen.getByText('v2.0.0')).toBeDefined());
-    expect(screen.getByTestId('channel-toggle')).toHaveAttribute('data-value', 'stable');
+    expect(screen.getByTestId('channel-toggle').getAttribute('data-value')).toBe('stable');
 
     fireEvent.click(screen.getByText('Latest'));
     await waitFor(() => expect(window.electronAPI!.setUpdateChannel).toHaveBeenCalledWith('latest'));
@@ -67,7 +67,7 @@ describe('UpdateChannelSelector', () => {
     };
 
     render(<UpdateChannelSelector />);
-    await waitFor(() => expect(screen.getByTestId('channel-toggle')).toHaveAttribute('data-value', 'latest'));
+    await waitFor(() => expect(screen.getByTestId('channel-toggle').getAttribute('data-value')).toBe('latest'));
 
     fireEvent.click(screen.getByText('Latest'));
     expect(window.electronAPI!.setUpdateChannel).not.toHaveBeenCalled();
@@ -84,6 +84,8 @@ describe('UpdateChannelSelector', () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     (window as unknown as { electronAPI: Partial<Window['electronAPI']> }).electronAPI = {
       getUpdateChannel: vi.fn().mockRejectedValue(error),
+      getAppVersion: vi.fn().mockResolvedValue(''),
+      getAutoUpdateEnabled: vi.fn().mockResolvedValue(true),
     };
 
     render(<UpdateChannelSelector />);
