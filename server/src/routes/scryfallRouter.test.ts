@@ -33,6 +33,7 @@ vi.mock('../services/scryfallMicroserviceClient.js', () => ({
 
 import { scryfallRouter } from './scryfallRouter.js';
 import axios from 'axios';
+import { getScryfallClient, isMicroserviceAvailable } from '../services/scryfallMicroserviceClient.js';
 
 describe('scryfallRouter', () => {
     let app: express.Application;
@@ -113,6 +114,42 @@ describe('scryfallRouter', () => {
         });
     });
 
+
+
+        it('redirects image format named requests directly to Scryfall', async () => {
+            const res = await request(app).get('/api/scryfall/named?exact=Sol%20Ring&format=image&version=normal');
+            expect(res.status).toBe(302);
+            expect(res.header.location).toBe('https://api.scryfall.com/cards/named?exact=Sol+Ring&format=image&version=normal');
+        });
+
+        it('uses microservice for named requests when available', async () => {
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                getCardByName: vi.fn().mockResolvedValue({ success: true, data: { name: 'Micro Card' } }),
+            } as never);
+
+            const res = await request(app).get('/api/scryfall/named?exact=Micro%20Card');
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ name: 'Micro Card' });
+        });
+
+        it('falls back when named microservice returns no data and forwards upstream errors', async () => {
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                getCardByName: vi.fn().mockResolvedValue({ success: false }),
+            } as never);
+            vi.mocked(axios.get).mockResolvedValueOnce({ data: { name: 'Fallback Named' } });
+            const fallback = await request(app).get('/api/scryfall/named?fuzzy=Fallback%20Named');
+            expect(fallback.status).toBe(200);
+            expect(fallback.body).toEqual({ name: 'Fallback Named' });
+
+            vi.mocked(axios.get).mockRejectedValueOnce({ isAxiosError: true, response: { status: 429, data: { error: 'rate' } } });
+            vi.mocked(axios.isAxiosError).mockReturnValueOnce(true);
+            const upstream = await request(app).get('/api/scryfall/named?exact=Rate%20Limited');
+            expect(upstream.status).toBe(429);
+            expect(upstream.body).toEqual({ error: 'rate' });
+        });
+
     describe('GET /search', () => {
         it('should return 400 when no q param', async () => {
             const res = await request(app).get('/api/scryfall/search');
@@ -172,6 +209,43 @@ describe('scryfallRouter', () => {
         });
     });
 
+
+
+        it('converts token search syntax and page_size for direct Scryfall', async () => {
+            vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [] } });
+            const quoted = await request(app).get('/api/scryfall/search?q=t:%22human%20soldier%22&page_size=7');
+            expect(quoted.status).toBe(200);
+            expect(axios.get).toHaveBeenCalledWith('/cards/search', {
+                params: { q: 'human soldier type:token', limit: '7' },
+            });
+        });
+
+        it('uses microservice search pagination when available', async () => {
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                searchCards: vi.fn().mockResolvedValue({
+                    success: true,
+                    data: { has_more: false, data: [{ name: 'Micro Search' }], page: 2, page_size: 3, total: 1, total_pages: 1 },
+                }),
+            } as never);
+            const res = await request(app).get('/api/scryfall/search?q=micro-search&page=2&page_size=3&limit=4');
+            expect(res.status).toBe(200);
+            expect(res.body).toMatchObject({ object: 'list', page: 2, page_size: 3, total: 1 });
+        });
+
+        it('forwards search axios errors and plain failures', async () => {
+            vi.mocked(axios.get).mockRejectedValueOnce({ isAxiosError: true, response: { status: 400, data: { error: 'bad query' } } });
+            vi.mocked(axios.isAxiosError).mockReturnValueOnce(true);
+            const upstream = await request(app).get('/api/scryfall/search?q=bad-query-unique');
+            expect(upstream.status).toBe(400);
+            expect(upstream.body).toEqual({ error: 'bad query' });
+
+            vi.mocked(axios.get).mockRejectedValueOnce(new Error('network'));
+            const plain = await request(app).get('/api/scryfall/search?q=plain-failure-unique');
+            expect(plain.status).toBe(500);
+            expect(plain.body.error).toBe('Failed to search cards');
+        });
+
     describe('GET /cards/:set/:number', () => {
         it('should proxy card lookup to Scryfall', async () => {
             const mockCard = { name: 'Sol Ring', set: 'cmd', collector_number: '235' };
@@ -190,6 +264,28 @@ describe('scryfallRouter', () => {
             const res = await request(app).get('/api/scryfall/cards/cmd/235?lang=ja');
             expect(res.status).toBe(200);
             expect(axios.get).toHaveBeenCalledWith('/cards/cmd/235/ja');
+        });
+
+
+        it('uses microservice for card lookup and handles upstream failures', async () => {
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                searchCards: vi.fn().mockResolvedValue({ success: true, data: { data: [{ name: 'Micro Set Card' }] } }),
+            } as never);
+            const micro = await request(app).get('/api/scryfall/cards/mic/42');
+            expect(micro.status).toBe(200);
+            expect(micro.body).toEqual({ name: 'Micro Set Card' });
+
+            vi.mocked(axios.get).mockRejectedValueOnce({ isAxiosError: true, response: { status: 404, data: { error: 'missing' } } });
+            vi.mocked(axios.isAxiosError).mockReturnValueOnce(true);
+            const missing = await request(app).get('/api/scryfall/cards/zzz/999?lang=fr');
+            expect(missing.status).toBe(404);
+            expect(missing.body).toEqual({ error: 'missing' });
+
+            vi.mocked(axios.get).mockRejectedValueOnce(new Error('network'));
+            const failed = await request(app).get('/api/scryfall/cards/abc/123?lang=de');
+            expect(failed.status).toBe(500);
+            expect(failed.body.error).toBe('Failed to fetch card');
         });
     });
 });
