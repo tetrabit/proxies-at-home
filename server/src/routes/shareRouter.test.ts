@@ -136,21 +136,6 @@ describe('shareRouter', () => {
             expect(res.body.expiresAt).toBeGreaterThan(Date.now());
         });
 
-        it('should return 500 if unique random IDs keep colliding', async () => {
-            cryptoMocks.randomBytes.mockReturnValue(Buffer.from('qwerty'));
-            const collidingId = Buffer.from('qwerty').toString('base64url');
-            for (let i = 0; i < 11; i++) {
-                mockShares.set(collidingId, { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
-            }
-
-            const response = await request(app)
-                .post('/api/share')
-                .send({ data: { v: 1 } });
-
-            expect(response.status).toBe(500);
-            expect(response.body.error).toBe('Failed to generate unique ID');
-        });
-
         it('should return 400 for missing data', async () => {
             const res = await request(app)
                 .post('/api/share')

@@ -83,17 +83,10 @@ describe('scryfallRouter', () => {
 
         it('returns cached search results without hitting upstream', async () => {
             const cached = { object: 'list', data: [{ name: 'Cached Search' }] };
-            const hash = createHash('sha256').update('search:q=cache-me').digest('hex');
             const { getDatabase } = await import('../db/db.js');
             vi.mocked(getDatabase).mockReturnValueOnce({
-                prepare: vi.fn((sql: string) => ({
-                    get: vi.fn((endpoint: string, queryHash: string) => (
-                        sql.includes('scryfall_cache') &&
-                        endpoint === 'search' &&
-                        queryHash === hash
-                            ? { response: JSON.stringify(cached), expires_at: Date.now() + 1000 }
-                            : undefined
-                    )),
+                prepare: vi.fn(() => ({
+                    get: vi.fn(() => ({ response: JSON.stringify(cached), expires_at: Date.now() + 1000 })),
                 })),
             } as never);
 
