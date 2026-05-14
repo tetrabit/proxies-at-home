@@ -57,40 +57,40 @@ vi.mock('@/hooks/useCardImport', () => ({
     }),
 }));
 
-const settingsStore = Object.assign(
-    vi.fn((selector?: (state: { preferredArtSource: typeof mocks.preferredArtSource; setSortBy: typeof mocks.setSortBy }) => unknown) => {
-        const state = { preferredArtSource: mocks.preferredArtSource, setSortBy: mocks.setSortBy };
+vi.mock('@/store', () => {
+    const useSettingsStore = Object.assign(
+        vi.fn((selector?: (state: { preferredArtSource: typeof mocks.preferredArtSource; setSortBy: typeof mocks.setSortBy }) => unknown) => {
+            const state = { preferredArtSource: mocks.preferredArtSource, setSortBy: mocks.setSortBy };
+            return selector ? selector(state) : state;
+        }),
+        { getState: () => ({ setSortBy: mocks.setSortBy, preferredArtSource: mocks.preferredArtSource }) }
+    );
+    const useProjectStore = vi.fn((selector?: (state: { currentProjectId: string | null }) => unknown) => {
+        const state = { currentProjectId: mocks.currentProjectId };
         return selector ? selector(state) : state;
-    }),
-    { getState: () => ({ setSortBy: mocks.setSortBy, preferredArtSource: mocks.preferredArtSource }) }
-);
+    });
 
-const projectStore = vi.fn((selector?: (state: { currentProjectId: string | null }) => unknown) => {
-    const state = { currentProjectId: mocks.currentProjectId };
-    return selector ? selector(state) : state;
+    return {
+        useSettingsStore,
+        useProjectStore,
+        useCardsStore: (selector: (state: { clearAllCardsAndImages: typeof mocks.clearAllCardsAndImages }) => unknown) => selector({ clearAllCardsAndImages: mocks.clearAllCardsAndImages }),
+    };
 });
-
-vi.mock('@/store', () => ({
-    useSettingsStore: settingsStore,
-    useProjectStore: projectStore,
-    useCardsStore: (selector: (state: { clearAllCardsAndImages: typeof mocks.clearAllCardsAndImages }) => unknown) => selector({ clearAllCardsAndImages: mocks.clearAllCardsAndImages }),
-}));
 
 vi.mock('@/store/loading', () => ({
     useLoadingStore: (selector: (state: { setLoadingTask: typeof mocks.setLoadingTask }) => unknown) => selector({ setLoadingTask: mocks.setLoadingTask }),
 }));
 
-const toastStore = Object.assign(
-    vi.fn((selector?: (state: { showInfoToast: typeof mocks.showInfoToast; showErrorToast: typeof mocks.showErrorToast; addToast: typeof mocks.addToast; removeToast: typeof mocks.removeToast }) => unknown) => {
-        const state = { showInfoToast: mocks.showInfoToast, showErrorToast: mocks.showErrorToast, addToast: mocks.addToast, removeToast: mocks.removeToast };
-        return selector ? selector(state) : state;
-    }),
-    { getState: () => ({ showErrorToast: mocks.showErrorToast }) }
-);
-
-vi.mock('@/store/toast', () => ({
-    useToastStore: toastStore,
-}));
+vi.mock('@/store/toast', () => {
+    const useToastStore = Object.assign(
+        vi.fn((selector?: (state: { showInfoToast: typeof mocks.showInfoToast; showErrorToast: typeof mocks.showErrorToast; addToast: typeof mocks.addToast; removeToast: typeof mocks.removeToast }) => unknown) => {
+            const state = { showInfoToast: mocks.showInfoToast, showErrorToast: mocks.showErrorToast, addToast: mocks.addToast, removeToast: mocks.removeToast };
+            return selector ? selector(state) : state;
+        }),
+        { getState: () => ({ showErrorToast: mocks.showErrorToast }) }
+    );
+    return { useToastStore };
+});
 
 vi.mock('@/db', () => ({
     db: { cards: { count: () => mocks.cardCount() } },
@@ -147,7 +147,7 @@ describe('DecklistUploader action branches', () => {
 
         await waitFor(() => expect(mocks.processCards).toHaveBeenCalledWith([{ name: 'Island', quantity: 2, sourcePreference: 'scryfall' }]));
         expect(onUploadComplete).toHaveBeenCalledTimes(2);
-        expect(screen.getByPlaceholderText(/1x Sol Ring/)).toHaveValue('');
+        expect((screen.getByPlaceholderText(/1x Sol Ring/) as HTMLTextAreaElement).value).toBe('');
 
         mocks.parseDeckList.mockReturnValue([{ name: 'Swamp', quantity: 1, sourcePreference: 'mpc' }]);
         typeDeck('1 Swamp');
