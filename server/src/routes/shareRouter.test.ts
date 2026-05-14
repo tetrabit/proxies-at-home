@@ -110,6 +110,7 @@ describe('shareRouter', () => {
         app.use('/api/share', shareRouter);
         mockShares.clear();
         vi.clearAllMocks();
+        cryptoMocks.randomBytes.mockReturnValue(Buffer.from('qwerty'));
     });
 
     afterEach(() => {
@@ -173,6 +174,13 @@ describe('shareRouter', () => {
                     run: vi.fn(() => { throw new Error('db exploded'); }),
                 })),
             };
+            vi.doMock('crypto', () => ({
+                randomBytes: vi.fn(() => Buffer.from('aaaaaa')),
+                createHash: vi.fn(() => ({
+                    update: vi.fn().mockReturnThis(),
+                    digest: vi.fn(() => Buffer.from('stable-id')),
+                })),
+            }));
             vi.doMock('../db/db.js', () => ({
                 getDatabase: vi.fn(() => dbMock),
             }));
