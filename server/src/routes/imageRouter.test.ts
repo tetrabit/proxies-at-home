@@ -4,6 +4,28 @@ import express, { type Express, type Response } from "express";
 import fs from "fs";
 import axios from "axios";
 import { Writable } from "stream";
+
+const routeMocks = vi.hoisted(() => ({
+    batchFetchCards: vi.fn(),
+    getCardDataForCardInfo: vi.fn(),
+    fetchCardsForTokenLookup: vi.fn(),
+    resolveLatestTokenParts: vi.fn(),
+    extractTokenParts: vi.fn(),
+}));
+
+vi.mock("../utils/getCardImagesPaged.js", () => ({
+    batchFetchCards: routeMocks.batchFetchCards,
+    getCardDataForCardInfo: routeMocks.getCardDataForCardInfo,
+}));
+
+vi.mock("../utils/tokenLookup.js", () => ({
+    fetchCardsForTokenLookup: routeMocks.fetchCardsForTokenLookup,
+    resolveLatestTokenParts: routeMocks.resolveLatestTokenParts,
+}));
+
+vi.mock("../utils/tokenUtils.js", () => ({
+    extractTokenParts: routeMocks.extractTokenParts,
+}));
 import { imageRouter } from "./imageRouter";
 
 vi.mock("axios", () => {
@@ -80,6 +102,11 @@ describe("getWithRetry logic", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        routeMocks.batchFetchCards.mockResolvedValue(new Map());
+        routeMocks.getCardDataForCardInfo.mockResolvedValue(null);
+        routeMocks.fetchCardsForTokenLookup.mockResolvedValue({ cards: new Map() });
+        routeMocks.resolveLatestTokenParts.mockResolvedValue([]);
+        routeMocks.extractTokenParts.mockReturnValue([]);
         mockedAxios.create.mockClear();
         mockedAxios.get.mockReset();
         // Default mock implementation for fs.existsSync to avoid "not found" errors in general flow
@@ -292,4 +319,97 @@ describe("getWithRetry logic", () => {
             expect(res.body.error).toBe("Failed to download image");
         });
     });
+
+    describe("enrichment, token, and cardback routes", () => {
+        it("returns [] for empty enrich and tokens requests and rejects overlarge batches", async () => {
+            expect((await request(app).post("/images/enrich").send({ cards: [] })).body).toEqual([]);
+            expect((await request(app).post("/images/tokens").send({ cards: [] })).body).toEqual([]);
+            expect((await request(app).post("/images/enrich").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
+            expect((await request(app).post("/images/tokens").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
+        });
+
+        it("enriches batch hits by set/number and name, and falls back for misses", async () => {
+            const batch = new Map();
+            batch.set("lea:1", { name: "Set Hit", set: "lea", collector_number: "1", colors: ["W"], mana_cost: "{W}", cmc: 1, type_line: "Creature", rarity: "common", lang: "en" });
+            batch.set("face card", { name: "Front // Back", set: "abc", collector_number: "2", card_faces: [{ name: "Face Card", colors: ["U"], mana_cost: "{U}", image_uris: { png: "face.png" } }], cmc: 2, type_line: "Instant", rarity: "rare" });
+            routeMocks.batchFetchCards.mockResolvedValueOnce(batch);
+            routeMocks.getCardDataForCardInfo.mockResolvedValueOnce({ name: "Fallback", set: "def", collector_number: "3", image_uris: { png: "fallback.png" }, all_parts: [{ component: "token", name: "Token" }] });
+            routeMocks.extractTokenParts.mockReturnValueOnce([]).mockReturnValueOnce([{ name: "Face Token" }]).mockReturnValueOnce([{ name: "Token" }]);
+
+            const response = await request(app).post("/images/enrich").send({ cards: [
+                { name: "Set Hit", set: "LEA", number: "1" },
+                { name: "Face Card" },
+                { name: "Fallback" },
+            ] });
+
+            expect(response.status).toBe(200);
+            expect(response.body[0]).toMatchObject({ name: "Set Hit", set: "lea", number: "1", colors: ["W"] });
+            expect(response.body[1]).toMatchObject({ name: "Front // Back", token_parts: [{ name: "Face Token" }] });
+            expect(response.body[2]).toMatchObject({ name: "Fallback", token_parts: [{ name: "Token" }] });
+        });
+
+        it("returns null enrich entries for mismatches, fallback misses, timeouts, and reports batch failures", async () => {
+            const batch = new Map();
+            batch.set("wrong", { name: "Different", set: "abc", collector_number: "9" });
+            routeMocks.batchFetchCards.mockResolvedValueOnce(batch);
+            routeMocks.getCardDataForCardInfo.mockResolvedValueOnce(null);
+            const mismatch = await request(app).post("/images/enrich").send({ cards: [{ name: "Wrong" }] });
+            expect(mismatch.body).toEqual([null]);
+
+            routeMocks.batchFetchCards.mockResolvedValueOnce(new Map());
+            routeMocks.getCardDataForCardInfo.mockRejectedValueOnce(new Error("lookup failed"));
+            const fallbackFailure = await request(app).post("/images/enrich").send({ cards: [{ name: "Timeout" }] });
+            expect(fallbackFailure.body).toEqual([null]);
+
+            routeMocks.batchFetchCards.mockRejectedValueOnce(new Error("batch down"));
+            const failed = await request(app).post("/images/enrich").send({ cards: [{ name: "Boom" }] });
+            expect(failed.status).toBe(500);
+            expect(failed.body.error).toBe("Failed to enrich cards.");
+        });
+
+        it("fetches token data while preserving request identity and handles misses/failures", async () => {
+            const lookup = new Map();
+            lookup.set("lea:1", { name: "Canonical", set: "lea", collector_number: "1" });
+            lookup.set("sol ring", { name: "Sol Ring", set: "cmd", collector_number: "1" });
+            routeMocks.fetchCardsForTokenLookup.mockResolvedValueOnce({ cards: lookup });
+            routeMocks.extractTokenParts.mockReturnValue([{ name: "Goblin" }]);
+            routeMocks.resolveLatestTokenParts.mockResolvedValue([{ name: "Latest Goblin" }]);
+
+            const response = await request(app).post("/images/tokens").send({ cards: [
+                { name: "Requested", set: "LEA", number: "1" },
+                { name: "Sol Ring" },
+                { name: "Missing" },
+            ] });
+
+            expect(response.status).toBe(200);
+            expect(response.body).toEqual([
+                { name: "Requested", set: "LEA", number: "1", token_parts: [{ name: "Latest Goblin" }] },
+                { name: "Sol Ring", token_parts: [{ name: "Latest Goblin" }] },
+                { name: "Missing" },
+            ]);
+
+            routeMocks.fetchCardsForTokenLookup.mockRejectedValueOnce(new Error("lookup down"));
+            const failed = await request(app).post("/images/tokens").send({ cards: [{ name: "Boom" }] });
+            expect(failed.status).toBe(500);
+            expect(failed.body.error).toBe("Failed to fetch token data.");
+        });
+
+        it("serves and rejects cardbacks", async () => {
+            const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+                this.type("image/png").send("png");
+            });
+            (fs.existsSync as unknown as Mock).mockImplementation((filePath: string) => String(filePath).endsWith("mtg.png"));
+
+            const ok = await request(app).get("/images/cardback/mtg");
+            const unknown = await request(app).get("/images/cardback/unknown");
+            (fs.existsSync as unknown as Mock).mockReturnValue(false);
+            const missing = await request(app).get("/images/cardback/mtg");
+
+            expect(ok.status).toBe(200);
+            expect(unknown.status).toBe(404);
+            expect(missing.status).toBe(404);
+            sendFileSpy.mockRestore();
+        });
+    });
+
 });
