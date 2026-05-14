@@ -133,9 +133,9 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 if unique random IDs keep colliding', async () => {
-            const randomBytesSpy = vi.spyOn(crypto, 'randomBytes').mockReturnValue(Buffer.from('AAAAAA'));
+            cryptoMocks.randomBytes.mockReturnValue(Buffer.from('AAAAAA'));
             for (let i = 0; i < 11; i++) {
-                mockShares.set('QUFBQUE', { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
+                mockShares.set('QUFBQUFB', { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
             }
 
             const response = await request(app)
@@ -144,8 +144,6 @@ describe('shareRouter', () => {
 
             expect(response.status).toBe(500);
             expect(response.body.error).toBe('Failed to generate unique ID');
-
-            randomBytesSpy.mockRestore();
         });
 
         it('should return 400 for missing data', async () => {
@@ -167,20 +165,13 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 when persistence throws during create', async () => {
-            const prepareSpy = vi.spyOn(crypto, 'randomBytes').mockReturnValueOnce(Buffer.from('BBBBBB'));
+            cryptoMocks.randomBytes.mockReturnValueOnce(Buffer.from('BBBBBB'));
             const dbMock = {
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => undefined),
                     run: vi.fn(() => { throw new Error('db exploded'); }),
                 })),
             };
-            vi.doMock('crypto', () => ({
-                randomBytes: vi.fn(() => Buffer.from('aaaaaa')),
-                createHash: vi.fn(() => ({
-                    update: vi.fn().mockReturnThis(),
-                    digest: vi.fn(() => Buffer.from('stable-id')),
-                })),
-            }));
             vi.doMock('../db/db.js', () => ({
                 getDatabase: vi.fn(() => dbMock),
             }));
@@ -197,8 +188,6 @@ describe('shareRouter', () => {
 
             expect(response.status).toBe(500);
             expect(response.body.error).toBe('Failed to create share');
-
-            prepareSpy.mockRestore();
         });
 
         it('should compress the data', async () => {
