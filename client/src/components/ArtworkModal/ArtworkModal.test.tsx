@@ -1229,6 +1229,35 @@ describe('ArtworkModal', () => {
             });
         });
 
+        it('should reassign cards using a deleted custom cardback to the default cardback', async () => {
+            mockGetAllCardbacks.mockResolvedValue([
+                { id: 'default-cardback-1', name: 'Default Back', source: 'builtin', hasBuiltInBleed: true },
+                { id: 'cardback-1', name: 'Custom Back', source: 'custom', hasBuiltInBleed: false },
+            ]);
+            mockDbCards.filter.mockReturnValueOnce({
+                toArray: vi.fn().mockResolvedValue([
+                    { uuid: 'back-using-custom', name: 'Old Back', imageId: 'cardback-1', linkedFrontId: 'front-1' },
+                ])
+            });
+
+            render(<ArtworkModal />);
+
+            await waitFor(() => expect(mockGetAllCardbacks).toHaveBeenCalled());
+            fireEvent.click(screen.getByTestId('delete-cardback'));
+            fireEvent.click(screen.getByText('Yes, delete'));
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('back-using-custom', {
+                    imageId: 'default-cardback-1',
+                    name: 'Default Back',
+                    usesDefaultCardback: true,
+                    needsEnrichment: false,
+                    hasBuiltInBleed: true,
+                });
+                expect(mockDbCardbacks.delete).toHaveBeenCalledWith('cardback-1');
+            });
+        });
+
         it('should save dont-show-again preference to localStorage', async () => {
             const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
 
@@ -1382,6 +1411,28 @@ describe('ArtworkModal', () => {
             // Check for filter button in header
             const header = screen.getByTestId('modal-header');
             expect(header).toBeDefined();
+        });
+    });
+
+    describe('custom upload name editing', () => {
+        beforeEach(() => {
+            mockState.isModalOpen = true;
+            mockState.modalCard = { uuid: 'custom-uuid', name: 'Original Custom', imageId: 'custom-upload-image' };
+        });
+
+        it('should save edited custom upload names and sync the modal store', async () => {
+            const updatedCard = { uuid: 'custom-uuid', name: 'Renamed Custom', imageId: 'custom-upload-image' };
+            mockDbCards.get.mockResolvedValue(updatedCard);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTitle('Edit card name'));
+            fireEvent.change(screen.getByDisplayValue('Original Custom'), { target: { value: 'Renamed Custom' } });
+            fireEvent.click(screen.getByTitle('Save name'));
+
+            await waitFor(() => {
+                expect(mockDbCards.update).toHaveBeenCalledWith('custom-uuid', { name: 'Renamed Custom' });
+                expect(mockUpdateCard).toHaveBeenCalledWith(updatedCard);
+            });
         });
     });
 
