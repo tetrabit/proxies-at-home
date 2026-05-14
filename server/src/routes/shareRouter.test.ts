@@ -133,9 +133,9 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 if unique random IDs keep colliding', async () => {
-            cryptoMocks.randomBytes.mockReturnValue(Buffer.from('AAAAAA'));
+            const collidingId = Buffer.from('qwerty').toString('base64url');
             for (let i = 0; i < 11; i++) {
-                mockShares.set('QUFBQUFB', { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
+                mockShares.set(collidingId, { data: Buffer.from('x'), created_at: Date.now(), expires_at: Date.now() + 1000 });
             }
 
             const response = await request(app)
@@ -165,7 +165,6 @@ describe('shareRouter', () => {
         });
 
         it('should return 500 when persistence throws during create', async () => {
-            cryptoMocks.randomBytes.mockReturnValueOnce(Buffer.from('BBBBBB'));
             const dbMock = {
                 prepare: vi.fn(() => ({
                     get: vi.fn(() => undefined),
