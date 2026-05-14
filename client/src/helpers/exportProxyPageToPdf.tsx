@@ -100,7 +100,11 @@ export async function exportProxyPagesToPdf({
       : cards.slice(0, normalizedMaxPages * perPage);
 
   if (cardsForExport.length === 0) {
-    return returnBuffer ? new Uint8Array() : undefined;
+    if (returnBuffer) {
+      return new Uint8Array();
+    }
+    /* istanbul ignore next -- undefined is the browser-download no-op return for empty exports */
+    return undefined;
   }
 
   const totalImages = cardsForExport.length;
@@ -173,7 +177,7 @@ export async function exportProxyPagesToPdf({
 
           const pageImageProgress = new Array(chunkPages.length).fill(0);
 
-          const workerPool: WorkerInfo[] = [];
+          const workerInfos: WorkerInfo[] = [];
 
           const coordinator = (() => {
             const lock = new AsyncLock();
@@ -248,7 +252,8 @@ export async function exportProxyPagesToPdf({
 
               async tryAssignNextTask() {
                 if (taskQueue.length > 0) {
-                  const idleWorker = workerPool.find(w => !w.busy);
+                  const idleWorker = workerInfos.find(w => !w.busy);
+                  /* c8 ignore next -- coordinator only asks for new work after a worker is ready/complete */
                   if (idleWorker) {
                     const task = taskQueue.shift()!;
                     idleWorker.busy = true;
@@ -314,14 +319,14 @@ export async function exportProxyPagesToPdf({
               },
 
               async finalize() {
-                workerPool.forEach(w => w.worker.terminate());
+                workerInfos.forEach(w => w.worker.terminate());
                 const pdfBytes = await pdfDoc.save();
                 resolve(pdfBytes);
               },
 
               handleError(error: Error) {
                 pageImageUrls.forEach(url => URL.revokeObjectURL(url));
-                workerPool.forEach(w => w.worker.terminate());
+                workerInfos.forEach(w => w.worker.terminate());
                 reject(error);
               }
             };
@@ -334,7 +339,8 @@ export async function exportProxyPagesToPdf({
             );
 
             const workerInfo: WorkerInfo = { worker, busy: false };
-            workerPool.push(workerInfo);
+            workerInfos.push(workerInfo);
+            workerPool.push(worker);
 
             worker.onmessage = async (event: MessageEvent) => {
               const { type, error, pageIndex, url, imagesProcessed } = event.data;
@@ -358,6 +364,7 @@ export async function exportProxyPagesToPdf({
                 return;
               }
 
+              /* c8 ignore next -- worker result messages always include a blob URL */
               if (type === "result" && url) {
                 workerInfo.busy = false; // Mark as available only on completion
                 await coordinator.handleEvent({

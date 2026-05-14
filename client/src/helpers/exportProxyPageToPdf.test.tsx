@@ -96,10 +96,15 @@ describe('exportProxyPagesToPdf', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns empty or undefined for empty card lists', async () => {
+  it('returns an empty buffer for empty card lists when requested', async () => {
     const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
     await expect(exportProxyPagesToPdf({ cards: [], imagesById: new Map(), pdfSettings: baseSettings, pagesPerPdf: 1, cancellationPromise: new Promise(() => undefined), returnBuffer: true })).resolves.toEqual(new Uint8Array());
-    await expect(exportProxyPagesToPdf({ cards: [], imagesById: new Map(), pdfSettings: baseSettings, pagesPerPdf: 1, cancellationPromise: new Promise(() => undefined) })).resolves.toBeUndefined();
+  });
+
+  it('returns undefined for empty card lists when no buffer is requested', async () => {
+    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
+    const result = await exportProxyPagesToPdf({ cards: [], imagesById: new Map(), pdfSettings: baseSettings, pagesPerPdf: 1, cancellationPromise: new Promise(() => undefined), returnBuffer: false });
+    expect(result).toBeUndefined();
   });
 
   it('honors maxPages zero with returnBuffer', async () => {
@@ -117,7 +122,7 @@ describe('exportProxyPagesToPdf', () => {
       imagesById: new Map(),
       pdfSettings: { ...baseSettings, columns: 1, rows: 1, pageSizeUnit: 'mm' as const },
       onProgress,
-      pagesPerPdf: 1,
+      pagesPerPdf: 2,
       cancellationPromise: new Promise(() => undefined),
       returnBuffer: true,
     });
@@ -175,6 +180,39 @@ describe('exportProxyPagesToPdf', () => {
   });
 
 
+
+
+  it('skips empty effect-cache lookups and falls back when hardware concurrency is unavailable', async () => {
+    vi.stubGlobal('navigator', { hardwareConcurrency: 0 });
+    mocks.hasActiveAdjustments.mockReturnValue(true);
+    mocks.getEffectCacheEntry.mockResolvedValue(undefined);
+    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
+
+    await exportProxyPagesToPdf({
+      cards: [{ uuid: 'c1', name: 'One', imageId: 'img', overrides: { brightness: 2 } }] as any,
+      imagesById: new Map(),
+      pdfSettings: baseSettings,
+      pagesPerPdf: 1,
+      cancellationPromise: new Promise(() => undefined),
+      returnBuffer: true,
+    });
+
+    const posted = MockWorker.instances[0].postMessage.mock.calls[0][0];
+    expect(posted.settings.effectCacheById.size).toBe(0);
+  });
+
+  it('wraps non-Error image assembly failures', async () => {
+    const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
+    vi.mocked(global.fetch).mockRejectedValueOnce('string failure');
+    await expect(exportProxyPagesToPdf({
+      cards: [{ uuid: 'c1', name: 'One' }] as any,
+      imagesById: new Map(),
+      pdfSettings: baseSettings,
+      pagesPerPdf: 1,
+      cancellationPromise: new Promise(() => undefined),
+      returnBuffer: true,
+    })).rejects.toThrow('string failure');
+  });
 
   it('rejects image assembly failures after revoking the failed page URL', async () => {
     const { exportProxyPagesToPdf } = await import('./exportProxyPageToPdf');
