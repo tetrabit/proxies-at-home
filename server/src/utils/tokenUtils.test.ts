@@ -150,3 +150,23 @@ describe('tokenUtils', () => {
         });
     });
 });
+
+    describe('token self-suppression', () => {
+        it('returns no needed tokens for token layouts or token type lines', () => {
+            expect(extractTokenParts({
+                name: 'Treasure',
+                layout: 'token',
+                all_parts: [{ component: 'token', name: 'Gold', type_line: 'Token Artifact' }],
+            })).toEqual([]);
+            expect(extractTokenParts({
+                name: 'Copy',
+                layout: 'double_faced_token',
+                all_parts: [{ component: 'token', name: 'Back', type_line: 'Token Creature' }],
+            })).toEqual([]);
+            expect(extractTokenParts({
+                name: 'Soldier',
+                type_line: 'Token Creature — Soldier',
+                all_parts: [{ component: 'token', name: 'Recruit', type_line: 'Token Creature' }],
+            })).toEqual([]);
+        });
+    });

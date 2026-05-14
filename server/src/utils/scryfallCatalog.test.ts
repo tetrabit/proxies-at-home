@@ -157,3 +157,43 @@ describe('scryfallCatalog', () => {
         });
     });
 });
+
+describe('scryfallCatalog database write branches', () => {
+    it('returns true for known token rows and lowercases writes/batches', async () => {
+        const dbModule = await import('../db/db.js');
+        const run = vi.fn();
+        const get = vi.fn(() => ({ 1: 1 }));
+        const transaction = vi.fn((fn: Function) => (items: unknown[]) => fn(items));
+        vi.mocked(dbModule.getDatabase).mockReturnValue({
+            prepare: vi.fn(() => ({ run, get })),
+            transaction,
+        } as never);
+
+        expect(isKnownToken('Treasure')).toBe(true);
+        insertTokenName('Treasure');
+        expect(run).toHaveBeenCalledWith('treasure');
+        insertCardType('card', 'Creature', true);
+        expect(run).toHaveBeenCalledWith('card', 'creature', 1);
+
+        const { batchInsertCardTypes, batchInsertTokenNames } = await import('./scryfallCatalog.js');
+        batchInsertCardTypes([{ cardId: 'c1', type: 'Goblin', isToken: false }]);
+        batchInsertTokenNames(['Gold']);
+        expect(transaction).toHaveBeenCalled();
+        expect(run).toHaveBeenCalledWith('c1', 'goblin', 0);
+        expect(run).toHaveBeenCalledWith('gold');
+    });
+
+    it('ignores database errors and empty batch inputs', async () => {
+        const dbModule = await import('../db/db.js');
+        vi.mocked(dbModule.getDatabase).mockImplementation(() => { throw new Error('missing table'); });
+        const { batchInsertCardTypes, batchInsertTokenNames } = await import('./scryfallCatalog.js');
+
+        expect(isKnownToken('Treasure')).toBe(false);
+        expect(() => insertTokenName('Treasure')).not.toThrow();
+        expect(() => insertCardType('card', 'Creature', false)).not.toThrow();
+        expect(() => batchInsertCardTypes([{ cardId: 'c1', type: 'Goblin', isToken: true }])).not.toThrow();
+        expect(() => batchInsertTokenNames(['Gold'])).not.toThrow();
+        expect(() => batchInsertCardTypes([])).not.toThrow();
+        expect(() => batchInsertTokenNames([])).not.toThrow();
+    });
+});
