@@ -2,14 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-const getMicroserviceMetrics = vi.fn();
-const logMicroserviceMetrics = vi.fn();
-const resetMicroserviceMetrics = vi.fn();
+const serviceMocks = vi.hoisted(() => ({
+  getMicroserviceMetrics: vi.fn(),
+  logMicroserviceMetrics: vi.fn(),
+  resetMicroserviceMetrics: vi.fn(),
+}));
+const { getMicroserviceMetrics, logMicroserviceMetrics, resetMicroserviceMetrics } = serviceMocks;
 
-vi.mock('../services/scryfallMicroserviceClient.js', () => ({
-  getMicroserviceMetrics,
-  logMicroserviceMetrics,
-  resetMicroserviceMetrics,
+vi.mock('../services/scryfallMicroserviceClient.ts', () => ({
+  getMicroserviceMetrics: serviceMocks.getMicroserviceMetrics,
+  logMicroserviceMetrics: serviceMocks.logMicroserviceMetrics,
+  resetMicroserviceMetrics: serviceMocks.resetMicroserviceMetrics,
 }));
 
 const { default: metricsRouter } = await import('./metricsRouter.js');

@@ -133,10 +133,12 @@ describe('mpcAutofillRouter', () => {
       .mockRejectedValueOnce({ response: { status: 500 } })
       .mockResolvedValueOnce({ data: { results: { id1: cardPayload('id1'), id2: cardPayload('id2') } } });
 
-    vi.useFakeTimers();
-    const responsePromise = request(app).post('/api/mpc/batch-search').send({ queries: ['Cached', 'Miss'] });
-    await vi.advanceTimersByTimeAsync(1000);
-    const response = await responsePromise;
+    vi.stubGlobal('setTimeout', ((callback: () => void) => {
+      callback();
+      return 0;
+    }) as unknown as typeof setTimeout);
+
+    const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Cached', 'Miss'] });
 
     expect(response.status).toBe(200);
     expect(response.body.results.Cached[0].identifier).toBe('cached-id');
