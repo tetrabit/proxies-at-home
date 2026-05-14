@@ -675,12 +675,10 @@ describe("shareHelper", () => {
     it("includes DFC links in created share payloads", async () => {
       vi.stubGlobal(
         "fetch",
-        vi
-          .fn()
-          .mockResolvedValue({
-            ok: true,
-            json: async () => ({ id: "dfc-share", expiresAt: 123 }),
-          })
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ id: "dfc-share", expiresAt: 123 }),
+        })
       );
       Object.defineProperty(window, "location", {
         configurable: true,
@@ -712,6 +710,209 @@ describe("shareHelper", () => {
       );
       const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
       expect(body.data.dfc).toEqual([[0, 1]]);
+    });
+  });
+
+  describe("branch completion cases", () => {
+    it("returns null overrides for empty override objects and preserves unknown override keys", () => {
+      const serialized = serializeCards([
+        {
+          uuid: "empty",
+          name: "Empty",
+          order: 0,
+          set: "abc",
+          number: "1",
+          imageId: "scryfall/abc/1",
+          isUserUpload: false,
+          overrides: {},
+        },
+        {
+          uuid: "unknown",
+          name: "Unknown",
+          order: 1,
+          set: "abc",
+          number: "2",
+          imageId: "scryfall/abc/2",
+          isUserUpload: false,
+          overrides: { customKey: 42 } as any,
+        },
+      ] as CardOption[]);
+      expect(serialized.shareCards[0][4]).toBeNull();
+      expect(serialized.shareCards[1][4]).toEqual({ customKey: 42 });
+
+      const imported = deserializeForImport({
+        v: 1,
+        c: [["s", "abc/2", 0, null, { customKey: 42 }]],
+      });
+      expect((imported.cards[0].overrides as any).customKey).toBe(42);
+    });
+
+    it("does not skip placeholders or unidentifiable non-custom cards", () => {
+      const result = serializeCards([
+        {
+          uuid: "placeholder",
+          name: "Placeholder",
+          order: 0,
+          isUserUpload: false,
+        },
+        {
+          uuid: "mpc-no-id",
+          name: "Bad MPC",
+          order: 1,
+          imageId: "mpc_",
+          isUserUpload: false,
+        },
+        {
+          uuid: "scryfall-missing-number",
+          name: "Bad Scryfall",
+          order: 2,
+          set: "abc",
+          imageId: "scryfall/abc",
+          isUserUpload: false,
+        },
+      ] as CardOption[]);
+      expect(result).toEqual({ shareCards: [], dfc: [], skipped: 0 });
+    });
+
+    it("handles DFC fronts without usable backs", () => {
+      const noBack = serializeCards([
+        {
+          uuid: "front",
+          name: "Front",
+          order: 0,
+          set: "abc",
+          number: "1",
+          imageId: "scryfall/abc/1",
+          isUserUpload: false,
+          linkedBackId: "missing",
+        },
+      ] as CardOption[]);
+      expect(noBack.dfc).toEqual([]);
+
+      const unshareableBack = serializeCards([
+        {
+          uuid: "front",
+          name: "Front",
+          order: 0,
+          set: "abc",
+          number: "1",
+          imageId: "scryfall/abc/1",
+          isUserUpload: false,
+          linkedBackId: "back",
+        },
+        {
+          uuid: "back",
+          name: "Back",
+          order: 1,
+          imageId: "local_custom",
+          isUserUpload: true,
+          linkedFrontId: "front",
+        },
+      ] as CardOption[]);
+      expect(unshareableBack.dfc).toEqual([]);
+    });
+
+    it("uses fallback API errors when responses omit an error message", async () => {
+      vi.stubGlobal("fetch", vi.fn());
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { origin: "http://app.test", pathname: "/builder" },
+      });
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({}),
+      } as Response);
+      await expect(
+        createShare(
+          [
+            {
+              uuid: "card",
+              name: "Card",
+              order: 0,
+              set: "abc",
+              number: "1",
+              imageId: "scryfall/abc/1",
+              isUserUpload: false,
+            } as CardOption,
+          ],
+          {}
+        )
+      ).rejects.toThrow("Failed to create share");
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+      } as Response);
+      await expect(loadShare("bad-empty")).rejects.toThrow(
+        "Failed to load share"
+      );
+    });
+
+    it("skips linked backs when calculating warnings", () => {
+      expect(
+        getShareWarnings([
+          {
+            uuid: "back",
+            name: "Back",
+            order: 1,
+            imageId: "local_custom",
+            isUserUpload: true,
+            linkedFrontId: "front",
+          } as CardOption,
+        ])
+      ).toEqual([]);
+    });
+
+    it("deserializes built-in cardbacks without optional category or overrides", () => {
+      const result = deserializeForImport({
+        v: 1,
+        c: [["b", "cardback_default", 0, null, null]],
+      });
+      expect(result.cards[0]).toMatchObject({
+        builtInCardbackId: "cardback_default",
+        category: undefined,
+        overrides: undefined,
+      });
+    });
+  });
+
+  describe("remaining override branch cases", () => {
+    it("compresses overrides on DFC back cards", () => {
+      const result = serializeCards([
+        {
+          uuid: "front",
+          name: "Front",
+          order: 0,
+          set: "abc",
+          number: "1",
+          imageId: "scryfall/abc/1",
+          isUserUpload: false,
+          linkedBackId: "back",
+        },
+        {
+          uuid: "back",
+          name: "Back",
+          order: 1,
+          imageId: "cardback_default",
+          isUserUpload: true,
+          linkedFrontId: "front",
+          overrides: { brightness: 3 },
+        },
+      ] as CardOption[]);
+      expect(result.shareCards[1][4]).toEqual({ br: 3 });
+    });
+
+    it("expands overrides for MPC and built-in cardback imports", () => {
+      const result = deserializeForImport({
+        v: 1,
+        c: [
+          ["m", "mpc-id", 0, null, { br: 4 }],
+          ["b", "cardback_default", 1, null, { ct: 1.5 }],
+        ],
+      });
+      expect(result.cards[0].overrides?.brightness).toBe(4);
+      expect(result.cards[1].overrides?.contrast).toBe(1.5);
     });
   });
 });
