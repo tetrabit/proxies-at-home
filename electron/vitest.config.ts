@@ -4,5 +4,14 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['electron/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      include: ['electron/*.{ts,cts}'],
+      exclude: ['electron/*.test.ts'],
+      reportsDirectory: './coverage/electron',
+      reportOnFailure: true,
+      skipFull: true,
+    },
   },
 });
