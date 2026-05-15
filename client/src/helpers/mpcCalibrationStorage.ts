@@ -179,12 +179,9 @@ export async function getMpcCalibrationPreferredIdentifier(input: {
 function toPreferenceProfile(
   calibrationCase: MpcCalibrationCaseRecord
 ): MpcCalibrationPreferenceProfile | undefined {
-  const expected = calibrationCase.expectedIdentifier
-    ? calibrationCase.candidates.find(
-        (candidate) =>
-          candidate.identifier === calibrationCase.expectedIdentifier
-      )
-    : undefined;
+  const expected = calibrationCase.candidates.find(
+    (candidate) => candidate.identifier === calibrationCase.expectedIdentifier
+  );
 
   if (!expected) {
     return undefined;
