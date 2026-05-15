@@ -31,6 +31,12 @@ describe('NumberInput', () => {
             expect(screen.getByTestId('text-input')).toBeDefined();
         });
 
+        it('should forward the input ref', () => {
+            const ref = React.createRef<HTMLInputElement>();
+            render(<NumberInput ref={ref} />);
+            expect(ref.current).toBe(screen.getByTestId('text-input'));
+        });
+
         it('should render increment button', () => {
             render(<NumberInput />);
             expect(screen.getByTestId('chevron-up')).toBeDefined();
@@ -62,6 +68,19 @@ describe('NumberInput', () => {
             fireEvent.change(input, { target: { value: '10' } });
 
             expect(onChange).toHaveBeenCalled();
+        });
+
+        it('should trigger native events even when onChange is omitted', () => {
+            const inputEvents: string[] = [];
+            render(<NumberInput />);
+
+            const input = screen.getByTestId('text-input') as HTMLInputElement;
+            input.addEventListener('input', () => inputEvents.push('input'));
+            input.addEventListener('change', () => inputEvents.push('change'));
+
+            fireEvent.mouseDown(screen.getByTestId('chevron-up').parentElement!);
+
+            expect(inputEvents).toEqual(['input', 'change']);
         });
 
         it('should round step changes to the configured precision', () => {
@@ -153,6 +172,37 @@ describe('NumberInput', () => {
 
             fireEvent.mouseDown(downButton);
             expect(onChange.mock.calls.length).toBeGreaterThan(1);
+        });
+
+        it('should ignore a ghost mouse click after a decrement touch interaction', () => {
+            const onChange = vi.fn();
+            render(<NumberInput value={5} step={1} onChange={onChange} />);
+
+            const downButton = screen.getByTestId('chevron-down').parentElement!;
+            fireEvent.touchStart(downButton);
+            fireEvent.touchEnd(downButton);
+            const firstCallCount = onChange.mock.calls.length;
+
+            fireEvent.mouseDown(downButton);
+            expect(onChange.mock.calls.length).toBe(firstCallCount);
+
+            act(() => {
+                vi.advanceTimersByTime(500);
+            });
+
+            fireEvent.mouseDown(downButton);
+            expect(onChange.mock.calls.length).toBeGreaterThan(firstCallCount);
+        });
+
+        it('should ignore repeated mouseDowns while spinning', () => {
+            const onChange = vi.fn();
+            render(<NumberInput value={5} step={1} onChange={onChange} />);
+
+            const upButton = screen.getByTestId('chevron-up').parentElement!;
+            fireEvent.mouseDown(upButton);
+            fireEvent.mouseDown(upButton);
+
+            expect(onChange).toHaveBeenCalledTimes(1);
         });
     });
 
