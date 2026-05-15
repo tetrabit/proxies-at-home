@@ -1133,8 +1133,9 @@ export async function selectBestCandidate(
   }
 
   const second = ensembleResults[1];
-  const topHasSsim = ssimMap.has(top.card.identifier);
+  const topSsim = ssimMap.get(top.card.identifier);
   const secondHasSsim = second && ssimMap.has(second.card.identifier);
+  const topHasSsim = topSsim !== undefined;
   const marginNeeded = (topHasSsim && secondHasSsim) ? (SSIM_MIN_MARGIN * 5000) : 0.1;
 
   const decisive = !second || (top.ensembleScore - second.ensembleScore) > (marginNeeded + 1e-9);
@@ -1144,7 +1145,7 @@ export async function selectBestCandidate(
     return { card: byDpi[0], reason: `${prefix}_dpi_fallback` as MatchReason };
   }
 
-  const ssimWin = ssimMap.has(top.card.identifier) && (ssimMap.get(top.card.identifier) ?? 0) >= SSIM_MIN_SCORE;
+  const ssimWin = topSsim !== undefined && topSsim >= SSIM_MIN_SCORE;
   const reason: MatchReason = ssimWin
     ? `${prefix}_ssim` as MatchReason
     : (activeBucket.length === 1 ? `${prefix}_only` as MatchReason : `${prefix}_dpi_fallback` as MatchReason);
