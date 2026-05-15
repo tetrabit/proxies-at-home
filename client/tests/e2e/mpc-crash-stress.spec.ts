@@ -94,6 +94,16 @@ test.describe("MPC Calibration Modal Stress Test", () => {
     await expect(page.getByText("MPC Auto-Selection Calibration")).toBeVisible({
       timeout: 15000,
     });
+    const headerBox = await page
+      .getByTestId("mpc-calibration-modal-header")
+      .boundingBox();
+    const closeBox = await page
+      .getByTestId("calibration-modal-close")
+      .boundingBox();
+    expect(headerBox).not.toBeNull();
+    expect(closeBox).not.toBeNull();
+    expect(closeBox!.x).toBeGreaterThan(headerBox!.x + headerBox!.width - 72);
+    expect(closeBox!.y).toBeLessThan(headerBox!.y + 56);
 
     // 4. Verify bootstrap starts and finishes (transition to "Active Capture" or similar state)
     // The "Cases captured" text appears once the dataset is ensured and cases listed

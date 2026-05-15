@@ -354,6 +354,12 @@ describe("CalibrationModal", () => {
   it("renders a top-right close button that closes the modal", async () => {
     render(<CalibrationModal />);
     const closeButton = await screen.findByRole("button", { name: /close/i });
+    expect(
+      screen.getByTestId("mpc-calibration-modal-header").className
+    ).toContain("relative");
+    expect(closeButton.className).toContain("absolute");
+    expect(closeButton.className).toContain("right-4");
+    expect(closeButton.className).toContain("top-4");
     fireEvent.click(closeButton);
     expect(mockCalibrationState.closeModal).toHaveBeenCalled();
   });

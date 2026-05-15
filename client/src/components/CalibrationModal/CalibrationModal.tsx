@@ -363,19 +363,21 @@ export function CalibrationModal() {
 
   return (
     <Modal show={open} onClose={closeModal} size="6xl">
-      <ModalHeader>
-        <div className="flex w-full items-center justify-between gap-4">
-          <span>MPC Auto-Selection Calibration</span>
-          <button
-            type="button"
-            aria-label="Close calibration modal"
-            data-testid="calibration-modal-close"
-            className="rounded-md px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-400 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
-            onClick={closeModal}
-          >
-            ×
-          </button>
-        </div>
+      <ModalHeader
+        as="div"
+        className="relative pr-14"
+        data-testid="mpc-calibration-modal-header"
+      >
+        <span>MPC Auto-Selection Calibration</span>
+        <button
+          type="button"
+          aria-label="Close calibration modal"
+          data-testid="calibration-modal-close"
+          className="absolute right-4 top-4 z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-transparent text-2xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-400 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
+          onClick={closeModal}
+        >
+          ×
+        </button>
       </ModalHeader>
       <ModalBody>
         <div className="space-y-6">
