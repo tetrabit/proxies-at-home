@@ -320,6 +320,27 @@ describe("useUserPreferencesStore", () => {
             expect(db.userPreferences.put).toHaveBeenCalledTimes(2);
         });
 
+        it("should initialize MPC favorite sources/tags arrays when missing", async () => {
+            useUserPreferencesStore.setState({
+                preferences: {
+                    id: "default",
+                    settings: {},
+                    favoriteCardbacks: [],
+                    favoriteMpcSources: undefined as never,
+                    favoriteMpcTags: undefined as never,
+                    favoriteMpcDpi: null,
+                    favoriteMpcSort: null,
+                },
+            });
+
+            await useUserPreferencesStore.getState().toggleFavoriteMpcSource("source2");
+            await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag2");
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.favoriteMpcSources).toEqual(["source2"]);
+            expect(prefs?.favoriteMpcTags).toEqual(["tag2"]);
+        });
+
         it("should toggle MPC favorite tags on and off", async () => {
             await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag1");
             expect(useUserPreferencesStore.getState().preferences?.favoriteMpcTags).toContain("tag1");
