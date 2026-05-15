@@ -201,4 +201,31 @@ describe('ProjectSelector', () => {
     await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to fetch server backups'));
     expect(screen.getByText('No server backups found.')).toBeDefined();
   });
+
+  it('submits create and rename modals with Enter and closes cancel-only dialogs', async () => {
+    render(<ProjectSelector />);
+
+    openMenu();
+    fireEvent.click(screen.getByText('Create New Project...'));
+    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'Keyboard Deck' } });
+    fireEvent.keyDown(screen.getByLabelText('Project Name'), { key: 'Enter' });
+    await waitFor(() => expect(projectState.createProject).toHaveBeenCalledWith('Keyboard Deck'));
+
+    openMenu();
+    fireEvent.click(screen.getAllByTitle('Rename Project')[0]);
+    fireEvent.change(screen.getByLabelText('New Name'), { target: { value: 'Keyboard Rename' } });
+    fireEvent.keyDown(screen.getByLabelText('New Name'), { key: 'Enter' });
+    await waitFor(() => expect(projectState.renameProject).toHaveBeenCalledWith('p1', 'Keyboard Rename'));
+
+    openMenu();
+    fireEvent.click(screen.getAllByTitle('Delete Project')[0]);
+    fireEvent.click(screen.getByText('No, cancel'));
+    expect(screen.queryByText('Confirm Delete Project')).toBeNull();
+
+    openMenu();
+    fireEvent.click(screen.getByText('Restore from Server Backup...'));
+    await waitFor(() => expect(screen.getByText('Server Deck')).toBeDefined());
+    fireEvent.click(screen.getByText('Close'));
+    expect(screen.queryByText('Restore from Server Backup')).toBeNull();
+  });
 });

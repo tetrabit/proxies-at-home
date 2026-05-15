@@ -103,7 +103,7 @@ vi.mock('@dnd-kit/sortable', () => ({
 }));
 
 vi.mock('../common', () => ({
-  AutoTooltip: ({ children, content }: { children: React.ReactNode; content: string }) => <span data-tooltip={content}>{children}</span>,
+  AutoTooltip: ({ children, content }: { children: React.ReactNode; content: string }) => <span data-tooltip={content}><span>{content}</span>{children}</span>,
 }));
 
 vi.mock('../PullToRefresh', () => ({
@@ -219,15 +219,15 @@ describe('PageSettingsControls', () => {
 
     renderControls();
 
-    expect(screen.getByText('Projects').parentElement).toHaveAttribute('data-tooltip', 'Projects');
-    expect(screen.getByText('Layout').parentElement).toHaveAttribute('data-tooltip', 'Layout');
-    expect(screen.getByText('Bleed').parentElement).toHaveAttribute('data-tooltip', 'Bleed');
-    expect(screen.getByText('Darken').parentElement).toHaveAttribute('data-tooltip', 'Darken');
-    expect(screen.getByText('Guides').parentElement).toHaveAttribute('data-tooltip', 'Guides');
-    expect(screen.getByText('Card').parentElement).toHaveAttribute('data-tooltip', 'Card');
-    expect(screen.getByText('Filter & Sort').parentElement).toHaveAttribute('data-tooltip', 'Filter & Sort');
-    expect(screen.getByText('Export').parentElement).toHaveAttribute('data-tooltip', 'Export');
-    expect(screen.getByText('Application').parentElement).toHaveAttribute('data-tooltip', 'Application');
+    expect(screen.getByText('Projects').parentElement?.getAttribute('data-tooltip')).toBe('Projects');
+    expect(screen.getByText('Layout').parentElement?.getAttribute('data-tooltip')).toBe('Layout');
+    expect(screen.getByText('Bleed').parentElement?.getAttribute('data-tooltip')).toBe('Bleed');
+    expect(screen.getByText('Darken').parentElement?.getAttribute('data-tooltip')).toBe('Darken');
+    expect(screen.getByText('Guides').parentElement?.getAttribute('data-tooltip')).toBe('Guides');
+    expect(screen.getByText('Card').parentElement?.getAttribute('data-tooltip')).toBe('Card');
+    expect(screen.getByText('Filter & Sort').parentElement?.getAttribute('data-tooltip')).toBe('Filter & Sort');
+    expect(screen.getByText('Export').parentElement?.getAttribute('data-tooltip')).toBe('Export');
+    expect(screen.getByText('Application').parentElement?.getAttribute('data-tooltip')).toBe('Application');
   });
 
   it('uses the mobile landscape two-column layout when requested', () => {
