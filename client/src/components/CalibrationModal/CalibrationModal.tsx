@@ -1,6 +1,6 @@
 /* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { Button, Modal, ModalBody, ModalHeader, Spinner } from "flowbite-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCalibrationModalStore } from "@/store";
 import {
   db,
@@ -82,6 +82,59 @@ function runLabel(result: MpcCalibrationEvaluationResult | null) {
   return `${result.summary.matchedCases}/${result.summary.totalCases}`;
 }
 
+function normalizeChoiceSegment(value?: string) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function buildCapturedChoiceKey(input: {
+  name?: string;
+  set?: string;
+  collectorNumber?: string;
+  number?: string;
+  expectedIdentifier?: string;
+  identifier?: string;
+}) {
+  const name = normalizeChoiceSegment(input.name);
+  const expectedIdentifier = normalizeChoiceSegment(
+    input.expectedIdentifier ?? input.identifier
+  );
+
+  if (!name || !expectedIdentifier) {
+    return null;
+  }
+
+  return [
+    name,
+    normalizeChoiceSegment(input.set),
+    normalizeChoiceSegment(input.collectorNumber ?? input.number),
+    expectedIdentifier,
+  ].join("\u0000");
+}
+
+function buildCaseChoiceKey(calibrationCase: MpcCalibrationCaseRecord) {
+  return buildCapturedChoiceKey({
+    name: calibrationCase.source.name,
+    set: calibrationCase.source.set,
+    collectorNumber: calibrationCase.source.collectorNumber,
+    expectedIdentifier: calibrationCase.expectedIdentifier,
+  });
+}
+
+function toCapturedChoiceKeySet(cases: MpcCalibrationCaseRecord[]) {
+  const capturedChoiceKeys = new Set<string>();
+  for (const calibrationCase of cases) {
+    const key = buildCaseChoiceKey(calibrationCase);
+    if (key) {
+      capturedChoiceKeys.add(key);
+    }
+  }
+  return capturedChoiceKeys;
+}
+
+function formatCandidateName(candidate: MpcAutofillCard) {
+  return candidate.rawName ?? candidate.name;
+}
+
 async function ensureCalibrationDataset(): Promise<MpcCalibrationDatasetRecord> {
   const datasets = await listMpcCalibrationDatasets();
   const existing = datasets.find(
@@ -132,6 +185,7 @@ export function CalibrationModal() {
     getMpcPreferenceSyncStatus().saveStateLabel
   );
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const capturedChoiceKeys = useMemo(() => toCapturedChoiceKeySet(cases), [cases]);
 
   const refreshDataset = useCallback(async (datasetId: string) => {
     const [loadedCases, loadedRuns] = await Promise.all([
@@ -335,9 +389,29 @@ export function CalibrationModal() {
   const captureCase = useCallback(
     async (candidate: MpcAutofillCard) => {
       if (!dataset || !card?.imageId || !captureState.imageRecord) return;
+      const choiceKey = buildCapturedChoiceKey({
+        name: card.name,
+        set: card.set,
+        number: card.number,
+        identifier: candidate.identifier,
+      });
+
+      if (choiceKey && capturedChoiceKeys.has(choiceKey)) {
+        setStatus(`Expected choice already captured: ${formatCandidateName(candidate)}.`);
+        return;
+      }
+
       setPhase("capturing");
-      setStatus(`Capturing expected choice: ${candidate.rawName ?? candidate.name}...`);
+      setStatus(`Capturing expected choice: ${formatCandidateName(candidate)}...`);
       try {
+        const latestCases = await listMpcCalibrationCases(dataset.id);
+        setCases(latestCases);
+
+        if (choiceKey && toCapturedChoiceKeySet(latestCases).has(choiceKey)) {
+          setStatus(`Expected choice already captured: ${formatCandidateName(candidate)}.`);
+          return;
+        }
+
         const captured = await captureMpcCalibrationCase({
           datasetId: dataset.id,
           card,
@@ -352,7 +426,7 @@ export function CalibrationModal() {
         setStatus(
           captured.assetErrors.length > 0
             ? `Captured expected choice with ${captured.assetErrors.length} asset warning${captured.assetErrors.length === 1 ? "" : "s"}.`
-            : `Captured expected choice: ${candidate.rawName ?? candidate.name}.`
+            : `Captured expected choice: ${formatCandidateName(candidate)}.`
         );
         await refreshDataset(dataset.id);
       } catch (error) {
@@ -364,7 +438,7 @@ export function CalibrationModal() {
         setPhase("idle");
       }
     },
-    [card, dataset, captureState, refreshDataset]
+    [card, dataset, captureState, capturedChoiceKeys, refreshDataset]
   );
 
   const exportFixture = useCallback(async () => {
@@ -376,7 +450,7 @@ export function CalibrationModal() {
   const importFixture = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file || !dataset) return;
+      if (!file) return;
       setPhase("importing");
       try {
         const text = await file.text();
@@ -402,7 +476,7 @@ export function CalibrationModal() {
         if (importInputRef.current) importInputRef.current.value = "";
       }
     },
-    [dataset, refreshDataset]
+    [refreshDataset]
   );
 
   if (!open) return null;
@@ -544,6 +618,17 @@ export function CalibrationModal() {
                   );
                   const stats = prefModel?.sourceStats?.[candidate.sourceName];
                   const winRate = stats ? (stats.selections / stats.appearances) * 100 : null;
+                  const alreadyCaptured =
+                    card
+                      ? capturedChoiceKeys.has(
+                          buildCapturedChoiceKey({
+                            name: card.name,
+                            set: card.set,
+                            number: card.number,
+                            identifier: candidate.identifier,
+                          }) ?? ""
+                        )
+                      : false;
 
                   return (
                     <div
@@ -620,9 +705,11 @@ export function CalibrationModal() {
                         size="xs"
                         color={rec && recommendations?.fullProcess[0].card.identifier === candidate.identifier ? "purple" : "light"}
                         onClick={() => void captureCase(candidate)}
-                        disabled={phase !== "idle"}
+                        disabled={phase !== "idle" || alreadyCaptured}
                       >
-                        Use as Expected Choice
+                        {alreadyCaptured
+                          ? "Expected Choice Captured"
+                          : "Use as Expected Choice"}
                       </Button>
                     </div>
                   );

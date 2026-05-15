@@ -180,6 +180,11 @@ test("captures an expected MPC choice and runs calibration from a real card", as
     timeout: 30_000,
   });
   await expect(page.getByText(/Expected:\s*mpc-expected/i)).toBeVisible();
+  await expect(
+    page
+      .getByTestId("mpc-calibration-candidate-mpc-expected")
+      .getByRole("button", { name: "Expected Choice Captured" })
+  ).toBeDisabled();
 
   await page.getByTestId("mpc-calibration-run").click();
   await expect(page.getByTestId("mpc-calibration-scoreboard")).toContainText(

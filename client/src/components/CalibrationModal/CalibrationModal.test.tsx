@@ -290,6 +290,45 @@ describe("CalibrationModal", () => {
     });
   });
 
+  it("disables an expected candidate that is already captured for the active card", async () => {
+    mockListCases.mockResolvedValue([frozenCase]);
+
+    render(<CalibrationModal />);
+
+    const button = await screen.findByRole("button", {
+      name: /expected choice captured/i,
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(button);
+
+    expect(mockCaptureCase).not.toHaveBeenCalled();
+    expect(mockSaveCase).not.toHaveBeenCalled();
+    expect(mockSaveAssets).not.toHaveBeenCalled();
+  });
+
+  it("rechecks latest cases before saving a duplicate expected choice", async () => {
+    mockListCases
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([frozenCase]);
+
+    render(<CalibrationModal />);
+
+    const button = await screen.findByRole("button", {
+      name: /use as expected choice/i,
+    });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-calibration-status").textContent
+      ).toContain("already captured");
+    });
+    expect(mockCaptureCase).not.toHaveBeenCalled();
+    expect(mockSaveCase).not.toHaveBeenCalled();
+    expect(mockSaveAssets).not.toHaveBeenCalled();
+  });
+
   it("runs the current algorithm and updates the scoreboard", async () => {
     mockListCases.mockResolvedValue([frozenCase]);
     mockEvaluateDataset.mockResolvedValue({
