@@ -306,6 +306,49 @@ describe("printerCalibrationRouter", () => {
     expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("duplex");
   });
 
+  it("uses the default runner path when no CLI is injected", async () => {
+    const originalEnv = { ...process.env };
+    const binPath = path.join(tempDirectory, "printer-calibration-bin");
+    await fs.writeFile(
+      binPath,
+      `#!/bin/sh
+if [ "$1" = "sheet" ]; then
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+      shift
+      printf '%s\\n' '%PDF-1.4 mock sheet' > "$1"
+      exit 0
+    fi
+    shift
+  done
+fi
+exit 1
+`,
+      { mode: 0o755 }
+    );
+    await fs.chmod(binPath, 0o755);
+    process.env = {
+      ...originalEnv,
+      PRINTER_CALIBRATION_BIN: binPath,
+      PRINTER_CALIBRATION_REPO: "",
+    };
+
+    try {
+      const defaultApp = express();
+      defaultApp.use(express.json());
+      defaultApp.use(
+        "/api/printer-calibration",
+        createPrinterCalibrationRouter({ dataDirectory })
+      );
+
+      const response = await request(defaultApp).get("/api/printer-calibration/sheet");
+      expect(response.status).toBe(200);
+      expect(response.header["content-type"]).toContain("application/pdf");
+    } finally {
+      process.env = originalEnv;
+    }
+  });
+
   it("logs download callback failures when calibrated pdf delivery fails", async () => {
     profiles.set("office", {
       name: "office",
