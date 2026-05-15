@@ -228,16 +228,20 @@ describe('exportImagesZip', () => {
             await ExportImagesZip({
                 cards: [
                     createMockCard({ name: 'All', imageId: 'all', overrides: { darkenMode: 'darken-all' } }),
+                    createMockCard({ name: 'AllFallback', imageId: 'allFallback', overrides: { darkenMode: 'darken-all' } }),
                     createMockCard({ name: 'Edges', imageId: 'edge', overrides: { darkenMode: 'contrast-edges' } }),
                     createMockCard({ name: 'EdgesFallback', imageId: 'edgeFallback', overrides: { darkenMode: 'contrast-edges' } }),
+                    createMockCard({ name: 'EdgesExportFallback', imageId: 'edgeExportFallback', overrides: { darkenMode: 'contrast-edges' } }),
                     createMockCard({ name: 'Full', imageId: 'full', overrides: { darkenMode: 'contrast-full' } }),
                     createMockCard({ name: 'FullFallback', imageId: 'fullFallback', overrides: { darkenMode: 'contrast-full' } }),
                     createMockCard({ name: 'Unknown', imageId: 'fallback', overrides: { darkenMode: 'unexpected' } }),
                 ] as CardOption[],
                 images: [
                     createMockImage({ id: 'all', exportBlob, exportBlobDarkenAll: darkenAllBlob }),
+                    createMockImage({ id: 'allFallback', exportBlob }),
                     createMockImage({ id: 'edge', exportBlob, exportBlobContrastEdges: edgeBlob }),
                     createMockImage({ id: 'edgeFallback', exportBlob, exportBlobDarkened: darkenedFallbackBlob }),
+                    createMockImage({ id: 'edgeExportFallback', exportBlob }),
                     createMockImage({ id: 'full', exportBlob, exportBlobContrastFull: fullBlob }),
                     createMockImage({ id: 'fullFallback', exportBlob }),
                     createMockImage({ id: 'fallback', exportBlob: fallbackBlob }),
@@ -246,11 +250,26 @@ describe('exportImagesZip', () => {
             });
 
             expect(mocks.file).toHaveBeenCalledWith('001 - All.png', darkenAllBlob);
-            expect(mocks.file).toHaveBeenCalledWith('002 - Edges.webp', edgeBlob);
-            expect(mocks.file).toHaveBeenCalledWith('003 - EdgesFallback.png', darkenedFallbackBlob);
-            expect(mocks.file).toHaveBeenCalledWith('004 - Full.png', fullBlob);
-            expect(mocks.file).toHaveBeenCalledWith('005 - FullFallback.png', exportBlob);
-            expect(mocks.file).toHaveBeenCalledWith('006 - Unknown.png', fallbackBlob);
+            expect(mocks.file).toHaveBeenCalledWith('002 - AllFallback.png', exportBlob);
+            expect(mocks.file).toHaveBeenCalledWith('003 - Edges.webp', edgeBlob);
+            expect(mocks.file).toHaveBeenCalledWith('004 - EdgesFallback.png', darkenedFallbackBlob);
+            expect(mocks.file).toHaveBeenCalledWith('005 - EdgesExportFallback.png', exportBlob);
+            expect(mocks.file).toHaveBeenCalledWith('006 - Full.png', fullBlob);
+            expect(mocks.file).toHaveBeenCalledWith('007 - FullFallback.png', exportBlob);
+            expect(mocks.file).toHaveBeenCalledWith('008 - Unknown.png', fallbackBlob);
+        });
+
+        it('should skip effect-cache writes when advanced overrides are reported without card overrides', async () => {
+            mocks.hasAdvancedOverrides.mockReturnValue(true);
+            mocks.renderCardWithOverridesWorker.mockResolvedValue(new Blob(['rendered'], { type: 'image/png' }));
+
+            await ExportImagesZip({
+                cards: [createMockCard({ imageId: 'img-1', overrides: undefined })],
+                images: [createMockImage({ id: 'img-1', exportBlob: new Blob(['base'], { type: 'image/png' }) })],
+            });
+
+            expect(mocks.renderCardWithOverridesWorker).toHaveBeenCalled();
+            expect(mocks.dbPut).not.toHaveBeenCalled();
         });
 
         it('should skip cards with no image data', async () => {
@@ -339,6 +358,12 @@ describe('exportImagesZip', () => {
 
             expect(mocks.saveAs).toHaveBeenCalledWith(expect.any(Blob), '001 - Forest.png');
             expect(mocks.saveAs).toHaveBeenCalledWith(expect.any(Blob), '002 - Forest (2).png');
+        });
+
+        it('should skip individual downloads for empty image slots', async () => {
+            await ExportImagesIndividual({ cards: [createMockCard({ imageId: undefined })], images: [] });
+
+            expect(mocks.saveAs).not.toHaveBeenCalled();
         });
     });
 });

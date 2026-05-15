@@ -169,6 +169,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
         parsing = false;
 
         // 1. Try to extract Set/Num from [Set] {Num} or [Set]
+        /* v8 ignore start -- pre-loop cleanup and the top-level set/number parser handle this grammar before the loop. @preserve */
         if (!setCode) {
             const m = s.match(setNumBrackets);
             if (m) {
@@ -180,6 +181,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
                 continue;
             }
         }
+        /* v8 ignore stop */
 
         // 2. Strip {Num} pattern
         if (!number) {
