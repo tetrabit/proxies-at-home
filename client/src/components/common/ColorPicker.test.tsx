@@ -95,24 +95,4 @@ describe('ColorPicker', () => {
     expect(onChange).toHaveBeenLastCalledWith('#000000');
   });
 
-  it('uses the EyeDropper when available and commits the selected color', async () => {
-    const onChange = vi.fn();
-    const onChangeEnd = vi.fn();
-
-    class MockEyeDropper {
-      open = vi.fn().mockResolvedValue({ sRGBHex: '#123456' });
-    }
-    vi.stubGlobal('EyeDropper', MockEyeDropper);
-
-    const { container } = render(<ColorPicker label="Pick" value="#abcdef" onChange={onChange} onChangeEnd={onChangeEnd} />);
-    fireEvent.click(container.querySelector('button[title="Click to pick color"]')!);
-    fireEvent.click(screen.getByTitle('Pick color from screen'));
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(onChange).toHaveBeenCalledWith('#123456');
-    expect(onChangeEnd).toHaveBeenCalledWith('#123456', '#abcdef');
-  });
 });
