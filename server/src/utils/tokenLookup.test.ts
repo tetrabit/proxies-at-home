@@ -296,6 +296,21 @@ describe("fetchCardsForTokenLookup additional branches", () => {
     expect(hoisted.mockBatchFetchCards).not.toHaveBeenCalled();
   });
 
+  it("ignores nameless microservice cards without falling back", async () => {
+    process.env.SCRYFALL_CACHE_URL = "http://localhost:8080";
+    hoisted.mockIsMicroserviceAvailable.mockResolvedValueOnce(true);
+    hoisted.mockClient.getCardByName.mockResolvedValueOnce({
+      success: true,
+      data: { id: "nameless", set: "tst", collector_number: "1" },
+    });
+
+    const result = await fetchCardsForTokenLookup([{ name: "Nameless" } as CardInfo], "en");
+
+    expect(result.usedMicroservice).toBe(true);
+    expect(result.cards.size).toBe(0);
+    expect(hoisted.mockBatchFetchCards).not.toHaveBeenCalled();
+  });
+
   it("falls back for microservice errors and deduplicates repeated card infos", async () => {
     process.env.SCRYFALL_CACHE_URL = "http://localhost:8080";
     hoisted.mockIsMicroserviceAvailable.mockResolvedValueOnce(true);
@@ -395,6 +410,21 @@ describe("resolveLatestTokenParts additional branches", () => {
     await expect(resolveLatestTokenParts([{ id: "missing", name: "Missing" }], "en")).resolves.toEqual([{ id: "missing", name: "Missing" }]);
   });
 
+  it("falls back to name lookup for malformed or non-card token uris", async () => {
+    hoisted.mockGetCardDataForCardInfo
+      .mockResolvedValueOnce({ id: "bad-uri-token", name: "Bad Uri", type_line: "Token Creature" })
+      .mockResolvedValueOnce({ id: "non-card-token", name: "Non Card", type_line: "Token Creature" });
+    hoisted.mockGetCardsWithImagesForCardInfo.mockResolvedValue([]);
+
+    await expect(resolveLatestTokenParts([
+      { name: "Bad Uri", uri: "not a url" },
+      { name: "Non Card", uri: "https://api.scryfall.com/not-cards/token-id" },
+    ], "en")).resolves.toEqual([
+      { id: "bad-uri-token", name: "Bad Uri", type_line: "Token Creature" },
+      { id: "non-card-token", name: "Non Card", type_line: "Token Creature" },
+    ]);
+  });
+
   it("falls back to name lookup when direct id requests throw", async () => {
     hoisted.mockAxiosGet.mockRejectedValueOnce(new Error("scryfall unavailable"));
     hoisted.mockGetCardDataForCardInfo.mockResolvedValueOnce({
@@ -471,6 +501,29 @@ describe("resolveLatestTokenParts additional branches", () => {
 
     await expect(resolveLatestTokenParts([{ id: "old-token", name: "Soldier" }], "en")).resolves.toEqual([
       { id: "soldier-high-set", name: "Soldier", uri: "https://api.scryfall.com/cards/tzzz/1" },
+    ]);
+  });
+
+  it("deduplicates distinct source tokens that resolve to the same latest identity", async () => {
+    hoisted.mockAxiosGet
+      .mockResolvedValueOnce({ data: { id: "old-a", name: "Clue", oracle_id: "oracle-clue" } })
+      .mockResolvedValueOnce({ data: { id: "old-b", name: "Clue", oracle_id: "oracle-clue" } });
+    hoisted.mockGetCardsWithImagesForCardInfo.mockResolvedValue([
+      {
+        id: "latest-clue",
+        name: "Clue",
+        oracle_id: "oracle-clue",
+        set: "tmkm",
+        collector_number: "11",
+        released_at: "2026-01-01",
+      },
+    ]);
+
+    await expect(resolveLatestTokenParts([
+      { id: "old-a", name: "Clue" },
+      { id: "old-b", name: "Clue" },
+    ], "en")).resolves.toEqual([
+      { id: "latest-clue", name: "Clue", uri: "https://api.scryfall.com/cards/tmkm/11" },
     ]);
   });
 
