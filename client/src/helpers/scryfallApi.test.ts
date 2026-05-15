@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     fetchCardWithPrints,
+    fetchCardBySetAndNumber,
     searchCards,
     getImages,
     autocomplete,
