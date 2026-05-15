@@ -108,6 +108,55 @@ describe("useScryfallPrints", () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain("oracle_id=oracle-xyz");
   });
 
+  it("uses oracle_id from the returned print list when the response omits it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 1,
+          prints: [
+            {
+              imageUrl: "https://example.com/single-print.png",
+              set: "mh2",
+              number: "200",
+              oracle_id: "oracle-fallback",
+              scryfall_id: "print-single",
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 1,
+          prints: [
+            {
+              imageUrl: "https://example.com/oracle-print.png",
+              set: "mh2",
+              number: "200",
+              oracle_id: "oracle-fallback",
+              scryfall_id: "print-oracle",
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Sheoldred",
+        set: "mh2",
+        number: "200",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+      expect(result.current.prints[0]?.scryfall_id).toBe("print-oracle");
+    });
+  });
+
   it("keeps the initial set+number results when the secondary oracle lookup fails", async () => {
     const fetchMock = vi
       .fn()
@@ -179,6 +228,38 @@ describe("useScryfallPrints", () => {
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses a cached set+number result on repeated queries", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        oracle_id: "oracle-cache-repeat",
+        prints: [
+          {
+            imageUrl: "https://example.com/repeat.png",
+            set: "mh2",
+            number: "200",
+            oracle_id: "oracle-cache-repeat",
+            scryfall_id: "print-repeat",
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderHook(({ name }) => useScryfallPrints({ name, set: "mh2", number: "200" }), {
+      initialProps: { name: "Sheoldred" },
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    rerender({ name: "Sheoldred" });
+
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it("does not fetch when disabled or missing lookup identity", async () => {
@@ -326,6 +407,31 @@ describe("useScryfallPrints", () => {
 
     const stored = await db.cardMetadataCache.get("cached-update-name");
     expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
+  it("uses a set-only lookup without setting the name query parameter", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/set-only.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() =>
+      useScryfallPrints({
+        name: "",
+        set: "m21",
+        number: "200",
+      })
+    );
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("set=m21");
+    expect(url).toContain("number=200");
+    expect(url).not.toContain("name=");
   });
 
   it("handles a non-ok response by clearing results", async () => {
