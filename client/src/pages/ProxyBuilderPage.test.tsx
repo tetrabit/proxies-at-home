@@ -58,6 +58,11 @@ const mocks = vi.hoisted(() => {
     rebalanceCardOrders: vi.fn(),
     queueBulkPreRender: vi.fn(),
     hasActiveAdjustments: vi.fn(() => false),
+    filteredAndSortedCards: [] as unknown[],
+    idsToFlip: [
+      { uuid: "front", targetState: true },
+      { uuid: "back", targetState: false },
+    ] as Array<{ uuid: string; targetState: boolean }>,
     dbCardsToArray: vi.fn().mockResolvedValue([]),
     dbImagesEach: vi.fn().mockResolvedValue(undefined),
     dbImagesToArray: vi.fn().mockResolvedValue([]),
@@ -177,11 +182,8 @@ vi.mock("../hooks/useCardEnrichment", () => ({ useCardEnrichment: vi.fn() }));
 vi.mock("../hooks/useAutoBackup", () => ({ useAutoBackup: vi.fn() }));
 vi.mock("../hooks/useFilteredAndSortedCards", () => ({
   useFilteredAndSortedCards: vi.fn(() => ({
-    filteredAndSortedCards: [],
-    idsToFlip: [
-      { uuid: "front", targetState: true },
-      { uuid: "back", targetState: false },
-    ],
+    filteredAndSortedCards: mocks.filteredAndSortedCards,
+    idsToFlip: mocks.idsToFlip,
   })),
 }));
 
@@ -269,6 +271,7 @@ vi.mock("../helpers/imageSpecs", () => ({
 }));
 
 import ProxyBuilderPage, { getInitialLandscape } from "./ProxyBuilderPage";
+import { getEffectiveExistingBleedMm } from "../helpers/imageSpecs";
 
 const setViewport = ({
   width,
@@ -315,6 +318,11 @@ describe("ProxyBuilderPage", () => {
     mocks.settingsState.noBleedTargetMode = "add";
     mocks.settingsState.noBleedTargetAmount = 3;
     mocks.settingsState.dpi = 800;
+    mocks.filteredAndSortedCards = [];
+    mocks.idsToFlip = [
+      { uuid: "front", targetState: true },
+      { uuid: "back", targetState: false },
+    ];
     mocks.userPreferencesState.preferences = {
       settingsPanelWidth: 340,
       uploadPanelWidth: 350,
@@ -395,6 +403,56 @@ describe("ProxyBuilderPage", () => {
         matchMedia: vi.fn().mockReturnValue({ matches: true }),
       })
     ).toBe(true);
+  });
+
+  it("renders with preference defaults, metric bleed width, empty live query results, and no flip ids", async () => {
+    mocks.userPreferencesState.preferences = undefined;
+    mocks.settingsState.bleedEdgeUnit = "mm";
+    mocks.settingsState.bleedEdge = false;
+    mocks.idsToFlip = [];
+    mocks.useLiveQuery.mockImplementation((query: () => unknown) => {
+      void query();
+      return undefined;
+    });
+
+    render(<ProxyBuilderPage />);
+
+    expect(screen.getByTestId("page-view")).toHaveTextContent("0:0:0");
+    await waitFor(() =>
+      expect(mocks.setFlipped).not.toHaveBeenCalledWith([], true)
+    );
+    expect(mocks.ensureProcessed).not.toHaveBeenCalled();
+  });
+
+  it("handles layout checks for alternate mobile predicates and missing current project", async () => {
+    mocks.projectState.currentProjectId = undefined;
+    mocks.idsToFlip = [{ uuid: "only-false", targetState: false }];
+    setViewport({
+      width: 900,
+      pointerCoarse: true,
+      hover: false,
+      landscape: true,
+    });
+
+    const { unmount } = render(<ProxyBuilderPage />);
+
+    await waitFor(() => expect(screen.getByText("Upload")).toBeInTheDocument());
+    expect(mocks.rebalanceCardOrders).not.toHaveBeenCalled();
+    expect(mocks.setFlipped).toHaveBeenCalledWith(["only-false"], false);
+    expect(mocks.setFlipped).not.toHaveBeenCalledWith(expect.any(Array), true);
+    unmount();
+
+    mocks.projectState.currentProjectId = "project-1";
+    setViewport({
+      width: 900,
+      pointerCoarse: false,
+      hover: false,
+      landscape: false,
+    });
+
+    render(<ProxyBuilderPage />);
+
+    await waitFor(() => expect(screen.getByText("Upload")).toBeInTheDocument());
   });
 
   it("expands collapsed desktop panels from reset handles", () => {
@@ -576,6 +634,39 @@ describe("ProxyBuilderPage", () => {
     vi.useRealTimers();
   });
 
+  it("queues images with missing existing-bleed metadata during startup processing", async () => {
+    vi.useFakeTimers();
+    const card = { uuid: "existing-bleed-missing", imageId: "img-existing" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-existing",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: undefined,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).toHaveBeenCalledWith(card, "low");
+    vi.useRealTimers();
+  });
+
   it("reprocesses cards after DPI changes and queues adjusted effect renders", async () => {
     vi.useFakeTimers();
     const card = {
@@ -733,6 +824,92 @@ describe("ProxyBuilderPage", () => {
     });
 
     expect(mocks.reprocessSelectedImages).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("uses no-bleed reprocessing width and skips empty effect queues", async () => {
+    vi.useFakeTimers();
+    mocks.settingsState.bleedEdge = false;
+    const card = {
+      uuid: "dpi-without-effects",
+      imageId: "img-dpi",
+      overrides: { brightness: 1 },
+    };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardsToArray.mockResolvedValue([card]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-dpi",
+          displayBlob: new Blob(["display"]),
+          exportBlob: new Blob(["old-export"]),
+          exportDpi: 300,
+          exportBleedWidth: 0,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+        });
+      }
+    );
+    mocks.dbImagesToArray.mockResolvedValue([
+      { id: "img-dpi", exportBlob: new Blob(["fresh-export"]) },
+    ]);
+    mocks.hasActiveAdjustments.mockReturnValue(false);
+
+    const { rerender } = render(<ProxyBuilderPage />);
+    mocks.settingsState.dpi = 900;
+    rerender(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(550);
+    });
+
+    expect(mocks.reprocessSelectedImages).toHaveBeenCalledWith([card], 0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+
+    expect(mocks.queueBulkPreRender).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("reprocesses when effective existing bleed is unspecified", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getEffectiveExistingBleedMm).mockReturnValueOnce(undefined);
+    const card = { uuid: "unspecified-existing", imageId: "img-existing" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardsToArray.mockResolvedValue([card]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-existing",
+          displayBlob: new Blob(["display"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 1,
+        });
+      }
+    );
+
+    const { rerender } = render(<ProxyBuilderPage />);
+    mocks.settingsState.withBleedTargetAmount = 4;
+    rerender(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(550);
+    });
+
+    expect(mocks.reprocessSelectedImages).toHaveBeenCalledWith([card], 3.175);
     vi.useRealTimers();
   });
 
