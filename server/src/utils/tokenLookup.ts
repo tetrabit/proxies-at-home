@@ -57,6 +57,7 @@ async function delayTokenIdLookup(): Promise<void> {
 }
 
 async function fetchCardByScryfallId(id: string): Promise<ScryfallApiCard | undefined> {
+  /* v8 ignore next -- private callers pass non-empty parsed Scryfall ids; guard documents the defensive contract. @preserve */
   if (!id) return undefined;
   await delayTokenIdLookup();
   try {
@@ -122,6 +123,7 @@ async function resolveLinkedTokenCard(token: TokenPart, language: string): Promi
     if (exactPrint) return exactPrint;
   }
 
+  /* v8 ignore next -- resolveLatestTokenParts filters nameless token parts before resolving links. @preserve */
   if (!token.name) return undefined;
   return (await getCardDataForCardInfo({ name: token.name, isToken: true }, language, true)) ?? undefined;
 }
@@ -144,7 +146,7 @@ async function resolveMostRecentTokenPrint(linkedToken: ScryfallApiCard, languag
   }
 
   oracleMatches.sort(sortByMostRecentPrint);
-  return oracleMatches[0] ?? linkedToken;
+  return oracleMatches[0];
 }
 
 // Small p-limit implementation to cap microservice concurrency.
@@ -160,9 +162,10 @@ function pLimit(concurrency: number) {
     active++;
     try {
       resolve(await fn());
-    /* v8 ignore next 3 -- pLimit is currently used with per-task error capture; this protects future raw callers. @preserve */
+    /* v8 ignore start -- pLimit is currently used with per-task error capture; this protects future raw callers. @preserve */
     } catch (e) {
       reject(e);
+    /* v8 ignore stop */
     } finally {
       active--;
       if (q.length) {
