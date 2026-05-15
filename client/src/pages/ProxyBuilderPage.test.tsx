@@ -306,7 +306,21 @@ const setViewport = ({
 describe("ProxyBuilderPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.settingsState.bleedEdge = true;
+    mocks.settingsState.bleedEdgeWidth = 0.125;
+    mocks.settingsState.bleedEdgeUnit = "in";
+    mocks.settingsState.withBleedSourceAmount = 1;
+    mocks.settingsState.withBleedTargetMode = "preserve";
+    mocks.settingsState.withBleedTargetAmount = 2;
+    mocks.settingsState.noBleedTargetMode = "add";
+    mocks.settingsState.noBleedTargetAmount = 3;
     mocks.settingsState.dpi = 800;
+    mocks.userPreferencesState.preferences = {
+      settingsPanelWidth: 340,
+      uploadPanelWidth: 350,
+      isSettingsPanelCollapsed: false,
+      isUploadPanelCollapsed: false,
+    };
     mocks.useLiveQuery.mockImplementation(() => []);
     mocks.ensureProcessed.mockResolvedValue(undefined);
     mocks.dbCardsToArray.mockResolvedValue([]);
@@ -371,6 +385,32 @@ describe("ProxyBuilderPage", () => {
     ).toHaveBeenCalledWith(320);
   });
 
+  it("expands collapsed desktop panels from reset handles", () => {
+    mocks.userPreferencesState.preferences = {
+      settingsPanelWidth: 340,
+      uploadPanelWidth: 350,
+      isSettingsPanelCollapsed: true,
+      isUploadPanelCollapsed: true,
+    };
+
+    render(<ProxyBuilderPage />);
+
+    expect(screen.getByTestId("upload-section")).toHaveAttribute(
+      "data-collapsed",
+      "true"
+    );
+
+    fireEvent.click(screen.getByText("left reset"));
+    fireEvent.click(screen.getByText("right reset"));
+
+    expect(
+      mocks.userPreferencesState.setIsUploadPanelCollapsed
+    ).toHaveBeenCalledWith(false);
+    expect(
+      mocks.userPreferencesState.setIsSettingsPanelCollapsed
+    ).toHaveBeenCalledWith(false);
+  });
+
   it("renders mobile navigation, persists active view, and switches tabs", async () => {
     setViewport({
       width: 390,
@@ -404,6 +444,33 @@ describe("ProxyBuilderPage", () => {
 
     fireEvent.click(screen.getByText("upload complete"));
     expect(localStorage.getItem("activeMobileView")).toBe("preview");
+  });
+
+  it("renders landscape mobile navigation and falls back from invalid persisted view", async () => {
+    setViewport({
+      width: 700,
+      pointerCoarse: true,
+      hover: false,
+      landscape: true,
+    });
+    localStorage.setItem("activeMobileView", "invalid");
+
+    render(<ProxyBuilderPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("page-view")).toHaveAttribute(
+        "data-active",
+        "true"
+      )
+    );
+
+    fireEvent.click(screen.getByText("Upload"));
+
+    expect(localStorage.getItem("activeMobileView")).toBe("upload");
+    expect(screen.getByTestId("upload-section")).toHaveAttribute(
+      "data-mobile",
+      "true"
+    );
   });
 
   it("processes unique unprocessed images in batches", async () => {
@@ -494,6 +561,85 @@ describe("ProxyBuilderPage", () => {
     expect(mocks.queueBulkPreRender).toHaveBeenCalledWith([
       expect.objectContaining({ card, exportBlob: expect.any(Blob) }),
     ]);
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["missing export bleed width", { exportBleedWidth: undefined }],
+    ["mismatched export bleed width", { exportBleedWidth: 99 }],
+    ["mismatched built-in bleed marker", { generatedHasBuiltInBleed: true }],
+    ["mismatched bleed mode", { generatedBleedMode: "preserve" }],
+    ["missing existing bleed marker", { generatedExistingBleedMm: undefined }],
+    ["mismatched existing bleed amount", { generatedExistingBleedMm: 1 }],
+    ["missing processed blobs", { displayBlob: undefined }],
+  ])("reprocesses cards with %s after bleed setting changes", async (_label, overrides) => {
+    vi.useFakeTimers();
+    const card = { uuid: "card", imageId: "img-card" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardsToArray.mockResolvedValue([card]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-card",
+          displayBlob: new Blob(["display"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+          ...overrides,
+        });
+      }
+    );
+
+    const { rerender } = render(<ProxyBuilderPage />);
+    mocks.settingsState.withBleedTargetAmount = 4;
+    rerender(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(550);
+    });
+
+    expect(mocks.reprocessSelectedImages).toHaveBeenCalledWith([card], 3.175);
+    vi.useRealTimers();
+  });
+
+  it("skips reprocessing when processed image metadata still matches settings", async () => {
+    vi.useFakeTimers();
+    const card = { uuid: "card", imageId: "img-card" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardsToArray.mockResolvedValue([card]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-card",
+          displayBlob: new Blob(["display"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+        });
+      }
+    );
+
+    const { rerender } = render(<ProxyBuilderPage />);
+    mocks.settingsState.withBleedTargetAmount = 4;
+    rerender(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(550);
+    });
+
+    expect(mocks.reprocessSelectedImages).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
