@@ -146,6 +146,34 @@ describe('usePageGuides', () => {
     expect(graphics.clear).toHaveBeenCalled();
   });
 
+  it('returns from disabled states before graphics exist', () => {
+    const container = makeContainer();
+    const app = makeApp();
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: container as never,
+      app: app as never,
+      pages: [page] as never,
+      cards: [baseCard] as never,
+      cutLineStyle: 'none',
+      guideWidth: 1,
+    }));
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: container as never,
+      app: null,
+      pages: [page] as never,
+      cards: [] as never,
+      cutLineStyle: 'edges',
+      guideWidth: 1,
+    }));
+
+    expect(container.addChild).not.toHaveBeenCalled();
+    expect(app.render).toHaveBeenCalled();
+  });
+
   it('skips pages without cards but still strokes and renders', () => {
     const container = makeContainer();
     const app = makeApp();
@@ -215,6 +243,44 @@ describe('usePageGuides', () => {
         {
           card: { uuid: 'right' },
           globalX: cardWidthPx,
+          globalY: 0,
+          bleedMm: 0,
+          baseCardWidthMm: cardWidthMm,
+          baseCardHeightMm: cardHeightMm,
+        },
+      ] as never,
+      cutLineStyle: 'full',
+      guideWidth: 1,
+    }));
+
+    expect(container.addChild).toHaveBeenCalledTimes(1);
+    expect(mocks.graphicsInstances[0].stroke).toHaveBeenCalled();
+  });
+
+  it('handles reverse-ordered shared cut positions', () => {
+    const container = makeContainer();
+    const cardWidthMm = 20;
+    const cardHeightMm = 30;
+    const cardWidthPx = cardWidthMm * (96 / 25.4);
+    const cardHeightPx = cardHeightMm * (96 / 25.4);
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: container as never,
+      app: null,
+      pages: [page] as never,
+      cards: [
+        {
+          card: { uuid: 'right-bottom' },
+          globalX: cardWidthPx,
+          globalY: cardHeightPx,
+          bleedMm: 0,
+          baseCardWidthMm: cardWidthMm,
+          baseCardHeightMm: cardHeightMm,
+        },
+        {
+          card: { uuid: 'left-top' },
+          globalX: 0,
           globalY: 0,
           bleedMm: 0,
           baseCardWidthMm: cardWidthMm,
