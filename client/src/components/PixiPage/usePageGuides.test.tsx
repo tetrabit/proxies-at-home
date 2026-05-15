@@ -225,6 +225,7 @@ describe('usePageGuides', () => {
     const cardWidthMm = 20;
     const cardHeightMm = 30;
     const cardWidthPx = cardWidthMm * (96 / 25.4);
+    const cardHeightPx = cardHeightMm * (96 / 25.4);
 
     renderHook(() => usePageGuides({
       isReady: true,
@@ -243,7 +244,7 @@ describe('usePageGuides', () => {
         {
           card: { uuid: 'right' },
           globalX: cardWidthPx,
-          globalY: 0,
+          globalY: cardHeightPx,
           bleedMm: 0,
           baseCardWidthMm: cardWidthMm,
           baseCardHeightMm: cardHeightMm,
