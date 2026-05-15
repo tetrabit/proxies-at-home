@@ -61,6 +61,35 @@ describe("cacheUtils", () => {
       const count = await enforceImageCacheLimits();
       expect(count).toBe(0);
     });
+
+    it("uses blob-size and zero-size fallbacks while enforcing the image cache cap", async () => {
+      const now = Date.now();
+      const threeGB = 3 * 1024 * 1024 * 1024;
+
+      await db.imageCache.add({
+        url: "old-blob-sized",
+        blob: { size: threeGB } as Blob,
+        cachedAt: now - 10_000,
+      } as never);
+      await db.imageCache.add({
+        url: "new-blob-sized",
+        blob: { size: threeGB } as Blob,
+        cachedAt: now,
+      } as never);
+      await db.imageCache.add({
+        url: "new-zero-sized",
+        cachedAt: now + 1,
+      } as never);
+
+      await expect(enforceImageCacheLimits()).resolves.toBe(1);
+      await expect(db.imageCache.toArray()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "new-blob-sized" }),
+          expect.objectContaining({ url: "new-zero-sized" }),
+        ])
+      );
+      await expect(db.imageCache.get("old-blob-sized")).resolves.toBeUndefined();
+    });
   });
 
   describe("enforceMetadataCacheLimits", () => {
@@ -239,6 +268,36 @@ describe("cacheUtils", () => {
 
       orderBySpy.mockRestore();
     });
+
+    it("uses the unknown table label when cleanup fails before a table name is available", async () => {
+      const errorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      const orderBySpy = vi
+        .spyOn(db.effectCache, "orderBy")
+        .mockImplementation(() => {
+          throw new Error("unnamed table down");
+        });
+      const originalName = db.effectCache.name;
+      Object.defineProperty(db.effectCache, "name", {
+        configurable: true,
+        value: "",
+      });
+
+      try {
+        await expect(enforceEffectCacheLimits()).resolves.toBe(0);
+        expect(errorSpy).toHaveBeenCalledWith(
+          "[Cache] Cleanup error for table unknown:",
+          expect.any(Error)
+        );
+      } finally {
+        Object.defineProperty(db.effectCache, "name", {
+          configurable: true,
+          value: originalName,
+        });
+        orderBySpy.mockRestore();
+      }
+    });
   });
 
   describe("getImageCacheStats", () => {
@@ -328,7 +387,7 @@ describe("cacheUtils", () => {
   it("uses blob size fallback and handles cache stat/cleanup errors", async () => {
     await db.imageCache.add({
       url: "blob-sized",
-      blob: new Blob([new Uint8Array(10)]),
+      blob: { size: 10 } as Blob,
       cachedAt: Date.now(),
     } as never);
 
@@ -337,10 +396,18 @@ describe("cacheUtils", () => {
       sizeBytes: 10,
     });
 
-    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(new Error("count failed"));
-    await expect(getImageCacheStats()).resolves.toEqual({ count: 0, sizeBytes: 0, oldestMs: null });
+    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(
+      new Error("count failed")
+    );
+    await expect(getImageCacheStats()).resolves.toEqual({
+      count: 0,
+      sizeBytes: 0,
+      oldestMs: null,
+    });
 
-    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(new Error("cleanup failed"));
+    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(
+      new Error("cleanup failed")
+    );
     await expect(emergencyCleanup()).resolves.toBe(false);
   });
 });
