@@ -55,6 +55,10 @@ import {
   CardControlsOverlay,
   type CardControlLayout,
 } from "./PageComponents/CardControlsOverlay";
+import {
+  PageControlsOverlay,
+  type PageControlLayout,
+} from "./PageComponents/PageControlsOverlay";
 import { PageViewContextMenu } from "./PageComponents/PageViewContextMenu";
 import { PageViewSelectionBar } from "./PageComponents/PageViewSelectionBar";
 import { KeyboardShortcutsModal } from "../common";
@@ -924,6 +928,19 @@ export function PageView({
     flippedCards,
   ]);
 
+  const pageControlLayouts = useMemo((): PageControlLayout[] => {
+    const pages = chunkCards(localCards, pageCapacity);
+
+    return pixiPages.map((page) => ({
+      pageIndex: page.pageIndex,
+      screenX: 0,
+      screenY: Math.round(page.pageYOffset * effectiveZoom),
+      width: Math.round(page.pageWidthPx * effectiveZoom),
+      height: Math.round(page.pageHeightPx * effectiveZoom),
+      cardUuids: pages[page.pageIndex]?.map((card) => card.uuid) ?? [],
+    }));
+  }, [localCards, pageCapacity, pixiPages, effectiveZoom]);
+
   // Render
   return (
     <>
@@ -1032,6 +1049,13 @@ export function PageView({
                       zoom={effectiveZoom}
                       onRangeSelect={handleRangeSelect}
                       setContextMenu={setContextMenu}
+                    />
+                    <PageControlsOverlay
+                      pageLayouts={pageControlLayouts}
+                      containerWidth={pageWidthPx * effectiveZoom}
+                      containerHeight={containerHeight}
+                      scrollContainerRef={scrollRef}
+                      mobile={mobile}
                     />
                   </SortableContext>
 
