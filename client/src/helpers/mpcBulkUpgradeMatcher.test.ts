@@ -1957,7 +1957,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           sourceImageUrl: scryfallSourceUrl,
           ssimCompare,
           getMpcImageUrl: defaultGetUrl,
-          unseenPreferenceScores: { predicted: 2 },
+          unseenPreferenceScores: { predicted: 200 },
         });
 
         expect(result.fullProcess[0].card.identifier).toBe("predicted");
@@ -1982,7 +1982,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result.fullProcess[0].card.identifier).toBe("set-card");
-        expect(result.fullProcess[0].bucket).toBe("set_collector");
+        expect(result.fullProcess[0].bucket).toBe("set");
       });
 
       it("does not treat collector-number-only metadata as exact-printing evidence", async () => {
@@ -2082,7 +2082,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result?.card.identifier).toBe("set-card");
-        expect(result?.reason).toBe("set_collector_only");
+        expect(result?.reason).toBe("set_only");
       });
 
       it("keeps parsed metadata at name score when the set differs", async () => {
