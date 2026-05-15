@@ -31,6 +31,11 @@ describe("mpcUtils", () => {
       expect(parseMpcCardName("")).toBe("");
     });
 
+    it("uses fallback or empty string for whitespace-only input", () => {
+      expect(parseMpcCardName("   ", "Fallback")).toBe("Fallback");
+      expect(parseMpcCardName("   ")).toBe("");
+    });
+
     it("strips trailing language or quality tags before metadata", () => {
       expect(parseMpcCardName("Sol Ring_EN [C21] {267}")).toBe("Sol Ring");
       expect(parseMpcCardName("Counterspell-hd [STA] {15}")).toBe(
@@ -40,6 +45,10 @@ describe("mpcUtils", () => {
 
     it("normalizes multiline MPC names before parsing", () => {
       expect(parseMpcCardName("Sol Ring\n[C21] {267}")).toBe("Sol Ring");
+    });
+
+    it("falls back to normalized text when no leading base name exists", () => {
+      expect(parseMpcCardName("[C21] {267}")).toBe("[C21] {267}");
     });
   });
 
@@ -167,7 +176,12 @@ describe("mpcUtils", () => {
     });
 
     it("prefers the bracket closest to the collector number when multiple valid set-like tags exist", () => {
-      const result = parseMpcSetCollector("Counterspell [ALT] [STA] {15}");
+      const result = parseMpcSetCollector("Counterspell [ABC] [STA] {15}");
+      expect(result).toEqual({ set: "STA", collectorNumber: "15" });
+    });
+
+    it("falls back to the last valid bracket when all set tags follow the collector number", () => {
+      const result = parseMpcSetCollector("Counterspell {15} [ABC] [STA]");
       expect(result).toEqual({ set: "STA", collectorNumber: "15" });
     });
 

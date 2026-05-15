@@ -22,6 +22,11 @@ vi.mock("../db", () => ({
 import { getCachedMpcSearch, cacheMpcSearch, clearMpcSearchCache, getMpcCacheStats } from "./mpcSearchCache";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
 
+async function flushAsyncTrim() {
+    await Promise.resolve();
+    await Promise.resolve();
+}
+
 // Helper to create mock MPC card
 function createMockMpcCard(overrides: Partial<MpcAutofillCard> = {}): MpcAutofillCard {
     return {
@@ -100,6 +105,26 @@ describe("mpcSearchCache", () => {
             );
         });
 
+        it("should backfill rawName for stale cache entries", async () => {
+            const staleCard = createMockMpcCard({ name: "Stale Cache Card" });
+            delete (staleCard as Partial<MpcAutofillCard>).rawName;
+            mockMpcSearchCache.get.mockResolvedValue({
+                query: "stale",
+                cardType: "CARD",
+                cards: [staleCard],
+                cachedAt: Date.now(),
+            });
+
+            const result = await getCachedMpcSearch("stale", "CARD");
+
+            expect(result?.[0]).toEqual(
+                expect.objectContaining({
+                    name: "Stale Cache Card",
+                    rawName: "Stale Cache Card",
+                })
+            );
+        });
+
         it("should normalize query to lowercase and trim", async () => {
             mockMpcSearchCache.get.mockResolvedValue(undefined);
 
@@ -154,6 +179,42 @@ describe("mpcSearchCache", () => {
             await cacheMpcSearch("test", "CARD", []);
 
             expect(consoleSpy).toHaveBeenCalled();
+            consoleSpy.mockRestore();
+        });
+
+        it("should trim the least recently used entries when the cache is over limit", async () => {
+            const staleEntries = [
+                { query: "old one", cardType: "CARD", cards: [], cachedAt: 1 },
+                { query: "old token", cardType: "TOKEN", cards: [], cachedAt: 2 },
+            ];
+            const toArray = vi.fn().mockResolvedValue(staleEntries);
+            const limit = vi.fn(() => ({ toArray }));
+            mockMpcSearchCache.put.mockResolvedValue(undefined);
+            mockMpcSearchCache.count.mockResolvedValue(1002);
+            mockMpcSearchCache.orderBy.mockReturnValue({ limit });
+
+            await cacheMpcSearch("new", "CARD", []);
+            await flushAsyncTrim();
+
+            expect(limit).toHaveBeenCalledWith(2);
+            expect(mockMpcSearchCache.bulkDelete).toHaveBeenCalledWith([
+                ["old one", "CARD"],
+                ["old token", "TOKEN"],
+            ]);
+        });
+
+        it("should warn when asynchronous trim fails", async () => {
+            mockMpcSearchCache.put.mockResolvedValue(undefined);
+            mockMpcSearchCache.count.mockRejectedValue(new Error("trim failed"));
+            const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => { });
+
+            await cacheMpcSearch("new", "CARD", []);
+            await flushAsyncTrim();
+
+            expect(consoleSpy).toHaveBeenCalledWith(
+                "[MPC Client Cache] Trim failed:",
+                expect.any(Error)
+            );
             consoleSpy.mockRestore();
         });
     });

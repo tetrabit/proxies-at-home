@@ -99,7 +99,7 @@ export function parseMpcSetCollector(mpcName: string): MpcSetCollector | null {
     set = validSetMatches[0][1].toUpperCase();
   } else if (validSetMatches.length > 1) {
     const closestBeforeCollector = validSetMatches
-      .filter((match) => (match.index ?? -1) < collectorIndex)
+      .filter((match) => match.index < collectorIndex)
       .at(-1);
     set = (closestBeforeCollector ?? validSetMatches.at(-1))?.[1].toUpperCase();
   }
