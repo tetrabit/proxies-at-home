@@ -392,6 +392,12 @@ describe("mpcCalibrationRunner", () => {
 
     expect(result.summary.totalCases).toBe(3);
     expect(result.cases).toHaveLength(3);
+    expect(result.summary.mismatchedCases).toBe(3);
+    expect(result.cases.map((item) => item.predictedIdentifier)).toEqual([
+      "exact-print",
+      "exact-print",
+      "exact-print",
+    ]);
   });
 
   it("skips held-out cases without labels, enough candidates, or a trainable model", async () => {
