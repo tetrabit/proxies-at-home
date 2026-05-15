@@ -156,7 +156,7 @@ describe("useShareUrl", () => {
     const sharedData = {
       v: 1 as const,
       c: [{ name: "Island" }],
-      st: {},
+      st: undefined,
     };
     const existingProject = {
       id: "project-1",

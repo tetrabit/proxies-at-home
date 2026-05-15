@@ -153,6 +153,30 @@ describe("useScryfallPrints", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("aborts an in-flight request when the query changes", async () => {
+    vi.useFakeTimers();
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Promise(() => {
+          // Intentionally left pending so the second query can abort it.
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderHook(
+      ({ name }) => useScryfallPrints({ name }),
+      { initialProps: { name: "First Card" } }
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    rerender({ name: "Second Card" });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(abortSpy).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("updates an existing cached metadata object after a successful fetch", async () => {
     await db.cardMetadataCache.add({
       id: "cached-update-object",
