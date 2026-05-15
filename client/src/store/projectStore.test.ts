@@ -1,6 +1,6 @@
 
 import "fake-indexeddb/auto";
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useProjectStore } from "./projectStore";
 import { db } from "../db";
 import { useSettingsStore } from "./settings";
@@ -32,6 +32,10 @@ describe("Project Switching (Relational Architecture)", () => {
         // Reset stores
         useProjectStore.setState({ currentProjectId: null, projects: [], isLoading: false });
         useSettingsStore.getState().resetSettings();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it("should maintain data integrity in a single cards table when switching projects", async () => {
@@ -220,5 +224,27 @@ describe("Project Switching (Relational Architecture)", () => {
         const updated = await db.projects.get(projectId);
         expect(updated?.name).toBe("Renamed");
         expect(useProjectStore.getState().projects.find((p) => p.id === projectId)?.name).toBe("Renamed");
+    });
+
+    it("should persist settings to the active project after debounce", async () => {
+        vi.useFakeTimers();
+        const projectId = await useProjectStore.getState().createProject("Timer Project");
+        await useProjectStore.getState().switchProject(projectId);
+
+        await useProjectStore.getState().updateProjectSettings({});
+        await vi.advanceTimersByTimeAsync(1000);
+
+        const updated = await db.projects.get(projectId);
+        expect(updated?.settings).toBeDefined();
+    });
+
+    it("should persist settings to user preferences when no project is active", async () => {
+        vi.useFakeTimers();
+        useProjectStore.setState({ currentProjectId: null });
+
+        await useProjectStore.getState().updateProjectSettings({});
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(await db.userPreferences.get("default")).toBeDefined();
     });
 });
