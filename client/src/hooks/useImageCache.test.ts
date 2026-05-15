@@ -1,5 +1,6 @@
 import { renderHook } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { act } from "react";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { useImageCache } from "./useImageCache";
 import type { Image } from "../db";
 
@@ -10,6 +11,7 @@ let urlCounter = 0;
 beforeEach(() => {
     mockObjectUrls.clear();
     urlCounter = 0;
+    vi.useFakeTimers();
 
     global.URL.createObjectURL = vi.fn((blob: Blob) => {
         const url = `blob:test-${urlCounter++}`;
@@ -18,6 +20,10 @@ beforeEach(() => {
     });
 
     global.URL.revokeObjectURL = vi.fn();
+});
+
+afterEach(() => {
+    vi.useRealTimers();
 });
 
 describe("useImageCache", () => {
@@ -154,6 +160,26 @@ describe("useImageCache", () => {
 
             // Should be different URLs since different blobs are used
             expect(darkenedUrl).not.toBe(normalUrl);
+        });
+    });
+
+    describe("cleanup", () => {
+        it("should revoke object URLs after images are removed", async () => {
+            const image = createMockImage("img1", 100);
+            const { rerender } = renderHook(
+                ({ imgs, mode }) => useImageCache(imgs, mode),
+                { initialProps: { imgs: [image], mode: 'none' as const } }
+            );
+
+            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
+
+            rerender({ imgs: [], mode: 'none' as const });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(2000);
+            });
+
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test-0");
         });
     });
 });
