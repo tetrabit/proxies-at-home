@@ -8,9 +8,19 @@ import {
   undoableDuplicateCard,
   undoableDuplicateCardsBatch,
   undoableUpdateCardBleedSettings,
+  undoableChangeCardback,
 } from "./undoableActions";
 import { db } from "@/db";
-import { addCards, deleteCard, duplicateCard } from "./dbUtils";
+import {
+  addCards,
+  addRemoteImage,
+  changeCardArtwork,
+  createLinkedBackCard,
+  createLinkedBackCardsBulk,
+  deleteCard,
+  duplicateCard,
+  rebalanceCardOrders,
+} from "./dbUtils";
 import type { CardOption } from "@/types";
 
 // Mock the database
@@ -380,6 +390,70 @@ describe("undoableActions", () => {
       );
       expect(mockPushAction).not.toHaveBeenCalled();
     });
+
+
+    it("undoes and redoes a batch duplicate with linked backs and image refs", async () => {
+      const front = {
+        uuid: "front-1",
+        name: "Front",
+        order: 10,
+        imageId: "img-front",
+        linkedBackId: "back-1",
+      } as CardOption;
+      const back = {
+        uuid: "back-1",
+        name: "Back",
+        order: 10,
+        imageId: "img-back",
+        linkedFrontId: "front-1",
+      } as CardOption;
+      vi.spyOn(crypto, "randomUUID")
+        .mockReturnValueOnce("new-front" as never)
+        .mockReturnValueOnce("new-back" as never);
+      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
+        toArray: vi.fn().mockResolvedValue([front, back]),
+      } as never);
+      vi.mocked(db.cards.get).mockResolvedValueOnce(back);
+      vi.mocked(db.images.bulkGet)
+        .mockResolvedValueOnce([
+          { id: "img-back", refCount: 1 },
+          { id: "img-front", refCount: 2 },
+        ] as never)
+        .mockResolvedValueOnce([
+          { id: "img-front", refCount: 3 },
+          { id: "img-back", refCount: 2 },
+        ] as never);
+
+      await expect(undoableDuplicateCardsBatch(["front-1"])).resolves.toEqual([
+        "new-front",
+        "new-back",
+      ]);
+
+      expect(db.cards.bulkPut).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ uuid: "front-1", order: 10 }),
+          expect.objectContaining({ uuid: "new-front", linkedBackId: "new-back", order: 20 }),
+          expect.objectContaining({ uuid: "new-back", linkedFrontId: "new-front", order: 20 }),
+        ])
+      );
+      expect(db.images.bulkUpdate).toHaveBeenCalledWith([
+        { key: "img-back", changes: { refCount: 2 } },
+        { key: "img-front", changes: { refCount: 3 } },
+      ]);
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
+        { uuid: "new-front", imageId: "img-front" },
+        { uuid: "new-back", imageId: "img-back" },
+      ] as CardOption[]);
+      await pushedAction.undo();
+
+      expect(db.cards.bulkDelete).toHaveBeenCalledWith(["new-front", "new-back"]);
+      expect(rebalanceCardOrders).toHaveBeenCalled();
+
+      await pushedAction.redo();
+      expect(mockPushAction).toHaveBeenCalledTimes(2);
+    });
   });
   describe("undoableUpdateCardBleedSettings", () => {
     const selectedCard = {
@@ -446,6 +520,138 @@ describe("undoableActions", () => {
           changes: expect.objectContaining({ bleedMode: "none" }),
         },
       ]);
+    });
+
+
+    it("undoes and redoes bleed settings while invalidating image and cardback caches", async () => {
+      await undoableUpdateCardBleedSettings(["back-1"], { bleedMode: "none" });
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.update).mockClear();
+      vi.mocked(db.cardbacks.update).mockClear();
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.update).toHaveBeenCalledWith(
+        "back-1",
+        expect.objectContaining({ bleedMode: undefined })
+      );
+      expect(db.cards.update).toHaveBeenCalledWith(
+        "back-2",
+        expect.objectContaining({ bleedMode: undefined })
+      );
+      expect(db.cards.bulkUpdate).toHaveBeenLastCalledWith([
+        { key: "back-1", changes: expect.objectContaining({ bleedMode: "none" }) },
+        { key: "back-2", changes: expect.objectContaining({ bleedMode: "none" }) },
+      ]);
+      expect(db.cardbacks.update).toHaveBeenCalledWith(
+        "cardback_uploaded_1",
+        expect.objectContaining({ generatedBleedMode: undefined })
+      );
+    });
+  });
+
+  describe("undoableChangeCardback", () => {
+    const frontWithBack = {
+      uuid: "front-existing",
+      name: "Same",
+      order: 10,
+      linkedBackId: "back-existing",
+    } as CardOption;
+    const backExisting = {
+      uuid: "back-existing",
+      name: "Old Back",
+      order: 10,
+      imageId: "old-cardback",
+      linkedFrontId: "front-existing",
+      usesDefaultCardback: true,
+    } as CardOption;
+    const frontWithoutBack = {
+      uuid: "front-new",
+      name: "Other",
+      order: 20,
+    } as CardOption;
+
+    beforeEach(() => {
+      vi.mocked(db.cards.where).mockReturnValue({
+        anyOf: vi.fn(() => ({
+          toArray: vi.fn().mockResolvedValue([frontWithBack, frontWithoutBack]),
+        })),
+      } as never);
+      vi.mocked(db.cards.bulkGet).mockResolvedValue([backExisting] as CardOption[]);
+    });
+
+    it("updates existing backs, creates missing backs, and supports undo/redo", async () => {
+      await undoableChangeCardback(
+        ["front-existing", "front-new"],
+        "cardback_new",
+        "New Back",
+        false
+      );
+
+      expect(changeCardArtwork).toHaveBeenCalledWith(
+        "old-cardback",
+        "cardback_new",
+        backExisting,
+        false,
+        "New Back",
+        undefined,
+        undefined,
+        false
+      );
+      expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+        {
+          frontUuid: "front-new",
+          backImageId: "cardback_new",
+          backName: "New Back",
+          options: { hasBuiltInBleed: false, usesDefaultCardback: false },
+        },
+      ]);
+      expect(mockPushAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "CHANGE_CARDBACK",
+          description: "Change cardback for 2 cards",
+        })
+      );
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(backExisting)
+        .mockResolvedValueOnce({ ...frontWithoutBack, linkedBackId: "new-back" } as CardOption)
+        .mockResolvedValueOnce({ uuid: "new-back", imageId: "img-new" } as CardOption);
+      vi.mocked(db.images.get).mockResolvedValueOnce({ id: "img-new", refCount: 1 } as never);
+
+      await pushedAction.undo();
+
+      expect(changeCardArtwork).toHaveBeenCalledWith(
+        "old-cardback",
+        "old-cardback",
+        backExisting,
+        false,
+        "Old Back",
+        undefined,
+        undefined,
+        true
+      );
+      expect(db.images.delete).toHaveBeenCalledWith("img-new");
+      expect(db.cards.delete).toHaveBeenCalledWith("new-back");
+      expect(db.cards.update).toHaveBeenCalledWith("front-new", { linkedBackId: undefined });
+
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(frontWithBack)
+        .mockResolvedValueOnce(backExisting)
+        .mockResolvedValueOnce(frontWithoutBack);
+      await pushedAction.redo();
+
+      expect(db.cards.update).toHaveBeenCalledWith("back-existing", {
+        usesDefaultCardback: false,
+      });
+      expect(createLinkedBackCard).toHaveBeenCalledWith(
+        "front-new",
+        "cardback_new",
+        "New Back",
+        { hasBuiltInBleed: false, usesDefaultCardback: false }
+      );
     });
   });
 });
