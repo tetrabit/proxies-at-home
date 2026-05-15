@@ -15,29 +15,11 @@ vi.mock('lucide-react', () => ({
 
 vi.mock('react', async () => {
     const actual = await vi.importActual<typeof import('react')>('react');
-    let value = '5';
-    let wasAssigned = false;
-    const fakeInput = {};
-    Object.defineProperty(fakeInput, 'value', {
+    const nullRef = {};
+    Object.defineProperty(nullRef, 'current', {
         configurable: true,
         enumerable: true,
-        get: () => value,
-        set: (next: string) => {
-            value = String(next);
-            wasAssigned = true;
-        },
-    });
-    Object.defineProperty(fakeInput, 'dispatchEvent', {
-        configurable: true,
-        enumerable: true,
-        value: vi.fn(),
-    });
-
-    const guardedRef = {};
-    Object.defineProperty(guardedRef, 'current', {
-        configurable: true,
-        enumerable: true,
-        get: () => (wasAssigned ? null : (fakeInput as HTMLInputElement)),
+        get: () => null,
         set: () => undefined,
     });
 
@@ -51,7 +33,7 @@ vi.mock('react', async () => {
                 call += 1;
                 switch (call) {
                     case 1:
-                        return guardedRef;
+                        return nullRef;
                     case 2:
                         return mutableRef<NodeJS.Timeout | null>(null);
                     case 3:
@@ -68,8 +50,8 @@ vi.mock('react', async () => {
 
 import { NumberInput } from './NumberInput';
 
-describe('NumberInput ref guard', () => {
-    it('does nothing when the internal input ref is unavailable', () => {
+describe('NumberInput update guard', () => {
+    it('does nothing when the inner input ref is unavailable before value updates', () => {
         const onChange = vi.fn();
         render(<NumberInput value={5} step={1} onChange={onChange} />);
 
