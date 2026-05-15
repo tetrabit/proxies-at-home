@@ -226,6 +226,30 @@ describe('importParsers', () => {
                 }),
             ]);
         });
+
+        it('uses query text in MPC XML different-back warnings when the name is absent', () => {
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+            const xml = `
+              <order>
+                <fronts>
+                  <card>
+                    <id>front_query_only</id>
+                    <name></name>
+                    <query>Query Only</query>
+                    <slots>0,1</slots>
+                  </card>
+                </fronts>
+                <backs>
+                  <card><id>back_query_a</id><name>Back A</name><slots>0</slots></card>
+                  <card><id>back_query_b</id><name>Back B</name><slots>1</slots></card>
+                </backs>
+              </order>`;
+
+            parseMpcXml(xml);
+
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Card "Query Only" has different backs per slot'));
+            warnSpy.mockRestore();
+        });
     });
 
     describe('createIntentFromPreloaded', () => {
