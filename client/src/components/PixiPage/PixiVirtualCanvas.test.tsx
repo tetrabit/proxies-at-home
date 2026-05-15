@@ -20,14 +20,14 @@ type FilterTestState = {
 };
 
 type GuideHookState = {
-  page: ReturnType<typeof vi.fn>;
-  perCard: ReturnType<typeof vi.fn>;
-  registration: ReturnType<typeof vi.fn>;
+  page: unknown[];
+  perCard: unknown[];
+  registration: unknown[];
 };
 
 function guideHookState(): GuideHookState {
   const global = globalThis as typeof globalThis & { __pixiVirtualCanvasGuideHooks?: GuideHookState };
-  global.__pixiVirtualCanvasGuideHooks ??= { page: vi.fn(), perCard: vi.fn(), registration: vi.fn() };
+  global.__pixiVirtualCanvasGuideHooks ??= { page: [], perCard: [], registration: [] };
   return global.__pixiVirtualCanvasGuideHooks;
 }
 
@@ -152,9 +152,9 @@ vi.mock("./filters", () => {
   };
 });
 
-vi.mock("./usePageGuides", () => ({ usePageGuides: guideHookState().page }));
-vi.mock("./usePerCardGuides", () => ({ usePerCardGuides: guideHookState().perCard }));
-vi.mock("./useRegistrationMarks", () => ({ useRegistrationMarks: guideHookState().registration }));
+vi.mock("./usePageGuides", () => ({ usePageGuides: (args: unknown) => guideHookState().page.push(args) }));
+vi.mock("./usePerCardGuides", () => ({ usePerCardGuides: (args: unknown) => guideHookState().perCard.push(args) }));
+vi.mock("./useRegistrationMarks", () => ({ useRegistrationMarks: (args: unknown) => guideHookState().registration.push(args) }));
 
 vi.mock("../../store/settings", () => {
   const settings = {
@@ -262,6 +262,10 @@ describe("PixiVirtualCanvas", () => {
     const filters = filterState();
     filters.darken = [];
     filters.adjustment = [];
+    const hooks = guideHookState();
+    hooks.page = [];
+    hooks.perCard = [];
+    hooks.registration = [];
     vi.clearAllMocks();
     vi.stubGlobal("Image", MockImage);
     vi.stubGlobal("URL", {
@@ -301,9 +305,9 @@ describe("PixiVirtualCanvas", () => {
     expect(state.apps[0].ticker.stop).toHaveBeenCalled();
     expect(state.apps[0].renderer.resize).toHaveBeenCalledWith(320, 240);
     expect(pixiSingleton.app).toBe(state.apps[0]);
-    expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
-    expect(guideHookState().perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "solid-rounded-rect" }));
-    expect(guideHookState().registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "4" }));
+    expect(guideHookState().page.at(-1)).toEqual(expect.objectContaining({ cutLineStyle: "full" }));
+    expect(guideHookState().perCard.at(-1)).toEqual(expect.objectContaining({ guideStyle: "solid-rounded-rect" }));
+    expect(guideHookState().registration.at(-1)).toEqual(expect.objectContaining({ registrationMarks: "4" }));
 
     scrollHost.dispatchEvent(new Event("scroll"));
     expect(state.apps[0].render).toHaveBeenCalled();
@@ -375,14 +379,14 @@ describe("PixiVirtualCanvas", () => {
     await waitFor(() => expect(state.apps[0]?.init).toHaveBeenCalled());
     await waitFor(() => expect(state.sprites.length).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(warn).toHaveBeenCalledWith("[PixiVirtualCanvas] Failed to create texture:", expect.any(Error)));
-    expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
+    expect(guideHookState().page.at(-1)).toEqual(expect.objectContaining({ cutLineStyle: "full" }));
 
     cleanup();
     resetPixiSingleton();
     renderCanvas({ cards: [], showGuideLinesOnBackCards: false });
-    await waitFor(() => expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "none" })));
-    expect(guideHookState().perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "none" }));
-    expect(guideHookState().registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "none" }));
+    await waitFor(() => expect(guideHookState().page.at(-1)).toEqual(expect.objectContaining({ cutLineStyle: "none" })));
+    expect(guideHookState().perCard.at(-1)).toEqual(expect.objectContaining({ guideStyle: "none" }));
+    expect(guideHookState().registration.at(-1)).toEqual(expect.objectContaining({ registrationMarks: "none" }));
   });
 
   it("reuses in-flight and existing singleton apps and reports init failures", async () => {
