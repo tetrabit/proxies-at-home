@@ -89,9 +89,12 @@ export function ApplicationSection() {
 
             resetSettings(); // Reset settings store to defaults
 
-            if ("caches" in window) {
-                const names = await caches.keys();
-                await Promise.all(names.map((n) => caches.delete(n)));
+            try {
+                const cacheStorage = window.caches;
+                const names = await cacheStorage.keys();
+                await Promise.all(names.map((n) => cacheStorage.delete(n)));
+            } catch {
+                // Cache storage is optional in some environments; keep reset flow going.
             }
         } catch (e) {
             console.error("Error clearing app data:", e);
