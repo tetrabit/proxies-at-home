@@ -106,6 +106,25 @@ describe("undoRedo store", () => {
             expect(state.redoStack).toHaveLength(1);
         });
 
+        it("should log and recover when undo throws", async () => {
+            const error = new Error("undo failed");
+            const undoFn = vi.fn().mockRejectedValue(error);
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const action = {
+                type: "DELETE_CARD" as const,
+                description: "Test action",
+                undo: undoFn,
+                redo: vi.fn().mockResolvedValue(undefined),
+            };
+
+            useUndoRedoStore.getState().pushAction(action);
+            await useUndoRedoStore.getState().undo();
+
+            expect(errorSpy).toHaveBeenCalledWith("[UndoRedo] Failed to undo action:", error);
+            expect(useUndoRedoStore.getState().isPerformingAction).toBe(false);
+            errorSpy.mockRestore();
+        });
+
         it("should do nothing if undo stack is empty", async () => {
             await useUndoRedoStore.getState().undo();
 
@@ -149,6 +168,26 @@ describe("undoRedo store", () => {
             const state = useUndoRedoStore.getState();
             expect(state.undoStack).toHaveLength(1);
             expect(state.redoStack).toHaveLength(0);
+        });
+
+        it("should log and recover when redo throws", async () => {
+            const error = new Error("redo failed");
+            const redoFn = vi.fn().mockRejectedValue(error);
+            const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            const action = {
+                type: "DELETE_CARD" as const,
+                description: "Test action",
+                undo: vi.fn().mockResolvedValue(undefined),
+                redo: redoFn,
+            };
+
+            useUndoRedoStore.getState().pushAction(action);
+            await useUndoRedoStore.getState().undo();
+            await useUndoRedoStore.getState().redo();
+
+            expect(errorSpy).toHaveBeenCalledWith("[UndoRedo] Failed to redo action:", error);
+            expect(useUndoRedoStore.getState().isPerformingAction).toBe(false);
+            errorSpy.mockRestore();
         });
 
         it("should do nothing if redo stack is empty", async () => {
