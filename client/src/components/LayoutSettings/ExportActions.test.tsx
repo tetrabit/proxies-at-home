@@ -156,11 +156,12 @@ vi.mock('pdf-lib', () => ({
 vi.mock('../common', () => ({
   AutoTooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   NumberInput: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
-  SplitButton: ({ label, sublabel, disabled, onClick, isOpen, onToggle, options, onSelect }: { label: string; sublabel?: string; disabled?: boolean; onClick: () => void; isOpen: boolean; onToggle: () => void; options: Array<{ value: string; label: string }>; onSelect: (value: string) => void }) => (
+  SplitButton: ({ label, sublabel, disabled, onClick, isOpen, onToggle, onClose, options, onSelect }: { label: string; sublabel?: string; disabled?: boolean; onClick: () => void; isOpen: boolean; onToggle: () => void; onClose: () => void; options: Array<{ value: string; label: string }>; onSelect: (value: string) => void }) => (
     <div>
       <button disabled={disabled} onClick={onClick}>{label}</button>
       <span>{sublabel}</span>
       <button onClick={onToggle}>{label} modes</button>
+      <button onClick={onClose}>{label} close</button>
       {isOpen ? options.map((option) => <button key={`${label}-${option.value}`} onClick={() => onSelect(option.value)}>{label}: {option.label}</button>) : null}
     </div>
   ),
@@ -205,7 +206,10 @@ describe('ExportActions', () => {
     mocks.dbCardsGet.mockImplementation(async (id: string) => ({ 'back-1': linkedBack, 'back-2': hiddenBack }[id]));
     mocks.dbCardsBulkGet.mockResolvedValue([hiddenBack]);
     mocks.dbCardbacksGet.mockResolvedValue({ id: 'cardback-mpc', sourceUrl: 'https://mpcfill.com/back' });
-    mocks.exportProxyPagesToPdf.mockResolvedValue(undefined);
+    mocks.exportProxyPagesToPdf.mockImplementation(async (options?: { onProgress?: (value: number) => void }) => {
+      options?.onProgress?.(10);
+      return undefined;
+    });
     mocks.ExportImagesZip.mockResolvedValue(undefined);
     mocks.ExportImagesIndividual.mockResolvedValue(undefined);
     mocks.applyCalibration.mockImplementation(async (blob: Blob) => blob);
@@ -275,6 +279,7 @@ describe('ExportActions', () => {
 
     const pageLimit = screen.getByLabelText('PDF pages');
     fireEvent.change(pageLimit, { target: { value: ' 2.8 ' } });
+    fireEvent.keyDown(pageLimit, { key: 'Enter' });
     fireEvent.blur(pageLimit);
     expect((pageLimit as HTMLInputElement).value).toBe('2');
 
@@ -294,6 +299,8 @@ describe('ExportActions', () => {
     fireEvent.click(screen.getByText('Export to PDF'));
     expect(await screen.findByText('PDF Export Failed')).toBeDefined();
     expect(screen.getByText('pdf failed')).toBeDefined();
+    fireEvent.click(screen.getByText('Close'));
+    await waitFor(() => expect(screen.queryByText('pdf failed')).toBeNull());
   });
 
   it('exports interleaved, visible-face, and back-only PDF modes', async () => {
@@ -325,13 +332,22 @@ describe('ExportActions', () => {
       filenameSuffix: '_visible_faces',
     });
 
+    mocks.dbCardsGet.mockResolvedValueOnce(undefined);
+    renderExport();
+    fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(4));
+    expect(mocks.exportProxyPagesToPdf.mock.calls.at(-1)?.[0]).toMatchObject({
+      cards: [front1, front2],
+      filenameSuffix: '_visible_faces',
+    });
+
     mocks.exportMode = 'backs';
     mocks.settingsState.useCustomBackOffset = true;
     mocks.settingsState.cardBackPositionX = 4;
     mocks.settingsState.cardBackPositionY = 5;
     renderExport();
     fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
-    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(5));
     expect(mocks.exportProxyPagesToPdf.mock.calls.at(-1)?.[0]).toMatchObject({
       cards: [hiddenBack, linkedBack],
       filenameSuffix: '_backs',
@@ -341,17 +357,24 @@ describe('ExportActions', () => {
   });
 
   it('exports duplex PDF modes through merge and calibration paths', async () => {
-    mocks.exportProxyPagesToPdf.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    mocks.exportProxyPagesToPdf.mockImplementation(async (options?: { onProgress?: (value: number) => void }) => {
+      options?.onProgress?.(10);
+      return new Uint8Array([1, 2, 3]);
+    });
     mocks.exportMode = 'duplex';
+    mocks.settingsState.useCustomBackOffset = true;
+    mocks.settingsState.cardBackPositionX = 6;
+    mocks.settingsState.cardBackPositionY = 7;
     renderExport();
 
     fireEvent.click(screen.getByText('Export to PDF'));
     await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(2));
+    expect(mocks.exportProxyPagesToPdf.mock.calls[1][0].pdfSettings).toMatchObject({ rightAlignRows: true, cardPositionX: 6, cardPositionY: 7 });
     expect(mocks.pdfLoad).toHaveBeenCalled();
     expect(mocks.pdfCreate).toHaveBeenCalled();
     expect(mocks.setProgress).toHaveBeenCalledWith(100);
 
-    mocks.exportMode = 'duplex-collated';
+    mocks.exportMode = 'duplex';
     mocks.settingsState.printerCalibrationEnabled = true;
     mocks.settingsState.printerCalibrationProfileId = 'profile-1';
     renderExport();
@@ -359,15 +382,22 @@ describe('ExportActions', () => {
     await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(4));
     expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-1', { pageMode: 'duplex' });
 
+    mocks.exportMode = 'duplex-collated';
+    renderExport();
+    fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(6));
+    expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-1', { pageMode: 'duplex' });
+
     mocks.exportMode = 'backs';
     renderExport();
     fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
     await waitFor(() => expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-1', { pageMode: 'back-only' }));
+    mocks.settingsState.useCustomBackOffset = false;
     mocks.settingsState.printerCalibrationEnabled = false;
     mocks.settingsState.printerCalibrationProfileId = undefined;
   });
 
-  it('uses fallback backs and fallback MPC XML cardback ids', async () => {
+  it('uses fallback backs, missing linked-back fallbacks, and fallback MPC XML cardback ids', async () => {
     const noBack = { uuid: 'front-3', name: 'Plains', quantity: 1, imageId: 'img-3' };
     mocks.exportMode = 'backs';
     mocks.defaultCardbackId = 'plain-cardback';
@@ -387,6 +417,42 @@ describe('ExportActions', () => {
     fireEvent.click(screen.getByText('Download Decklist'));
     await waitFor(() => expect(mocks.downloadMpcXml).toHaveBeenCalled());
     expect(mocks.downloadMpcXml.mock.calls.at(-1)?.[2]).toBe('1LrVX0pUcye9n_0RtaDNVl2xPrQgn7CYf');
+
+    mocks.defaultCardbackId = 'mpc-id-cardback';
+    mocks.dbCardbacksGet.mockResolvedValue({ id: 'mpc-id-cardback' });
+    fireEvent.click(screen.getByText('Download Decklist'));
+    await waitFor(() => expect(mocks.downloadMpcXml).toHaveBeenCalledTimes(2));
+    expect(mocks.downloadMpcXml.mock.calls.at(-1)?.[2]).toBe('mpc-back-id');
+
+    mocks.exportMode = 'backs';
+    mocks.dbCardsGet.mockResolvedValue(undefined);
+    renderExport([front1]);
+    fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(2));
+    expect(mocks.exportProxyPagesToPdf.mock.calls.at(-1)?.[0].cards[0]).toMatchObject({
+      uuid: 'blank-back-front-1',
+    });
+  });
+
+  it('handles user cancellation and split button close callbacks', async () => {
+    mocks.exportProxyPagesToPdf.mockImplementationOnce(async (options: { cancellationPromise: Promise<void> }) => options.cancellationPromise);
+    renderExport();
+
+    fireEvent.click(screen.getByText('Export to PDF modes'));
+    fireEvent.click(screen.getByText('Export to PDF close'));
+    fireEvent.click(screen.getByText('Export Card Images modes'));
+    fireEvent.click(screen.getByText('Export Card Images close'));
+    fireEvent.click(screen.getByText('Copy Decklist modes'));
+    fireEvent.click(screen.getByText('Copy Decklist close'));
+    fireEvent.click(screen.getByText('Download Decklist modes'));
+    fireEvent.click(screen.getByText('Download Decklist close'));
+
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.setOnCancel).toHaveBeenCalledWith(expect.any(Function)));
+    const cancel = mocks.setOnCancel.mock.calls.find((call) => typeof call[0] === 'function')?.[0] as () => void;
+    cancel();
+    await waitFor(() => expect(mocks.setOnCancel).toHaveBeenLastCalledWith(null));
+    expect(screen.queryByText('PDF Export Failed')).toBeNull();
   });
 
   it('disables export actions when no front cards are available', () => {
