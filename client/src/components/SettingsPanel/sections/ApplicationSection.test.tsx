@@ -12,16 +12,44 @@ const mockState = vi.hoisted(() => ({
 
 const mockSetters = vi.hoisted(() => ({
     resetSettings: vi.fn(),
+    setAllSettings: vi.fn(),
     setShowProcessingToasts: vi.fn(),
     setDecklistSortAlpha: vi.fn(),
     setPreferredArtSource: vi.fn(),
+    setGlobalLanguage: vi.fn(),
+}));
+
+const userPrefsState = vi.hoisted(() => ({
+    preferences: null as null | { settings?: Record<string, unknown> },
+    saveCurrentAsDefaults: vi.fn().mockResolvedValue(undefined),
+}));
+
+const toastState = vi.hoisted(() => ({
+    addToast: vi.fn(),
 }));
 
 vi.mock('@/store/settings', () => ({
-    useSettingsStore: vi.fn((selector) => {
-        const state = { ...mockState, ...mockSetters };
-        return selector(state);
-    }),
+    useSettingsStore: Object.assign(
+        vi.fn((selector) => {
+            const state = { ...mockState, ...mockSetters };
+            return selector(state);
+        }),
+        {
+            getState: () => ({ ...mockState, ...mockSetters }),
+        },
+    ),
+}));
+
+vi.mock('@/store/userPreferences', () => ({
+    useUserPreferencesStore: {
+        getState: () => userPrefsState,
+    },
+}));
+
+vi.mock('@/store/toast', () => ({
+    useToastStore: {
+        getState: () => toastState,
+    },
 }));
 
 vi.mock('flowbite-react', () => ({
@@ -95,6 +123,8 @@ describe('ApplicationSection', () => {
         mockState.showProcessingToasts = true;
         mockState.decklistSortAlpha = false;
         mockState.preferredArtSource = 'scryfall';
+        userPrefsState.preferences = null;
+        userPrefsState.saveCurrentAsDefaults.mockResolvedValue(undefined);
 
         // Mock window.location with reload
         delete (window as unknown as { location?: Location }).location;
@@ -242,5 +272,41 @@ describe('ApplicationSection', () => {
             fireEvent.click(screen.getByText('Restore Factory Settings'));
             expect(mockSetters.resetSettings).toHaveBeenCalled();
         });
+
+        it('should save current settings as defaults and show a success toast', async () => {
+            render(<ApplicationSection />);
+            fireEvent.click(screen.getByText('Save Current as My Defaults'));
+
+            await waitFor(() => expect(userPrefsState.saveCurrentAsDefaults).toHaveBeenCalled());
+            expect(toastState.addToast).toHaveBeenCalledWith({
+                type: 'success',
+                message: 'Current settings saved as your global defaults',
+                dismissible: true,
+            });
+        });
+
+        it('should reset to user defaults when stored preferences exist', () => {
+            userPrefsState.preferences = { settings: { preferredArtSource: 'mpc' } };
+
+            render(<ApplicationSection />);
+            fireEvent.click(screen.getByText('Reset to My Defaults'));
+
+            expect(mockSetters.resetSettings).toHaveBeenCalled();
+            expect(mockSetters.setAllSettings).toHaveBeenCalledWith({ preferredArtSource: 'mpc' });
+            expect(toastState.addToast).toHaveBeenCalledWith({
+                type: 'success',
+                message: 'Settings reset to your defaults',
+                dismissible: true,
+            });
+        });
+    });
+
+    it('should dispatch the about modal event when About Proxxied is clicked', () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+        render(<ApplicationSection />);
+        fireEvent.click(screen.getByText('About Proxxied'));
+
+        expect(dispatchSpy).toHaveBeenCalled();
     });
 });
