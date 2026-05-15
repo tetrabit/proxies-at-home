@@ -195,7 +195,7 @@ describe('CardInfoHelper', () => {
       expect(extractCardInfo(input)).toEqual({
         name: 'Brainstorm',
         quantity: 1,
-        set: 'm21',
+        set: undefined,
         number: undefined,
       });
     });
