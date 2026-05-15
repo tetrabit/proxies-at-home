@@ -89,11 +89,20 @@ describe("sortAndFilterUtils", () => {
       sortCards(cards, { by: "name", order: "desc" }).map((c) => c.uuid)
     ).toEqual(["basic", "rare", "mythic"]);
     expect(
+      sortCards(cards, { by: "manual", order: "asc" }).map((c) => c.uuid)
+    ).toEqual(["basic", "mythic", "rare"]);
+    expect(
       sortCards(cards, { by: "type", order: "asc" }).map((c) => c.uuid)
     ).toEqual(["mythic", "rare", "basic"]);
     expect(
       sortCards(cards, { by: "cmc", order: "asc" }).map((c) => c.uuid)
     ).toEqual(["basic", "mythic", "rare"]);
+    expect(
+      sortCards(
+        [card({ uuid: "missing-cmc-b", name: "B" }), card({ uuid: "missing-cmc-a", name: "A" })],
+        { by: "cmc", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["missing-cmc-b", "missing-cmc-a"]);
     expect(
       sortCards(cards, { by: "rarity", order: "asc" }).map((c) => c.uuid)
     ).toEqual(["basic", "rare", "mythic"]);
@@ -188,6 +197,11 @@ describe("sortAndFilterUtils", () => {
   });
 
   it("extracts filters with token, dual-faced, type, and category ordering", () => {
+    expect(extractAvailableFilters([card({ name: "Plain", type_line: "Creature" })])).toEqual({
+      types: ["Creature"],
+      categories: [],
+    });
+
     expect(
       extractAvailableFilters([
         card({ name: "Side", type_line: "Sorcery", category: "Sideboard" }),
@@ -305,6 +319,9 @@ describe("sortAndFilterUtils", () => {
     expect(
       matchesFilters(front, { ...baseCriteria, colors: ["B"] }, back)
     ).toBe(true);
+    expect(
+      matchesFilters(card({ colors: ["W"] }), { ...baseCriteria, colors: ["C"] })
+    ).toBe(false);
   });
 
   it("matches token and type filters for exact and partial modes across faces", () => {
@@ -367,6 +384,13 @@ describe("sortAndFilterUtils", () => {
         matchType: "partial",
       })
     ).toBe(true);
+    expect(
+      matchesFilters(card({ type_line: "Emblem", isToken: true }), {
+        ...baseCriteria,
+        types: ["Token", "Creature"],
+        matchType: "partial",
+      })
+    ).toBe(true);
   });
 
 
@@ -379,7 +403,27 @@ describe("sortAndFilterUtils", () => {
         ],
         { by: "color", order: "asc" }
       ).map((c) => c.uuid)
-    ).toEqual(["none", "unknown"]);
+    ).toEqual(["unknown", "none"]);
+
+    expect(
+      sortCards(
+        [
+          card({ uuid: "z-no-colors", name: "Zulu", type_line: "Artifact" }),
+          card({ uuid: "a-no-colors", name: "Alpha", type_line: "Artifact" }),
+        ],
+        { by: "color", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["a-no-colors", "z-no-colors"]);
+
+    expect(
+      sortCards(
+        [
+          card({ uuid: "wx", name: "WX", colors: ["W", "X"] }),
+          card({ uuid: "wu", name: "WU", colors: ["W", "U"] }),
+        ],
+        { by: "color", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["wu", "wx"]);
 
     expect(
       sortCards(
