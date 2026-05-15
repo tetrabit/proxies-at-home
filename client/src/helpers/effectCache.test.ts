@@ -154,6 +154,10 @@ describe('effectCache', () => {
         let MockWorker: MockWorkerClass;
 
         beforeEach(() => {
+            const existingProcessor = getEffectProcessor();
+            if (vi.isMockFunction(existingProcessor.process)) {
+                existingProcessor.process.mockRestore();
+            }
             vi.useFakeTimers();
 
             // Mock Worker implementation
