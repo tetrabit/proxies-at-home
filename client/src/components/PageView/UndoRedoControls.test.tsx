@@ -25,6 +25,10 @@ describe('UndoRedoControls', () => {
         vi.clearAllMocks();
         mockState.undoStack = [];
         mockState.redoStack = [];
+        Object.defineProperty(navigator, 'platform', {
+            configurable: true,
+            value: 'Linux x86_64',
+        });
     });
 
     describe('rendering', () => {
@@ -101,6 +105,19 @@ describe('UndoRedoControls', () => {
 
             fireEvent.keyDown(document, { key: 'z', ctrlKey: true, shiftKey: true });
             // Visual state changes are internal
+        });
+
+
+        it('uses Meta+Z as the undo modifier on macOS platforms', () => {
+            Object.defineProperty(navigator, 'platform', {
+                configurable: true,
+                value: 'MacIntel',
+            });
+            mockState.undoStack = [{}];
+            render(<UndoRedoControls />);
+
+            fireEvent.keyDown(document, { key: 'z', metaKey: true });
+            expect((screen.getByLabelText('Undo') as HTMLButtonElement).style.transform).toBe('translateY(2px)');
         });
 
         it('should reset pressed state on keyup', () => {
