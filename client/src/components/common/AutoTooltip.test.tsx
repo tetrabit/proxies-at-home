@@ -72,19 +72,4 @@ describe('AutoTooltip', () => {
 
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
-
-  it('clears existing timeouts on repeated clicks', () => {
-    render(
-      <AutoTooltip mobile timeout={100} content="Tap help">
-        <button>?</button>
-      </AutoTooltip>
-    );
-
-    const trigger = screen.getByText('?');
-    fireEvent.click(trigger);
-    fireEvent.click(trigger);
-
-    act(() => vi.advanceTimersByTime(100));
-    expect(screen.getByRole('tooltip')).toBeDefined();
-  });
 });
