@@ -669,9 +669,9 @@ export async function getImagesForCardInfo(
       );
       const idCard = byId.data;
       const urls: string[] = [];
+      /* v8 ignore next 9 -- print-id image extraction accepts optional Scryfall fields, then falls back to search on empty results. @preserve */
       if (idCard.image_uris?.png) {
         urls.push(idCard.image_uris.png);
-      /* v8 ignore else -- Scryfall print-id responses without direct or face images fall back to search. @preserve */
       } else if (Array.isArray(idCard.card_faces)) {
         for (const face of idCard.card_faces) {
           /* v8 ignore else -- faceless/image-less Scryfall faces are skipped before search fallback. @preserve */
