@@ -23,7 +23,6 @@ import {
   rankCandidates,
   createSsimCompare,
   filterByExactName,
-  sortByDpiThenId,
   normalizeName,
   computeSobelMagnitude,
   computeEdgeScore,
