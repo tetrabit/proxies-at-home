@@ -35,6 +35,16 @@ describe("useCardsStore", () => {
     vi.clearAllMocks();
   });
 
+  it("does nothing when no project is selected", async () => {
+    const { useProjectStore } = await import("./projectStore");
+    vi.mocked(useProjectStore.getState).mockReturnValueOnce({ currentProjectId: null } as never);
+
+    const { clearAllCardsAndImages } = useCardsStore.getState();
+    await clearAllCardsAndImages();
+
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
   it("should clear current project cards and images", async () => {
     const { clearAllCardsAndImages } = useCardsStore.getState();
 
