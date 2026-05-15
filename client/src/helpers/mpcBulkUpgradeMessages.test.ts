@@ -40,9 +40,31 @@ describe("mpcBulkUpgradeMessages", () => {
     );
   });
 
+  it("formats progress messages without current card and includes skipped/error counts", () => {
+    const progress: BulkUpgradeProgress = {
+      processedImages: 3,
+      totalImages: 4,
+      fraction: 0.76,
+      currentCardName: undefined,
+      summary: makeSummary({ skipped: 5, errors: 2 }),
+    };
+
+    expect(formatBulkUpgradeProgressMessage(progress)).toBe(
+      "MPC Upgrade (3/4, 76%) · 1✓ 1? 1∅ 3→ 2✗"
+    );
+  });
+
   it("formats cancelled messages with explicit outcome counts", () => {
     expect(formatBulkUpgradeCancelledMessage(makeSummary())).toBe(
       "MPC upgrade cancelled. 1 auto-matched, 1 ambiguous, 1 no match before stopping."
+    );
+  });
+
+  it("formats cancelled messages with other skipped and errors", () => {
+    expect(
+      formatBulkUpgradeCancelledMessage(makeSummary({ skipped: 4, errors: 3 }))
+    ).toBe(
+      "MPC upgrade cancelled. 1 auto-matched, 1 ambiguous, 1 no match, 2 other skipped, 3 errors before stopping."
     );
   });
 
