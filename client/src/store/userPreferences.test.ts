@@ -44,6 +44,23 @@ describe("useUserPreferencesStore", () => {
             expect(useUserPreferencesStore.getState().isLoading).toBe(false);
         });
 
+        it("should initialize missing favorite arrays when loading old preferences", async () => {
+            const oldPrefs = {
+                id: "default",
+                settings: {},
+                favoriteCardbacks: [],
+                favoriteMpcDpi: null,
+                favoriteMpcSort: null,
+            };
+            (db.userPreferences.get as Mock).mockResolvedValue(oldPrefs);
+
+            await useUserPreferencesStore.getState().load();
+
+            const loaded = useUserPreferencesStore.getState().preferences;
+            expect(loaded?.favoriteMpcSources).toEqual([]);
+            expect(loaded?.favoriteMpcTags).toEqual([]);
+        });
+
         it("should initialize with built-in defaults if no preferences exist", async () => {
             (db.userPreferences.get as Mock).mockResolvedValue(undefined); // No prefs found
 
@@ -352,6 +369,7 @@ describe("useUserPreferencesStore", () => {
         it("should ignore preference updates when no preferences are loaded", async () => {
             useUserPreferencesStore.setState({ preferences: null });
 
+            await useUserPreferencesStore.getState().toggleFavoriteMpcSource("source0");
             await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag1");
             await useUserPreferencesStore.getState().setFavoriteMpcDpi(300);
             await useUserPreferencesStore.getState().setFavoriteMpcSort("name");
