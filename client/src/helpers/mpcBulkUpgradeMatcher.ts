@@ -441,7 +441,7 @@ export function computeBlockScore(
   return blockCount > 0 ? scoreSum / blockCount : computeSsimForValues(a, b);
 }
 
-function computeSsimForValues(a: Float32Array, b: Float32Array): number {
+export function computeSsimForValues(a: Float32Array, b: Float32Array): number {
   if (a.length === 0 || b.length === 0 || a.length !== b.length) {
     return 0;
   }

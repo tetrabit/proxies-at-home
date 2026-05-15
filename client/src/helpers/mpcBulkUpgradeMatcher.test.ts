@@ -15,6 +15,8 @@ vi.mock("./imageHelper", () => ({
 import {
   bucketBySetOnly,
   computeBlockScore,
+  computeSsimBlock,
+  computeSsimForValues,
   normalizeBitmap,
   prioritizePreferredCandidate,
   selectBestCandidate,
@@ -369,6 +371,216 @@ describe("mpcBulkUpgradeMatcher", () => {
   describe("normalizeName", () => {
     it("trims and lowercases", () => {
       expect(normalizeName("  Sol Ring  ")).toBe("sol ring");
+    });
+  });
+
+  describe("prioritizePreferredCandidate", () => {
+    it("keeps the existing layer when no preferred identifier is provided", () => {
+      const layer: RankedCandidate[] = [
+        {
+          card: makeCard({ identifier: "alpha" }),
+          reason: "set_only",
+          bucket: "set",
+        },
+      ];
+
+      expect(prioritizePreferredCandidate(layer, [layer[0].card])).toBe(layer);
+    });
+
+    it("promotes an existing preferred card to the front and clears its score", () => {
+      const preferred = makeCard({ identifier: "preferred" });
+      const fallback = makeCard({ identifier: "fallback" });
+      const layer: RankedCandidate[] = [
+        {
+          card: fallback,
+          reason: "set_only",
+          bucket: "set",
+          score: 7,
+        },
+        {
+          card: preferred,
+          reason: "set_dpi_fallback",
+          bucket: "set",
+          score: 9,
+        },
+      ];
+
+      const result = prioritizePreferredCandidate(
+        layer,
+        [fallback, preferred],
+        "preferred"
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        card: preferred,
+        reason: "name_only",
+        bucket: "set",
+      });
+      expect(result[0].score).toBeUndefined();
+      expect(result[1].card).toBe(fallback);
+    });
+
+    it("inserts a missing preferred card before the existing layer", () => {
+      const preferred = makeCard({ identifier: "preferred" });
+      const fallback = makeCard({ identifier: "fallback" });
+      const layer: RankedCandidate[] = [
+        {
+          card: fallback,
+          reason: "set_only",
+          bucket: "set",
+        },
+      ];
+
+      const result = prioritizePreferredCandidate(
+        layer,
+        [preferred, fallback],
+        "preferred"
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        card: preferred,
+        reason: "name_only",
+        bucket: "name",
+      });
+      expect(result[1]).toBe(layer[0]);
+    });
+  });
+
+  describe("bucketBySetOnly", () => {
+    it("returns an empty array when no set is provided and filters same-set cards", () => {
+      const setCard = makeCard({
+        identifier: "set-card",
+        rawName: "Sol Ring [C21] {267}",
+      });
+      const otherSet = makeCard({
+        identifier: "other-set",
+        rawName: "Sol Ring [CMR] {395}",
+      });
+      const nameOnly = makeCard({
+        identifier: "name-only",
+        rawName: "Sol Ring",
+      });
+
+      expect(bucketBySetOnly([setCard, otherSet, nameOnly])).toEqual([]);
+      expect(bucketBySetOnly([setCard, otherSet, nameOnly], "c21")).toEqual([
+        setCard,
+      ]);
+    });
+  });
+
+  describe("normalizeBitmap", () => {
+    it("normalizes full-frame and cropped bitmaps and rejects missing contexts", () => {
+      const restoreCanvas = installMockOffscreenCanvas();
+      const expectedLuma = 64 / 255;
+      const bitmap = makeBitmap({
+        luma: expectedLuma,
+        outputWidth: 4,
+        outputHeight: 4,
+      });
+
+      try {
+        const fullFrame = normalizeBitmap(bitmap, undefined, 4);
+        const cropped = normalizeBitmap(
+          bitmap,
+          { top: 0.25, right: 0.25, bottom: 0.25, left: 0.25 },
+          4
+        );
+
+        expect(fullFrame.width).toBe(4);
+        expect(fullFrame.height).toBe(4);
+        expect(Array.from(fullFrame.pixels)).toHaveLength(16);
+        expect(fullFrame.pixels[0]).toBeCloseTo(expectedLuma);
+        expect(fullFrame.pixels.at(-1)).toBeCloseTo(expectedLuma);
+        expect(cropped.width).toBe(4);
+        expect(cropped.height).toBe(4);
+        expect(Array.from(cropped.pixels)).toHaveLength(16);
+      } finally {
+        restoreCanvas();
+      }
+
+      const restoreNoContext = installMockOffscreenCanvas({
+        contextAvailable: false,
+      });
+      try {
+        expect(() => normalizeBitmap(bitmap, undefined, 4)).toThrow(
+          "Failed to get 2D context"
+        );
+      } finally {
+        restoreNoContext();
+      }
+    });
+
+    it("returns an empty bitmap for zero-sized image data and zeroes truncated pixels", () => {
+      const restoreCanvas = installMockOffscreenCanvas();
+      const emptyBitmap = makeBitmap({
+        luma: 0.75,
+        outputWidth: 0,
+        outputHeight: 0,
+      });
+
+      try {
+        const empty = normalizeBitmap(emptyBitmap, undefined, 4);
+        expect(empty.width).toBe(0);
+        expect(empty.height).toBe(0);
+        expect(empty.pixels).toHaveLength(0);
+      } finally {
+        restoreCanvas();
+      }
+
+      const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+      class TruncatedOffscreenCanvas {
+        constructor(
+          public width: number,
+          public height: number
+        ) {}
+
+        getContext() {
+          return {
+            drawImage: vi.fn(),
+            getImageData: () => ({
+              data: new Uint8ClampedArray([255, 255]),
+              width: 1,
+              height: 1,
+            }),
+          };
+        }
+      }
+
+      Object.defineProperty(globalThis, "OffscreenCanvas", {
+        configurable: true,
+        writable: true,
+        value: TruncatedOffscreenCanvas,
+      });
+
+      try {
+        const truncated = normalizeBitmap(makeBitmap(), undefined, 1);
+        expect(truncated.width).toBe(1);
+        expect(truncated.height).toBe(1);
+        expect(truncated.pixels).toHaveLength(1);
+        expect(truncated.pixels[0]).toBe(0);
+      } finally {
+        restoreOffscreenCanvas(originalOffscreenCanvas);
+      }
+    });
+  });
+
+  describe("SSIM math helpers", () => {
+    it("falls back to the direct SSIM formula when no blocks fit", () => {
+      const pixels = new Float32Array([0.5]);
+
+      expect(computeBlockScore(pixels, pixels, 1, 1)).toBeCloseTo(1);
+      expect(
+        computeBlockScore(new Float32Array([1]), new Float32Array([]), 1, 1)
+      ).toBe(0);
+      expect(computeSsimForValues(new Float32Array([1]), new Float32Array([]))).toBe(0);
+    });
+
+    it("computes block SSIM over a dense window", () => {
+      const pixels = new Float32Array(64).fill(0.5);
+
+      expect(computeSsimBlock(pixels, pixels, 0, 0, 8)).toBeCloseTo(1);
     });
   });
 
