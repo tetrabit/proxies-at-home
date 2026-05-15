@@ -526,7 +526,18 @@ describe("useShareUrl", () => {
     mockDeserializeForImport.mockReturnValue({
       cards: [{ name: "Overwrite With Settings" }],
       dfcLinks: [],
-      settings: { pr: "A4", c: 2, r: 2, dpi: 300 },
+      settings: {
+        pr: "A4",
+        c: 2,
+        r: 2,
+        dpi: 300,
+        fmc: "any",
+        fcol: "W,U",
+        ftyp: "Creature",
+        fcat: "Token",
+        ffeat: "Flying",
+        fmt: "contains",
+      },
     });
     mockProjectsWhere.mockReturnValueOnce({
       equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
@@ -547,6 +558,12 @@ describe("useShareUrl", () => {
     expect(settingsStore.setColumns).toHaveBeenCalledWith(2);
     expect(settingsStore.setRows).toHaveBeenCalledWith(2);
     expect(settingsStore.setDpi).toHaveBeenCalledWith(300);
+    expect(settingsStore.setFilterManaCost).toHaveBeenCalledWith("any");
+    expect(settingsStore.setFilterColors).toHaveBeenCalledWith("W,U");
+    expect(settingsStore.setFilterTypes).toHaveBeenCalledWith("Creature");
+    expect(settingsStore.setFilterCategories).toHaveBeenCalledWith("Token");
+    expect(settingsStore.setFilterFeatures).toHaveBeenCalledWith("Flying");
+    expect(settingsStore.setFilterMatchType).toHaveBeenCalledWith("contains");
   });
 
   it("skips shared-setting setters when the share payload includes an empty settings object", async () => {
