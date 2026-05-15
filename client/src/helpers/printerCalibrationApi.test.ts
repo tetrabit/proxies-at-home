@@ -66,7 +66,8 @@ describe("printerCalibrationApi – network error normalization", () => {
     it("falls back to the default message when the error body has no error field", async () => {
       mockFetch.mockResolvedValueOnce(makeErrorResponse(500, {}));
       const err = await getPrinterProfiles().catch((e: unknown) => e);
-      expect((err as Error).message).toBe("Failed to fetch printer profiles");
+      expect(err).toBeInstanceOf(CalibrationApiUnavailableError);
+      expect((err as Error).message).toMatch(/printer calibration service is unavailable/i);
     });
   });
 
