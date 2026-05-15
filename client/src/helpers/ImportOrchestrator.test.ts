@@ -255,6 +255,106 @@ describe('ImportOrchestrator', () => {
         expect(streamSpy).toHaveBeenCalledWith(expect.objectContaining({ artSource: 'scryfall' }));
     });
 
+    it('processes local-image DFC imports with metadata enrichment and MPC back-face lookup', async () => {
+        const addSpy = vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'local-uuid', order: 0 } as CardOption]);
+        vi.mocked(scryfallApiModule.fetchCardsMetadataBatch).mockResolvedValue(new Map([
+            ['delver of secrets', {
+                name: 'Delver of Secrets // Insectile Aberration',
+                set: 'isd',
+                collector_number: '43',
+                colors: ['U'],
+                cmc: 1,
+                type_line: 'Creature — Human Wizard',
+                rarity: 'rare',
+                mana_cost: '{U}',
+                scryfall_id: 'scry-1',
+                oracle_id: 'oracle-1',
+                token_parts: [{ name: 'Insect Token', id: 'tok-1', uri: 'https://api.scryfall.com/cards/tkn/1' }],
+                card_faces: [
+                    { name: 'Delver of Secrets', imageUrl: 'front.jpg' },
+                    { name: 'Insectile Aberration', imageUrl: 'back.jpg' },
+                ],
+            } as ScryfallCard],
+        ]));
+        vi.mocked(mpcImportIntegrationModule.findBestMpcMatches).mockResolvedValue([
+            { imageUrl: 'https://mpc.example/back-face.jpg' },
+        ] as never);
+
+        await ImportOrchestrator.process([
+            {
+                name: 'Delver of Secrets',
+                quantity: 1,
+                isToken: false,
+                localImageId: 'local-image-1',
+                sourcePreference: 'manual',
+            },
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(addSpy).toHaveBeenCalledWith(expect.arrayContaining([
+            expect.objectContaining({
+                name: 'Delver of Secrets',
+                imageId: 'local-image-1',
+                needsEnrichment: true,
+            }),
+        ]));
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
+            expect.objectContaining({
+                frontUuid: 'local-uuid',
+                backImageId: 'https://mpc.example/back-face.jpg',
+                backName: 'Insectile Aberration',
+            }),
+        ]);
+    });
+
+    it('processes MPC imports with explicit linked backs and DFC fallback metadata', async () => {
+        vi.spyOn(mpcAutofillApiModule, 'getMpcAutofillImageUrl').mockImplementation((id: string) => `https://mpc.example/${id}.jpg`);
+        vi.mocked(scryfallApiModule.fetchCardWithPrints).mockResolvedValue({
+            name: 'MPC Backed Card // Back Face',
+            set: 'mkm',
+            number: '12',
+            scryfall_id: 'scry-2',
+            oracle_id: 'oracle-2',
+            colors: ['B'],
+            cmc: 3,
+            type_line: 'Creature — Human',
+            rarity: 'mythic',
+            mana_cost: '{2}{B}',
+            token_parts: [],
+            card_faces: [
+                { name: 'MPC Backed Card', imageUrl: 'front.jpg' },
+                { name: 'Back Face', imageUrl: 'back-from-scryfall.jpg' },
+            ],
+        } as ScryfallCard);
+        vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'mpc-uuid', order: 0 } as CardOption]);
+
+        await ImportOrchestrator.process([
+            {
+                name: 'MPC Backed Card',
+                quantity: 1,
+                isToken: false,
+                mpcId: 'mpc-front',
+                linkedBackImageId: 'custom-back',
+                linkedBackName: 'Custom Back',
+                sourcePreference: 'mpc',
+            },
+        ]);
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc-front.jpg'], 1);
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/custom-back.jpg'], 1);
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
+            expect.objectContaining({
+                frontUuid: 'mpc-uuid',
+                backImageId: 'https://mpc.example/custom-back.jpg',
+                backName: 'Custom Back',
+                options: expect.objectContaining({ hasBuiltInBleed: true, usesDefaultCardback: false }),
+            }),
+        ]);
+    });
+
     it('reports progress and completion callbacks across direct and streamed work', async () => {
         const addSpy = vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'direct-1' } as CardOption]);
         const streamSpy = vi.spyOn(streamCardsModule, 'streamCards').mockImplementation(async ({ onComplete }) => {
