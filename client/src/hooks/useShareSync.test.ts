@@ -48,6 +48,20 @@ describe("useShareSync", () => {
     expect(result.current.syncStatus).toBe("idle");
   });
 
+  it("stores null when a shared project has no timestamp", () => {
+    currentProject = { id: "p1" };
+    const { result, rerender } = renderHook(() => useShareSync());
+
+    expect(result.current.lastSyncedAt).toBeNull();
+    expect(result.current.syncStatus).toBe("idle");
+
+    currentProject = { id: "p2" };
+    rerender();
+
+    expect(result.current.lastSyncedAt).toBeNull();
+    expect(result.current.syncStatus).toBe("idle");
+  });
+
   it("returns to idle after the synced toast timeout expires", async () => {
     currentProject = { id: "p1", lastSharedAt: 111 };
     const { result, rerender } = renderHook(() => useShareSync());
