@@ -415,13 +415,14 @@ describe("initializeFlipState", () => {
 
     it("should ignore unflipped cards when initializing from database", async () => {
         const mockDb = await import("../db");
-        vi.mocked(mockDb.db.cards.filter).mockReturnValue({
-            toArray: vi.fn().mockResolvedValue([
-                { uuid: "card-1", isFlipped: true },
-                { uuid: "card-2", isFlipped: false },
-                { uuid: "card-3", isFlipped: true },
-            ]),
-        } as never);
+        const allCards = [
+            { uuid: "card-1", isFlipped: true },
+            { uuid: "card-2", isFlipped: false },
+            { uuid: "card-3", isFlipped: true },
+        ];
+        vi.mocked(mockDb.db.cards.filter).mockImplementation((predicate: any) => ({
+            toArray: vi.fn().mockResolvedValue(allCards.filter(predicate)),
+        }) as never);
 
         await initializeFlipState();
 
