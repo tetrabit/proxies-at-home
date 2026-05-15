@@ -420,9 +420,11 @@ describe("initializeFlipState", () => {
             { uuid: "card-2", isFlipped: false },
             { uuid: "card-3", isFlipped: true },
         ];
-        vi.mocked(mockDb.db.cards.filter).mockImplementation((predicate: any) => ({
-            toArray: vi.fn().mockResolvedValue(allCards.filter(predicate)),
-        }) as never);
+        vi.mocked(mockDb.db.cards.filter).mockImplementation(
+            (predicate: (card: (typeof allCards)[number]) => boolean) => ({
+                toArray: vi.fn().mockResolvedValue(allCards.filter(predicate)),
+            }) as never,
+        );
 
         await initializeFlipState();
 
