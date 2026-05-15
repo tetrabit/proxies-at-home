@@ -58,4 +58,12 @@ describe('FloatingZoomPanel', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect((container.querySelector('[data-testid="zoom-controls"]')!.parentElement as HTMLElement).className).toContain('opacity-0');
   });
+
+  it('ignores Escape while collapsed', () => {
+    const { container } = render(<FloatingZoomPanel zoom={1} onZoomChange={vi.fn()} />);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect((container.querySelector('[data-testid="zoom-controls"]')!.parentElement as HTMLElement).className).toContain('opacity-0');
+  });
 });
