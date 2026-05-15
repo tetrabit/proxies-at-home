@@ -14,6 +14,10 @@ const mockState = vi.hoisted(() => ({
     noBleedTargetAmount: 3,
 }));
 
+const mockNormalizedInputRef = vi.hoisted(() => ({
+    current: { value: "3" } as HTMLInputElement | null,
+}));
+
 const mockSetters = vi.hoisted(() => ({
     setBleedEdgeWidth: vi.fn(),
     setBleedEdge: vi.fn(),
@@ -64,7 +68,7 @@ vi.mock('@/components/common', () => ({
 
 vi.mock('@/hooks/useInputHooks', () => ({
     useNormalizedInput: (value: number, onChange: (v: number) => void) => ({
-        inputRef: { current: null },
+        inputRef: mockNormalizedInputRef,
         defaultValue: value,
         handleChange: (e: React.ChangeEvent<HTMLInputElement>) => {
             const val = parseFloat(e.target.value);
@@ -104,6 +108,7 @@ describe('BleedSection', () => {
         mockState.bleedEdge = true;
         mockState.bleedEdgeWidth = 3;
         mockState.bleedEdgeUnit = 'mm';
+        mockNormalizedInputRef.current = { value: "3" } as HTMLInputElement;
     });
 
     describe('rendering', () => {
@@ -173,6 +178,26 @@ describe('BleedSection', () => {
             fireEvent.change(select, { target: { value: 'mm' } });
             // Should convert 1 inch to 25.4mm
             expect(mockSetters.setBleedEdgeWidth).toHaveBeenCalledWith(25.4);
+        });
+
+        it('should update the normalized input ref when converting units', () => {
+            mockState.bleedEdgeWidth = 25.4;
+            mockState.bleedEdgeUnit = 'mm';
+            render(<BleedSection />);
+            const select = screen.getByTestId('unit-select');
+            fireEvent.change(select, { target: { value: 'in' } });
+            expect(mockSetters.setBleedEdgeWidth).toHaveBeenCalledWith(1);
+            expect((screen.getByTestId('bleed-width-input') as HTMLInputElement).value).toBe('1');
+        });
+
+        it('should still convert units when the normalized input ref is unavailable', () => {
+            mockNormalizedInputRef.current = null;
+            mockState.bleedEdgeWidth = 25.4;
+            mockState.bleedEdgeUnit = 'mm';
+            render(<BleedSection />);
+            const select = screen.getByTestId('unit-select');
+            fireEvent.change(select, { target: { value: 'in' } });
+            expect(mockSetters.setBleedEdgeWidth).toHaveBeenCalledWith(1);
         });
 
         it('should not convert when selecting same unit', () => {
