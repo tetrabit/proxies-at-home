@@ -68,4 +68,21 @@ describe("useZoomShortcuts", () => {
 
     expect(setZoom).not.toHaveBeenCalled();
   });
+
+  it("ignores keyboard and wheel events without the zoom modifier", () => {
+    const setZoom = vi.fn();
+    renderHook(() =>
+      useZoomShortcuts({
+        setZoom,
+        isOpen: true,
+      })
+    );
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+      window.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+    });
+
+    expect(setZoom).not.toHaveBeenCalled();
+  });
 });
