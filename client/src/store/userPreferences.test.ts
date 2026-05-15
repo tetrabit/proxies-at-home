@@ -82,6 +82,48 @@ describe("useUserPreferencesStore", () => {
             expect(loaded?.settingsPanelState?.order[0]).toBe("projects");
             expect(loaded?.settingsPanelState?.order.at(-1)).toBe("application");
         });
+
+        it("should preserve fully populated valid preferences without repairing them", async () => {
+            const validPrefs = {
+                id: "default",
+                settings: {},
+                favoriteCardbacks: [],
+                favoriteMpcSources: ["source-a"],
+                favoriteMpcTags: ["tag-a"],
+                favoriteMpcDpi: 200,
+                favoriteMpcSort: "name" as const,
+                settingsPanelState: {
+                    order: ["projects", "layout", "bleed", "card", "guides", "darken", "filterSort", "export", "application"],
+                    collapsed: { layout: true },
+                },
+                settingsPanelWidth: 480,
+                isSettingsPanelCollapsed: true,
+                isUploadPanelCollapsed: true,
+                uploadPanelWidth: 512,
+                cardEditorSectionCollapsed: { basic: true },
+                cardEditorSectionOrder: ["basic", "enhance", "darkPixels", "holographic", "colorReplace", "gamma", "colorEffects", "borderEffects"],
+                filterSectionCollapsed: { Source: true, Quality: true },
+            };
+            (db.userPreferences.get as Mock).mockResolvedValue(validPrefs);
+
+            await useUserPreferencesStore.getState().load();
+
+            const loaded = useUserPreferencesStore.getState().preferences;
+            expect(db.userPreferences.add).not.toHaveBeenCalled();
+            expect(loaded).toEqual(validPrefs);
+        });
+
+        it("should log and recover when loading preferences fails", async () => {
+            const error = new Error("boom");
+            const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+            (db.userPreferences.get as Mock).mockRejectedValue(error);
+
+            await useUserPreferencesStore.getState().load();
+
+            expect(consoleSpy).toHaveBeenCalledWith("Failed to load user preferences:", error);
+            expect(useUserPreferencesStore.getState().isLoading).toBe(false);
+            consoleSpy.mockRestore();
+        });
     });
 
     describe("saveCurrentAsDefaults", () => {
@@ -112,6 +154,22 @@ describe("useUserPreferencesStore", () => {
             expect(savedPrefs.favoriteMpcSources).toEqual([]);
             expect(savedPrefs.favoriteMpcTags).toEqual([]);
             expect(useUserPreferencesStore.getState().preferences).toEqual(savedPrefs);
+        });
+
+        it("should save defaults when no preferences are currently loaded", async () => {
+            useUserPreferencesStore.setState({ preferences: null });
+            useSettingsStore.setState({ zoom: 1.25, hasHydrated: true });
+
+            await useUserPreferencesStore.getState().saveCurrentAsDefaults();
+
+            const savedPrefs = (db.userPreferences.put as Mock).mock.calls[0][0];
+            expect(savedPrefs.id).toBe("default");
+            expect(savedPrefs.favoriteCardbacks).toEqual([]);
+            expect(savedPrefs.favoriteMpcSources).toEqual([]);
+            expect(savedPrefs.favoriteMpcTags).toEqual([]);
+            expect(savedPrefs.favoriteMpcDpi).toBeNull();
+            expect(savedPrefs.favoriteMpcSort).toBeNull();
+            expect(savedPrefs.settings.zoom).toBe(1.25);
         });
     });
 
@@ -191,6 +249,14 @@ describe("useUserPreferencesStore", () => {
             expect(db.userPreferences.put).toHaveBeenCalledTimes(2);
         });
 
+        it("should toggle MPC favorite tags on and off", async () => {
+            await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag1");
+            expect(useUserPreferencesStore.getState().preferences?.favoriteMpcTags).toContain("tag1");
+
+            await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag1");
+            expect(useUserPreferencesStore.getState().preferences?.favoriteMpcTags).not.toContain("tag1");
+        });
+
         it("should ignore preference updates when no preferences are loaded", async () => {
             useUserPreferencesStore.setState({ preferences: null });
 
@@ -198,6 +264,13 @@ describe("useUserPreferencesStore", () => {
             await useUserPreferencesStore.getState().setFavoriteMpcDpi(300);
             await useUserPreferencesStore.getState().setFavoriteMpcSort("name");
             await useUserPreferencesStore.getState().setSettingsPanelWidth(480);
+            await useUserPreferencesStore.getState().setSettingsPanelState({ order: ["x"], collapsed: {} });
+            await useUserPreferencesStore.getState().setIsSettingsPanelCollapsed(true);
+            await useUserPreferencesStore.getState().setIsUploadPanelCollapsed(true);
+            await useUserPreferencesStore.getState().setUploadPanelWidth(640);
+            await useUserPreferencesStore.getState().setCardEditorSectionCollapsed({ basic: true });
+            await useUserPreferencesStore.getState().setCardEditorSectionOrder(["basic"]);
+            await useUserPreferencesStore.getState().setFilterSectionCollapsed({ Source: true });
 
             expect(db.userPreferences.put).not.toHaveBeenCalled();
         });
