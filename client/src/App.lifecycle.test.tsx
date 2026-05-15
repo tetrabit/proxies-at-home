@@ -179,7 +179,7 @@ describe("App project initialization lifecycle", () => {
     const dbGetResult = new Promise<undefined>((resolve) => {
       resolvePrefs = resolve;
     });
-    const { App, state } = await loadApp({
+    const { App, state, dbGet } = await loadApp({
       projects: [],
       autoRestoreResult: null,
       userPrefs: undefined,
@@ -187,11 +187,14 @@ describe("App project initialization lifecycle", () => {
     });
 
     const { unmount } = render(<App />);
+    await waitFor(() => expect(dbGet).toHaveBeenCalledWith("default"));
     unmount();
     resolvePrefs(undefined);
 
     await waitFor(() => expect(state.loadProjects).toHaveBeenCalled());
-    await waitFor(() => expect(state.createProject).not.toHaveBeenCalled());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.createProject).not.toHaveBeenCalled();
     expect(state.switchProject).not.toHaveBeenCalled();
   });
 
@@ -200,18 +203,21 @@ describe("App project initialization lifecycle", () => {
     const dbGetResult = new Promise<undefined>((resolve) => {
       resolvePrefs = resolve;
     });
-    const { App, state } = await loadApp({
+    const { App, state, dbGet } = await loadApp({
       projects: [{ id: "first-project" }],
       userPrefs: undefined,
       dbGetResult,
     });
 
     const { unmount } = render(<App />);
+    await waitFor(() => expect(dbGet).toHaveBeenCalledWith("default"));
     unmount();
     resolvePrefs(undefined);
 
     await waitFor(() => expect(state.loadProjects).toHaveBeenCalled());
-    await waitFor(() => expect(state.switchProject).not.toHaveBeenCalled());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.switchProject).not.toHaveBeenCalled();
     expect(state.createProject).not.toHaveBeenCalled();
   });
 
