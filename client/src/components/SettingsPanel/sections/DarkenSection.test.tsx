@@ -204,6 +204,12 @@ describe('DarkenSection', () => {
             render(<DarkenSection />);
             expect(screen.getByText('Contrast')).toBeDefined();
         });
+
+        it('should show a plus sign for positive brightness values', () => {
+            mockState.darkenBrightness = 20;
+            render(<DarkenSection />);
+            expect(screen.getByText('+20')).toBeDefined();
+        });
     });
 
     describe('none mode', () => {
