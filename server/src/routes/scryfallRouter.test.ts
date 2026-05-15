@@ -435,16 +435,29 @@ describe('scryfallRouter', () => {
         });
 
         it('uses microservice search pagination when available', async () => {
-            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
-            vi.mocked(getScryfallClient).mockReturnValueOnce({
-                searchCards: vi.fn().mockResolvedValue({
+            const paginatedSearch = vi.fn().mockResolvedValue({
                     success: true,
                     data: { has_more: false, data: [{ name: 'Micro Search' }], page: 2, page_size: 3, total: 1, total_pages: 1 },
-                }),
+                });
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                searchCards: paginatedSearch,
             } as never);
             const res = await request(app).get('/api/scryfall/search?q=micro-search&page=2&page_size=3&limit=4');
             expect(res.status).toBe(200);
             expect(res.body).toMatchObject({ object: 'list', page: 2, page_size: 3, total: 1 });
+
+            const simpleSearch = vi.fn().mockResolvedValue({
+                success: true,
+                data: { has_more: false, data: [], page: 1, page_size: 175, total: 0, total_pages: 1 },
+            });
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                searchCards: simpleSearch,
+            } as never);
+            const simple = await request(app).get('/api/scryfall/search?q=micro-simple');
+            expect(simple.status).toBe(200);
+            expect(simpleSearch).toHaveBeenCalledWith({ q: 'micro-simple' });
         });
 
         it('falls back to direct search when the microservice returns no data', async () => {

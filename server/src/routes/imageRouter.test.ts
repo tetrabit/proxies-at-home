@@ -240,6 +240,11 @@ describe("getWithRetry logic", () => {
         expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("[CACHE] Failed to delete"), "plain unlink failure");
 
         __imageRouterTestInternals.resetCacheCleanupForTests();
+        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce(new Error("readdir failed"));
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "readdir failed");
+
+        __imageRouterTestInternals.resetCacheCleanupForTests();
         (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce("plain readdir failure");
         await __imageRouterTestInternals.checkAndCleanCache();
         expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "plain readdir failure");
@@ -532,6 +537,18 @@ describe("getWithRetry logic", () => {
             const malformed = await request(app).get("/images/proxy").query({ url: "%E0%A4%A" });
             expect(malformed.status).toBe(502);
             expect(mockedAxios.get).toHaveBeenLastCalledWith("%E0%A4%A", expect.any(Object));
+
+            delete process.env.PORT;
+            mockedAxios.get.mockResolvedValueOnce({
+                status: 200,
+                data: Buffer.from("text data"),
+                headers: {},
+            });
+            await request(app).get("/images/proxy").query({ url: "/cardbacks/proxxied.png" });
+            expect(mockedAxios.get).toHaveBeenLastCalledWith(
+                "http://127.0.0.1:3001/cardbacks/proxxied.png",
+                expect.any(Object)
+            );
         });
 
         it("continues to fetch when an in-progress write does not produce a cached file", async () => {
@@ -661,6 +678,10 @@ describe("getWithRetry logic", () => {
             const fallbackFailure = await request(app).post("/images/enrich").send({ cards: [{ name: "Timeout" }] });
             expect(fallbackFailure.body).toEqual([null]);
 
+            routeMocks.batchFetchCards.mockRejectedValueOnce(new Error("batch down"));
+            const errorFailed = await request(app).post("/images/enrich").send({ cards: [{ name: "Boom" }] });
+            expect(errorFailed.status).toBe(500);
+
             routeMocks.batchFetchCards.mockRejectedValueOnce("plain batch down");
             const failed = await request(app).post("/images/enrich").send({ cards: [{ name: "Boom" }] });
             expect(failed.status).toBe(500);
@@ -687,6 +708,10 @@ describe("getWithRetry logic", () => {
                 { name: "Sol Ring", token_parts: [{ name: "Latest Goblin" }] },
                 { name: "Missing" },
             ]);
+
+            routeMocks.fetchCardsForTokenLookup.mockRejectedValueOnce(new Error("lookup down"));
+            const errorFailed = await request(app).post("/images/tokens").send({ cards: [{ name: "Boom" }] });
+            expect(errorFailed.status).toBe(500);
 
             routeMocks.fetchCardsForTokenLookup.mockRejectedValueOnce("plain lookup down");
             const failed = await request(app).post("/images/tokens").send({ cards: [{ name: "Boom" }] });

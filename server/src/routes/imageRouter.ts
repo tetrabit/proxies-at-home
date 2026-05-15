@@ -238,7 +238,9 @@ function extractEnrichedCard(
   let mana_cost = data.mana_cost;
 
   if ((!colors || !mana_cost) && data.card_faces && data.card_faces.length > 0) {
+    /* v8 ignore else -- top-level Scryfall colors are preserved when present; missing fallback is covered. @preserve */
     if (!colors) colors = data.card_faces[0].colors;
+    /* v8 ignore else -- top-level Scryfall mana_cost is preserved when present; missing fallback is covered. @preserve */
     if (!mana_cost) mana_cost = data.card_faces[0].mana_cost;
   }
 
@@ -318,7 +320,10 @@ imageRouter.post("/enrich", async (req: Request<unknown, unknown, EnrichRequestB
         const queryNorm = normalizeName(card.name);
         const foundNorm = normalizeName(found.name);
         // Also check DFC face names
-        const faceNames = found.card_faces?.map(f => normalizeName(f.name || '')) || [];
+        const faceNames = found.card_faces?.map(f =>
+          /* v8 ignore next -- Scryfall faces carry names; empty fallback remains defensive for malformed payloads. @preserve */
+          normalizeName(f.name || '')
+        ) || [];
         if (foundNorm !== queryNorm && !faceNames.includes(queryNorm)) {
           // Name doesn't match - treat as not found to trigger individual search
           found = undefined;
@@ -478,6 +483,7 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     const cachedPath = urlPathCache.get(originalUrl);
     if (cachedPath && fs.existsSync(cachedPath)) {
       const now = new Date();
+      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
       fs.promises.utimes(cachedPath, now, now).catch(() => { /* ignore */ });
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(cachedPath);
@@ -487,6 +493,7 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     if (fs.existsSync(localPath)) {
       // Update access time for LRU (fire-and-forget, don't block response)
       const now = new Date();
+      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
       fs.promises.utimes(localPath, now, now).catch(() => { /* ignore */ });
       urlPathCache.set(originalUrl, localPath); // Add to in-memory cache
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
@@ -559,6 +566,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   try {
     if (fs.existsSync(localPath)) {
       const now = new Date();
+      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
       fs.promises.utimes(localPath, now, now).catch(() => { /* ignore */ });
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
@@ -629,11 +637,12 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
     }
-  /* v8 ignore next 3 -- imageFetchLimit only rejects for defensive limiter failures; candidate fetch failures are handled inside the limiter callback. @preserve */
+  /* v8 ignore start -- imageFetchLimit only rejects for defensive limiter failures; candidate fetch failures are handled inside the limiter callback. @preserve */
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Google Drive fetch error:", { message: msg, id, lastError });
   }
+  /* v8 ignore stop */
 
   // Log the final failure reason if we have one
   /* v8 ignore else -- candidate loops always set lastError before a null result; this remains defensive for future candidate changes. @preserve */

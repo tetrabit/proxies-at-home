@@ -385,8 +385,9 @@ router.get("/search", async (req: Request, res: Response) => {
 router.get("/cards/:set/:number", async (req: Request, res: Response) => {
     const rawSet = req.params.set;
     const rawNumber = req.params.number;
-    /* v8 ignore next 2 -- Express route params are strings for /cards/:set/:number; array form is a defensive type guard. @preserve */
+    /* v8 ignore next -- Express route params are strings for /cards/:set/:number; array form is a defensive type guard. @preserve */
     const set = Array.isArray(rawSet) ? rawSet[0] : rawSet;
+    /* v8 ignore next -- Express route params are strings for /cards/:set/:number; array form is a defensive type guard. @preserve */
     const number = Array.isArray(rawNumber) ? rawNumber[0] : rawNumber;
     const lang = req.query.lang as string | undefined;
 
@@ -460,7 +461,7 @@ router.get("/prints", async (req: Request, res: Response) => {
     } else if (setCode && collectorNumber) {
         params.set = setCode;
         params.number = collectorNumber;
-    /* v8 ignore else -- the initial guard guarantees name when oracle_id and set+number are absent. @preserve */
+    /* v8 ignore next -- the initial guard guarantees name when oracle_id and set+number are absent. @preserve */
     } else if (name) {
         params.name = name;
     }

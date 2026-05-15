@@ -219,6 +219,10 @@ describe("scryfallRouter - /prints", () => {
           { name: "Back", image_uris: { png: "https://example.com/back.png" } },
         ],
       },
+      {
+        id: "imageless",
+        name: "Imageless",
+      },
     ];
 
     vi.mocked(getCardsWithImagesForCardInfo).mockResolvedValue(

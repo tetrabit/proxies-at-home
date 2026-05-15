@@ -216,6 +216,13 @@ describe('mpcAutofillRouter', () => {
     const sparse = await request(app).post('/api/mpc/batch-search').send({ queries: ['Sparse'] });
     expect(sparse.status).toBe(200);
     expect(sparse.body.results.Sparse).toEqual([]);
+
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { noresults: { CARD: ['noresults-card'] } } } })
+      .mockResolvedValueOnce({ data: {} });
+    const noResultsPayload = await request(app).post('/api/mpc/batch-search').send({ queries: ['Noresults'] });
+    expect(noResultsPayload.status).toBe(200);
+    expect(noResultsPayload.body.results.Noresults).toEqual([]);
   });
 
   it('surfaces axios and non-axios batch failures', async () => {

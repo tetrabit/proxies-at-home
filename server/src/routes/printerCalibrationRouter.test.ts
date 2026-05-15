@@ -121,6 +121,12 @@ describe("printerCalibrationRouter", () => {
     ).toThrow(
       `PRINTER_CALIBRATION_PROFILES_PATH must stay within ${path.resolve(dataDirectory)}`
     );
+    expect(
+      resolvePrinterCalibrationProfilesPath(
+        path.join(dataDirectory, "inside", "profiles.toml"),
+        dataDirectory
+      )
+    ).toBe(path.join(dataDirectory, "inside", "profiles.toml"));
   });
 
   it("calculates translation offsets from measured values", () => {
@@ -370,6 +376,16 @@ exit 1
       const scriptsDirectory = path.join(tempDirectory, "scripts");
       await fs.mkdir(scriptsDirectory, { recursive: true });
 
+      const echoScript = path.join(scriptsDirectory, "echo.sh");
+      await fs.writeFile(echoScript, "#!/bin/sh\necho ok\n", { mode: 0o755 });
+      await fs.chmod(echoScript, 0o755);
+      await expect(
+        __printerCalibrationTestInternals.runProcess(echoScript, [])
+      ).resolves.toMatchObject({ stdout: "ok\n", code: 0 });
+      await expect(
+        __printerCalibrationTestInternals.runProcess(path.join(scriptsDirectory, "missing-command"), [])
+      ).rejects.toThrow();
+
       const terminatingScript = path.join(scriptsDirectory, "terminates.sh");
       await fs.writeFile(terminatingScript, "#!/bin/sh\nkill -TERM $$\n", { mode: 0o755 });
       await fs.chmod(terminatingScript, 0o755);
@@ -387,6 +403,16 @@ exit 1
       const failingBin = path.join(scriptsDirectory, "printer-calibration-bin");
       await fs.writeFile(failingBin, "#!/bin/sh\necho bad-bin >&2\nexit 7\n", { mode: 0o755 });
       await fs.chmod(failingBin, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: path.join(scriptsDirectory, "missing-bin"),
+        PRINTER_CALIBRATION_REPO: "",
+        PRINTER_CALIBRATION_PYTHON: failingBin,
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).rejects.toThrow();
+
       process.env = {
         ...originalEnv,
         PRINTER_CALIBRATION_BIN: failingBin,
@@ -416,6 +442,34 @@ exit 1
       await expect(
         __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
       ).rejects.toThrow("code=9");
+
+      const stdoutFailingPython = path.join(scriptsDirectory, "python-stdout-fail");
+      await fs.writeFile(stdoutFailingPython, "#!/bin/sh\necho py-stdout-bad\nexit 8\n", { mode: 0o755 });
+      await fs.chmod(stdoutFailingPython, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: "",
+        PRINTER_CALIBRATION_REPO: repoDir,
+        PRINTER_CALIBRATION_PYTHON: stdoutFailingPython,
+        PYTHONPATH: "",
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).rejects.toThrow("py-stdout-bad");
+
+      const successPython = path.join(scriptsDirectory, "python-success");
+      await fs.writeFile(successPython, "#!/bin/sh\necho py-ok\nexit 0\n", { mode: 0o755 });
+      await fs.chmod(successPython, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: "",
+        PRINTER_CALIBRATION_REPO: repoDir,
+        PRINTER_CALIBRATION_PYTHON: successPython,
+        PYTHONPATH: "",
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).resolves.toEqual({ stdout: "py-ok\n", stderr: "" });
 
       process.env = {
         ...originalEnv,
@@ -659,7 +713,10 @@ exit 1
           const [command, subcommand] = args;
           if (command === "sheet") throw "plain sheet failure";
           if (command === "profile" && subcommand === "list") throw "plain list failure";
-          if (command === "profile" && subcommand === "show") throw "plain not found";
+          if (command === "profile" && subcommand === "show") {
+            const name = args[args.indexOf("--name") + 1];
+            throw name === "missing-string" ? "plain not found" : "plain get failure";
+          }
           if (command === "profile" && subcommand === "set") throw "plain put failure";
           if (command === "profile" && subcommand === "delete") throw "plain delete failure";
           return { stdout: "", stderr: "" };
@@ -676,8 +733,12 @@ exit 1
     expect(list.body.error).toBe("plain list failure");
 
     const get = await request(stringErrorApp).get("/api/printer-calibration/profiles/office");
-    expect(get.status).toBe(404);
-    expect(get.body.error).toBe("plain not found");
+    expect(get.status).toBe(500);
+    expect(get.body.error).toBe("plain get failure");
+
+    const missing = await request(stringErrorApp).get("/api/printer-calibration/profiles/missing-string");
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toBe("plain not found");
 
     const put = await request(stringErrorApp)
       .put("/api/printer-calibration/profiles/office")
@@ -736,7 +797,7 @@ exit 1
   it("rejects malformed profile output", () => {
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: nope\nfront_y_mm: 1\nback_x_mm: 2\nback_y_mm: 3")).toThrow("Invalid numeric value");
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: 1")).toThrow("Failed to parse");
-    expect(() => parsePrinterCalibrationProfileOutput("bad", "paper_size: letter\nignored line\nfront_x_mm: 1\nfront_y_mm: 2\nback_x_mm: 3\nback_y_mm: 4")).not.toThrow();
+    expect(() => parsePrinterCalibrationProfileOutput("bad", "paper_size: letter\nignored: value\nfront_x_mm: 1\nfront_y_mm: 2\nback_x_mm: 3\nback_y_mm: 4")).not.toThrow();
   });
 
 
