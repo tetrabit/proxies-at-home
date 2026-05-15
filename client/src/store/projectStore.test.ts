@@ -1,10 +1,26 @@
 
 import "fake-indexeddb/auto";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useProjectStore } from "./projectStore";
 import { db } from "../db";
 import { useSettingsStore } from "./settings";
 import type { CardOption } from "../../../shared/types";
+
+const mockClearHistory = vi.hoisted(() => vi.fn());
+const mockCancelAllProcessing = vi.hoisted(() => vi.fn());
+
+vi.mock("./undoRedo", () => ({
+    useUndoRedoStore: {
+        getState: () => ({
+            clearHistory: mockClearHistory,
+            pushAction: vi.fn(),
+        }),
+    },
+}));
+
+vi.mock("../helpers/cancellationService", () => ({
+    cancelAllProcessing: mockCancelAllProcessing,
+}));
 
 describe("Project Switching (Relational Architecture)", () => {
     beforeEach(async () => {
@@ -101,5 +117,108 @@ describe("Project Switching (Relational Architecture)", () => {
         await useProjectStore.getState().deleteProject(projectId);
 
         expect(await db.cards.count()).toBe(0);
+    });
+
+    it("should load projects ordered by last opened time", async () => {
+        await db.projects.add({
+            id: "project-old",
+            name: "Old",
+            createdAt: 1,
+            lastOpenedAt: 1,
+            cardCount: 0,
+            settings: {},
+        });
+        await db.projects.add({
+            id: "project-new",
+            name: "New",
+            createdAt: 2,
+            lastOpenedAt: 2,
+            cardCount: 0,
+            settings: {},
+        });
+
+        await useProjectStore.getState().loadProjects();
+
+        expect(useProjectStore.getState().projects.map((p) => p.id)).toEqual(["project-new", "project-old"]);
+    });
+
+    it("should create projects with default user preference settings", async () => {
+        await db.userPreferences.put({
+            id: "default",
+            settings: { zoom: 2 },
+            favoriteCardbacks: [],
+            favoriteMpcSources: [],
+            favoriteMpcTags: [],
+            favoriteMpcDpi: null,
+            favoriteMpcSort: null,
+        });
+
+        const projectId = await useProjectStore.getState().createProject("Defaults");
+        const created = await db.projects.get(projectId);
+
+        expect(created?.settings).toEqual({ zoom: 2 });
+    });
+
+    it("should ignore switch requests for the current project", async () => {
+        const projectId = await useProjectStore.getState().createProject("Current");
+        await useProjectStore.getState().switchProject(projectId);
+        mockClearHistory.mockClear();
+        mockCancelAllProcessing.mockClear();
+
+        await useProjectStore.getState().switchProject(projectId);
+
+        expect(mockClearHistory).not.toHaveBeenCalled();
+        expect(mockCancelAllProcessing).not.toHaveBeenCalled();
+    });
+
+    it("should surface a missing project as a logged switch failure", async () => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        await useProjectStore.getState().switchProject("missing-project");
+
+        expect(errorSpy).toHaveBeenCalled();
+        expect(useProjectStore.getState().isLoading).toBe(false);
+        errorSpy.mockRestore();
+    });
+
+    it("should create a replacement project when deleting the active final project", async () => {
+        const currentId = await useProjectStore.getState().createProject("Only Project");
+        await useProjectStore.getState().switchProject(currentId);
+
+        await useProjectStore.getState().deleteProject(currentId);
+
+        expect(useProjectStore.getState().currentProjectId).not.toBe(currentId);
+        expect(useProjectStore.getState().projects).toHaveLength(1);
+    });
+
+    it("should switch to another project when deleting the active one and others remain", async () => {
+        const projectIdA = await useProjectStore.getState().createProject("Project A");
+        const projectIdB = await useProjectStore.getState().createProject("Project B");
+        await useProjectStore.getState().switchProject(projectIdA);
+
+        await useProjectStore.getState().deleteProject(projectIdA);
+
+        expect(useProjectStore.getState().currentProjectId).toBe(projectIdB);
+    });
+
+    it("should log delete failures", async () => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const deleteSpy = vi.spyOn(db.projects, "delete").mockRejectedValue(new Error("boom"));
+        const projectId = await useProjectStore.getState().createProject("Broken");
+
+        await useProjectStore.getState().deleteProject(projectId);
+
+        expect(errorSpy).toHaveBeenCalledWith("[ProjectStore] Delete failed:", expect.any(Error));
+        deleteSpy.mockRestore();
+        errorSpy.mockRestore();
+    });
+
+    it("should rename a project and refresh the list", async () => {
+        const projectId = await useProjectStore.getState().createProject("Rename Me");
+        await useProjectStore.getState().renameProject(projectId, "Renamed");
+
+        const updated = await db.projects.get(projectId);
+        expect(updated?.name).toBe("Renamed");
+        expect(useProjectStore.getState().projects.find((p) => p.id === projectId)?.name).toBe("Renamed");
     });
 });
