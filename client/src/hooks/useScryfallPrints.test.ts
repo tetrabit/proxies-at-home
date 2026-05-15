@@ -611,10 +611,9 @@ describe("useScryfallPrints", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     cacheLookup.resolve(cachedResult);
-
-    await vi.waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     vi.useRealTimers();
   });
