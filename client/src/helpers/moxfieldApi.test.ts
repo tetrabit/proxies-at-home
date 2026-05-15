@@ -288,6 +288,28 @@ describe("moxfieldApi", () => {
       expect(cards[0].category).toBe("Special board");
     });
 
+    it("should tolerate a missing mainboard and still process other boards", () => {
+      const deck = {
+        id: "deck-id",
+        name: "Test Deck",
+        format: "commander",
+        publicId: "abc123",
+        publicUrl: "https://moxfield.com/decks/abc123",
+        mainboard: undefined,
+        sideboard: {
+          side1: createDeckCard("Sideboard Card", 1, "1", "ABC", "sideboard"),
+        },
+        commanders: undefined,
+        companions: undefined,
+        maybeboard: undefined,
+      } as unknown as MoxfieldDeck;
+
+      const cards = extractCardsFromDeck(deck);
+
+      expect(cards).toHaveLength(1);
+      expect(cards[0].category).toBe("Sideboard");
+    });
+
     it("should lowercase set codes", () => {
       const deck = createMockDeck({
         mainboard: {
