@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { PageViewFloatingControls } from "./PageViewFloatingControls";
 import { usePageViewSettings } from "@/hooks/usePageViewSettings";
 import { useCardEditorModalStore } from "@/store";
@@ -19,6 +19,12 @@ vi.mock("../ZoomControls", () => ({
 
 vi.mock("../UndoRedoControls", () => ({
     UndoRedoControls: () => <div data-testid="undo-redo-controls">UndoRedoControls</div>,
+}));
+
+vi.mock("@/hooks/useOnClickOutside", () => ({
+    useOnClickOutside: (_ref: unknown, handler: () => void) => {
+        (window as unknown as { __outsideHandler?: () => void }).__outsideHandler = handler;
+    },
 }));
 
 describe("PageViewFloatingControls", () => {
@@ -110,20 +116,25 @@ describe("PageViewFloatingControls", () => {
             expect(screen.queryByTestId("zoom-controls")).toBeNull();
         });
 
-        it("should close zoom controls when clicking outside", () => {
+        it("should close zoom controls when clicking outside", async () => {
+            const addEventListenerSpy = vi.spyOn(window, "addEventListener");
             render(<PageViewFloatingControls hasCards={true} mobile={true} />);
 
             // Open it
             fireEvent.click(screen.getByRole("button"));
             expect(screen.getByTestId("zoom-controls")).toBeDefined();
 
-            // Click elsewhere
-            fireEvent.mouseDown(document.body);
-            // useOnClickOutside uses mousedown/touchstart
+            const clickHandler = addEventListenerSpy.mock.calls.find(([type]) => type === "click")?.[1];
+            expect(clickHandler).toBeTypeOf("function");
 
-            // Note: useOnClickOutside implementation might need specific event simulation
-            // Since we mocked it? No, we didn't mock useOnClickOutside, wait...
-            // useOnClickOutside is imported from hooks.
+            const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "target", { value: document.body });
+
+            await act(async () => {
+                (clickHandler as EventListener)(event);
+            });
+            expect(screen.queryByTestId("zoom-controls")).toBeNull();
+            addEventListenerSpy.mockRestore();
         });
     });
 });
