@@ -10,6 +10,12 @@ export default defineConfig({
       include: ['electron/*.{ts,cts}'],
       exclude: ['electron/*.test.ts'],
       reportsDirectory: './coverage/electron',
+      thresholds: {
+        lines: 100,
+        branches: 100,
+        functions: 100,
+        statements: 100,
+      },
       reportOnFailure: true,
     },
   },
