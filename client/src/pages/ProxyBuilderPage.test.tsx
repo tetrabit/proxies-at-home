@@ -306,6 +306,7 @@ const setViewport = ({
 describe("ProxyBuilderPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.settingsState.dpi = 800;
     mocks.useLiveQuery.mockImplementation(() => []);
     mocks.ensureProcessed.mockResolvedValue(undefined);
     mocks.dbCardsToArray.mockResolvedValue([]);
