@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { ZoomControls } from "./ZoomControls";
 import { useSettingsStore } from "@/store/settings";
 
@@ -9,6 +9,9 @@ vi.mock("@/store/settings", () => ({
 }));
 
 describe("ZoomControls", () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
     it("should reset zoom on double click (desktop)", () => {
         const setZoom = vi.fn();
         (useSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((selector: (state: unknown) => unknown) => selector({
@@ -130,6 +133,55 @@ describe("ZoomControls", () => {
 
         fireEvent.change(slider, { target: { value: "75" } });
         expect(setZoom).toHaveBeenCalled();
+    });
+
+
+
+    it("should map low slider values through the lower zoom range before snapping", () => {
+        const setZoom = vi.fn();
+        (useSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((selector: (state: unknown) => unknown) => selector({
+            zoom: 1.0,
+            setZoom,
+        }));
+
+        render(<ZoomControls />);
+        fireEvent.change(screen.getByRole("slider"), { target: { value: "25" } });
+
+        expect(setZoom).toHaveBeenCalledWith(expect.any(Number));
+    });
+
+    it("should map high slider values through the upper zoom range", () => {
+        const setZoom = vi.fn();
+        (useSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((selector: (state: unknown) => unknown) => selector({
+            zoom: 1.0,
+            setZoom,
+        }));
+
+        render(<ZoomControls />);
+        fireEvent.change(screen.getByRole("slider"), { target: { value: "97" } });
+
+        expect(setZoom).toHaveBeenCalledWith(4.76);
+    });
+
+    it("should ignore the slider change emitted by a double tap reset", () => {
+        vi.useFakeTimers();
+        const setZoom = vi.fn();
+        (useSettingsStore as unknown as ReturnType<typeof vi.fn>).mockImplementation((selector: (state: unknown) => unknown) => selector({
+            zoom: 1.5,
+            setZoom,
+        }));
+
+        render(<ZoomControls />);
+        const slider = screen.getByRole("slider");
+
+        fireEvent.touchStart(slider);
+        fireEvent.touchStart(slider);
+        fireEvent.change(slider, { target: { value: "90" } });
+        expect(setZoom).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(200);
+        fireEvent.change(slider, { target: { value: "90" } });
+        expect(setZoom).toHaveBeenCalledTimes(2);
     });
 
     it("should render compact mode", () => {
