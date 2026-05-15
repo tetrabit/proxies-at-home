@@ -116,16 +116,16 @@ describe("moxfieldApi", () => {
   describe("fetchMoxfieldDeck", () => {
     it("uses the Electron bridge when available", async () => {
       const mockDeck = createMockDeck({ name: "Electron Deck" });
-      const fetchMoxfieldDeck = vi.fn().mockResolvedValue(mockDeck);
+      const electronFetchMoxfieldDeck = vi.fn().mockResolvedValue(mockDeck);
       (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof fetchMoxfieldDeck } }).electronAPI =
         {
-          fetchMoxfieldDeck,
+          fetchMoxfieldDeck: electronFetchMoxfieldDeck,
         };
 
       const result = await fetchMoxfieldDeck("abc123");
 
       expect(result.name).toBe("Electron Deck");
-      expect(fetchMoxfieldDeck).toHaveBeenCalledWith("abc123");
+      expect(electronFetchMoxfieldDeck).toHaveBeenCalledWith("abc123");
     });
 
     it("logs and rethrows non-Error Electron failures", async () => {
@@ -139,6 +139,21 @@ describe("moxfieldApi", () => {
       await expect(fetchMoxfieldDeck("abc123")).rejects.toBe("boom");
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         "[moxfieldApi] Electron IPC failed: boom"
+      );
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("logs and rethrows Error Electron failures", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const electronFetch = vi.fn().mockRejectedValue(new Error("ipc-failed"));
+      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof electronFetch } }).electronAPI =
+        {
+          fetchMoxfieldDeck: electronFetch,
+        };
+
+      await expect(fetchMoxfieldDeck("abc123")).rejects.toThrow("ipc-failed");
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[moxfieldApi] Electron IPC failed: ipc-failed"
       );
       consoleErrorSpy.mockRestore();
     });
