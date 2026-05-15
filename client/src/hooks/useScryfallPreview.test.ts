@@ -140,6 +140,20 @@ describe("useScryfallPreview", () => {
     expect(result.current.validatedPreviewUrl).toBeNull();
   });
 
+  it("clears specific-card results when the direct lookup rejects", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
+    mockFetchCardBySetAndNumber.mockRejectedValue(new Error("lookup failed"));
+
+    const { result } = renderHook(() => useScryfallPreview("Dark [abc] 12"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(result.current.isLoading).toBe(false);
+  });
+
   it("clears results when the search API rejects", async () => {
     mockSearchCards.mockRejectedValue(new Error("Network down"));
 

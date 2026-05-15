@@ -1,5 +1,4 @@
 import { renderHook, waitFor } from "@testing-library/react";
-import { createElement, StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useShareUrl } from "./useShareUrl";
 
@@ -153,6 +152,34 @@ describe("useShareUrl", () => {
     expect(mockLoadShare).not.toHaveBeenCalled();
     expect(result.current.error).toBeNull();
     expect(result.current.shareData).toBeNull();
+  });
+
+  it("only loads a shared deck once on rerender after the first load starts", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Island" }],
+      st: undefined,
+    };
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Island" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockCreateProject.mockResolvedValue("project-strict-mode");
+    mockProcess.mockResolvedValue(undefined);
+
+    const { rerender } = renderHook((_count: number) => useShareUrl(), {
+      initialProps: 0,
+    });
+
+    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
+    rerender(1);
+    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
+    expect(mockProcess).toHaveBeenCalledTimes(1);
   });
 
   it("opens an existing clean project and clears the share parameter", async () => {
@@ -741,26 +768,4 @@ describe("useShareUrl", () => {
     expect(mockShowErrorToast).toHaveBeenCalledWith("Shared deck contains no cards");
   });
 
-  it("only loads once under StrictMode guard", async () => {
-    const sharedData = {
-      v: 1 as const,
-      c: [{ name: "Island" }],
-      st: {},
-    };
-    mockLoadShare.mockResolvedValue(sharedData);
-    mockDeserializeForImport.mockReturnValue({
-      cards: [{ name: "Island" }],
-      dfcLinks: [],
-      settings: undefined,
-    });
-    mockProjectsWhere.mockReturnValueOnce({
-      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
-    });
-
-    renderHook(() => useShareUrl(), {
-      wrapper: ({ children }) => createElement(StrictMode, null, children),
-    });
-
-    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
-  });
 });
