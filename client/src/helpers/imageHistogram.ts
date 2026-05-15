@@ -31,7 +31,7 @@ export async function calculateDarknessFactorFromBlob(blob: Blob): Promise<numbe
                     ? new OffscreenCanvas(img.width, img.height)
                     : document.createElement('canvas');
 
-                if (!(canvas instanceof OffscreenCanvas)) {
+                if (typeof OffscreenCanvas === 'undefined' || !(canvas instanceof OffscreenCanvas)) {
                     canvas.width = img.width;
                     canvas.height = img.height;
                 }
