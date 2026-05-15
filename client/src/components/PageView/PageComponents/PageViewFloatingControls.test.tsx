@@ -116,15 +116,17 @@ describe("PageViewFloatingControls", () => {
             expect(screen.queryByTestId("zoom-controls")).toBeNull();
         });
 
-        it("should close zoom controls when clicking outside", () => {
+        it("should close zoom controls when clicking outside", async () => {
             render(<PageViewFloatingControls hasCards={true} mobile={true} />);
 
             // Open it
-            fireEvent.click(screen.getByRole("button"));
+            await act(async () => {
+                fireEvent.click(screen.getByRole("button"));
+            });
             expect(screen.getByTestId("zoom-controls")).toBeDefined();
 
-            act(() => {
-                (window as unknown as { __outsideHandler?: () => void }).__outsideHandler?.();
+            await act(async () => {
+                fireEvent.click(document.body);
             });
             expect(screen.queryByTestId("zoom-controls")).toBeNull();
         });
