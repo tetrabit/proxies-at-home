@@ -116,5 +116,36 @@ describe("undoableSettings", () => {
             await action.redo();
             // The mock setter was called in the redo callback
         });
+
+        it("skips unchanged debounced values", () => {
+            recordSettingChange("pageSizePreset", "A4");
+
+            vi.advanceTimersByTime(600);
+
+            expect(mockPushAction).not.toHaveBeenCalled();
+        });
+
+        it("handles stale timeout callbacks and settings without setter functions", async () => {
+            const callbacks: Array<() => void> = [];
+            const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback: TimerHandler) => {
+                callbacks.push(callback as () => void);
+                return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+            });
+
+            recordSettingChange("missingSetting" as UndoableSettingKey, "old");
+
+            callbacks[0]();
+            callbacks[0]();
+
+            expect(mockPushAction).toHaveBeenCalledTimes(1);
+            const action = mockPushAction.mock.calls[0][0];
+            expect(action.description).toBe("Change missingSetting");
+
+            await action.undo();
+            await action.redo();
+
+            setTimeoutSpy.mockRestore();
+        });
+
     });
 });
