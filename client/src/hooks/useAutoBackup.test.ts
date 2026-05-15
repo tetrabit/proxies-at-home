@@ -147,4 +147,22 @@ describe("useAutoBackup", () => {
       expect.any(Blob)
     );
   });
+
+  it("skips the scheduled backup when the last backup was too recent", async () => {
+    mockExportProject.mockResolvedValue({
+      project: { name: "Project 1" },
+      cards: [{ linkedFrontId: null }],
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+
+    await backupProject("project-1");
+
+    renderHook(() => useAutoBackup());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(mockExportProject).toHaveBeenCalledTimes(1);
+  });
 });
