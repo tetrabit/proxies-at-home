@@ -260,6 +260,52 @@ export interface MpcCalibrationRunRecord {
   results: MpcCalibrationRunResult[];
 }
 
+export type UpgradeTransactionLike = {
+  table: (name: string) => {
+    clear?: () => Promise<unknown> | unknown;
+    count?: () => Promise<number> | number;
+    get?: (
+      key: string
+    ) => Promise<{ value?: Json } | undefined> | { value?: Json } | undefined;
+    add?: (record: unknown) => Promise<unknown> | unknown;
+  };
+};
+
+export function clearCardMetadataCacheUpgrade(tx: UpgradeTransactionLike) {
+  return tx.table("cardMetadataCache").clear?.();
+}
+
+export async function createDefaultProjectUpgrade(
+  tx: UpgradeTransactionLike,
+  options: { randomUUID?: () => string; now?: () => number } = {}
+) {
+  const randomUUID = options.randomUUID ?? crypto.randomUUID;
+  const now = options.now ?? Date.now;
+  const defaultProjectId = randomUUID();
+  const cardCount = (await tx.table("cards").count?.()) ?? 0;
+
+  const settingRecord = await tx
+    .table("settings")
+    .get?.("proxxied:layout-settings:v1");
+  const existingSettings = settingRecord?.value || {};
+
+  await tx.table("projects").add?.({
+    id: defaultProjectId,
+    name: "My Project",
+    createdAt: now(),
+    lastOpenedAt: now(),
+    cardCount,
+    settings: existingSettings,
+  });
+
+  await tx.table("userPreferences").add?.({
+    id: "default",
+    settings: existingSettings,
+    favoriteCardbacks: [],
+    lastProjectId: defaultProjectId,
+  });
+}
+
 class ProxxiedDexie extends Dexie {
   // 'cards' is the name of the table
   // '&uuid' makes 'uuid' a unique index and primary key
@@ -508,9 +554,7 @@ class ProxxiedDexie extends Dexie {
         effectCache: "&key, cachedAt",
         mpcSearchCache: "&[query+cardType], cachedAt",
       })
-      .upgrade((tx) => {
-        return tx.table("cardMetadataCache").clear();
-      });
+      .upgrade(clearCardMetadataCacheUpgrade);
 
     // Version 16: Add projects and userPreferences tables
     this.version(16)
@@ -528,34 +572,7 @@ class ProxxiedDexie extends Dexie {
         projects: "&id, lastOpenedAt",
         userPreferences: "&id",
       })
-      .upgrade(async (tx) => {
-        // Create default project
-        const defaultProjectId = crypto.randomUUID();
-        const cardCount = await tx.table("cards").count();
-
-        // Copy existing global settings
-        const settingRecord = await tx
-          .table("settings")
-          .get("proxxied:layout-settings:v1");
-        const existingSettings = settingRecord?.value || {};
-
-        await tx.table("projects").add({
-          id: defaultProjectId,
-          name: "My Project",
-          createdAt: Date.now(),
-          lastOpenedAt: Date.now(),
-          cardCount,
-          settings: existingSettings,
-        });
-
-        // Assign all existing cards to default project
-        await tx.table("userPreferences").add({
-          id: "default",
-          settings: existingSettings,
-          favoriteCardbacks: [],
-          lastProjectId: defaultProjectId,
-        });
-      });
+      .upgrade(createDefaultProjectUpgrade);
 
     // Version 17: Unified Project Architecture
     // - 'cards' table holds ALL cards, filtered by projectId on read
