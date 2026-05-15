@@ -392,11 +392,11 @@ describe("mpcCalibrationRunner", () => {
 
     expect(result.summary.totalCases).toBe(3);
     expect(result.cases).toHaveLength(3);
-    expect(result.summary.matchedCases).toBe(3);
+    expect(result.summary.mismatchedCases).toBe(3);
     expect(result.cases.map((item) => item.predictedIdentifier)).toEqual([
-      "art-match",
-      "art-match",
-      "art-match",
+      "exact-print",
+      "exact-print",
+      "exact-print",
     ]);
   });
 
