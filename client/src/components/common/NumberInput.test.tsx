@@ -72,7 +72,10 @@ describe('NumberInput', () => {
             fireEvent.mouseDown(upButton);
 
             expect(onChange).toHaveBeenCalledTimes(1);
-            expect((onChange.mock.calls[0][0] as React.ChangeEvent<HTMLInputElement>).target.value).toBe('1.3');
+            const syntheticEvent = onChange.mock.calls[0][0] as React.ChangeEvent<HTMLInputElement>;
+            expect(syntheticEvent.target.value).toBe('1.3');
+            expect(syntheticEvent.isDefaultPrevented()).toBe(false);
+            expect(syntheticEvent.isPropagationStopped()).toBe(false);
         });
     });
 
@@ -132,6 +135,24 @@ describe('NumberInput', () => {
             fireEvent.touchEnd(upButton);
 
             expect(onChange).toHaveBeenCalled();
+        });
+
+        it('should handle touch events on the decrement button and reset the ghost-click guard', () => {
+            const onChange = vi.fn();
+            render(<NumberInput value={5} step={1} onChange={onChange} />);
+
+            const downButton = screen.getByTestId('chevron-down').parentElement!;
+            fireEvent.touchStart(downButton);
+            fireEvent.touchEnd(downButton);
+
+            expect(onChange).toHaveBeenCalled();
+
+            act(() => {
+                vi.advanceTimersByTime(500);
+            });
+
+            fireEvent.mouseDown(downButton);
+            expect(onChange.mock.calls.length).toBeGreaterThan(1);
         });
     });
 
