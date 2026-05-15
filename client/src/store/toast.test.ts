@@ -281,6 +281,16 @@ describe("useToastStore", () => {
 
             expect(useToastStore.getState().toasts).toHaveLength(0);
         });
+
+        it("should remove an existing copy toast before adding a new one", () => {
+            const { addToast, showCopyToast } = useToastStore.getState();
+            addToast({ type: "copy", message: "Old copy", dismissible: true });
+
+            showCopyToast("Copied!");
+
+            expect(useToastStore.getState().toasts).toHaveLength(1);
+            expect(useToastStore.getState().toasts[0].message).toBe("Copied!");
+        });
     });
 
     describe("showInfoToast", () => {
@@ -310,6 +320,16 @@ describe("useToastStore", () => {
             vi.advanceTimersByTime(8000);
 
             expect(useToastStore.getState().toasts).toHaveLength(0);
+        });
+
+        it("should remove an existing error toast before adding a new one", () => {
+            const { addToast, showErrorToast } = useToastStore.getState();
+            addToast({ type: "error", message: "Old error", dismissible: true });
+
+            showErrorToast("Oops");
+
+            expect(useToastStore.getState().toasts).toHaveLength(1);
+            expect(useToastStore.getState().toasts[0].message).toBe("Oops");
         });
     });
 });
