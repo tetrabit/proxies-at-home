@@ -202,6 +202,20 @@ describe("undoableActions", () => {
       expect(mockPushAction).not.toHaveBeenCalled();
     });
 
+    it("undoes and redoes a single-card reorder with a linked back partner", async () => {
+      vi.mocked(db.cards.get).mockResolvedValueOnce({
+        uuid: "front-card",
+        linkedBackId: "back-card",
+      } as CardOption);
+
+      await undoableReorderCards("front-card", 4, 8);
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.update).toHaveBeenCalledWith("back-card", { order: 8 });
+    });
+
     it("undoes and redoes a single-card reorder with a linked front partner", async () => {
       vi.mocked(db.cards.get).mockResolvedValueOnce({
         uuid: "back-card",
@@ -980,6 +994,23 @@ describe("undoableActions", () => {
       );
     });
 
+
+    it("skips cardback redo when a front card disappeared", async () => {
+      vi.mocked(db.cards.where).mockReturnValue({
+        anyOf: vi.fn(() => ({
+          toArray: vi.fn().mockResolvedValue([frontWithoutBack]),
+        })),
+      } as never);
+      vi.mocked(db.cards.bulkGet).mockResolvedValue([]);
+
+      await undoableChangeCardback(["front-new"], "img-new", "New Back", false);
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.get).mockResolvedValueOnce(undefined as unknown as CardOption);
+
+      await pushedAction.redo();
+
+      expect(createLinkedBackCard).not.toHaveBeenCalled();
+    });
 
     it("decrements image refs instead of deleting when undoing newly created backs with shared images", async () => {
       vi.mocked(db.cards.where).mockReturnValue({
