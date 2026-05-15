@@ -252,4 +252,49 @@ describe("useToastStore", () => {
             expect(toasts[0].message).toBe("Added Dark Ritual");
         });
     });
+
+    describe("showCopyToast", () => {
+        it("should add and auto-dismiss copy toasts", () => {
+            const { showCopyToast } = useToastStore.getState();
+
+            showCopyToast("Copied!");
+
+            expect(useToastStore.getState().toasts).toHaveLength(1);
+            expect(useToastStore.getState().toasts[0].type).toBe("copy");
+
+            vi.advanceTimersByTime(2000);
+
+            expect(useToastStore.getState().toasts).toHaveLength(0);
+        });
+    });
+
+    describe("showInfoToast", () => {
+        it("should add and auto-dismiss info toasts using copy styling", () => {
+            const { showInfoToast } = useToastStore.getState();
+
+            showInfoToast("Heads up");
+
+            expect(useToastStore.getState().toasts).toHaveLength(1);
+            expect(useToastStore.getState().toasts[0].type).toBe("copy");
+
+            vi.advanceTimersByTime(4000);
+
+            expect(useToastStore.getState().toasts).toHaveLength(0);
+        });
+    });
+
+    describe("showErrorToast", () => {
+        it("should add and auto-dismiss error toasts", () => {
+            const { showErrorToast } = useToastStore.getState();
+
+            showErrorToast("Oops");
+
+            expect(useToastStore.getState().toasts).toHaveLength(1);
+            expect(useToastStore.getState().toasts[0].type).toBe("error");
+
+            vi.advanceTimersByTime(8000);
+
+            expect(useToastStore.getState().toasts).toHaveLength(0);
+        });
+    });
 });
