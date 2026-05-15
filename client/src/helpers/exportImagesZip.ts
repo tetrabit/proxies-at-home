@@ -122,10 +122,11 @@ async function processCardForExport(
       console.warn(`[Export skipped] Error fetching ${url}`, err);
       return null;
     }
-  /* v8 ignore next -- an empty URL without a blob is returned above before blob selection. @preserve */
+  /* v8 ignore start -- an empty URL without a blob is returned above before blob selection. @preserve */
   } else {
     return null;
   }
+  /* v8 ignore stop */
 
   // de-dupe filenames per printed order
   // Note: This shared mutation of `usedNames` is safe because we only access it here

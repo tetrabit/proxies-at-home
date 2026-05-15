@@ -713,8 +713,8 @@ describe("streamCards", () => {
     (undoableAddCards as any).mockResolvedValue([{ uuid: "placeholder-one" }]);
     (findBestMpcMatches as any).mockResolvedValue([]);
     (addRemoteImage as any)
-      .mockResolvedValueOnce("custom-url-back")
-      .mockResolvedValueOnce("front-url-image");
+      .mockResolvedValueOnce("front-url-image")
+      .mockResolvedValueOnce("custom-url-back");
     (fetchEventSource as any).mockImplementation(
       async (_url: string, opts: any) => {
         await opts.onmessage({
