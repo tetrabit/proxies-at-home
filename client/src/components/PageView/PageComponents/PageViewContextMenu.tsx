@@ -68,16 +68,14 @@ export function PageViewContextMenu({
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (contextMenu.visible) {
-        const menuEl = document.getElementById("mobile-context-menu");
-        if (menuEl && menuEl.contains(e.target as Node)) {
-          return;
-        }
-
-        e.preventDefault();
-        e.stopPropagation();
-        setContextMenu({ ...contextMenu, visible: false });
+      const menuEl = document.getElementById("mobile-context-menu");
+      if (menuEl && menuEl.contains(e.target as Node)) {
+        return;
       }
+
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({ ...contextMenu, visible: false });
     };
 
     if (contextMenu.visible) {

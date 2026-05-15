@@ -185,12 +185,65 @@ describe('PageViewContextMenu', () => {
     expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
   });
 
-  it('closes without opening editors when card image data is unavailable', async () => {
-    mocks.dbImagesGet.mockResolvedValue(null);
-    const setContextMenu = renderMenu({ cards: [{ uuid: 'front-1', name: 'No image' }] as never[] });
+
+  it('covers single-card fallback branches when cards or back images are unavailable', async () => {
+    const oneSidedCard = { uuid: 'front-1', name: 'Island', imageId: 'img-1' };
+    const setContextMenu = renderMenu({ cards: [oneSidedCard] as never[] });
 
     fireEvent.click(screen.getByText('Adjust Art'));
+    await waitFor(() => expect(mocks.openCardEditor).toHaveBeenCalledWith({
+      card: oneSidedCard,
+      image: { id: 'img-1' },
+      backCard: undefined,
+      backImage: null,
+      initialFace: 'front',
+    }));
+
+    expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
+  });
+
+  it('closes single-card modal actions without opening when the card is missing', () => {
+    const setContextMenu = renderMenu({ cards: [] });
+
+    fireEvent.click(screen.getByTestId('card-context-menu-mpc-upgrade'));
+    fireEvent.click(screen.getByTestId('card-context-menu-mpc-calibration'));
+    fireEvent.click(screen.getByText('Settings'));
+
+    expect(mocks.openMpcUpgrade).not.toHaveBeenCalled();
+    expect(mocks.openCalibrationModal).not.toHaveBeenCalled();
+    expect(mocks.openArtworkModal).not.toHaveBeenCalled();
+    expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
+  });
+
+  it('closes multi-select editor/settings actions without opening when the card is missing', async () => {
+    mocks.selectedCards = new Set(['front-1', 'back-1']);
+    const setContextMenu = renderMenu({ cards: [] });
+
+    fireEvent.click(screen.getByText('Adjust 2 Cards'));
     await waitFor(() => expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false }));
+
+    fireEvent.click(screen.getByText('2 Cards Settings'));
+
     expect(mocks.openCardEditor).not.toHaveBeenCalled();
+    expect(mocks.openArtworkModal).not.toHaveBeenCalled();
+    expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
+  });
+
+  it('opens the editor with null image data when database images are unavailable', async () => {
+    mocks.dbImagesGet.mockResolvedValue(null);
+    const cardWithMissingImage = { uuid: 'front-1', name: 'No image', imageId: 'missing-image' };
+    const setContextMenu = renderMenu({
+      cards: [cardWithMissingImage] as never[],
+    });
+
+    fireEvent.click(screen.getByText('Adjust Art'));
+    await waitFor(() => expect(mocks.openCardEditor).toHaveBeenCalledWith({
+      card: cardWithMissingImage,
+      image: null,
+      backCard: undefined,
+      backImage: null,
+      initialFace: 'front',
+    }));
+    expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
   });
 });
