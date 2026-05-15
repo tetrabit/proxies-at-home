@@ -227,23 +227,30 @@ describe("Project Switching (Relational Architecture)", () => {
     });
 
     it("should persist settings to the active project after debounce", async () => {
-        vi.useFakeTimers();
         const projectId = await useProjectStore.getState().createProject("Timer Project");
         await useProjectStore.getState().switchProject(projectId);
 
         await useProjectStore.getState().updateProjectSettings({});
-        await vi.advanceTimersByTimeAsync(1000);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
 
         const updated = await db.projects.get(projectId);
         expect(updated?.settings).toBeDefined();
     });
 
     it("should persist settings to user preferences when no project is active", async () => {
-        vi.useFakeTimers();
         useProjectStore.setState({ currentProjectId: null });
+        await db.userPreferences.put({
+            id: "default",
+            settings: {},
+            favoriteCardbacks: [],
+            favoriteMpcSources: [],
+            favoriteMpcTags: [],
+            favoriteMpcDpi: null,
+            favoriteMpcSort: null,
+        });
 
         await useProjectStore.getState().updateProjectSettings({});
-        await vi.advanceTimersByTimeAsync(1000);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
 
         expect(await db.userPreferences.get("default")).toBeDefined();
     });
