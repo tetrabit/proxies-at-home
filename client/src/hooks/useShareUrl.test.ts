@@ -172,12 +172,11 @@ describe("useShareUrl", () => {
     mockCreateProject.mockResolvedValue("project-strict-mode");
     mockProcess.mockResolvedValue(undefined);
 
-    const { rerender } = renderHook((_count: number) => useShareUrl(), {
+    renderHook((_count: number) => useShareUrl(), {
       initialProps: 0,
+      reactStrictMode: true,
     });
 
-    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
-    rerender(1);
     await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
     expect(mockProcess).toHaveBeenCalledTimes(1);
   });

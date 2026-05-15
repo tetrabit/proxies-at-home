@@ -45,6 +45,37 @@ describe("useScryfallPreview", () => {
     expect(result.current.setVariations.map((card) => card.name)).toEqual(["Forest", "Forest Bear"]);
   });
 
+  it("sorts an exact match ahead of a longer result when the exact card is returned second", async () => {
+    mockSearchCards.mockResolvedValue([
+      { name: "Forest Bear" },
+      { name: "Forest" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("Forest"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual(["Forest", "Forest Bear"]);
+  });
+
+  it("deduplicates repeated search results by card name", async () => {
+    mockSearchCards.mockResolvedValue([
+      { name: "Forest" },
+      { name: "Forest" },
+      { name: "Forest Bear" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("Forest"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual(["Forest", "Forest Bear"]);
+  });
+
   it("fetches a specific set/number card and validates the name", async () => {
     mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
     mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Darksteel Citadel" });
@@ -57,6 +88,20 @@ describe("useScryfallPreview", () => {
 
     expect(mockFetchCardBySetAndNumber).toHaveBeenCalledWith("abc", "12", expect.any(AbortSignal));
     expect(result.current.setVariations).toHaveLength(1);
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it("keeps a matching specific-card result when the fetched name matches the cleaned query", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Darksteel Citadel", set: "abc", number: "12" });
+    mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Darksteel Citadel" });
+
+    const { result } = renderHook(() => useScryfallPreview("Darksteel Citadel [abc] 12"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations).toEqual([{ name: "Darksteel Citadel" }]);
     expect(result.current.isLoading).toBe(false);
   });
 
@@ -152,6 +197,44 @@ describe("useScryfallPreview", () => {
 
     expect(result.current.setVariations).toEqual([]);
     expect(result.current.isLoading).toBe(false);
+  });
+
+  it("ignores a stale specific-card response after the query changes", async () => {
+    mockExtractCardInfo.mockImplementation((input: string) =>
+      input.includes("Lightning")
+        ? { name: "Lightning", set: "def", number: "1" }
+        : { name: "Dark", set: "abc", number: "12" }
+    );
+    const deferred = <T,>() => {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      const promise = new Promise<T>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    };
+    const firstPending = deferred<{ name: string }>();
+    const secondPending = deferred<{ name: string }>();
+    mockFetchCardBySetAndNumber
+      .mockReturnValueOnce(firstPending.promise)
+      .mockReturnValueOnce(secondPending.promise);
+
+    const { result, rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Dark [abc] 12" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: "Lightning [def] 1" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      firstPending.resolve({ name: "Darksteel Citadel" });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(2);
   });
 
   it("clears results when the search API rejects", async () => {
