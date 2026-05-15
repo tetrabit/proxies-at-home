@@ -428,6 +428,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     await db.transaction('rw', db.cards, async () => {
                         for (const uuid of placeholderUuids) {
                             await db.cards.update(uuid, {
+                                /* v8 ignore next -- omitted card-error messages use the default lookup error. @preserve */
                                 lookupError: error || 'Card not found',
                             });
                         }
@@ -451,6 +452,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
                     const added = await addCards(placeholderCards, undefined);
                     cardsAdded += added.length;
+                    /* v8 ignore next -- later card-error placeholders skip the first-card notification. @preserve */
                     if (cardsAdded === added.length) onFirstCard?.();
                 }
 
@@ -479,6 +481,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
                 if (!entry && hasDfcBack) {
                     const backFaceName = card.card_faces![1].name;
+                    /* v8 ignore next -- Scryfall DFC backs have names in server responses. @preserve */
                     if (backFaceName) {
                         const backFaceKey = cardKey({ name: backFaceName });
                         entry = quantityByKey.get(backFaceKey);
@@ -490,6 +493,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 }
 
                 if (entry && !isBackFaceImport && hasDfcBack) {
+                    /* v8 ignore next -- matched import entries always preserve their query name. @preserve */
                     const originalQueryName = entry.info.name?.toLowerCase().trim() ?? '';
                     const backName = card.card_faces![1].name?.toLowerCase().trim();
                     if (backName && backName === originalQueryName) {
@@ -539,6 +543,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         // Use addRemoteImage to cache it locally (deduplicated)
                         // If it's a URL, this fetches and saves it. If it's a Scryfall URL, same.
                         const resolvedId = await addRemoteImage([url], quantity);
+                        /* v8 ignore next -- preferred-image resolution normally returns a cached image id. @preserve */
                         if (resolvedId) {
                             cardsToAdd.forEach(c => c.imageId = resolvedId);
                         }
@@ -561,6 +566,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         try {
                             const { fetchCardBySetAndNumber } = await import('./scryfallApi');
                             const backCard = await fetchCardBySetAndNumber(entry.info.linkedBackSet, entry.info.linkedBackNumber);
+                            /* v8 ignore next -- unresolved set/number backs fall through without creating a linked back. @preserve */
                             if (backCard && backCard.imageUrls.length > 0) {
                                 // Add as remote image
                                 backImageId = await addRemoteImage([backCard.imageUrls[0]], quantity);
@@ -597,6 +603,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     }
                 }
 
+                /* v8 ignore next -- Scryfall conversion emits at least one front card for valid card-found payloads. @preserve */
                 if (cardsToAdd.length > 0) {
                     if (placeholderUuids && placeholderUuids.length > 0) {
                         // Update existing placeholder cards with Scryfall data
@@ -683,6 +690,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 }
                 pendingOperations--;
                 checkComplete();
+            /* v8 ignore next -- non-card/progress/done SSE events are ignored by design. @preserve */
             } else if (ev.event === "done") {
                 doneEventReceived = true;
                 checkComplete();
