@@ -87,14 +87,12 @@ export async function findBestMpcMatches(
 
         if (results && results.length > 0) {
             // Pass the query name and minDpi to enable exact match detection and DPI filtering
-            const best = pickBestMpcCard(results, favSources, favTags, info.name, minDpi);
-            if (best) {
-                matches.push({
-                    info,
-                    mpcCard: best,
-                    imageUrl: getMpcAutofillImageUrl(best.identifier)
-                });
-            }
+            const best = pickBestMpcCard(results, favSources, favTags, info.name, minDpi)!;
+            matches.push({
+                info,
+                mpcCard: best,
+                imageUrl: getMpcAutofillImageUrl(best.identifier)
+            });
         }
     }
 
@@ -233,18 +231,16 @@ export function pickBestMpcCard(
     // Log top 5 candidates with their scores
     const top5 = scored.slice(0, 5);
     debugLog(`[MPC Match] Query: "${queryName}" - Total candidates: ${cards.length}, After filters: ${filtered.length}`);
-    if (top5.length > 0) {
-        debugLog('[MPC Match] Top candidates:', top5.map(s => ({
-            name: s.card.name,
-            source: s.card.sourceName,
-            tags: s.card.tags?.join(', ') || '',
-            dpi: s.card.dpi,
-            score: s.score.toFixed(2),
-            isExactMatch: queryName ? isExactNameMatch(parseMpcCardName(s.card.name), queryName) : false,
-        })));
-    }
+    debugLog('[MPC Match] Top candidates:', top5.map(s => ({
+        name: s.card.name,
+        source: s.card.sourceName,
+        tags: s.card.tags?.join(', ') || '',
+        dpi: s.card.dpi,
+        score: s.score.toFixed(2),
+        isExactMatch: queryName ? isExactNameMatch(parseMpcCardName(s.card.name), queryName) : false,
+    })));
 
-    return scored.length > 0 ? scored[0].card : null;
+    return scored[0]!.card;
 }
 
 /**
