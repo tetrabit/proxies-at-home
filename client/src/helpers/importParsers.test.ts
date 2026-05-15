@@ -142,7 +142,7 @@ describe('importParsers', () => {
               <order>
                 <fronts>
                   <card>
-                    <id>https://drive.google.com/file/d/front-id/view</id>
+                    <id>drive_front_123</id>
                     <name>Fancy_Card.png</name>
                     <query>Ignored Query</query>
                     <slots>0,1</slots>
@@ -155,8 +155,8 @@ describe('importParsers', () => {
                   </card>
                 </fronts>
                 <backs>
-                  <card><id>back-a</id><name>Back_A.png</name><slots>0</slots></card>
-                  <card><id>back-b</id><name></name><slots>1</slots></card>
+                  <card><id>drive_back_a</id><name>Back_A.png</name><slots>0</slots></card>
+                  <card><id>drive_back_b</id><name></name><slots>1</slots></card>
                 </backs>
               </order>`;
 
@@ -165,8 +165,8 @@ describe('importParsers', () => {
             expect(intents[0]).toEqual(expect.objectContaining({
                 name: 'Fancy Card',
                 filename: 'Fancy_Card.png',
-                mpcId: 'front-id',
-                linkedBackImageId: 'back-a',
+                mpcId: 'drive_front_123',
+                linkedBackImageId: 'drive_back_a',
                 linkedBackName: 'Back A',
                 quantity: 2,
             }));
@@ -276,7 +276,7 @@ describe('importParsers', () => {
         });
 
         it('detects and normalizes category headers', () => {
-            const result = parseDeckList(`// Sideboard\n1 Negate\nmaybe:\n1 Unsummon\nDECK\n1 Island`);
+            const result = parseDeckList(`// Sideboard\n1 Negate\nMaybeboard:\n1 Unsummon\nDECK\n1 Island`);
 
             expect(result).toEqual([
                 expect.objectContaining({ name: 'Negate', category: 'Sideboard' }),

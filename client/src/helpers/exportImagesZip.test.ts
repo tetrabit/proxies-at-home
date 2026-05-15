@@ -256,7 +256,7 @@ describe('exportImagesZip', () => {
 
             await ExportImagesZip({ cards: [card], images: [image], concurrency: 0 });
 
-            expect(mocks.file).toHaveBeenCalledWith('001 - _________.png', expect.any(Blob));
+            expect(mocks.file).toHaveBeenCalledWith('001 - ________.png', expect.any(Blob));
         });
 
         it('should handle fetch errors gracefully', async () => {
