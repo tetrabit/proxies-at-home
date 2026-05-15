@@ -13,6 +13,7 @@ import {
 import { db } from "@/db";
 import {
   addCards,
+  addRemoteImage,
   changeCardArtwork,
   createLinkedBackCard,
   createLinkedBackCardsBulk,
@@ -236,6 +237,22 @@ describe("undoableActions", () => {
         })
       );
     });
+
+
+    it("undoes a single-card delete and restores captured image data", async () => {
+      const card = { uuid: "card-1", name: "Delete Me", imageId: "img-1" } as CardOption;
+      const image = { id: "img-1", refCount: 1 };
+      vi.mocked(db.cards.get).mockResolvedValueOnce(card);
+      vi.mocked(db.images.get).mockResolvedValueOnce(image as never);
+
+      await undoableDeleteCard("card-1");
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.add).toHaveBeenCalledWith(card);
+      expect(deleteCard).toHaveBeenCalledWith("card-1");
+    });
   });
 
   describe("undoableDeleteCardsBatch", () => {
@@ -324,6 +341,68 @@ describe("undoableActions", () => {
           description: expect.stringContaining('Add "'),
         })
       );
+    });
+
+
+    it("undoes and redoes added cards while restoring source urls and image refs", async () => {
+      const cardsToAdd = [
+        { name: "Card A", lang: "en", isUserUpload: false, imageId: "img-source" },
+        { name: "Card B", lang: "en", isUserUpload: false, imageId: "img-url-array" },
+      ];
+      const added = [
+        { uuid: "added-1", name: "Card A", imageId: "img-source" },
+        { uuid: "added-2", name: "Card B", imageId: "img-url-array" },
+      ] as CardOption[];
+      vi.mocked(addCards)
+        .mockResolvedValueOnce(added)
+        .mockResolvedValueOnce(added);
+      vi.mocked(db.images.bulkGet)
+        .mockResolvedValueOnce([
+          { id: "img-source", sourceUrl: "https://example.test/source.png" },
+          { id: "img-url-array", imageUrls: ["https://example.test/array.png"] },
+        ] as never)
+        .mockResolvedValueOnce([
+          { id: "img-source", refCount: 3 },
+          { id: "img-url-array", refCount: 1 },
+        ] as never)
+        .mockResolvedValueOnce([
+          { id: "img-source", refCount: 2 },
+          undefined,
+        ] as never);
+
+      await undoableAddCards(cardsToAdd);
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
+        { uuid: "back-uuid", imageId: "cardback_builtin" },
+        ...added,
+      ] as CardOption[]);
+
+      await pushedAction.undo();
+      expect(db.images.bulkUpdate).toHaveBeenCalledWith([
+        { key: "img-source", changes: { refCount: 2 } },
+      ]);
+      expect(db.images.bulkDelete).toHaveBeenCalledWith(["img-url-array"]);
+
+      await pushedAction.redo();
+      expect(addRemoteImage).toHaveBeenCalledWith(
+        ["https://example.test/array.png"],
+        1
+      );
+      expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+        {
+          frontUuid: "added-1",
+          backImageId: "__builtin_mtg__",
+          backName: "MTG",
+          options: { hasBuiltInBleed: true, usesDefaultCardback: true },
+        },
+        {
+          frontUuid: "added-2",
+          backImageId: "__builtin_mtg__",
+          backName: "MTG",
+          options: { hasBuiltInBleed: true, usesDefaultCardback: true },
+        },
+      ]);
     });
   });
 
