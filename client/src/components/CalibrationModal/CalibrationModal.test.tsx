@@ -14,6 +14,7 @@ const {
   mockCaptureCase,
   mockSaveCase,
   mockSaveAssets,
+  mockSaveRun,
   mockEvaluateDataset,
   mockCompareAlgorithms,
   mockBuildFixture,
@@ -47,6 +48,7 @@ const {
   mockCaptureCase: vi.fn(),
   mockSaveCase: vi.fn(),
   mockSaveAssets: vi.fn(),
+  mockSaveRun: vi.fn(),
   mockEvaluateDataset: vi.fn(),
   mockCompareAlgorithms: vi.fn(),
   mockBuildFixture: vi.fn(),
@@ -117,7 +119,7 @@ vi.mock("@/helpers/mpcCalibrationStorage", () => ({
   listMpcCalibrationAssets: mockListAssets,
   saveMpcCalibrationCase: mockSaveCase,
   saveMpcCalibrationAssets: mockSaveAssets,
-  saveMpcCalibrationRun: vi.fn(),
+  saveMpcCalibrationRun: mockSaveRun,
   MPC_CALIBRATION_TARGET_CASE_COUNT: 9,
 }));
 
@@ -268,13 +270,23 @@ describe("CalibrationModal", () => {
 
     await waitFor(() => {
       expect(mockCaptureCase).toHaveBeenCalled();
-      expect(mockCaptureCase).toHaveBeenCalledWith(
-        dataset.id,
-        mockCalibrationState.card,
-        expect.objectContaining({ id: "image-1" }),
-        expect.any(Array),
-        "cand-1"
+      expect(mockCaptureCase).toHaveBeenCalledWith({
+        datasetId: dataset.id,
+        card: mockCalibrationState.card,
+        imageRecord: expect.objectContaining({ id: "image-1" }),
+        candidates: expect.any(Array),
+        expectedIdentifier: "cand-1",
+      });
+      expect(mockSaveCase).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "case-1",
+          expectedIdentifier: "cand-1",
+        })
       );
+      expect(mockSaveAssets).toHaveBeenCalledWith([]);
+      expect(
+        screen.getByTestId("mpc-calibration-status").textContent
+      ).toContain("Captured expected choice");
     });
   });
 
@@ -298,7 +310,20 @@ describe("CalibrationModal", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(mockEvaluateDataset).toHaveBeenCalled();
+      expect(mockEvaluateDataset).toHaveBeenCalledWith(
+        dataset,
+        [frozenCase],
+        { id: "current", label: "Current algorithm" },
+        []
+      );
+      expect(mockSaveRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datasetId: dataset.id,
+          algorithmId: "current",
+          algorithmLabel: "Current algorithm",
+          summary: expect.objectContaining({ matchedCases: 1 }),
+        })
+      );
       expect(
         screen.getByTestId("mpc-calibration-scoreboard").textContent
       ).toContain("1/1");
@@ -346,6 +371,17 @@ describe("CalibrationModal", () => {
     );
 
     await waitFor(() => {
+      expect(mockCompareAlgorithms).toHaveBeenCalledWith(
+        dataset,
+        [frozenCase],
+        {
+          id: "dpi-baseline",
+          label: "DPI baseline",
+          usePreferenceProfile: false,
+        },
+        { id: "current", label: "Current algorithm" },
+        []
+      );
       expect(screen.getByText(/Baseline: baseline-pick/i)).toBeTruthy();
       expect(screen.getByText(/Current: current-pick/i)).toBeTruthy();
     });

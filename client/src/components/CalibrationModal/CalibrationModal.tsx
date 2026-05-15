@@ -1,6 +1,6 @@
 /* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { Button, Modal, ModalBody, ModalHeader, Spinner } from "flowbite-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCalibrationModalStore } from "@/store";
 import {
   db,
@@ -17,7 +17,6 @@ import {
   createSsimCompare,
   FULL_CARD_NORMALIZED_SIZE,
   rankCandidates,
-  scoreCandidateEnsemble,
   type RankedRecommendations,
   filterByExactName,
 } from "@/helpers/mpcBulkUpgradeMatcher";
@@ -108,7 +107,7 @@ export function CalibrationModal() {
     null
   );
   const [cases, setCases] = useState<MpcCalibrationCaseRecord[]>([]);
-  const [runs, setRuns] = useState<MpcCalibrationRunRecord[]>([]);
+  const [, setRuns] = useState<MpcCalibrationRunRecord[]>([]);
   const [currentResult, setCurrentResult] =
     useState<MpcCalibrationEvaluationResult | null>(null);
   const [comparisonResult, setComparisonResult] =
@@ -119,7 +118,7 @@ export function CalibrationModal() {
   });
   const [recommendations, setRecommendations] =
     useState<RankedRecommendations | null>(null);
-  const [rawPrefScores, setRawPrefScores] =
+  const [, setRawPrefScores] =
     useState<Record<string, number>>({});
   const [prefModel, setPrefModel] = useState<MpcPreferenceModel | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -174,7 +173,7 @@ export function CalibrationModal() {
         if (signal.aborted) return;
 
         // Prepare Preference Model for scoring
-        await hydrateMpcPreferences(signal);
+        await hydrateMpcPreferences();
         if (signal.aborted) return;
 
         const calibrationCases = await listDefaultMpcCalibrationCases();
@@ -200,12 +199,11 @@ export function CalibrationModal() {
 
             const harvested = await harvestSourcePreferenceCandidates(
               BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-              async (name) => searchMpcAutofill(name, "CARD", true),
-              signal
+              async (name) => searchMpcAutofill(name, "CARD", true)
             );
             if (signal.aborted) return;
 
-            const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
+            const profiles = await buildMpcSourceVisualProfiles(harvested);
             if (signal.aborted) return;
 
             const visualScores = await buildMpcVisualPreferenceScoreMap(
@@ -270,10 +268,23 @@ export function CalibrationModal() {
     setPhase("running");
     setStatus("Analyzing dataset...");
     try {
-      const result = await evaluateMpcCalibrationDataset(dataset.id);
+      const [loadedCases, loadedAssets] = await Promise.all([
+        listMpcCalibrationCases(dataset.id),
+        listMpcCalibrationAssets(dataset.id),
+      ]);
+      setCases(loadedCases);
+      const result = await evaluateMpcCalibrationDataset(
+        dataset,
+        loadedCases,
+        { id: "current", label: "Current algorithm" },
+        loadedAssets
+      );
       setCurrentResult(result);
       await saveMpcCalibrationRun({
+        id: crypto.randomUUID(),
         datasetId: dataset.id,
+        algorithmId: result.algorithmId,
+        algorithmLabel: result.algorithmLabel,
         summary: result.summary,
         results: toMpcCalibrationRunResults(result.cases),
         createdAt: Date.now(),
@@ -294,7 +305,22 @@ export function CalibrationModal() {
     setPhase("running");
     setStatus("Comparing algorithms...");
     try {
-      const result = await compareMpcCalibrationAlgorithms(dataset.id);
+      const [loadedCases, loadedAssets] = await Promise.all([
+        listMpcCalibrationCases(dataset.id),
+        listMpcCalibrationAssets(dataset.id),
+      ]);
+      setCases(loadedCases);
+      const result = await compareMpcCalibrationAlgorithms(
+        dataset,
+        loadedCases,
+        {
+          id: "dpi-baseline",
+          label: "DPI baseline",
+          usePreferenceProfile: false,
+        },
+        { id: "current", label: "Current algorithm" },
+        loadedAssets
+      );
       setComparisonResult(result);
     } catch (error) {
       console.error(error);
@@ -310,17 +336,30 @@ export function CalibrationModal() {
     async (candidate: MpcAutofillCard) => {
       if (!dataset || !card?.imageId || !captureState.imageRecord) return;
       setPhase("capturing");
+      setStatus(`Capturing expected choice: ${candidate.rawName ?? candidate.name}...`);
       try {
-        await captureMpcCalibrationCase(
-          dataset.id,
+        const captured = await captureMpcCalibrationCase({
+          datasetId: dataset.id,
           card,
-          captureState.imageRecord,
-          captureState.candidates,
-          candidate.identifier
+          imageRecord: captureState.imageRecord,
+          candidates: captureState.candidates,
+          expectedIdentifier: candidate.identifier,
+        });
+        await saveMpcCalibrationCase(captured.caseRecord);
+        await saveMpcCalibrationAssets(captured.assets);
+        setCurrentResult(null);
+        setComparisonResult(null);
+        setStatus(
+          captured.assetErrors.length > 0
+            ? `Captured expected choice with ${captured.assetErrors.length} asset warning${captured.assetErrors.length === 1 ? "" : "s"}.`
+            : `Captured expected choice: ${candidate.rawName ?? candidate.name}.`
         );
         await refreshDataset(dataset.id);
       } catch (error) {
         console.error(error);
+        setStatus(
+          error instanceof Error ? error.message : "Failed to capture expected choice"
+        );
       } finally {
         setPhase("idle");
       }
@@ -342,9 +381,16 @@ export function CalibrationModal() {
       try {
         const text = await file.text();
         const fixture = JSON.parse(text);
-        if (validateMpcCalibrationFixture(fixture)) {
-          await importMpcCalibrationFixture(fixture);
-          await refreshDataset(dataset.id);
+        const validFixture = validateMpcCalibrationFixture(fixture);
+        if (validFixture) {
+          const importedDatasetId = await importMpcCalibrationFixture(validFixture);
+          setDataset(validFixture.dataset);
+          setCurrentResult(null);
+          setComparisonResult(null);
+          setStatus(
+            `Cases captured: ${validFixture.cases.length}/${validFixture.dataset.targetCaseCount ?? MPC_CALIBRATION_TARGET_CASE_COUNT}`
+          );
+          await refreshDataset(importedDatasetId);
         } else {
           alert("Invalid calibration fixture file");
         }
@@ -379,7 +425,7 @@ export function CalibrationModal() {
           ×
         </button>
       </ModalHeader>
-      <ModalBody>
+      <ModalBody data-testid="mpc-calibration-modal">
         <div className="space-y-6">
           <div className="flex items-center justify-between border-b pb-4 dark:border-gray-700">
             <div>
@@ -407,12 +453,21 @@ export function CalibrationModal() {
                   {syncSaveStateLabel}
                 </span>
               </div>
+              {status ? (
+                <p
+                  className="mt-2 text-xs text-gray-600 dark:text-gray-300"
+                  data-testid="mpc-calibration-status"
+                >
+                  {status}
+                </p>
+              ) : null}
             </div>
             <div className="flex gap-2">
               <input
                 type="file"
                 className="hidden"
                 ref={importInputRef}
+                data-testid="mpc-calibration-import-input"
                 onChange={importFixture}
                 accept=".json"
               />
