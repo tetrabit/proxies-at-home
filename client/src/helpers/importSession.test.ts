@@ -185,6 +185,19 @@ describe("ImportSession", () => {
             logSpy.mockRestore();
         });
 
+        it("should use the generic import summary title for unknown import types", () => {
+            const logSpy = vi.spyOn(console, "log").mockImplementation(() => { });
+            const session = new ImportSession({
+                importType: "unknown",
+                cardUuids: [],
+            });
+
+            session.finish();
+
+            expect(logSpy.mock.calls[0]?.[0]).toContain("IMPORT SUMMARY");
+            logSpy.mockRestore();
+        });
+
         it("forceFinish should warn about pending cards", () => {
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => { });
             const logSpy = vi.spyOn(console, "log").mockImplementation(() => { });
