@@ -29,6 +29,7 @@ const mockSearchMpcAutofill = vi.hoisted(() => vi.fn());
 const mockGetMpcAutofillImageUrl = vi.hoisted(() => vi.fn());
 const mockAddRemoteImage = vi.hoisted(() => vi.fn());
 const mockInferImageSource = vi.hoisted(() => vi.fn());
+const mockInferSourceFromUrl = vi.hoisted(() => vi.fn());
 const mockLoadImage = vi.hoisted(() => vi.fn());
 const mockGetPreferenceProfile = vi.hoisted(() => vi.fn());
 const mockListDefaultCalibrationCases = vi.hoisted(() => vi.fn());
@@ -49,6 +50,7 @@ vi.mock("./dbUtils", () => ({
 
 vi.mock("./imageSourceUtils", () => ({
   inferImageSource: mockInferImageSource,
+  inferSourceFromUrl: mockInferSourceFromUrl,
 }));
 
 vi.mock("./imageProcessing", () => ({
@@ -161,6 +163,23 @@ function makeBitmap(): ImageBitmap {
   } as unknown as ImageBitmap;
 }
 
+function makeMpcCard(overrides: Record<string, unknown> = {}) {
+  return {
+    identifier: "match-1",
+    name: "Sol Ring",
+    rawName: "Sol Ring [C21] {267}",
+    smallThumbnailUrl: "",
+    mediumThumbnailUrl: "",
+    dpi: 600,
+    tags: [],
+    sourceName: "test",
+    source: "test",
+    extension: "png",
+    size: 1000,
+    ...overrides,
+  };
+}
+
 function installCanvasStub() {
   const drawImage = vi.fn();
   const getImageData = vi.fn(
@@ -188,6 +207,7 @@ describe("bulkUpgradeToMpcAutofill", () => {
     vi.clearAllMocks();
     installCanvasStub();
     mockInferImageSource.mockReturnValue("scryfall");
+    mockInferSourceFromUrl.mockReturnValue(undefined);
     mockLoadImage.mockResolvedValue(makeBitmap());
     mockGetPreferenceProfile.mockResolvedValue(undefined);
     mockListDefaultCalibrationCases.mockResolvedValue([]);
@@ -436,8 +456,11 @@ describe("bulkUpgradeToMpcAutofill", () => {
         sampleCount: 1,
       },
     });
+    mockHarvestCandidates.mockImplementation(async (names, search) => {
+      await search(names[0]);
+      return [];
+    });
     mockBuildVisualScoreMap.mockResolvedValue({
-      "default-pick": 0,
       "visual-pick": 8,
     });
     mockAddRemoteImage.mockResolvedValue("new-image-id");
@@ -563,6 +586,219 @@ describe("bulkUpgradeToMpcAutofill", () => {
       totalCards: 1,
       upgraded: 0,
       skipped: 1,
+      errors: 0,
+    });
+    expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
+  });
+
+  it("returns an empty summary when every card is filtered before processing", async () => {
+    mockDbCards.toArray.mockResolvedValue([
+      makeCardOption({ uuid: "no-image", imageId: undefined }),
+      makeCardOption({ uuid: "default-back", usesDefaultCardback: true }),
+      makeCardOption({
+        uuid: "library-back",
+        imageId: "cardback_builtin_blank",
+      }),
+    ]);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result).toEqual({
+      totalCards: 0,
+      upgraded: 0,
+      skipped: 0,
+      errors: 0,
+    });
+    expect(mockDbImages.bulkGet).not.toHaveBeenCalled();
+    expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
+  });
+
+  it("uses project filtering, sorted progress, and skipped counts when uploads fail", async () => {
+    const progress: string[] = [];
+    const first = makeCardOption({
+      uuid: "first",
+      name: "Arcane Signet",
+      imageId: "img-first",
+      order: undefined,
+    });
+    const second = makeCardOption({
+      uuid: "second",
+      name: "Sol Ring",
+      imageId: "img-second",
+      order: 2,
+    });
+    const third = makeCardOption({
+      uuid: "third",
+      name: "Thought Vessel",
+      imageId: "img-third",
+      order: 1,
+    });
+    mockDbCards.toArray.mockResolvedValue([second, first, third]);
+    mockDbImages.bulkGet.mockResolvedValue([
+      { source: "scryfall" },
+      { source: "scryfall" },
+      { source: "scryfall" },
+    ]);
+    mockSearchMpcAutofill.mockImplementation(async (name: string) => [
+      makeMpcCard({
+        identifier: `match-${name}`,
+        name,
+        rawName: `${name} [C21] {267}`,
+      }),
+    ]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue(null);
+
+    const result = await bulkUpgradeToMpcAutofill({
+      projectId: "proj-1",
+      onProgress: ({ currentCardName }) => progress.push(currentCardName),
+    });
+
+    expect(mockDbCards.where).toHaveBeenCalledWith("projectId");
+    expect(mockDbCards.equals).toHaveBeenCalledWith("proj-1");
+    expect(progress.slice(0, 3)).toEqual([
+      "Arcane Signet",
+      "Thought Vessel",
+      "Sol Ring",
+    ]);
+    expect(result).toEqual({
+      totalCards: 3,
+      upgraded: 0,
+      skipped: 3,
+      errors: 0,
+    });
+  });
+
+  it("uses source URL inference and decrements old image refs when copies remain", async () => {
+    const card = makeCardOption({ uuid: "source-url-card" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([
+      {
+        sourceUrl:
+          "https://cards.scryfall.io/png/front/1/2/source-url-card.png",
+      },
+    ]);
+    mockInferSourceFromUrl.mockReturnValue("scryfall");
+    mockSearchMpcAutofill.mockResolvedValue([makeMpcCard()]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue({ refCount: 3 });
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockInferSourceFromUrl).toHaveBeenCalledWith(
+      "https://cards.scryfall.io/png/front/1/2/source-url-card.png"
+    );
+    expect(mockDbImages.update).toHaveBeenCalledWith("scryfall-img-001", {
+      refCount: 2,
+    });
+    expect(mockDbImages.delete).not.toHaveBeenCalled();
+  });
+
+  it("uses image id source inference and records transaction failures as errors", async () => {
+    const card = makeCardOption({ uuid: "transaction-error" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{}]);
+    mockSearchMpcAutofill.mockResolvedValue([makeMpcCard()]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDb.transaction.mockRejectedValueOnce(new Error("write failed"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 0,
+      skipped: 0,
+      errors: 1,
+    });
+    expect(mockInferImageSource).toHaveBeenCalledWith("scryfall-img-001");
+    expect(warn).toHaveBeenCalledWith(
+      "[MPC Bulk Upgrade] Failed to apply upgrade:",
+      "Sol Ring",
+      expect.any(Error)
+    );
+    warn.mockRestore();
+  });
+
+  it("skips token cards when MPC returns no searchable results", async () => {
+    const card = makeCardOption({
+      uuid: "token-card",
+      type_line: "Token Creature — Goblin",
+    });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockSearchMpcAutofill.mockResolvedValue(undefined);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(mockSearchMpcAutofill).toHaveBeenCalledWith("Sol Ring", "TOKEN", true);
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 0,
+      skipped: 1,
+      errors: 0,
+    });
+  });
+
+  it("does not touch image refs when the uploaded image id is unchanged", async () => {
+    const card = makeCardOption({ uuid: "same-image" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockSearchMpcAutofill.mockResolvedValue([makeMpcCard()]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue("scryfall-img-001");
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockDbImages.get).not.toHaveBeenCalled();
+    expect(mockDbImages.update).not.toHaveBeenCalled();
+    expect(mockDbImages.delete).not.toHaveBeenCalled();
+  });
+
+  it("leaves old image refs untouched when the previous image record is missing", async () => {
+    const card = makeCardOption({ uuid: "missing-old-image" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockSearchMpcAutofill.mockResolvedValue([makeMpcCard()]);
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockResolvedValue("new-image-id");
+    mockDbImages.get.mockResolvedValue(undefined);
+
+    const result = await bulkUpgradeToMpcAutofill();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockDbImages.get).toHaveBeenCalledWith("scryfall-img-001");
+    expect(mockDbImages.update).not.toHaveBeenCalled();
+    expect(mockDbImages.delete).not.toHaveBeenCalled();
+  });
+
+  it("stops before processing when the abort signal is already aborted", async () => {
+    const card = makeCardOption({ uuid: "aborted" });
+    const controller = new AbortController();
+    controller.abort();
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+
+    const result = await bulkUpgradeToMpcAutofill({ signal: controller.signal });
+
+    expect(result).toEqual({
+      totalCards: 1,
+      upgraded: 0,
+      skipped: 0,
       errors: 0,
     });
     expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
