@@ -160,5 +160,81 @@ describe('useArtworkModalStore', () => {
         expect(state.initialFace).toBe('front');
         expect(state.initialTab).toBe('artwork');
     });
-});
 
+    it('should preserve advanced search and art source options when opening', () => {
+        const card: CardOption = {
+            uuid: '1',
+            name: 'Test Card',
+            imageId: 'test.jpg',
+            order: 0,
+            isUserUpload: false
+        };
+
+        useArtworkModalStore.getState().openModal({
+            card,
+            index: 0,
+            initialArtSource: 'mpc',
+            initialOpenAdvancedSearch: true,
+        });
+
+        const state = useArtworkModalStore.getState();
+        expect(state.initialArtSource).toBe('mpc');
+        expect(state.initialOpenAdvancedSearch).toBe(true);
+    });
+
+    it('should navigate to next and previous cards and reset modal context', () => {
+        const cards: CardOption[] = [
+            { uuid: '1', name: 'Card 1', imageId: '1.jpg', order: 0, isUserUpload: false },
+            { uuid: '2', name: 'Card 2', imageId: '2.jpg', order: 1, isUserUpload: false },
+            { uuid: '3', name: 'Card 3', imageId: '3.jpg', order: 2, isUserUpload: false }
+        ];
+
+        useArtworkModalStore.setState({
+            open: true,
+            card: cards[1],
+            index: 1,
+            allCards: cards,
+            initialTab: 'settings',
+            initialFace: 'back',
+            initialArtSource: 'mpc',
+            initialOpenAdvancedSearch: true,
+        });
+
+        useArtworkModalStore.getState().goToNextCard();
+        let state = useArtworkModalStore.getState();
+        expect(state.card).toEqual(cards[2]);
+        expect(state.index).toBe(2);
+        expect(state.initialTab).toBe('artwork');
+        expect(state.initialFace).toBe('front');
+        expect(state.initialArtSource).toBeNull();
+
+        useArtworkModalStore.getState().goToPrevCard();
+        state = useArtworkModalStore.getState();
+        expect(state.card).toEqual(cards[1]);
+        expect(state.index).toBe(1);
+    });
+
+    it('should ignore navigation when no cards are available', () => {
+        useArtworkModalStore.setState({
+            open: true,
+            card: null,
+            index: null,
+            allCards: [],
+        });
+
+        useArtworkModalStore.getState().goToNextCard();
+        useArtworkModalStore.getState().goToPrevCard();
+
+        const state = useArtworkModalStore.getState();
+        expect(state.card).toBeNull();
+        expect(state.index).toBeNull();
+    });
+
+    it('should set advanced search zoom directly and via updater', () => {
+        useArtworkModalStore.getState().setAdvancedSearchZoom(2);
+        expect(useArtworkModalStore.getState().advancedSearchZoom).toBe(2);
+
+        useArtworkModalStore.getState().setAdvancedSearchZoom((prev) => prev + 0.5);
+        expect(useArtworkModalStore.getState().advancedSearchZoom).toBe(2.5);
+    });
+});
