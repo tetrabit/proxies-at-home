@@ -152,3 +152,56 @@ describe("normalizeSharedCardbackTargetBleed", () => {
         expect(result).toBe(cards);
     });
 });
+
+// Task-28 residual coverage for remaining target key variants.
+describe("normalizeSharedCardbackTargetBleed residual target variants", () => {
+    it("normalizes shared cardbacks to explicit existing bleed targets", () => {
+        const cards = [
+            backCard({ uuid: "back-1", bleedMode: "existing", existingBleedMm: 3.175 }),
+            backCard({ uuid: "back-2", bleedMode: "existing", existingBleedMm: 3.175 }),
+            backCard({ uuid: "back-3", bleedMode: "generate", generateBleedMm: 2 }),
+        ];
+
+        const result = normalizeSharedCardbackTargetBleed(cards);
+
+        expect(result[2]).toMatchObject({
+            uuid: "back-3",
+            bleedMode: "existing",
+            existingBleedMm: 3.175,
+            generateBleedMm: undefined,
+        });
+    });
+
+    it("normalizes shared cardbacks to global existing bleed targets", () => {
+        const cards = [
+            backCard({ uuid: "back-1", bleedMode: "existing", existingBleedMm: undefined }),
+            backCard({ uuid: "back-2", bleedMode: "existing", existingBleedMm: undefined }),
+            backCard({ uuid: "back-3", bleedMode: "none" }),
+        ];
+
+        const result = normalizeSharedCardbackTargetBleed(cards);
+
+        expect(result[2]).toMatchObject({
+            uuid: "back-3",
+            bleedMode: "existing",
+            generateBleedMm: undefined,
+        });
+    });
+
+    it("uses first occurrence as tie breaker and ignores blank builtin cardbacks", () => {
+        const cards = [
+            backCard({ uuid: "back-1", bleedMode: "none" }),
+            backCard({ uuid: "back-2", bleedMode: "generate", generateBleedMm: 2 }),
+            backCard({ uuid: "back-3", imageId: "cardback_builtin_blank", bleedMode: "generate", generateBleedMm: 9 }),
+        ];
+
+        const result = normalizeSharedCardbackTargetBleed(cards);
+
+        expect(result[1]).toMatchObject({
+            uuid: "back-2",
+            bleedMode: "none",
+            generateBleedMm: undefined,
+        });
+        expect(result[2]).toBe(cards[2]);
+    });
+});

@@ -281,3 +281,33 @@ describe('chunkCards', () => {
         expect(chunks).toEqual([[1, 2]]);
     });
 });
+
+// Task-28 residual coverage for defensive default switch branches.
+describe("getCardTargetBleed defensive mode fallbacks", () => {
+    const settings = {
+        withBleedTargetMode: "global",
+        withBleedTargetAmount: 1,
+        noBleedTargetMode: "global",
+        noBleedTargetAmount: 2,
+    } as const;
+
+    it("falls back to global bleed for unknown with-bleed target mode", () => {
+        expect(
+            getCardTargetBleed(
+                { uuid: "card-1", name: "Card", order: 0, isUserUpload: false, hasBuiltInBleed: true },
+                { ...settings, withBleedTargetMode: "unexpected" as "global" },
+                3
+            )
+        ).toBe(3);
+    });
+
+    it("falls back to global bleed for unknown no-bleed target mode", () => {
+        expect(
+            getCardTargetBleed(
+                { uuid: "card-1", name: "Card", order: 0, isUserUpload: false },
+                { ...settings, noBleedTargetMode: "unexpected" as "global" },
+                4
+            )
+        ).toBe(4);
+    });
+});

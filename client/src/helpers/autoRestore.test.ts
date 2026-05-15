@@ -184,3 +184,40 @@ describe('autoRestore', () => {
     expect(result!.projectNames).toEqual(['Good']);
   });
 });
+
+// Task-28 residual coverage: all restore failures and unexpected top-level errors.
+describe('autoRestore residual branches', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSessionStorage.clear();
+  });
+
+  it('returns null when every listed backup fails to restore', async () => {
+    mockProjectCount.mockResolvedValue(0);
+    mockListBackups.mockResolvedValue([
+      {
+        projectId: 'proj-bad',
+        projectName: 'Broken',
+        cardCount: 3,
+        updatedAt: 1000,
+        createdAt: 500,
+        sizeBytes: 100,
+      },
+    ]);
+    mockFetchBackup.mockRejectedValue(new Error('corrupt data'));
+
+    const result = await autoRestore();
+
+    expect(result).toBeNull();
+    expect(mockSessionStorage.get('proxxied_auto_restore_done')).toBe('restored_0');
+  });
+
+  it('catches unexpected IndexedDB errors and marks the restore as errored', async () => {
+    mockProjectCount.mockRejectedValue(new Error('indexeddb unavailable'));
+
+    const result = await autoRestore();
+
+    expect(result).toBeNull();
+    expect(mockSessionStorage.get('proxxied_auto_restore_done')).toBe('error');
+  });
+});
