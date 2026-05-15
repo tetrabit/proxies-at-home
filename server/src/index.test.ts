@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
@@ -10,12 +11,14 @@ const state = vi.hoisted(() => ({
   corsOptions: undefined as undefined | { origin: Function },
   compressionOptions: undefined as undefined | { filter: Function },
   initDatabase: vi.fn(),
+  getDatabase: vi.fn(),
   initCatalogs: vi.fn(),
   startImportScheduler: vi.fn(),
   cleanupExpiredShares: vi.fn(),
   closeDatabase: vi.fn(),
   isMicroserviceAvailable: vi.fn(),
   logMicroserviceMetrics: vi.fn(),
+  listenAddress: undefined as undefined | string | { port?: number },
 }));
 
 vi.mock('express', () => {
@@ -26,7 +29,9 @@ vi.mock('express', () => {
         state.getHandlers.set(path, handler);
       }),
       listen: vi.fn((port: number, _host: string, cb: Function) => {
-        const server = { address: () => ({ port: port === 0 ? 49152 : port }) };
+        const server = {
+          address: () => state.listenAddress ?? { port: port === 0 ? 49152 : port },
+        };
         queueMicrotask(() => cb());
         return server;
       }),
@@ -57,7 +62,11 @@ vi.mock('compression', () => {
 });
 
 vi.mock('helmet', () => ({ default: vi.fn((options: unknown) => ({ middleware: 'helmet', options })) }));
-vi.mock('./db/db.js', () => ({ initDatabase: state.initDatabase, getDatabase: vi.fn(() => ({ prepare: vi.fn(() => ({ get: vi.fn(() => ({ ok: 1 })) })) })), closeDatabase: state.closeDatabase }));
+vi.mock('./db/db.js', () => ({
+  initDatabase: state.initDatabase,
+  getDatabase: state.getDatabase,
+  closeDatabase: state.closeDatabase,
+}));
 vi.mock('./services/importScheduler.js', () => ({ startImportScheduler: state.startImportScheduler }));
 vi.mock('./utils/scryfallCatalog.js', () => ({ initCatalogs: state.initCatalogs }));
 vi.mock('./services/scryfallMicroserviceClient.js', () => ({
@@ -101,7 +110,9 @@ describe('server index bootstrap and app wiring', () => {
     state.getHandlers.clear();
     state.corsOptions = undefined;
     state.compressionOptions = undefined;
+    state.listenAddress = undefined;
     state.initDatabase.mockClear();
+    state.getDatabase.mockReset().mockReturnValue({ prepare: vi.fn(() => ({ get: vi.fn(() => ({ ok: 1 })) })) });
     state.initCatalogs.mockClear();
     state.startImportScheduler.mockClear();
     state.cleanupExpiredShares.mockClear();
@@ -131,6 +142,9 @@ describe('server index bootstrap and app wiring', () => {
     expect(state.app?.use).toHaveBeenCalledWith('/api/scryfall', { route: 'scryfall' });
     expect(state.app?.use).toHaveBeenCalledWith('/api/metrics', { route: 'metrics' });
     expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0', expect.any(Function));
+
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(state.cleanupExpiredShares).toHaveBeenCalledTimes(2);
   });
 
   it('implements health and deep-health success/degraded branches', async () => {
@@ -153,6 +167,25 @@ describe('server index bootstrap and app wiring', () => {
     expect(deepUnavailable.body).toMatchObject({ status: 'degraded', checks: { microservice: 'unavailable' } });
   });
 
+  it('implements deep-health database and microservice error branches', async () => {
+    const { startServer } = await import('./index.js');
+    await startServer(3001);
+
+    state.getDatabase.mockImplementationOnce(() => {
+      throw new Error('db closed');
+    });
+    const databaseError = createResponse();
+    await state.getHandlers.get('/health/deep')?.({}, databaseError);
+    expect(databaseError.status).toHaveBeenCalledWith(503);
+    expect(databaseError.body).toMatchObject({ status: 'degraded', checks: { database: 'error', microservice: 'ok' } });
+
+    state.isMicroserviceAvailable.mockRejectedValueOnce(new Error('health failed'));
+    const microserviceError = createResponse();
+    await state.getHandlers.get('/health/deep')?.({}, microserviceError);
+    expect(microserviceError.status).toHaveBeenCalledWith(503);
+    expect(microserviceError.body).toMatchObject({ status: 'degraded', checks: { database: 'ok', microservice: 'error' } });
+  });
+
   it('covers CORS origin decisions and compression filter branches', async () => {
     process.env.ALLOWED_ORIGINS = 'https://app.example';
     const compression = (await import('compression')).default as unknown as { filter: ReturnType<typeof vi.fn> };
@@ -163,12 +196,16 @@ describe('server index bootstrap and app wiring', () => {
     state.corsOptions?.origin(undefined, corsCallback);
     state.corsOptions?.origin('https://app.example', corsCallback);
     state.corsOptions?.origin('http://localhost:5173', corsCallback);
+    state.corsOptions?.origin('http://127.0.0.1:5173', corsCallback);
+    state.corsOptions?.origin('http://[::1]:5173', corsCallback);
     state.corsOptions?.origin('not a url', corsCallback);
 
     expect(corsCallback).toHaveBeenNthCalledWith(1, null, true);
     expect(corsCallback).toHaveBeenNthCalledWith(2, null, true);
     expect(corsCallback).toHaveBeenNthCalledWith(3, null, true);
-    expect(corsCallback.mock.calls[3][0]).toBeInstanceOf(Error);
+    expect(corsCallback).toHaveBeenNthCalledWith(4, null, true);
+    expect(corsCallback).toHaveBeenNthCalledWith(5, null, true);
+    expect(corsCallback.mock.calls[5][0]).toBeInstanceOf(Error);
 
     const sseRes = createResponse();
     sseRes.getHeader.mockReturnValue('text/event-stream');
@@ -186,5 +223,43 @@ describe('server index bootstrap and app wiring', () => {
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
     expect(state.logMicroserviceMetrics).toHaveBeenCalledOnce();
+  });
+
+  it('uses port fallbacks for non-TCP and missing-address listeners', async () => {
+    const { startServer } = await import('./index.js');
+
+    state.listenAddress = 'named-pipe';
+    await expect(startServer(3002)).resolves.toBe(3002);
+
+    state.listenAddress = {};
+    await expect(startServer(3003)).resolves.toBe(3003);
+  });
+
+  it('starts when executed directly and handles graceful shutdown outcomes', async () => {
+    const originalArgv1 = process.argv[1];
+    const processOnSpy = vi.spyOn(process, 'on').mockImplementation(() => process);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    process.argv[1] = fileURLToPath(new URL('./index.ts', import.meta.url));
+    await import('./index.js');
+    await Promise.resolve();
+
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0', expect.any(Function));
+
+    const sigtermHandler = processOnSpy.mock.calls.find(([event]) => event === 'SIGTERM')?.[1] as (() => Promise<void>) | undefined;
+    const sigintHandler = processOnSpy.mock.calls.find(([event]) => event === 'SIGINT')?.[1] as (() => Promise<void>) | undefined;
+
+    await sigtermHandler?.();
+    expect(state.closeDatabase).toHaveBeenCalledOnce();
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    state.closeDatabase.mockImplementationOnce(() => {
+      throw new Error('close failed');
+    });
+    await sigintHandler?.();
+    expect(console.error).toHaveBeenCalledWith('[Server] Error during shutdown:', expect.any(Error));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    process.argv[1] = originalArgv1;
   });
 });
