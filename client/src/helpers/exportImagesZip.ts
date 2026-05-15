@@ -124,6 +124,7 @@ async function processCardForExport(
     }
   /* v8 ignore start -- an empty URL without a blob is returned above before blob selection. @preserve */
   } else {
+    /* v8 ignore next */
     return null;
   }
   /* v8 ignore stop */

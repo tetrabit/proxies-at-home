@@ -75,6 +75,14 @@ describe('importParsers', () => {
                 set: 'mh2',
                 number: '42',
             }));
+            expect(parseLineToIntent('Brainstorm [note] set:ice')).toEqual(expect.objectContaining({
+                name: 'Brainstorm',
+                set: 'ice',
+            }));
+            expect(parseLineToIntent('Ponder ^foil^ set:lrw')).toEqual(expect.objectContaining({
+                name: 'Ponder',
+                set: 'lrw',
+            }));
             expect(parseLineToIntent('Island {301}')).toEqual(expect.objectContaining({
                 name: 'Island',
             }));
