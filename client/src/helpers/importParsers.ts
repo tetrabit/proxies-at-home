@@ -173,6 +173,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
             const m = s.match(setNumBrackets);
             if (m) {
                 setCode = m[1].toLowerCase();
+                /* v8 ignore next -- setNumBrackets always captures the collector number when it matches. @preserve */
                 if (m[2]) number = m[2];
                 s = s.replace(setNumBrackets, "").trim();
                 parsing = true;
@@ -250,7 +251,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
 }
 
 // Known deck categories for detection
-const KNOWN_CATEGORIES = ['mainboard', 'sideboard', 'maybeboard', 'commander', 'companion', 'tokens', 'main', 'side', 'deck'];
+const KNOWN_CATEGORIES = ['mainboard', 'sideboard', 'maybeboard', 'commander', 'companion', 'tokens', 'main', 'side', 'sb', 'maybe', 'deck'];
 
 function isKnownCategory(s: string): boolean {
     return KNOWN_CATEGORIES.includes(s.toLowerCase().replace(/\s+/g, ''));

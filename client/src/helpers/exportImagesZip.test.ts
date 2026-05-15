@@ -222,24 +222,35 @@ describe('exportImagesZip', () => {
             const edgeBlob = new Blob(['edges'], { type: 'image/webp' });
             const fullBlob = new Blob(['full'], { type: 'image/png' });
             const fallbackBlob = new Blob(['fallback'], { type: 'image/png' });
+            const darkenAllBlob = new Blob(['darken-all'], { type: 'image/png' });
+            const darkenedFallbackBlob = new Blob(['darkened-fallback'], { type: 'image/png' });
 
             await ExportImagesZip({
                 cards: [
+                    createMockCard({ name: 'All', imageId: 'all', overrides: { darkenMode: 'darken-all' } }),
                     createMockCard({ name: 'Edges', imageId: 'edge', overrides: { darkenMode: 'contrast-edges' } }),
+                    createMockCard({ name: 'EdgesFallback', imageId: 'edgeFallback', overrides: { darkenMode: 'contrast-edges' } }),
                     createMockCard({ name: 'Full', imageId: 'full', overrides: { darkenMode: 'contrast-full' } }),
+                    createMockCard({ name: 'FullFallback', imageId: 'fullFallback', overrides: { darkenMode: 'contrast-full' } }),
                     createMockCard({ name: 'Unknown', imageId: 'fallback', overrides: { darkenMode: 'unexpected' } }),
                 ] as CardOption[],
                 images: [
+                    createMockImage({ id: 'all', exportBlob, exportBlobDarkenAll: darkenAllBlob }),
                     createMockImage({ id: 'edge', exportBlob, exportBlobContrastEdges: edgeBlob }),
+                    createMockImage({ id: 'edgeFallback', exportBlob, exportBlobDarkened: darkenedFallbackBlob }),
                     createMockImage({ id: 'full', exportBlob, exportBlobContrastFull: fullBlob }),
+                    createMockImage({ id: 'fullFallback', exportBlob }),
                     createMockImage({ id: 'fallback', exportBlob: fallbackBlob }),
                 ],
                 concurrency: 1,
             });
 
-            expect(mocks.file).toHaveBeenCalledWith('001 - Edges.webp', edgeBlob);
-            expect(mocks.file).toHaveBeenCalledWith('002 - Full.png', fullBlob);
-            expect(mocks.file).toHaveBeenCalledWith('003 - Unknown.png', fallbackBlob);
+            expect(mocks.file).toHaveBeenCalledWith('001 - All.png', darkenAllBlob);
+            expect(mocks.file).toHaveBeenCalledWith('002 - Edges.webp', edgeBlob);
+            expect(mocks.file).toHaveBeenCalledWith('003 - EdgesFallback.png', darkenedFallbackBlob);
+            expect(mocks.file).toHaveBeenCalledWith('004 - Full.png', fullBlob);
+            expect(mocks.file).toHaveBeenCalledWith('005 - FullFallback.png', exportBlob);
+            expect(mocks.file).toHaveBeenCalledWith('006 - Unknown.png', fallbackBlob);
         });
 
         it('should skip cards with no image data', async () => {
@@ -257,6 +268,20 @@ describe('exportImagesZip', () => {
             await ExportImagesZip({ cards: [card], images: [image], concurrency: 0 });
 
             expect(mocks.file).toHaveBeenCalledWith('001 - ________.png', expect.any(Blob));
+        });
+
+        it('should fall back to generated card filenames when names are missing or blank', async () => {
+            await ExportImagesZip({
+                cards: [
+                    createMockCard({ name: undefined, imageId: 'img-1' }),
+                    createMockCard({ name: '   ', imageId: 'img-1' }),
+                ] as CardOption[],
+                images: [createMockImage({ id: 'img-1' })],
+                concurrency: 1,
+            });
+
+            expect(mocks.file).toHaveBeenCalledWith('001 - Card 1.png', expect.any(Blob));
+            expect(mocks.file).toHaveBeenCalledWith('002 - card.png', expect.any(Blob));
         });
 
         it('should handle fetch errors gracefully', async () => {

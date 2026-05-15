@@ -284,11 +284,12 @@ describe('importParsers', () => {
         });
 
         it('detects and normalizes category headers', () => {
-            const result = parseDeckList(`// Sideboard\n1 Negate\nMaybeboard:\n1 Unsummon\nDECK\n1 Island`);
+            const result = parseDeckList(`// Sideboard\n1 Negate\nmaybe:\n1 Unsummon\nside\n1 Duress\nDECK\n1 Island`);
 
             expect(result).toEqual([
                 expect.objectContaining({ name: 'Negate', category: 'Sideboard' }),
                 expect.objectContaining({ name: 'Unsummon', category: 'Maybeboard' }),
+                expect.objectContaining({ name: 'Duress', category: 'Sideboard' }),
                 expect.objectContaining({ name: 'Island', category: 'Mainboard' }),
             ]);
         });
