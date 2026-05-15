@@ -368,6 +368,7 @@ export function CalibrationModal() {
           <button
             type="button"
             aria-label="Close calibration modal"
+            data-testid="calibration-modal-close"
             className="rounded-md px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-400 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
             onClick={closeModal}
           >
