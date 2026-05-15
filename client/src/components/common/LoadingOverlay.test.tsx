@@ -88,4 +88,20 @@ describe('LoadingOverlay', () => {
 
         expect(screen.getByText(/Elapsed:/)).toBeDefined();
     });
+
+    it('should format elapsed time with minutes when enough time has passed', () => {
+        render(
+            <LoadingOverlay
+                task="Processing"
+                progress={50}
+                onCancel={null}
+            />
+        );
+
+        act(() => {
+            vi.advanceTimersByTime(61000);
+        });
+
+        expect(screen.getByText(/Elapsed: 1m /)).toBeDefined();
+    });
 });
