@@ -164,6 +164,25 @@ describe("printerCalibrationApi – network error normalization", () => {
       ).rejects.toBeInstanceOf(CalibrationApiUnavailableError);
     });
 
+    it("returns a calculated profile on success", async () => {
+      const profile = {
+        front_x_mm: 10,
+        front_y_mm: 20,
+        back_x_mm: 30,
+        back_y_mm: 40,
+      };
+      mockFetch.mockResolvedValueOnce(makeOkJsonResponse(profile));
+
+      await expect(
+        calculateProfile({
+          front_x_measured_mm: 1,
+          front_y_measured_mm: 2,
+          back_x_measured_mm: 3,
+          back_y_measured_mm: 4,
+        })
+      ).resolves.toEqual(profile);
+    });
+
     it("preserves server error on non-ok response", async () => {
       mockFetch.mockResolvedValueOnce(
         makeErrorResponse(422, { error: "invalid measurement data" })

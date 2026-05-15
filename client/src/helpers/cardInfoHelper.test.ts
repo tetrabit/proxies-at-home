@@ -210,6 +210,16 @@ describe('CardInfoHelper', () => {
       });
     });
 
+    it('should keep set and number when extra metadata trails a [Set] {Number} pair', () => {
+      const input = '1x Counterspell [FIC] {7} [foil]';
+      expect(extractCardInfo(input)).toEqual({
+        name: 'Counterspell',
+        quantity: 1,
+        set: 'fic',
+        number: '7',
+      });
+    });
+
     it('should parse t: prefix for token cards', () => {
       const input = 't:treasure';
       expect(extractCardInfo(input)).toEqual({
