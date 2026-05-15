@@ -139,6 +139,25 @@ describe("ToggleButtonGroup", () => {
             const inactiveButton = screen.getByText("Option 2");
             expect(inactiveButton.className).toContain("text-gray-500");
         });
+
+        it("should apply custom highlightColor styles when selected", () => {
+            const options = [
+                { id: "option1", label: "Option 1", highlightColor: "#ff0000" },
+                { id: "option2", label: "Option 2" },
+            ];
+
+            render(
+                <ToggleButtonGroup
+                    options={options}
+                    value="option1"
+                    onChange={() => { }}
+                />
+            );
+
+            const activeButton = screen.getByText("Option 1");
+            expect(activeButton.className).toContain("text-white");
+            expect((activeButton as HTMLElement).style.backgroundColor).toBe("rgb(255, 0, 0)");
+        });
     });
 
     describe("custom className", () => {
