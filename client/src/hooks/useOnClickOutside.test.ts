@@ -32,4 +32,14 @@ describe("useOnClickOutside", () => {
         // Cleanup
         document.body.removeChild(ref.current);
     });
+
+    it("should ignore events when the ref has no current element", () => {
+        const handler = vi.fn();
+        const ref = { current: null };
+
+        renderHook(() => useOnClickOutside(ref, handler));
+
+        document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        expect(handler).not.toHaveBeenCalled();
+    });
 });
