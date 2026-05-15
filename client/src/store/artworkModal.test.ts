@@ -233,7 +233,7 @@ describe('useArtworkModalStore', () => {
     it('should ignore navigation when the next card slot is missing', () => {
         const cards = [
             { uuid: '1', name: 'Card 1', imageId: '1.jpg', order: 0, isUserUpload: false },
-            , // intentionally sparse to exercise the defensive early return
+            undefined,
         ] as unknown as CardOption[];
 
         useArtworkModalStore.setState({
@@ -252,7 +252,7 @@ describe('useArtworkModalStore', () => {
 
     it('should ignore navigation when the previous card slot is missing', () => {
         const cards = [
-            , // intentionally sparse to exercise the defensive early return
+            undefined,
             { uuid: '2', name: 'Card 2', imageId: '2.jpg', order: 1, isUserUpload: false },
         ] as unknown as CardOption[];
 
