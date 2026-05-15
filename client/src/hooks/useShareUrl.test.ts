@@ -506,6 +506,49 @@ describe("useShareUrl", () => {
     expect(result.current.shareData).toBe(sharedData);
   });
 
+  it("applies shared settings when overwriting a clean but out-of-date project", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Overwrite With Settings" }],
+      dfc: [],
+      st: {},
+    };
+    const existingProject = {
+      id: "project-clean-settings",
+      name: "Clean Settings Deck",
+      lastSyncedHash: "local-clean-hash",
+      settings: {},
+    };
+    const settingsStore = createSettingsStoreSpies();
+
+    mockSettingsGetState.mockReturnValue(settingsStore);
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Overwrite With Settings" }],
+      dfcLinks: [],
+      settings: { pr: "A4", c: 2, r: 2, dpi: 300 },
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]), delete: vi.fn().mockResolvedValue(undefined) })),
+    });
+    mockCalculateStateHash.mockResolvedValue("local-clean-hash");
+    mockProcess.mockImplementation(async (_intents, options) => {
+      await options.onComplete();
+    });
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+
+    expect(settingsStore.setPageSizePreset).toHaveBeenCalledWith("A4");
+    expect(settingsStore.setColumns).toHaveBeenCalledWith(2);
+    expect(settingsStore.setRows).toHaveBeenCalledWith(2);
+    expect(settingsStore.setDpi).toHaveBeenCalledWith(300);
+  });
+
   it("reports an error when the shared deck has no cards", async () => {
     mockLoadShare.mockResolvedValue({
       v: 1 as const,
