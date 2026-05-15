@@ -13,6 +13,16 @@ describe("useScryfallPrints", () => {
     await db.cardMetadataCache.clear();
   });
 
+  const deferred = <T,>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
   it("prefers oracle_id lookup when available", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -447,6 +457,189 @@ describe("useScryfallPrints", () => {
 
     expect(abortSpy).toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it("drops a stale request response after a newer query has started", async () => {
+    vi.useFakeTimers();
+    const firstResponse = deferred<{
+      ok: boolean;
+      json: () => Promise<{ total: number; prints: Array<{ imageUrl: string }> }>;
+    }>();
+    const secondResponse = Promise.resolve({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/newer-request.png" }],
+      }),
+    });
+    const fetchMock = vi.fn().mockImplementationOnce(() => firstResponse.promise).mockImplementationOnce(() => secondResponse);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderHook(
+      ({ name }) => useScryfallPrints({ name }),
+      { initialProps: { name: "First Card" } }
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    rerender({ name: "Second Card" });
+    await vi.advanceTimersByTimeAsync(100);
+
+    firstResponse.resolve({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/stale-request.png" }],
+      }),
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("drops a stale oracle lookup after a newer query has started", async () => {
+    vi.useFakeTimers();
+    const oracleResponse = deferred<{
+      ok: boolean;
+      json: () => Promise<{ total: number; prints: Array<{ imageUrl: string }> }>;
+    }>();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 1,
+          oracle_id: "oracle-stale",
+          prints: [
+            {
+              imageUrl: "https://example.com/stale-front.png",
+              set: "mh2",
+              number: "200",
+              oracle_id: "oracle-stale",
+              scryfall_id: "stale-front",
+            },
+          ],
+        }),
+      })
+      .mockImplementationOnce(() => oracleResponse.promise)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 1,
+          prints: [{ imageUrl: "https://example.com/newer-oracle.png" }],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender, result } = renderHook(
+      ({ name }) =>
+        useScryfallPrints({
+          name,
+          set: "mh2",
+          number: "200",
+        }),
+      { initialProps: { name: "First Card" } }
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    rerender({ name: "Second Card" });
+    await vi.advanceTimersByTimeAsync(100);
+
+    oracleResponse.resolve({
+      ok: true,
+      json: async () => ({
+        total: 2,
+        prints: [{ imageUrl: "https://example.com/stale-oracle.png" }],
+      }),
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("drops a stale cached result after a newer query has started", async () => {
+    vi.useFakeTimers();
+    const cachedResult = {
+      hasFullPrints: true,
+      data: { prints: [{ imageUrl: "https://example.com/stale-cache.png" }] },
+    };
+    const cacheLookup = deferred<typeof cachedResult | undefined>();
+    let lookupCount = 0;
+
+    vi.spyOn(db.cardMetadataCache, "where").mockImplementation((column: string) => {
+      expect(column).toBe("oracle_id");
+      lookupCount += 1;
+      return {
+        equals: vi.fn(() => ({
+          first: vi.fn(() =>
+            lookupCount === 1
+              ? cacheLookup.promise
+              : Promise.resolve(undefined)
+          ),
+        })),
+      } as never;
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/fresh-cache.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderHook(
+      ({ name }) =>
+        useScryfallPrints({
+          name,
+          oracleId: "oracle-stale-cache",
+        }),
+      { initialProps: { name: "First Cached Card" } }
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    rerender({ name: "Second Cached Card" });
+    await vi.advanceTimersByTimeAsync(100);
+
+    cacheLookup.resolve(cachedResult);
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    vi.useRealTimers();
+  });
+
+  it("handles a successful response that omits the prints array", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        oracle_id: "oracle-missing-prints",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Missing Prints",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    expect(result.current.prints).toEqual([]);
   });
 
   it("updates an existing cached metadata object after a successful fetch", async () => {
