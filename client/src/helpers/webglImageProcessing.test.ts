@@ -1,8 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("./webgl/webglUtils", () => ({
+  createShader: vi.fn((_gl, type: number) => ({ kind: "shader", type })),
+  createProgram: vi.fn((_gl, _vs, fs) => ({ kind: "program", fs })),
+  createTexture: vi.fn((_gl, width: number, height: number) => ({
+    kind: "texture",
+    width,
+    height,
+  })),
+  createFramebuffer: vi.fn((_gl, texture) => ({
+    kind: "framebuffer",
+    texture,
+  })),
+  createQuadBuffer: vi.fn(() => ({ kind: "buffer" })),
+}));
 
 import {
+  __webglImageProcessingTestInternals,
   deriveSourceBleedPixelsFromGeometry,
   getCardPixelDimensionsForBleed,
+  renderBleedCanvasDirect,
 } from "./webglImageProcessing";
 import { getBleedInPixels } from "./imageProcessing";
 

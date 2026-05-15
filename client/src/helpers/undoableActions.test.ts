@@ -10,7 +10,7 @@ import {
   undoableUpdateCardBleedSettings,
 } from "./undoableActions";
 import { db } from "@/db";
-import { addCards } from "./dbUtils";
+import { addCards, deleteCard, duplicateCard } from "./dbUtils";
 import type { CardOption } from "@/types";
 
 // Mock the database
@@ -132,7 +132,7 @@ describe("undoableActions", () => {
       );
     });
 
-    it("should include undo and redo functions in the action", async () => {
+    it("undoes and redoes a single-card reorder", async () => {
       const mockCard = { uuid: "card-123", order: 0 };
       vi.mocked(db.cards.get).mockResolvedValue(
         mockCard as unknown as CardOption
@@ -141,8 +141,15 @@ describe("undoableActions", () => {
       await undoableReorderCards("card-123", 0, 2);
 
       const pushedAction = mockPushAction.mock.calls[0][0];
-      expect(typeof pushedAction.undo).toBe("function");
-      expect(typeof pushedAction.redo).toBe("function");
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.update).toHaveBeenNthCalledWith(1, "card-123", {
+        order: 0,
+      });
+      expect(db.cards.update).toHaveBeenNthCalledWith(2, "card-123", {
+        order: 2,
+      });
     });
   });
 
@@ -176,14 +183,21 @@ describe("undoableActions", () => {
       expect(mockPushAction).not.toHaveBeenCalled();
     });
 
-    it("should include undo and redo functions in the action", async () => {
+    it("undoes and redoes multiple-card reorders", async () => {
       const adjustments = [{ uuid: "card-1", oldOrder: 0, newOrder: 2 }];
 
       await undoableReorderMultipleCards(adjustments);
 
       const pushedAction = mockPushAction.mock.calls[0][0];
-      expect(typeof pushedAction.undo).toBe("function");
-      expect(typeof pushedAction.redo).toBe("function");
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.bulkUpdate).toHaveBeenNthCalledWith(1, [
+        { key: "card-1", changes: { order: 0 } },
+      ]);
+      expect(db.cards.bulkUpdate).toHaveBeenNthCalledWith(2, [
+        { key: "card-1", changes: { order: 2 } },
+      ]);
     });
   });
   describe("undoableDeleteCard", () => {
@@ -255,6 +269,16 @@ describe("undoableActions", () => {
       expect(mockPushAction).toHaveBeenCalledWith(
         expect.objectContaining({ type: "DELETE_CARDS_BATCH" })
       );
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.images.bulkGet).mockResolvedValueOnce([undefined] as never);
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.bulkAdd).toHaveBeenCalledWith([front, back]);
+      expect(db.images.bulkAdd).toHaveBeenCalledWith([
+        { id: "img-front", refCount: 1 },
+      ]);
     });
   });
   describe("undoableAddCards", () => {
@@ -331,6 +355,13 @@ describe("undoableActions", () => {
           description: expect.stringContaining('Duplicate "'),
         })
       );
+
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(deleteCard).toHaveBeenCalledWith("new-uuid");
+      expect(duplicateCard).toHaveBeenCalledWith("old-uuid");
     });
   });
 
