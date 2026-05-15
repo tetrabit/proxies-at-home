@@ -149,5 +149,6 @@ describe("PageViewFloatingControls", () => {
 
             expect(screen.queryByTestId("zoom-controls")).toBeNull();
         });
+
     });
 });
