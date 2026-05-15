@@ -39,6 +39,26 @@ describe("ToggleButtonGroup", () => {
             const buttons = screen.getAllByRole("button");
             expect(buttons).toHaveLength(2);
         });
+
+        it("should render vertical orientation classes when requested", () => {
+            const options = [
+                { id: "one", label: "One" },
+                { id: "two", label: "Two" },
+            ];
+
+            const { container } = render(
+                <ToggleButtonGroup
+                    options={options}
+                    value="one"
+                    onChange={() => { }}
+                    vertical
+                />
+            );
+
+            const wrapper = container.firstChild as HTMLElement;
+            expect(wrapper.className).toContain("grid-cols-1");
+            expect(screen.getByText("One").className).toContain("writing-mode:sideways-lr");
+        });
     });
 
     describe("click handling", () => {
