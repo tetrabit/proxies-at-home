@@ -116,6 +116,57 @@ describe("residual CardEditor sections", () => {
     expect(darkenModeToInt("unexpected" as never)).toBe(0);
   });
 
+  it("covers positive display branches for color balances", () => {
+    render(
+      <ColorEffectsSection
+        params={{
+          ...DEFAULT_RENDER_PARAMS,
+          redBalance: 1,
+          greenBalance: 2,
+          blueBalance: 3,
+          cyanBalance: 4,
+          magentaBalance: 5,
+          yellowBalance: 6,
+          blackBalance: 7,
+          shadowsIntensity: 8,
+          midtonesIntensity: 9,
+          highlightsIntensity: 10,
+        }}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
+
+    expect(screen.getAllByDisplayValue(/[+]\d+/).length).toBeGreaterThanOrEqual(
+      10
+    );
+  });
+
+  it("renders stars-only holographic branches", () => {
+    render(
+      <HolographicSection
+        params={{
+          ...DEFAULT_RENDER_PARAMS,
+          holoEffect: "stars",
+          holoAreaMode: "full",
+          holoAnimation: "none",
+        }}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
+
+    expect(screen.getByLabelText("Star Size")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Glitter Size")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Blur")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Brightness Threshold")
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Speed")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Band Width")).not.toBeInTheDocument();
+    expect(screen.getByText("Twinkle")).toBeInTheDocument();
+  });
+
   it("renders disabled color replacement and enables nested controls", () => {
     const { rerender } = render(
       <ColorReplaceSection
