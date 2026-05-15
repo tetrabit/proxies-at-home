@@ -451,8 +451,12 @@ describe("undoableActions", () => {
       expect(db.cards.bulkDelete).toHaveBeenCalledWith(["new-front", "new-back"]);
       expect(rebalanceCardOrders).toHaveBeenCalled();
 
+      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
+        toArray: vi.fn().mockResolvedValue([front, back]),
+      } as never);
+      vi.mocked(db.cards.get).mockResolvedValueOnce(back);
       await pushedAction.redo();
-      expect(mockPushAction).toHaveBeenCalledTimes(2);
+      expect(db.cards.bulkPut).toHaveBeenCalledTimes(2);
     });
   });
   describe("undoableUpdateCardBleedSettings", () => {
