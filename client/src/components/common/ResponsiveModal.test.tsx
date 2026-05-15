@@ -71,6 +71,18 @@ describe("ResponsiveModal", () => {
             expect(onClose).toHaveBeenCalled();
         });
 
+        it("should ignore non-Escape keys", () => {
+            const onClose = vi.fn();
+            render(
+                <ResponsiveModal isOpen={true} onClose={onClose}>
+                    <div>Modal Content</div>
+                </ResponsiveModal>
+            );
+
+            fireEvent.keyDown(window, { key: "Enter" });
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
         it("should NOT call onClose when modal container is clicked", () => {
             const onClose = vi.fn();
             render(
