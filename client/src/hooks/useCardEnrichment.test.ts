@@ -31,6 +31,7 @@ const mockMetadataWhere = vi.hoisted(() => vi.fn());
 const mockMetadataUpdate = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockMetadataBulkPut = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockTransaction = vi.hoisted(() => vi.fn(async (_mode: unknown, _table: unknown, fn: () => Promise<void>) => fn()));
+let lastCreatingHookHandler: ((...args: unknown[]) => unknown) | null = null;
 
 vi.mock("../db", () => ({
   METADATA_CACHE_VERSION: 1,
@@ -100,6 +101,7 @@ describe("useCardEnrichment", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    lastCreatingHookHandler = null;
     mockGetAbortController.mockReturnValue({
       signal: { aborted: false },
       abort: vi.fn(),
@@ -121,6 +123,14 @@ describe("useCardEnrichment", () => {
     mockCardsHook.mockImplementation(() => ({
       unsubscribe: vi.fn(),
     }));
+    mockCardsHook.mockImplementation((event: string, handler?: (...args: unknown[]) => unknown) => {
+      if (event === "creating" && handler) {
+        lastCreatingHookHandler = handler;
+      }
+      return {
+        unsubscribe: vi.fn(),
+      };
+    });
     mockFetch.mockReset();
     mockFetch.mockResolvedValue({
       ok: true,
@@ -327,5 +337,166 @@ describe("useCardEnrichment", () => {
         }),
       }),
     ]);
+  });
+
+  it("covers DFC art lookup, existing back card updates, and back-face import cleanup", async () => {
+    const card = {
+      uuid: "card-dfc",
+      name: "Back Face",
+      set: "SET",
+      number: "5",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: "back-1",
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    const existingBack = {
+      uuid: "back-1",
+      name: "Old Back",
+      set: "SET",
+      number: "5",
+      order: 2,
+      linkedFrontId: "card-dfc",
+      linkedBackId: null,
+      imageId: null,
+      usesDefaultCardback: true,
+      isUserUpload: false,
+    };
+
+    mockUseSettingsGetState.mockReturnValue({
+      preferredArtSource: "scryfall",
+      favoriteMpcSources: [],
+      favoriteMpcTags: [],
+    });
+    mockCardsToArray.mockResolvedValue([card]);
+    mockCardsCount.mockResolvedValue(1);
+    mockCardsBulkGet.mockResolvedValue([existingBack]);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue([
+        {
+          name: "Front Face",
+          set: "SET",
+          number: "5",
+          colors: ["G"],
+          cmc: 4,
+          rarity: "rare",
+          lang: "en",
+          type_line: "Creature — Front",
+          layout: "transform",
+          card_faces: [
+            {
+              name: "Front Face",
+              type_line: "Creature — Front",
+              mana_cost: "{2}{G}",
+              colors: ["G"],
+              image_uris: {
+                large: "https://example.test/front-large.png",
+              },
+            },
+            {
+              name: "Back Face",
+              type_line: "Creature — Back",
+              mana_cost: "{3}{U}",
+              colors: ["U"],
+              image_uris: {
+                large: "https://example.test/back-large.png",
+              },
+            },
+          ],
+        },
+      ]),
+    } as Response);
+    mockAddRemoteImage
+      .mockResolvedValueOnce("front-image")
+      .mockResolvedValueOnce("back-image");
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockCardsBulkGet).toHaveBeenCalledWith(["back-1"]);
+    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(1, ["https://example.test/back-large.png"], 1);
+    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(2, ["https://example.test/front-large.png"], 1);
+    expect(mockCardsBulkAdd).not.toHaveBeenCalled();
+    expect(mockCardsBulkUpdate).toHaveBeenCalled();
+    expect(mockHideMetadataToast).toHaveBeenCalled();
+    expect(mockMarkEnrichmentComplete).toHaveBeenCalled();
+  });
+
+  it("marks a card finished when retry attempts are exhausted", async () => {
+    const card = {
+      uuid: "card-exhausted",
+      name: "Exhausted Card",
+      set: "SET",
+      number: "6",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 2,
+    };
+
+    mockCardsToArray.mockResolvedValue([card]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: vi.fn(),
+    } as Response);
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockCardsBulkUpdate).toHaveBeenCalledWith([
+      expect.objectContaining({
+        key: "card-exhausted",
+        changes: expect.objectContaining({
+          needsEnrichment: false,
+          enrichmentRetryCount: 3,
+        }),
+      }),
+    ]);
+  });
+
+  it("cleans up the db hook timeout and cancels enrichment", async () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const abortSpy = vi.fn();
+    mockGetAbortController.mockReturnValue({
+      signal: { aborted: false },
+      abort: abortSpy,
+    });
+
+    const { result, unmount } = renderHook(() => useCardEnrichment());
+
+    expect(typeof lastCreatingHookHandler).toBe("function");
+
+    act(() => {
+      lastCreatingHookHandler?.();
+    });
+
+    await act(async () => {
+      unmount();
+    });
+
+    act(() => {
+      result.current.cancelEnrichment();
+    });
+
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(abortSpy).toHaveBeenCalled();
+    expect(mockHideMetadataToast).not.toHaveBeenCalled();
   });
 });

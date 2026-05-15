@@ -45,6 +45,20 @@ describe("useScryfallPreview", () => {
     expect(result.current.setVariations.map((card) => card.name)).toEqual(["Forest", "Forest Bear"]);
   });
 
+  it("falls back to the trimmed query when extraction does not provide a cleaned name", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "", set: null, number: null });
+    mockSearchCards.mockResolvedValue([{ name: "Dragon" }]);
+
+    const { result } = renderHook(() => useScryfallPreview("  dragon  "));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).toHaveBeenCalledWith("dragon", expect.any(AbortSignal));
+    expect(result.current.setVariations).toEqual([{ name: "Dragon" }]);
+  });
+
   it("sorts an exact match ahead of a longer result when the exact card is returned second", async () => {
     mockSearchCards.mockResolvedValue([
       { name: "Forest Bear" },
@@ -272,6 +286,27 @@ describe("useScryfallPreview", () => {
     ]);
   });
 
+  it("prefers starts-with results over word-boundary and contains-only matches", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "art", set: null, number: null });
+    mockSearchCards.mockResolvedValue([
+      { name: "Quartermaster" },
+      { name: "Artful Mage" },
+      { name: "The Artful Dodger" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("art"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual([
+      "Artful Mage",
+      "The Artful Dodger",
+      "Quartermaster",
+    ]);
+  });
+
   it("passes raw Scryfall syntax through unchanged", async () => {
     mockExtractCardInfo.mockReturnValue({ name: "", set: null, number: null });
     mockSearchCards.mockResolvedValue([{ name: "Artifact" }]);
@@ -330,6 +365,20 @@ describe("useScryfallPreview", () => {
     });
 
     expect(result.current.setVariations).toEqual([]);
+    expect(result.current.hasSearched).toBe(true);
+  });
+
+  it("ignores AbortError rejections without treating them as fatal", async () => {
+    mockSearchCards.mockRejectedValue(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+
+    const { result } = renderHook(() => useScryfallPreview("Forest"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(result.current.isLoading).toBe(false);
     expect(result.current.hasSearched).toBe(true);
   });
 
