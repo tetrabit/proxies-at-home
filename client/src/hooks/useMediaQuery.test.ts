@@ -82,21 +82,25 @@ describe("useMediaQuery", () => {
 
     it("should update when the media query match changes", () => {
         let capturedListener: (() => void) | null = null;
-        let currentMatches = true;
-
-        mockMatchMedia.mockImplementation((query: string) => ({
-            matches: currentMatches && query === "(min-width: 768px)",
-            media: query,
+        const mediaState = {
+            matches: true,
+            media: "(min-width: 768px)",
             addEventListener: (_event: string, listener: () => void) => {
                 capturedListener = listener;
             },
             removeEventListener: vi.fn(),
+        };
+
+        mockMatchMedia.mockImplementation((query: string) => ({
+            ...mediaState,
+            matches: mediaState.matches && query === "(min-width: 768px)",
+            media: query,
         }));
 
         const { result } = renderHook(() => useMediaQuery("(min-width: 768px)"));
 
         expect(result.current).toBe(true);
-        currentMatches = false;
+        mediaState.matches = false;
         act(() => {
             capturedListener?.();
         });
