@@ -73,6 +73,17 @@ describe("useScryfallPreview", () => {
     expect(mockFetchCardBySetAndNumber).not.toHaveBeenCalled();
   });
 
+  it("skips searching for queries that are too short", async () => {
+    renderHook(() => useScryfallPreview("A"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).not.toHaveBeenCalled();
+    expect(mockFetchCardBySetAndNumber).not.toHaveBeenCalled();
+  });
+
   it("reuses cached specific-card results on repeated queries", async () => {
     mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
     mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Darksteel Citadel" });
@@ -120,5 +131,31 @@ describe("useScryfallPreview", () => {
     expect(mockSearchCards).toHaveBeenCalledWith("Forest", expect.any(AbortSignal));
     expect(result.current.setVariations).toEqual([]);
     expect(result.current.isLoading).toBe(false);
+  });
+
+  it("aborts the in-flight search when the query changes", async () => {
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    mockSearchCards.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the first request pending so the rerender can abort it.
+        }) as Promise<never>
+    );
+
+    const { rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Forest" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: "Forest Bear" });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(abortSpy).toHaveBeenCalled();
   });
 });
