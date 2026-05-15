@@ -79,6 +79,24 @@ describe('UpdateChannelSelector', () => {
     await waitFor(() => expect(consoleSpy).toHaveBeenCalledWith('Failed to set auto-update enabled:', error));
   });
 
+  it('does not trigger update checks when the channel update is rejected by the API result', async () => {
+    (window as unknown as { electronAPI: Partial<Window['electronAPI']> }).electronAPI = {
+      getUpdateChannel: vi.fn().mockResolvedValue('latest'),
+      getAppVersion: vi.fn().mockResolvedValue('2.0.0'),
+      getAutoUpdateEnabled: vi.fn().mockResolvedValue(true),
+      setUpdateChannel: vi.fn().mockResolvedValue(false),
+      checkForUpdates: vi.fn(),
+      setAutoUpdateEnabled: vi.fn().mockResolvedValue(undefined),
+    };
+
+    render(<UpdateChannelSelector />);
+    await waitFor(() => expect(screen.getByTestId('channel-toggle').getAttribute('data-value')).toBe('latest'));
+
+    fireEvent.click(screen.getByText('Stable'));
+    await waitFor(() => expect(window.electronAPI!.setUpdateChannel).toHaveBeenCalledWith('stable'));
+    expect(window.electronAPI!.checkForUpdates).not.toHaveBeenCalled();
+  });
+
   it('logs initial metadata failures and stays hidden until Electron is detected', async () => {
     const error = new Error('info failed');
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
