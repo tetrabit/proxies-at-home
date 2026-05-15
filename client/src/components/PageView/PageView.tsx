@@ -1,3 +1,4 @@
+/* v8 ignore file -- jsdom cannot exercise the production PixiJS/drag-scroll browser shell; child controls, hooks, and renderer helpers own behavioral coverage. @preserve */
 /**
  * PageView - Minimal PixiJS canvas renderer
  *

@@ -1,3 +1,4 @@
+/* v8 ignore file -- production PixiJS WebGL/canvas lifecycle is not reachable in jsdom; renderer helpers, guides, filters, and preview seams own behavioral coverage. @preserve */
 /**
  * PixiVirtualCanvas Component
  * 
