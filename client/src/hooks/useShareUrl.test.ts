@@ -228,6 +228,44 @@ describe("useShareUrl", () => {
     });
   });
 
+  it("skips lastSyncedHash backfill when the clean project already has one", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Island" }],
+      st: {},
+    };
+    const existingProject = {
+      id: "project-modern",
+      name: "Modern Deck",
+      lastSyncedHash: "0101010101010101010101010101010101010101010101010101010101010101",
+      settings: {},
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Island" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]) })),
+    });
+    mockCalculateStateHash.mockResolvedValue("0101010101010101010101010101010101010101010101010101010101010101");
+    vi.stubGlobal("crypto", {
+      subtle: {
+        digest: vi.fn(async () => new Uint8Array(32).fill(1).buffer),
+      },
+    });
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockSwitchProject).toHaveBeenCalledWith("project-modern"));
+    expect(mockProjectsUpdate).not.toHaveBeenCalledWith("project-modern", expect.objectContaining({ lastSyncedHash: expect.anything() }));
+  });
+
   it("creates a new project and imports shared cards when none exists locally", async () => {
     const sharedData = {
       v: 1 as const,
