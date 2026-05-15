@@ -32,6 +32,7 @@ describe("ImportSession", () => {
             });
 
             session.markProcessed("card-1", false);
+            session.markProcessed("card-1", false);
 
             const stats = session.getStats();
             expect(stats.imagesProcessed).toBe(1);
@@ -56,6 +57,7 @@ describe("ImportSession", () => {
                 cardUuids: ["card-1"],
             });
 
+            session.markFailed("card-1");
             session.markFailed("card-1");
 
             const stats = session.getStats();
@@ -242,6 +244,15 @@ describe("ImportSession", () => {
             });
 
             expect(getCurrentSession()).toBe(session);
+        });
+
+        it("createImportSession should support sessions without pre-registered cards", () => {
+            const session = createImportSession({
+                importType: "mpc",
+            });
+
+            expect(getCurrentSession()).toBe(session);
+            expect(session.getStats().totalCards).toBe(0);
         });
 
         it("createImportSession should finish previous session", () => {

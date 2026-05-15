@@ -83,6 +83,11 @@ describe('importParsers', () => {
                 name: 'Ponder',
                 set: 'lrw',
             }));
+            expect(parseLineToIntent('Opt [dom] {60} [note]')).toEqual(expect.objectContaining({
+                name: 'Opt',
+                set: 'dom',
+                number: '60',
+            }));
             expect(parseLineToIntent('Island {301}')).toEqual(expect.objectContaining({
                 name: 'Island',
             }));

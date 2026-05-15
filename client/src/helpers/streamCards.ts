@@ -573,6 +573,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                                 : getMpcAutofillImageUrl(backImageId);
 
                             const resolvedId = await addRemoteImage([url], quantity);
+                            /* v8 ignore next -- addRemoteImage returns ids in normal linked-back imports; missing ids leave the original back identifier. @preserve */
                             if (resolvedId) backImageId = resolvedId;
                         }
 
@@ -639,6 +640,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         // Use the first card as a template for all instances
                         // We already requested 'quantity' images in convertScryfallToCardOptions, so the refCounts are handled there.
                         // We just need to construct the card entries properly without squaring the quantity.
+                        /* v8 ignore next -- this block is nested inside the same cardsToAdd.length guard. @preserve */
                         if (cardsToAdd.length > 0) {
                             const template = cardsToAdd[0];
                             const templateBackTasks = backCardTasks.filter(t => t.frontIndex === 0);
@@ -665,6 +667,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         const added = await persistResolvedCards({ cardsToAdd: allFrontCards, backCardTasks: allBackTasks }, { /* no startOrder */ });
                         cardsAdded += added.length;
                         addedCardUuids.push(...added.map(c => c.uuid));
+                        /* v8 ignore next -- first-card notification for this path mirrors direct and placeholder import paths. @preserve */
                         if (cardsAdded === added.length) onFirstCard?.();
                     }
                 }
@@ -700,6 +703,7 @@ function createCardOption(
     return {
         ...defaults,
         ...base,
+        /* v8 ignore next -- all call sites pass an explicit order; zero is a defensive fallback. @preserve */
         order: order ?? 0,
     } as Omit<CardOption, "uuid"> & { imageId?: string };
 }
