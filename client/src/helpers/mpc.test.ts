@@ -84,6 +84,16 @@ describe('Mpc', () => {
       expect(extractDriveId(url2)).toBe('1-ABCDEFGHIJKL');
     });
 
+    it('should fall back to the last path segment when a /d/ segment is not a valid id', () => {
+      const url = 'https://example.com/file/d/not-an-id/1-ABCDEFGHIJKL';
+      expect(extractDriveId(url)).toBe('1-ABCDEFGHIJKL');
+    });
+
+    it('should return undefined when URL path segments do not contain a valid id', () => {
+      const url = 'https://example.com/file/d/not-an-id/view';
+      expect(extractDriveId(url)).toBeUndefined();
+    });
+
     it('should handle malformed URLs gracefully', () => {
       expect(extractDriveId('http://[invalid-url]')).toBeUndefined();
     });
