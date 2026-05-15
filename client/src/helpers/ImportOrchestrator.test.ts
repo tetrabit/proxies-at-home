@@ -6,10 +6,12 @@ import * as undoableActionsModule from './undoableActions';
 import * as importParsers from './importParsers';
 import * as scryfallApiModule from './scryfallApi';
 import * as mpcAutofillApiModule from './mpcAutofillApi';
+import * as mpcImportIntegrationModule from './mpcImportIntegration';
 import * as cardConverterModule from './cardConverter';
 import { type ImportIntent } from './importParsers';
 import type { ScryfallCard, CardOption } from '../../../shared/types';
 import type { ResolvedCardData } from './cardConverter';
+import * as tokenApiModule from './tokenApi';
 
 import * as dbUtilsModule from './dbUtils';
 
@@ -34,7 +36,13 @@ const dbState = vi.hoisted(() => ({
 // Mock dependencies that are imported directly by the Orchestrator
 vi.mock('./scryfallApi');
 vi.mock('./mpcAutofillApi');
+vi.mock('./mpcImportIntegration', () => ({
+    findBestMpcMatches: vi.fn(),
+}));
 vi.mock('./cardConverter');
+vi.mock('./tokenApi', () => ({
+    fetchTokenParts: vi.fn(),
+}));
 vi.mock('./dbUtils', () => ({
     addRemoteImage: vi.fn((urls) => Promise.resolve(urls[0] || 'mock_image_id')),
     createLinkedBackCardsBulk: vi.fn()
