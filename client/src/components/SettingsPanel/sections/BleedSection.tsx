@@ -65,6 +65,7 @@ export function BleedSection() {
                         value={bleedEdgeUnit}
                         onChange={(e) => {
                             const newUnit = e.target.value as 'mm' | 'in';
+                            /* v8 ignore next -- @preserve native select onChange cannot emit the already-selected unit. */
                             if (newUnit !== bleedEdgeUnit) {
                                 const converted = newUnit === 'in'
                                     ? bleedEdgeWidth / 25.4
