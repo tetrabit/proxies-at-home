@@ -198,6 +198,11 @@ describe("webglImageProcessing test internals", () => {
     manager.handleContextLost();
     manager.release();
 
+    const neverCreated = new __webglImageProcessingTestInternals.WebGLContextManager(
+      "never-created"
+    );
+    neverCreated.handleContextLost();
+
     const releasable = new __webglImageProcessingTestInternals.WebGLContextManager(
       "release"
     );
@@ -299,6 +304,24 @@ describe("webglImageProcessing test internals", () => {
 
 
 
+  it("generates a WebGL bleed canvas with default options, darkening, and no result 2d context", async () => {
+    class NoResult2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (kind === "2d") return null;
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoResult2dCanvas);
+
+    const generated = await generateBleedCanvasWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { darkenMode: "darken-all" }
+    );
+
+    expect(generated.width).toBeGreaterThan(0);
+  });
+
   it("generates a WebGL bleed canvas for input-bleed and fallback placement branches", async () => {
     const withBleed = await generateBleedCanvasWebGL(
       { width: 69, height: 94 } as ImageBitmap,
@@ -352,6 +375,16 @@ describe("webglImageProcessing test internals", () => {
     ).rejects.toThrow("Failed to get 2d context for display canvas");
   });
 
+  it("processes generated-bleed card images with default options", async () => {
+    const defaults = await processCardImageWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1
+    );
+
+    expect(defaults.exportBlob).toBeInstanceOf(Blob);
+    expect(defaults.displayBlob).toBeInstanceOf(Blob);
+  });
+
   it("processes generated-bleed card images for each darken output family", async () => {
     const base = await processCardImageWebGL(
       { width: 20, height: 30 } as ImageBitmap,
@@ -379,6 +412,16 @@ describe("webglImageProcessing test internals", () => {
     expect(full.exportBlobContrastFull).toBeInstanceOf(Blob);
   });
 
+  it("processes existing-bleed images with default options", async () => {
+    const defaults = await processExistingBleedWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1
+    );
+
+    expect(defaults.exportBlob).toBeInstanceOf(Blob);
+    expect(defaults.displayBlob).toBeInstanceOf(Blob);
+  });
+
   it("processes existing-bleed images for normal and selected darken modes", async () => {
     const normal = await processExistingBleedWebGL(
       { width: 20, height: 30 } as ImageBitmap,
@@ -403,6 +446,18 @@ describe("webglImageProcessing test internals", () => {
       { exportDpi: 20, displayDpi: 10, darkenMode: 3 }
     );
     expect(full.exportBlobContrastFull).toBeInstanceOf(Blob);
+  });
+
+  it("renders a direct bleed canvas without optional darken mode", async () => {
+    const canvas = await renderBleedCanvasDirect(
+      { width: 2, height: 2 } as ImageBitmap,
+      6,
+      8,
+      {}
+    );
+
+    expect(canvas.width).toBe(6);
+    expect(canvas.height).toBe(8);
   });
 
   it("renders a direct bleed canvas through the mocked WebGL path", async () => {
