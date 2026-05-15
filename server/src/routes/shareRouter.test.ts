@@ -121,6 +121,19 @@ describe('shareRouter', () => {
         vi.resetAllMocks();
     });
 
+    it('logs when expired share cleanup removes rows', () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        mockShares.set('expired1', {
+            data: gzipSync(Buffer.from('{}')),
+            created_at: Date.now() - 2000,
+            expires_at: Date.now() - 1000,
+        });
+
+        expect(cleanupExpiredShares()).toBe(1);
+        expect(consoleLogSpy).toHaveBeenCalledWith('[Share] Cleaned up 1 expired shares');
+        consoleLogSpy.mockRestore();
+    });
+
     describe('POST /api/share', () => {
         it('should create a share and return an 8-char ID', async () => {
             const testData = { v: 1, c: [['s', 'test-uuid', 0]] };

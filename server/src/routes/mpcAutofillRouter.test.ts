@@ -181,4 +181,24 @@ describe('mpcAutofillRouter', () => {
     expect(mocks.axiosPost).toHaveBeenCalledTimes(2);
   });
 
+  it('retries 5xx card fetch failures until exhausted', async () => {
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { miss: { CARD: ['id1'] } } } })
+      .mockRejectedValueOnce({ response: { status: 500 }, message: 'first' })
+      .mockRejectedValueOnce({ response: { status: 502 }, message: 'second' })
+      .mockRejectedValueOnce({ response: { status: 503 }, message: 'third' })
+      .mockRejectedValueOnce({ response: { status: 504 }, message: 'fourth' });
+    mocks.isAxiosError.mockReturnValueOnce(false);
+    vi.stubGlobal('setTimeout', ((callback: () => void) => {
+      callback();
+      return 0;
+    }) as unknown as typeof setTimeout);
+
+    const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Miss'] });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: '[object Object]' });
+    expect(mocks.axiosPost).toHaveBeenCalledTimes(5);
+  });
+
 });

@@ -5,7 +5,7 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MpcPreferenceFixture } from '../../../shared/types.js';
-import { createPreferencesRouter, resolvePreferencesFilePath } from './preferencesRouter.js';
+import { createPreferencesRouter, resolvePreferencesFilePath, validatePreferenceFixture } from './preferencesRouter.js';
 
 const validFixture: MpcPreferenceFixture = {
     version: 1,
@@ -110,6 +110,30 @@ describe('preferencesRouter', () => {
 
         expect(response.status).toBe(400);
         expect(response.body.error).toBe('Invalid preference fixture: candidates must be an array');
+    });
+
+    it('rejects every malformed fixture shape with a specific validation error', () => {
+        const malformedCases: Array<[unknown, string]> = [
+            [null, 'Invalid preference fixture: not a JSON object'],
+            [{ exportedAt: validFixture.exportedAt, cases: [] }, 'Invalid preference fixture: missing version'],
+            [{ version: 1, cases: [] }, 'Invalid preference fixture: missing exportedAt'],
+            [{ version: 1, exportedAt: validFixture.exportedAt }, 'Invalid preference fixture: missing cases array'],
+            [{ ...validFixture, cases: [null] }, 'Invalid preference fixture: case must be an object'],
+            [{ ...validFixture, cases: [{ source: null, candidates: [] }] }, 'Invalid preference fixture: malformed source card'],
+            [{ ...validFixture, cases: [{ source: { name: 'Bolt', set: 1 }, candidates: [] }] }, 'Invalid preference fixture: malformed source card'],
+            [{ ...validFixture, cases: [{ source: { name: 'Bolt' }, candidates: [null] }] }, 'Invalid preference fixture: candidate must be an object'],
+            [{
+                ...validFixture,
+                cases: [{ source: { name: 'Bolt' }, candidates: [{ ...validFixture.cases[0].candidates[0], dpi: 'high' }] }],
+            }, 'Invalid preference fixture: malformed candidate'],
+            [{ ...validFixture, cases: [{ source: { name: 'Bolt' }, candidates: [], expectedIdentifier: 1 }] }, 'Invalid preference fixture: malformed case metadata'],
+            [{ ...validFixture, cases: [{ source: { name: 'Bolt' }, candidates: [], comparisonHints: null }] }, 'Invalid preference fixture: malformed comparison hints'],
+            [{ ...validFixture, cases: [{ source: { name: 'Bolt' }, candidates: [], comparisonHints: { fullCard: { score: 'high' } } }] }, 'Invalid preference fixture: malformed comparison hints'],
+        ];
+
+        for (const [payload, message] of malformedCases) {
+            expect(() => validatePreferenceFixture(payload)).toThrow(message);
+        }
     });
 
     it('serializes concurrent writes without corrupting the preference file', async () => {
