@@ -98,7 +98,7 @@ export function startServer(port: number = 3001): Promise<number> {
             return cb(null, true);
           }
         } catch {
-          // Invalid origin strings should fall through to the CORS rejection below.
+          // Invalid origin URLs are rejected below.
         }
 
         cb(new Error("Not allowed by CORS"));

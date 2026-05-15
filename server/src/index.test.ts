@@ -1,15 +1,19 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type RequestHandler = (...args: unknown[]) => unknown;
+type CorsOrigin = (origin: string | undefined, cb: (error: Error | null, allow?: boolean) => void) => void;
+type CompressionFilter = (req: unknown, res: unknown) => unknown;
+
 const state = vi.hoisted(() => ({
   app: undefined as undefined | {
     use: ReturnType<typeof vi.fn>;
     get: ReturnType<typeof vi.fn>;
     listen: ReturnType<typeof vi.fn>;
   },
-  getHandlers: new Map<string, Function>(),
-  corsOptions: undefined as undefined | { origin: Function },
-  compressionOptions: undefined as undefined | { filter: Function },
+  getHandlers: new Map<string, RequestHandler>(),
+  corsOptions: undefined as undefined | { origin: CorsOrigin },
+  compressionOptions: undefined as undefined | { filter: CompressionFilter },
   initDatabase: vi.fn(),
   getDatabase: vi.fn(),
   initCatalogs: vi.fn(),
@@ -25,10 +29,10 @@ vi.mock('express', () => {
   const express = vi.fn(() => {
     const app = {
       use: vi.fn(),
-      get: vi.fn((path: string, handler: Function) => {
+      get: vi.fn((path: string, handler: RequestHandler) => {
         state.getHandlers.set(path, handler);
       }),
-      listen: vi.fn((port: number, _host: string, cb: Function) => {
+      listen: vi.fn((port: number, _host: string, cb: () => void) => {
         const server = {
           address: () => state.listenAddress ?? { port: port === 0 ? 49152 : port },
         };
@@ -46,14 +50,14 @@ vi.mock('express', () => {
 });
 
 vi.mock('cors', () => ({
-  default: vi.fn((options: { origin: Function }) => {
+  default: vi.fn((options: { origin: CorsOrigin }) => {
     state.corsOptions = options;
     return { middleware: 'cors' };
   }),
 }));
 
 vi.mock('compression', () => {
-  const compression = vi.fn((options: { filter: Function }) => {
+  const compression = vi.fn((options: { filter: CompressionFilter }) => {
     state.compressionOptions = options;
     return { middleware: 'compression' };
   });

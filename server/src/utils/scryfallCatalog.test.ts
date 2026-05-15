@@ -180,7 +180,7 @@ describe('scryfallCatalog database write branches', () => {
         const dbModule = await import('../db/db.js');
         const run = vi.fn();
         const get = vi.fn(() => ({ 1: 1 }));
-        const transaction = vi.fn((fn: Function) => (items: unknown[]) => fn(items));
+        const transaction = vi.fn((fn: (items: unknown[]) => unknown) => (items: unknown[]) => fn(items));
         vi.mocked(dbModule.getDatabase).mockReturnValue({
             prepare: vi.fn(() => ({ run, get })),
             transaction,
