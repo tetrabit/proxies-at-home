@@ -18,7 +18,10 @@ vi.mock("./webgl/webglUtils", () => ({
 import {
   __webglImageProcessingTestInternals,
   deriveSourceBleedPixelsFromGeometry,
+  generateBleedCanvasWebGL,
   getCardPixelDimensionsForBleed,
+  processCardImageWebGL,
+  processExistingBleedWebGL,
   renderBleedCanvasDirect,
 } from "./webglImageProcessing";
 import { getBleedInPixels } from "./imageProcessing";
@@ -194,6 +197,15 @@ describe("webglImageProcessing test internals", () => {
 
     manager.handleContextLost();
     manager.release();
+
+    const releasable = new __webglImageProcessingTestInternals.WebGLContextManager(
+      "release"
+    );
+    const releasableContext = releasable.getContext(3, 3);
+    releasable.release();
+    expect(releasableContext.gl.getExtension).toHaveBeenCalledWith(
+      "WEBGL_lose_context"
+    );
   });
 
   it("computes and caches darkness factor and falls back without 2d context", () => {
@@ -261,6 +273,88 @@ describe("webglImageProcessing test internals", () => {
       offsetX: 0,
       offsetY: 6,
     });
+  });
+
+
+
+  it("generates a WebGL bleed canvas for input-bleed and fallback placement branches", async () => {
+    const withBleed = await generateBleedCanvasWebGL(
+      { width: 69, height: 94 } as ImageBitmap,
+      0.125,
+      {
+        unit: "in",
+        dpi: 20,
+        inputBleed: 0.125,
+        darkenMode: "uniform",
+        darkenThreshold: 10,
+        darkenContrast: 1.5,
+        darkenEdgeWidth: 0.2,
+        darkenAmount: 0.8,
+        darkenBrightness: -25,
+      }
+    );
+    expect(withBleed.width).toBeGreaterThan(0);
+    expect(withBleed.height).toBeGreaterThan(0);
+
+    const fallback = await generateBleedCanvasWebGL(
+      { width: 2, height: 2 } as ImageBitmap,
+      1,
+      { unit: "mm", dpi: 10, inputBleed: 100 }
+    );
+    expect(fallback.width).toBeGreaterThan(0);
+  });
+
+  it("processes generated-bleed card images for each darken output family", async () => {
+    const base = await processCardImageWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { exportDpi: 20, displayDpi: 10, darkenMode: 1 }
+    );
+    expect(base.exportBlob).toBeInstanceOf(Blob);
+    expect(base.displayBlob).toBeInstanceOf(Blob);
+    expect(base.exportBlobDarkenAll).toBeInstanceOf(Blob);
+    expect(base.baseDisplayBlob).toBe(base.displayBlob);
+
+    const edges = await processCardImageWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { exportDpi: 20, displayDpi: 10, inputHasBleedMm: 0.5, darkenMode: 2 }
+    );
+    expect(edges.exportBlobContrastEdges).toBeInstanceOf(Blob);
+    expect(edges.exportBlobDarkened).toBe(edges.exportBlobContrastEdges);
+
+    const full = await processCardImageWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      0.05,
+      { unit: "in", exportDpi: 20, displayDpi: 10, inputHasBleedMm: 1, darkenMode: 3 }
+    );
+    expect(full.exportBlobContrastFull).toBeInstanceOf(Blob);
+  });
+
+  it("processes existing-bleed images for normal and selected darken modes", async () => {
+    const normal = await processExistingBleedWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { exportDpi: 20, displayDpi: 10, darkenMode: 0 }
+    );
+    expect(normal.exportBlob).toBeInstanceOf(Blob);
+    expect(normal.baseExportBlob).toBe(normal.exportBlob);
+    expect(normal.exportBlobDarkened).toBeUndefined();
+
+    const edges = await processExistingBleedWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      0.05,
+      { unit: "in", exportDpi: 20, displayDpi: 10, darkenMode: 2 }
+    );
+    expect(edges.exportBlobContrastEdges).toBeInstanceOf(Blob);
+    expect(edges.exportBlobDarkened).toBe(edges.exportBlobContrastEdges);
+
+    const full = await processExistingBleedWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { exportDpi: 20, displayDpi: 10, darkenMode: 3 }
+    );
+    expect(full.exportBlobContrastFull).toBeInstanceOf(Blob);
   });
 
   it("renders a direct bleed canvas through the mocked WebGL path", async () => {
