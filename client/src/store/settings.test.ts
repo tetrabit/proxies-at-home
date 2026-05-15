@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { useSettingsStore, migrateLegacySettings } from "./settings";
 
+const mockPushAction = vi.hoisted(() => vi.fn());
+
 // Mock dependencies
 vi.mock("./undoRedo", () => ({
     useUndoRedoStore: {
         getState: vi.fn(() => ({
-            pushAction: vi.fn(),
+            pushAction: mockPushAction,
         })),
     },
 }));
@@ -334,6 +336,37 @@ describe("useSettingsStore", () => {
             expect(useSettingsStore.getState().printerCalibrationProfileId).toBe("office-printer");
             expect(useSettingsStore.getState().printerCalibrationEnabled).toBe(true);
         });
+
+        it("tail setters should update state", () => {
+            const {
+                setAutoImportTokens,
+                setMpcFuzzySearch,
+                setPreferredArtSource,
+                setCardBackPositionY,
+                setCutGuideLengthMm,
+                setRegistrationMarks,
+                setRegistrationMarksPortrait,
+                setFilterFeatures,
+            } = useSettingsStore.getState();
+
+            setAutoImportTokens(true);
+            setMpcFuzzySearch(false);
+            setPreferredArtSource("mpc");
+            setCardBackPositionY(12);
+            setCutGuideLengthMm(7);
+            setRegistrationMarks("4");
+            setRegistrationMarksPortrait(true);
+            setFilterFeatures(["flying"]);
+
+            expect(useSettingsStore.getState().autoImportTokens).toBe(true);
+            expect(useSettingsStore.getState().mpcFuzzySearch).toBe(false);
+            expect(useSettingsStore.getState().preferredArtSource).toBe("mpc");
+            expect(useSettingsStore.getState().cardBackPositionY).toBe(12);
+            expect(useSettingsStore.getState().cutGuideLengthMm).toBe(7);
+            expect(useSettingsStore.getState().registrationMarks).toBe("4");
+            expect(useSettingsStore.getState().registrationMarksPortrait).toBe(true);
+            expect(useSettingsStore.getState().filterFeatures).toEqual(["flying"]);
+        });
     });
 
     describe("bleed settings", () => {
@@ -461,6 +494,24 @@ describe("useSettingsStore", () => {
             expect(state.zoom).toBe(1);
             expect(state.sortBy).toBe("manual");
         });
+
+        it("should push undo/redo actions when resetting", async () => {
+            mockPushAction.mockClear();
+            const { resetSettings } = useSettingsStore.getState();
+            resetSettings();
+
+            expect(mockPushAction).toHaveBeenCalled();
+            const action = mockPushAction.mock.calls.at(-1)![0];
+
+            useSettingsStore.setState({ columns: 9, sortBy: "name" });
+            await action.undo();
+            expect(useSettingsStore.getState().columns).toBe(3);
+            expect(useSettingsStore.getState().sortBy).toBe("manual");
+
+            await action.redo();
+            expect(useSettingsStore.getState().columns).toBe(3);
+            expect(useSettingsStore.getState().sortBy).toBe("manual");
+        });
     });
 
     describe("migrateLegacySettings", () => {
@@ -483,6 +534,12 @@ describe("useSettingsStore", () => {
             expect(migrated.pageWidth).toBe(8.5);
             expect(migrated.pageHeight).toBe(11);
             expect(migrated.columns).toBe(4);
+        });
+
+        it("should preserve settings for version 2 migrations", () => {
+            const migrated = migrateLegacySettings({ columns: 6, sortBy: "name" }, 2);
+            expect(migrated.columns).toBe(6);
+            expect(migrated.sortBy).toBe("name");
         });
 
         it("should preserve state for version 3 migrations", () => {
@@ -519,6 +576,17 @@ describe("useSettingsStore", () => {
         });
 
         it("should handle legacy bleed fields when no manual overrides exist", () => {
+            const migrated = migrateLegacySettings({
+                withBleedAmount: 2,
+                withBleedMode: "keep",
+                noBleedMode: "generate",
+            }, 7);
+
+            expect(migrated.withBleedTargetMode).toBe("global");
+            expect(migrated.noBleedTargetMode).toBe("global");
+        });
+
+        it("should keep explicit none bleed settings when migrating version 8", () => {
             const migrated = migrateLegacySettings({
                 withBleedAmount: 2,
                 withBleedMode: "none",
