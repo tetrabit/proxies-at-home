@@ -205,6 +205,20 @@ describe("scryfallRouter - /prints", () => {
         foil: true,
         image_uris: { png: "https://example.com/art-b.png" },
       },
+      {
+        id: "dfc-foil-only",
+        name: "Front // Back",
+        set: "setd",
+        collector_number: "4",
+        rarity: "rare",
+        lang: "en",
+        nonfoil: false,
+        foil: true,
+        card_faces: [
+          { name: "Front", image_uris: { png: "https://example.com/front.png" } },
+          { name: "Back", image_uris: { png: "https://example.com/back.png" } },
+        ],
+      },
     ];
 
     vi.mocked(getCardsWithImagesForCardInfo).mockResolvedValue(
@@ -230,6 +244,7 @@ describe("scryfallRouter - /prints", () => {
           p.scryfall_id === "foil-only-unique-art"
       )
     ).toBeDefined();
+    expect(res.body.prints.filter((p: { scryfall_id?: string }) => p.scryfall_id === "dfc-foil-only")).toHaveLength(2);
   });
 
   it("validates prints inputs and supports set+number plus non-English oracle searches", async () => {
@@ -246,6 +261,16 @@ describe("scryfallRouter - /prints", () => {
     const nonEnglish = await request(app).get("/api/scryfall/prints?oracle_id=oracle-fr&lang=fr");
     expect(nonEnglish.status).toBe(200);
     expect(axios.get).toHaveBeenLastCalledWith('/cards/search', { params: { q: 'oracleid:oracle-fr unique:prints include:extras lang:fr' } });
+
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: {} } as unknown as any);
+    const emptyOracle = await request(app).get("/api/scryfall/prints?oracle_id=oracle-empty");
+    expect(emptyOracle.status).toBe(200);
+    expect(emptyOracle.body.prints).toEqual([]);
+
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: {} } as unknown as any);
+    const emptySet = await request(app).get("/api/scryfall/prints?set=ABC&number=999");
+    expect(emptySet.status).toBe(200);
+    expect(emptySet.body.prints).toEqual([]);
   });
 
   it("uses the microservice for English oracle-id prints when available", async () => {
@@ -272,6 +297,9 @@ describe("scryfallRouter - /prints", () => {
       .mockResolvedValueOnce({
         success: true,
         data: { data: [{ id: 'micro-name', name: 'Named Print', card_faces: [{ name: 'Front', image_uris: { png: 'front.png' } }] }] },
+      })
+      .mockResolvedValueOnce({
+        success: false,
       });
     vi.mocked(isMicroserviceAvailable).mockResolvedValue(true);
     vi.mocked(getScryfallClient).mockReturnValue({ searchCards } as never);
@@ -285,6 +313,13 @@ describe("scryfallRouter - /prints", () => {
     expect(byName.status).toBe(200);
     expect(byName.body.prints[0]).toMatchObject({ imageUrl: 'front.png', set: '', number: '' });
     expect(searchCards).toHaveBeenNthCalledWith(2, { q: '!"Named Print" include:extras' });
+
+    vi.mocked(getCardsWithImagesForCardInfo).mockResolvedValueOnce([
+      { name: 'Fallback Name', image_uris: { png: 'fallback-name.png' } },
+    ] as unknown as any);
+    const fallbackName = await request(app).get("/api/scryfall/prints?name=Fallback%20Name");
+    expect(fallbackName.status).toBe(200);
+    expect(fallbackName.body.prints[0]).toMatchObject({ imageUrl: 'fallback-name.png' });
   });
 
   it("uses non-English set+number print searches", async () => {
