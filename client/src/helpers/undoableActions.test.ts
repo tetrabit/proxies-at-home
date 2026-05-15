@@ -383,6 +383,13 @@ describe("undoableActions", () => {
       expect(db.images.bulkUpdate).toHaveBeenCalledWith([
         { key: "img-shared", changes: { refCount: 2 } },
       ]);
+
+      vi.mocked(db.images.bulkGet).mockResolvedValueOnce([
+        { id: "img-shared", refCount: 1 },
+      ] as never);
+      await pushedAction.redo();
+
+      expect(db.images.bulkDelete).toHaveBeenCalledWith(["img-shared"]);
     });
 
     it("captures linked backs and image ref updates for batch deletes", async () => {
