@@ -101,11 +101,14 @@ describe("sortAndFilterUtils", () => {
       sortCards(cards, { by: "rarity", order: "desc" }).map((c) => c.uuid)
     ).toEqual(["mythic", "rare", "basic"]);
     expect(
-      sortCards([card({ name: "No Rarity", type_line: "Creature" })], {
-        by: "rarity",
-        order: "asc",
-      }).map((c) => c.name)
-    ).toEqual(["No Rarity"]);
+      sortCards(
+        [
+          card({ name: "No Rarity B", type_line: "Creature", order: 2 }),
+          card({ name: "No Rarity A", type_line: "Creature", order: 1 }),
+        ],
+        { by: "rarity", order: "asc" }
+      ).map((c) => c.name)
+    ).toEqual(["No Rarity B", "No Rarity A"]);
     expect(
       sortCards(cards, { by: "unknown" as never, order: "asc" }).map(
         (c) => c.uuid
@@ -289,6 +292,12 @@ describe("sortAndFilterUtils", () => {
     ).toBe(true);
     expect(
       matchesFilters(card({ colors: [] }), { ...baseCriteria, colors: ["C"] })
+    ).toBe(true);
+    expect(
+      matchesFilters(card({ colors: undefined }), {
+        ...baseCriteria,
+        colors: ["C"],
+      })
     ).toBe(true);
     expect(
       matchesFilters(front, { ...baseCriteria, colors: ["G"] }, back)
