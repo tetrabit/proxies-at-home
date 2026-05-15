@@ -1,4 +1,4 @@
-import { vi, describe, beforeEach, it, expect } from 'vitest';
+import { vi, describe, beforeEach, afterEach, it, expect } from 'vitest';
 import request from "supertest";
 import express, { type Express, json } from "express";
 import { streamRouter } from "./streamRouter";
@@ -26,6 +26,10 @@ describe("Stream Router", () => {
         app = express();
         app.use(json());
         app.use("/stream", streamRouter);
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it("should stream card data correctly on happy path", async () => {
@@ -312,6 +316,29 @@ describe("Stream Router", () => {
         expect(events.some((event: string) => event.includes('"printsFound":1'))).toBe(true);
         expect(events.some((event: string) => event.startsWith("event: card-error") && event.includes("prints failed"))).toBe(true);
         expect(events.at(-1)).toBe("event: done\ndata: {}");
+    });
+
+    it("sends keep-alive comments while card streaming is still pending", async () => {
+        vi.useFakeTimers();
+        let resolveBatch!: (value: Map<string, unknown>) => void;
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockReturnValueOnce(
+            new Promise((resolve) => {
+                resolveBatch = resolve;
+            }) as ReturnType<typeof getCardImagesPaged.batchFetchCards>
+        );
+
+        const responsePromise = request(app)
+            .post("/stream/cards")
+            .send({ cardQueries: [{ name: "Slow Card" }] })
+            .then((response) => response);
+
+        await vi.waitFor(() => expect(getCardImagesPaged.batchFetchCards).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(10_000);
+        resolveBatch(new Map());
+        const response = await responsePromise;
+
+        expect(response.status).toBe(200);
+        expect(response.text).toContain(":keep-alive\n\n");
     });
 
     it("returns metadata for batch hits, fallback hits, misses, per-card errors, empty input, and fatal failures", async () => {
