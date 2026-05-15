@@ -5,7 +5,10 @@ import { useShareSync } from "./useShareSync";
 let currentProject: { id: string; lastSharedAt?: number } | null = null;
 
 vi.mock("dexie-react-hooks", () => ({
-  useLiveQuery: vi.fn(() => currentProject),
+  useLiveQuery: vi.fn((queryFn) => {
+    void queryFn?.();
+    return currentProject;
+  }),
 }));
 
 vi.mock("@/store", () => ({
