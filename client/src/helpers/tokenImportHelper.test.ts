@@ -733,6 +733,7 @@ describe("handleManualTwoSidedTokenImport", () => {
         order: 1,
         isUserUpload: false,
         projectId: "project-1",
+        token_parts: [{ name: "" }],
       },
     ];
     hoisted.cardsToArray.mockResolvedValue(projectCards);
@@ -918,5 +919,294 @@ describe("handleManualTwoSidedTokenImport", () => {
       failure
     );
     consoleError.mockRestore();
+  });
+
+  it("reports no tokens when no import callback fires but no token intents are returned", async () => {
+    const projectCards = [
+      {
+        uuid: "source",
+        name: "Plain Card",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray.mockResolvedValue(projectCards);
+    hoisted.importMissingTokens.mockResolvedValue([]);
+    const onNoTokens = vi.fn();
+
+    const result = await handleManualTwoSidedTokenImport({ onNoTokens });
+
+    expect(result).toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+    expect(onNoTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns empty without reporting no tokens when unmatched intents were found", async () => {
+    const projectCards = [
+      {
+        uuid: "source",
+        name: "Plain Card",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray.mockResolvedValue(projectCards);
+    hoisted.importMissingTokens.mockResolvedValue([
+      { name: "Treasure", quantity: 1, isToken: true },
+    ]);
+    const onNoTokens = vi.fn();
+
+    const result = await handleManualTwoSidedTokenImport({ onNoTokens });
+
+    expect(result).toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+    expect(onNoTokens).not.toHaveBeenCalled();
+  });
+
+  it("returns unpaired imported tokens when valid back pairings cannot be made", async () => {
+    const beforeCards = [
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
+    ];
+    const afterCards = [
+      ...beforeCards,
+      {
+        uuid: "treasure-front-1",
+        name: "Treasure",
+        order: 10,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "treasure-img-1",
+        projectId: "project-1",
+      },
+      {
+        uuid: "treasure-front-2",
+        name: "Treasure",
+        order: 20,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "treasure-img-2",
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray
+      .mockResolvedValueOnce(beforeCards)
+      .mockResolvedValueOnce(afterCards);
+    hoisted.importMissingTokens.mockResolvedValue([
+      { name: "Treasure", quantity: 1, isToken: true },
+      { name: "Treasure", quantity: 1, isToken: true },
+    ]);
+    const onComplete = vi.fn();
+
+    const result = await handleManualTwoSidedTokenImport({ onComplete });
+
+    expect(result).toEqual({
+      importedTokenCount: 2,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 2,
+    });
+    expect(hoisted.transaction).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips stale fronts that are missing by the time backs are applied", async () => {
+    const beforeCards = [
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
+    ];
+    const afterCards = [
+      ...beforeCards,
+      {
+        uuid: "treasure-front",
+        name: "Treasure",
+        order: 10,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "treasure-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "soldier-front",
+        name: "Soldier",
+        order: 20,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "soldier-img",
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray
+      .mockResolvedValueOnce(beforeCards)
+      .mockResolvedValueOnce(afterCards)
+      .mockResolvedValueOnce(afterCards);
+    hoisted.cardsBulkGet.mockResolvedValue([undefined, undefined]);
+    hoisted.importMissingTokens.mockResolvedValue([
+      { name: "Treasure", quantity: 1, isToken: true },
+      { name: "Soldier", quantity: 1, isToken: true },
+    ]);
+
+    const result = await handleManualTwoSidedTokenImport();
+
+    expect(result).toEqual({
+      importedTokenCount: 2,
+      pairedTokenCount: 2,
+      unpairedTokenCount: 0,
+    });
+    expect(hoisted.cardsBulkAdd).not.toHaveBeenCalled();
+    expect(hoisted.cardsBulkUpdate).not.toHaveBeenCalled();
+    expect(hoisted.imagesBulkGet).not.toHaveBeenCalled();
+  });
+
+  it("keeps existing backs when art already matches and has no image ref deltas", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const projectCards = [
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+        token_parts: [{ name: "Treasure" }, { name: "Soldier" }],
+      },
+      {
+        uuid: "treasure-front",
+        name: "Treasure",
+        order: 10,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "treasure-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "treasure-back",
+        name: "Soldier",
+        order: 10,
+        isUserUpload: false,
+        imageId: "soldier-img",
+        linkedFrontId: "treasure-front",
+        projectId: "project-1",
+      },
+      {
+        uuid: "soldier-front",
+        name: "Soldier",
+        order: 20,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "soldier-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "soldier-back",
+        name: "Treasure",
+        order: 20,
+        isUserUpload: false,
+        imageId: "treasure-img",
+        linkedFrontId: "soldier-front",
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray.mockResolvedValue(projectCards);
+    hoisted.cardsBulkGet.mockResolvedValue([
+      projectCards.find((card) => card.uuid === "treasure-front"),
+      projectCards.find((card) => card.uuid === "soldier-front"),
+    ]);
+    hoisted.importMissingTokens.mockResolvedValue([]);
+
+    const result = await handleManualTwoSidedTokenImport();
+
+    expect(result.pairedTokenCount).toBe(2);
+    expect(hoisted.cardsBulkUpdate).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "treasure-back" }),
+        expect.objectContaining({ key: "soldier-back" }),
+      ])
+    );
+    expect(hoisted.imagesBulkGet).not.toHaveBeenCalled();
+    random.mockRestore();
+  });
+
+  it("uses linkedBackId repairs and deletes images whose refCount reaches zero", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const projectCards = [
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+        token_parts: [{ name: "Treasure" }, { name: "Soldier" }],
+      },
+      {
+        uuid: "treasure-front",
+        name: "Treasure",
+        order: 10,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "treasure-img",
+        linkedBackId: "orphan-linked-back",
+        projectId: "project-1",
+      },
+      {
+        uuid: "orphan-linked-back",
+        name: "Old",
+        order: 10,
+        isUserUpload: false,
+        imageId: "old-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "soldier-front",
+        name: "Soldier",
+        order: 20,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "cardback_token_soldier",
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray.mockResolvedValue(projectCards);
+    hoisted.cardsBulkGet.mockResolvedValue([
+      projectCards.find((card) => card.uuid === "treasure-front"),
+      projectCards.find((card) => card.uuid === "soldier-front"),
+    ]);
+    hoisted.imagesBulkGet.mockResolvedValue([
+      { id: "old-img", refCount: 1 },
+      undefined,
+    ]);
+    hoisted.importMissingTokens.mockResolvedValue([]);
+
+    const result = await handleManualTwoSidedTokenImport();
+
+    expect(result.pairedTokenCount).toBe(2);
+    expect(hoisted.cardsBulkUpdate).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "orphan-linked-back",
+          changes: expect.objectContaining({
+            imageId: "cardback_token_soldier",
+          }),
+        }),
+      ])
+    );
+    expect(hoisted.imagesBulkDelete).toHaveBeenCalledWith(["old-img"]);
+    random.mockRestore();
   });
 });
