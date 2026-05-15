@@ -172,6 +172,67 @@ describe("getWithRetry logic", () => {
         sendFileSpy.mockRestore();
     });
 
+    it("covers status validation and queued proxy limiter behavior", async () => {
+        expect(__imageRouterTestInternals.acceptsSurfaceableStatus(200)).toBe(true);
+        expect(__imageRouterTestInternals.acceptsSurfaceableStatus(499)).toBe(true);
+        expect(__imageRouterTestInternals.acceptsSurfaceableStatus(199)).toBe(false);
+        expect(__imageRouterTestInternals.acceptsSurfaceableStatus(500)).toBe(false);
+
+        const limit = __imageRouterTestInternals.pLimit(1);
+        let releaseFirst!: () => void;
+        const first = limit(() => new Promise<string>(resolve => {
+            releaseFirst = () => resolve("first");
+        }));
+        const second = limit(() => Promise.resolve("second"));
+
+        await Promise.resolve();
+        releaseFirst();
+        await expect(Promise.all([first, second])).resolves.toEqual(["first", "second"]);
+        await expect(limit(() => Promise.reject(new Error("limited failure")))).rejects.toThrow("limited failure");
+    });
+
+    it("cleans oversized image cache directories and tolerates cleanup races", async () => {
+        const gib = 1024 * 1024 * 1024;
+        const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        vi.spyOn(Date, "now").mockReturnValue(10 * 60 * 1000);
+
+        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["dir", "gone.png", "old.png", "new.png"]);
+        (fs.promises.stat as unknown as Mock).mockImplementation(async (filePath: string) => {
+            if (String(filePath).endsWith("dir")) return { isFile: () => false, atimeMs: 0, size: 0 };
+            if (String(filePath).endsWith("gone.png")) throw new Error("gone");
+            if (String(filePath).endsWith("old.png")) return { isFile: () => true, atimeMs: 1, size: 7 * gib };
+            return { isFile: () => true, atimeMs: 2, size: 6 * gib };
+        });
+        (fs.promises.unlink as unknown as Mock)
+            .mockRejectedValueOnce(new Error("unlink failed"))
+            .mockResolvedValueOnce(undefined);
+
+        await __imageRouterTestInternals.checkAndCleanCache();
+
+        expect(fs.promises.unlink).toHaveBeenCalledTimes(2);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("[CACHE] Failed to delete"), "unlink failed");
+
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(fs.promises.readdir).toHaveBeenCalledTimes(1);
+
+        __imageRouterTestInternals.resetCacheCleanupForTests();
+        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["small.png"]);
+        (fs.promises.stat as unknown as Mock).mockResolvedValueOnce({ isFile: () => true, atimeMs: 3, size: 1 });
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(fs.promises.readdir).toHaveBeenCalledTimes(2);
+
+        __imageRouterTestInternals.resetCacheCleanupForTests();
+        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce(new Error("readdir failed"));
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "readdir failed");
+
+        consoleLogSpy.mockRestore();
+        consoleWarnSpy.mockRestore();
+        consoleErrorSpy.mockRestore();
+    });
+
     it("should retry on 429 and then succeed", async () => {
         mockedAxios.get
             .mockResolvedValueOnce({ status: 429, headers: { "retry-after": "0" } }) // Use 0 to speed up test
@@ -229,6 +290,45 @@ describe("getWithRetry logic", () => {
         expect(res.status).toBe(502);
         expect(res.body.error).toBe("Upstream is a 0-byte image");
         expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it("returns upstream errors when the proxy response has no data", async () => {
+        mockedAxios.get.mockResolvedValue({
+            status: 200,
+            data: undefined,
+            headers: { "content-type": "image/jpeg" },
+        });
+
+        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/no-data.jpg")}`);
+        expect(res.status).toBe(502);
+        expect(res.body).toEqual({ error: "Upstream error", status: 200 });
+    });
+
+    it("serves a proxy request after an in-progress write finishes", async () => {
+        vi.useFakeTimers();
+        const url = "http://example.com/in-progress.jpg";
+        const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
+        __imageRouterTestInternals.writeInProgress.add(localPath);
+        let localPathChecks = 0;
+        (fs.existsSync as unknown as Mock).mockImplementation((filePath: string) => {
+            if (filePath === localPath) {
+                localPathChecks++;
+                return localPathChecks >= 2;
+            }
+            return false;
+        });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/jpeg").send("in-progress cached image");
+        });
+
+        const responsePromise = request(app).get("/images/proxy").query({ url });
+        await vi.advanceTimersByTimeAsync(100);
+        const res = await responsePromise;
+
+        expect(res.status).toBe(200);
+        expect(sendFileSpy).toHaveBeenCalledWith(localPath);
+        sendFileSpy.mockRestore();
+        vi.useRealTimers();
     });
 
 
