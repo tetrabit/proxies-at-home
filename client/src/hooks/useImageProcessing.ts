@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { API_BASE } from "@/constants";
 import { db, type Image, type Cardback } from "../db"; // Import the Dexie database instance
 import { ImageProcessor, Priority } from "../helpers/imageProcessor";

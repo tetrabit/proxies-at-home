@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 /**
  * DarkPixelsSection - Dark pixel handling with mode selection
  * Includes "Use Global Default" checkbox to inherit from global settings

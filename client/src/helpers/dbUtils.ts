@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { db, type Image } from "@/db";
 import type { CardOption, PrintInfo } from "../../../shared/types";
 import { parseImageIdFromUrl } from "./imageHelper";

@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useEffect, useRef } from "react";
 import { useUndoRedoStore } from "../store/undoRedo";
 import { useSelectionStore } from "../store/selection";

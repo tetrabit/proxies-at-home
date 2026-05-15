@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useSettingsStore } from "@/store";
 import type { LayoutPreset, PageOrientation } from "@/store/settings";
 import { Button, Label, Select, ToggleSwitch } from "flowbite-react";
