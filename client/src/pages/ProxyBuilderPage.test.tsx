@@ -268,7 +268,7 @@ vi.mock("../helpers/imageSpecs", () => ({
   getEffectiveExistingBleedMm: vi.fn(() => 0),
 }));
 
-import ProxyBuilderPage from "./ProxyBuilderPage";
+import ProxyBuilderPage, { getInitialLandscape } from "./ProxyBuilderPage";
 
 const setViewport = ({
   width,
@@ -386,6 +386,15 @@ describe("ProxyBuilderPage", () => {
     expect(
       mocks.userPreferencesState.setSettingsPanelWidth
     ).toHaveBeenCalledWith(320);
+  });
+
+  it("initializes landscape state without a browser window", () => {
+    expect(getInitialLandscape(undefined)).toBe(false);
+    expect(
+      getInitialLandscape({
+        matchMedia: vi.fn().mockReturnValue({ matches: true }),
+      })
+    ).toBe(true);
   });
 
   it("expands collapsed desktop panels from reset handles", () => {

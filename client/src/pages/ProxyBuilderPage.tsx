@@ -45,6 +45,12 @@ const EMPTY_CARDS: CardOption[] = [];
 const EMPTY_IMAGES: Image[] = [];
 const IMAGE_PROCESS_SUBMISSION_BATCH_SIZE = 24;
 
+export function getInitialLandscape(
+  win: Pick<Window, "matchMedia"> | undefined
+) {
+  return win?.matchMedia("(orientation: landscape)").matches ?? false;
+}
+
 export default function ProxyBuilderPage() {
   const bleedEdge = useSettingsStore((state) => state.bleedEdge);
   const bleedEdgeWidth = useSettingsStore((state) => state.bleedEdgeWidth);
@@ -120,12 +126,9 @@ export default function ProxyBuilderPage() {
 
   // Mobile detection and state
   const [isMobile, setIsMobile] = useState(false);
-  const [isLandscape, setIsLandscape] = useState(() => {
-    if (typeof window !== "undefined") {
-      return window.matchMedia("(orientation: landscape)").matches;
-    }
-    return false;
-  });
+  const [isLandscape, setIsLandscape] = useState(() =>
+    getInitialLandscape(globalThis.window)
+  );
   const [activeMobileView, setActiveMobileView] = useState<
     "upload" | "preview" | "settings"
   >(() => {
