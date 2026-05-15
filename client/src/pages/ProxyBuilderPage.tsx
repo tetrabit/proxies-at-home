@@ -51,6 +51,20 @@ export function getInitialLandscape(
   return win?.matchMedia("(orientation: landscape)").matches ?? false;
 }
 
+export function getInitialMobileView(
+  storage: Pick<Storage, "getItem"> | undefined
+): "upload" | "preview" | "settings" {
+  const saved = storage?.getItem("activeMobileView");
+  if (saved === "upload" || saved === "preview" || saved === "settings") {
+    return saved;
+  }
+  return "preview";
+}
+
+export function getInitialWindowWidth(win: Pick<Window, "innerWidth"> | undefined) {
+  return win?.innerWidth ?? 0;
+}
+
 export default function ProxyBuilderPage() {
   const bleedEdge = useSettingsStore((state) => state.bleedEdge);
   const bleedEdgeWidth = useSettingsStore((state) => state.bleedEdgeWidth);
@@ -131,20 +145,10 @@ export default function ProxyBuilderPage() {
   );
   const [activeMobileView, setActiveMobileView] = useState<
     "upload" | "preview" | "settings"
-  >(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("activeMobileView");
-      if (saved === "upload" || saved === "preview" || saved === "settings") {
-        return saved;
-      }
-    }
-    return "preview";
-  });
+  >(() => getInitialMobileView(globalThis.localStorage));
 
   // Track previous width to detect actual rotation vs keyboard opening
-  const lastWidth = useRef(
-    typeof window !== "undefined" ? window.innerWidth : 0
-  );
+  const lastWidth = useRef(getInitialWindowWidth(globalThis.window));
 
   useEffect(() => {
     localStorage.setItem("activeMobileView", activeMobileView);
