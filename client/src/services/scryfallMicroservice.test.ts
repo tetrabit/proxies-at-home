@@ -8,7 +8,9 @@ const clientMethods = {
   health: vi.fn(),
 };
 
-const ScryfallCacheClient = vi.fn(() => clientMethods);
+const ScryfallCacheClient = vi.fn(function (_options: unknown) {
+  return clientMethods;
+});
 
 vi.mock("@tetrabit/scryfall-cache-client", () => ({
   ScryfallCacheClient,
@@ -53,16 +55,34 @@ describe("scryfallMicroservice", () => {
     clientMethods.getStats.mockResolvedValue({ cards: 7 });
     clientMethods.health.mockResolvedValue({ status: "healthy" });
 
-    await expect(mod.searchCardsByName("island", 3)).resolves.toEqual({ data: ["search"] });
-    await expect(mod.getCardByName("Island", "lea")).resolves.toEqual({ name: "Island" });
-    await expect(mod.getCardByName("Forest")).resolves.toEqual({ name: "Island" });
-    await expect(mod.getCardById("card-id")).resolves.toEqual({ id: "card-id" });
+    await expect(mod.searchCardsByName("island", 3)).resolves.toEqual({
+      data: ["search"],
+    });
+    await expect(mod.getCardByName("Island", "lea")).resolves.toEqual({
+      name: "Island",
+    });
+    await expect(mod.getCardByName("Forest")).resolves.toEqual({
+      name: "Island",
+    });
+    await expect(mod.getCardById("card-id")).resolves.toEqual({
+      id: "card-id",
+    });
     await expect(mod.getCacheStats()).resolves.toEqual({ cards: 7 });
-    await expect(mod.checkMicroserviceHealth()).resolves.toEqual({ status: "healthy" });
+    await expect(mod.checkMicroserviceHealth()).resolves.toEqual({
+      status: "healthy",
+    });
 
-    expect(clientMethods.searchCards).toHaveBeenCalledWith({ q: "island", page: "3" });
-    expect(clientMethods.getCardByName).toHaveBeenNthCalledWith(1, { exact: "Island", set: "lea" });
-    expect(clientMethods.getCardByName).toHaveBeenNthCalledWith(2, { exact: "Forest" });
+    expect(clientMethods.searchCards).toHaveBeenCalledWith({
+      q: "island",
+      page: "3",
+    });
+    expect(clientMethods.getCardByName).toHaveBeenNthCalledWith(1, {
+      exact: "Island",
+      set: "lea",
+    });
+    expect(clientMethods.getCardByName).toHaveBeenNthCalledWith(2, {
+      exact: "Forest",
+    });
     expect(clientMethods.getCard).toHaveBeenCalledWith("card-id");
     expect(clientMethods.getStats).toHaveBeenCalledTimes(1);
     expect(clientMethods.health).toHaveBeenCalledTimes(1);
@@ -71,7 +91,9 @@ describe("scryfallMicroservice", () => {
   it("logs and rethrows operation failures but converts health failures", async () => {
     const mod = await loadModule();
     const error = new Error("offline");
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     clientMethods.searchCards.mockRejectedValueOnce(error);
     clientMethods.getCardByName.mockRejectedValueOnce(error);
     clientMethods.getCard.mockRejectedValueOnce(error);
