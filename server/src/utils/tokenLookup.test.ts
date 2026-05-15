@@ -413,15 +413,18 @@ describe("resolveLatestTokenParts additional branches", () => {
   it("falls back to name lookup for malformed or non-card token uris", async () => {
     hoisted.mockGetCardDataForCardInfo
       .mockResolvedValueOnce({ id: "bad-uri-token", name: "Bad Uri", type_line: "Token Creature" })
-      .mockResolvedValueOnce({ id: "non-card-token", name: "Non Card", type_line: "Token Creature" });
+      .mockResolvedValueOnce({ id: "non-card-token", name: "Non Card", type_line: "Token Creature" })
+      .mockResolvedValueOnce({ id: "empty-cards-token", name: "Empty Cards", type_line: "Token Creature" });
     hoisted.mockGetCardsWithImagesForCardInfo.mockResolvedValue([]);
 
     await expect(resolveLatestTokenParts([
       { name: "Bad Uri", uri: "not a url" },
       { name: "Non Card", uri: "https://api.scryfall.com/not-cards/token-id" },
+      { name: "Empty Cards", uri: "https://api.scryfall.com/cards/" },
     ], "en")).resolves.toEqual([
       { id: "bad-uri-token", name: "Bad Uri", uri: "not a url", type_line: "Token Creature" },
       { id: "non-card-token", name: "Non Card", uri: "https://api.scryfall.com/not-cards/token-id", type_line: "Token Creature" },
+      { id: "empty-cards-token", name: "Empty Cards", uri: "https://api.scryfall.com/cards/", type_line: "Token Creature" },
     ]);
   });
 
