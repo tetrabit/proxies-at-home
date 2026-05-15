@@ -223,8 +223,14 @@ describe("useScryfallPreview", () => {
 
     rerender({ query: "A" });
     await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(500);
-      pending.resolve({ name: "Darksteel Citadel" });
+    });
+    await act(async () => {
+      setTimeout(() => pending.resolve({ name: "Darksteel Citadel" }), 0);
+      await vi.advanceTimersByTimeAsync(0);
       await Promise.resolve();
     });
 
@@ -324,6 +330,25 @@ describe("useScryfallPreview", () => {
     mockSearchCards.mockResolvedValue([
       { name: "Quartermaster" },
       { name: "The Artful Dodger" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("art"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual([
+      "The Artful Dodger",
+      "Quartermaster",
+    ]);
+  });
+
+  it("also orders word-boundary results when the comparator sees the reverse pair first", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "art", set: null, number: null });
+    mockSearchCards.mockResolvedValue([
+      { name: "The Artful Dodger" },
+      { name: "Quartermaster" },
     ]);
 
     const { result } = renderHook(() => useScryfallPreview("art"));
