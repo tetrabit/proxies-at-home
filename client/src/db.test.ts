@@ -163,6 +163,12 @@ describe("db schema", () => {
         needs_token: true,
         token_parts: [{ name: "Copy" }],
       },
+      {
+        name: "Helper",
+        needs_token: true,
+        token_parts: [{ name: "Clue" }],
+      },
+      { name: "Missing parts", needs_token: true },
       { name: "Ignored", needs_token: false, token_parts: [{ name: "Ignored" }] },
     ];
     const tx = {
@@ -183,6 +189,11 @@ describe("db schema", () => {
     });
     expect(cards[1]).toMatchObject({ token_parts: [], needs_token: false });
     expect(cards[2]).toMatchObject({
+      token_parts: [{ name: "Clue" }],
+      needs_token: true,
+    });
+    expect(cards[3]).toMatchObject({ needs_token: true });
+    expect(cards[4]).toMatchObject({
       token_parts: [{ name: "Ignored" }],
       needs_token: false,
     });

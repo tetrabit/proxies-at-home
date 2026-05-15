@@ -412,6 +412,20 @@ describe("ProxyBuilderPage", () => {
     expect(
       mocks.userPreferencesState.setIsSettingsPanelCollapsed
     ).toHaveBeenCalledWith(false);
+
+    fireEvent.click(screen.getByText("left resize"));
+    fireEvent.mouseMove(document, { clientX: 110 });
+    fireEvent.mouseUp(document);
+    fireEvent.click(screen.getByText("right resize"));
+    fireEvent.mouseMove(document, { clientX: 90 });
+    fireEvent.mouseUp(document);
+
+    expect(
+      mocks.userPreferencesState.setIsUploadPanelCollapsed
+    ).toHaveBeenCalledWith(false);
+    expect(
+      mocks.userPreferencesState.setIsSettingsPanelCollapsed
+    ).toHaveBeenCalledWith(false);
   });
 
   it("renders mobile navigation, persists active view, and switches tabs", async () => {
