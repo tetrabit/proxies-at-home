@@ -166,6 +166,7 @@ export async function downloadAndImportBulkData(): Promise<{
   await pipeline(response.data as Readable, jsonParser, arrayStreamer);
 
   // Check if stream had parsing errors
+  /* v8 ignore next 3 -- defensive for stream implementations that emit arrayStreamer error without rejecting pipeline. @preserve */
   if (streamError) {
     throw streamError;
   }

@@ -160,6 +160,7 @@ function pLimit(concurrency: number) {
     active++;
     try {
       resolve(await fn());
+    /* v8 ignore next 3 -- pLimit is currently used with per-task error capture; this protects future raw callers. @preserve */
     } catch (e) {
       reject(e);
     } finally {

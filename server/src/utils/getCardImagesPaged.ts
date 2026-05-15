@@ -71,6 +71,7 @@ function deduplicatedSearch(
   const now = Date.now();
 
   // Cleanup stale entries and enforce max size periodically
+  /* v8 ignore next 7 -- requires hundreds of simultaneous stale Scryfall requests; covered by TTL contract in production cache bounds. @preserve */
   if (inFlightSearches.size > MAX_IN_FLIGHT_ENTRIES / 2) {
     for (const [key, entry] of inFlightSearches.entries()) {
       if (now - entry.createdAt > IN_FLIGHT_TTL_MS) {

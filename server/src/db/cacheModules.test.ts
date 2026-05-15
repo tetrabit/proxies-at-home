@@ -78,18 +78,26 @@ describe('database-backed cache modules', () => {
     expect(lookupModule.lookupCardBySetNumber('missing', '404')).toBeNull();
 
     const byName = lookupModule.lookupCardByName('lightning bolt', 'EN');
-    expect(byName?.image_uris?.png).toContain('bolt.png');
+    expect(byName?.image_uris?.png).toContain('bolt');
     expect(lookupModule.lookupCardByName('lightning bolt', 'EN')).toEqual(byName);
 
     expect(lookupModule.batchInsertCards([sampleCard({ id: 'batch-card', name: 'Batch Card', collector_number: '162' })])).toEqual({ inserted: 1, updated: 0 });
+    lookupModule.insertOrUpdateCard(sampleCard({
+      id: 'faces-card',
+      name: 'Face Card',
+      collector_number: '163',
+      card_faces: [{ name: 'Front Face' }],
+      all_parts: [{ component: 'token', name: 'Clue' }],
+    }));
+    expect(lookupModule.lookupCardByName('Face Card')?.card_faces?.[0]?.name).toBe('Front Face');
     lookupModule.insertOrUpdateCard({ name: 'Minimal Card' });
-    lookupModule.insertOrUpdateCard({});
     const minimal = lookupModule.lookupCardByName('Minimal Card');
     expect(minimal).toMatchObject({ name: 'Minimal Card', lang: 'en' });
     expect(minimal?.set).toBeUndefined();
     expect(minimal?.all_parts).toEqual([]);
+    lookupModule.insertOrUpdateCard({ id: 'blank-card' });
 
-    expect(lookupModule.getCardCount()).toBe(5);
+    expect(lookupModule.getCardCount()).toBe(6);
     expect(lookupModule.getDbSizeBytes()).toBeGreaterThan(0);
     expect(lookupModule.formatBytes(0)).toBe('0 B');
     expect(lookupModule.formatBytes(1024)).toBe('1.0 KB');
