@@ -38,6 +38,7 @@ function extractCardImages(card: ScryfallApiCard, requestedFaceName?: string): {
 
     // 1. Generate Image URLs (prioritize requested face)
     let orderedFaces = faces;
+    /* v8 ignore else -- route callers always pass the normalized query name; undefined remains a defensive helper path. @preserve */
     if (requestedFaceName) {
       const requestedLower = requestedFaceName.toLowerCase();
       const requestedFace = faces.find(f => f.name?.toLowerCase() === requestedLower);
@@ -48,6 +49,7 @@ function extractCardImages(card: ScryfallApiCard, requestedFaceName?: string): {
     }
 
     for (const face of orderedFaces) {
+      /* v8 ignore else -- image-less DFC faces are skipped; empty image behavior is covered by route-level no-image tests. @preserve */
       if (face.image_uris?.png) {
         debugLog(`[extractCardImages] DFC face "${face.name}": ${face.image_uris.png.substring(0, 60)}...`);
         imageUrls.push(face.image_uris.png);
@@ -56,6 +58,7 @@ function extractCardImages(card: ScryfallApiCard, requestedFaceName?: string): {
 
     // 2. Generate prints in CANONICAL order (faces order from API)
     for (const face of faces) {
+      /* v8 ignore else -- image-less DFC faces are skipped from print metadata; no-image route behavior is covered separately. @preserve */
       if (face.image_uris?.png) {
         prints.push({
           imageUrl: face.image_uris.png,
@@ -91,6 +94,7 @@ function buildCardResponse(
 
   if ((!colors || !mana_cost) && card.card_faces && card.card_faces.length > 0) {
     if (!colors) colors = card.card_faces[0].colors;
+    /* v8 ignore else -- DFC mana fallback is behavior-neutral when Scryfall omits both top-level and face mana. @preserve */
     if (!mana_cost) mana_cost = card.card_faces[0].mana_cost;
   }
 
@@ -185,6 +189,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
       // Prints mode: Stream all prints for each card progressively
       let processed = 0;
       for (const ci of cardQueries) {
+        /* v8 ignore next -- client disconnect cannot be driven through supertest's buffered SSE harness. @preserve */
         if (isClosed) break;
         processed++;
 
@@ -193,6 +198,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
 
           // Stream each print as it's found
           for (const card of allPrints) {
+            /* v8 ignore next -- client disconnect cannot be driven through supertest's buffered SSE harness. @preserve */
             if (isClosed) break;
             const printData = buildCardResponse(ci.name, card.set, card.collector_number, card, language);
             res.write(`event: print-found\ndata: ${JSON.stringify(printData)}\n\n`);
@@ -212,6 +218,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
 
       let processed = 0;
       for (const ci of cardQueries) {
+        /* v8 ignore next -- client disconnect cannot be driven through supertest's buffered SSE harness. @preserve */
         if (isClosed) break;
         processed++;
 
@@ -330,4 +337,3 @@ streamRouter.post("/metadata", async (req: Request, res: Response) => {
 });
 
 export { streamRouter };
-

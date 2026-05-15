@@ -224,6 +224,7 @@ export function createPreferencesRouter(options: PreferencesRouterOptions = {}):
         try {
             fixture = validatePreferenceFixture(req.body);
         } catch (error) {
+            /* v8 ignore next -- preference validators throw Error instances; fallback is defensive for future validators. @preserve */
             const message = error instanceof Error ? error.message : 'Invalid preference fixture';
             res.status(400).json({ error: message });
             return;

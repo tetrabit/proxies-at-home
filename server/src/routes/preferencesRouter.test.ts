@@ -159,6 +159,18 @@ describe('preferencesRouter', () => {
         };
 
         expect(validatePreferenceFixture(fixture)).toEqual(fixture);
+
+        const fixtureWithoutHints = {
+            version: 1,
+            exportedAt: validFixture.exportedAt,
+            cases: [
+                {
+                    source: { name: 'Island' },
+                    candidates: [],
+                },
+            ],
+        };
+        expect(validatePreferenceFixture(fixtureWithoutHints)).toEqual(fixtureWithoutHints);
     });
 
     it('serializes concurrent writes without corrupting the preference file', async () => {

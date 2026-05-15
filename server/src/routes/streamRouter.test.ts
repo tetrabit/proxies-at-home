@@ -428,6 +428,9 @@ describe("Stream Router", () => {
         const empty = await request(app).post("/stream/metadata").send({ cardQueries: [] }).expect(200);
         expect(empty.body).toEqual({ results: [] });
 
+        const invalidBody = await request(app).post("/stream/metadata").send({ cardQueries: "not-array" }).expect(200);
+        expect(invalidBody.body).toEqual({ results: [] });
+
         vi.mocked(getCardImagesPaged.batchFetchCards).mockRejectedValueOnce(new Error("batch fatal"));
         const failed = await request(app).post("/stream/metadata").send({ cardQueries: [{ name: "Boom" }] });
         expect(failed.status).toBe(500);
