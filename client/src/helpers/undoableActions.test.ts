@@ -13,7 +13,6 @@ import {
 import { db } from "@/db";
 import {
   addCards,
-  addRemoteImage,
   changeCardArtwork,
   createLinkedBackCard,
   createLinkedBackCardsBulk,
