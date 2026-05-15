@@ -420,8 +420,8 @@ describe("resolveLatestTokenParts additional branches", () => {
       { name: "Bad Uri", uri: "not a url" },
       { name: "Non Card", uri: "https://api.scryfall.com/not-cards/token-id" },
     ], "en")).resolves.toEqual([
-      { id: "bad-uri-token", name: "Bad Uri", type_line: "Token Creature" },
-      { id: "non-card-token", name: "Non Card", type_line: "Token Creature" },
+      { id: "bad-uri-token", name: "Bad Uri", uri: "not a url", type_line: "Token Creature" },
+      { id: "non-card-token", name: "Non Card", uri: "https://api.scryfall.com/not-cards/token-id", type_line: "Token Creature" },
     ]);
   });
 

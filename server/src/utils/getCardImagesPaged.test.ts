@@ -490,7 +490,7 @@ describe("getCardImagesPaged", () => {
         collector_number: "332",
         image_uris: { png: "sol.png" },
       };
-      mockedAxios.post.mockResolvedValue({ data: { data: [fetchedCard], not_found: [] } });
+      mockedAxios.post.mockResolvedValue({ data: { data: [fetchedCard, { id: "nameless" }], not_found: [] } });
 
       const result = await batchFetchCards([
         { name: "Sol Ring", set: "CMR", number: "332" },
@@ -511,6 +511,7 @@ describe("getCardImagesPaged", () => {
       expect(result.get("sol ring")).toBe(fetchedCard);
       expect(result.get("cmr:332")).toBe(fetchedCard);
       expect(result.get("id:sol-id")).toBe(fetchedCard);
+      expect(result.get("id:nameless")).toBeUndefined();
       expect(dbMocks.insertOrUpdateCard).toHaveBeenCalledWith(fetchedCard);
     });
 
@@ -771,6 +772,17 @@ describe("getCardImagesPaged", () => {
       expect(result).toEqual([tokenCard]);
       expect(mockedAxios.get.mock.calls[0]?.[0]).toEqual(expect.stringContaining("set%3Atfoo%20name%3A%22Goblin%22%20type%3Atoken"));
       expect(mockedAxios.get.mock.calls[1]?.[0]).toEqual(expect.stringContaining("!%22Goblin%22%20type%3Atoken"));
+    });
+
+    it("returns set/name card search results without falling through", async () => {
+      const card: ScryfallApiCard = { id: "set-name-id", name: "Sol Ring", set: "cmr" };
+      mockedAxios.get.mockResolvedValueOnce(mockScryfallResponse([card]));
+
+      const result = await getCardsWithImagesForCardInfo({ name: "Sol Ring", set: "cmr" }, "prints");
+
+      expect(result).toEqual([card]);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.get.mock.calls[0]?.[0]).toEqual(expect.stringContaining("set%3Acmr%20name%3A%22Sol%20Ring%22"));
     });
 
     it("sorts exact and face-name matches ahead of art series results", async () => {

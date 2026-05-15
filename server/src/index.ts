@@ -92,7 +92,8 @@ export function startServer(port: number = 3001): Promise<number> {
           if (
             hostname === "localhost" ||
             hostname === "127.0.0.1" ||
-            hostname === "::1"
+            hostname === "::1" ||
+            hostname === "[::1]"
           ) {
             return cb(null, true);
           }
