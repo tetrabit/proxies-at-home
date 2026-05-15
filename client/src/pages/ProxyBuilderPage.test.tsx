@@ -270,7 +270,11 @@ vi.mock("../helpers/imageSpecs", () => ({
   getEffectiveExistingBleedMm: vi.fn(() => 0),
 }));
 
-import ProxyBuilderPage, { getInitialLandscape } from "./ProxyBuilderPage";
+import ProxyBuilderPage, {
+  getInitialLandscape,
+  getInitialMobileView,
+  getInitialWindowWidth,
+} from "./ProxyBuilderPage";
 import { getEffectiveExistingBleedMm } from "../helpers/imageSpecs";
 
 const setViewport = ({
@@ -397,13 +401,22 @@ describe("ProxyBuilderPage", () => {
     ).toHaveBeenCalledWith(320);
   });
 
-  it("initializes landscape state without a browser window", () => {
+  it("initializes browser-derived state through pure fallbacks", () => {
     expect(getInitialLandscape(undefined)).toBe(false);
     expect(
       getInitialLandscape({
         matchMedia: vi.fn().mockReturnValue({ matches: true }),
       })
     ).toBe(true);
+    expect(getInitialWindowWidth(undefined)).toBe(0);
+    expect(getInitialWindowWidth({ innerWidth: 640 })).toBe(640);
+    expect(getInitialMobileView(undefined)).toBe("preview");
+    expect(
+      getInitialMobileView({ getItem: vi.fn().mockReturnValue("settings") })
+    ).toBe("settings");
+    expect(
+      getInitialMobileView({ getItem: vi.fn().mockReturnValue("invalid") })
+    ).toBe("preview");
   });
 
   it("renders with preference defaults, metric bleed width, empty live query results, and no flip ids", async () => {
@@ -423,6 +436,25 @@ describe("ProxyBuilderPage", () => {
       expect(mocks.setFlipped).not.toHaveBeenCalledWith([], true)
     );
     expect(mocks.ensureProcessed).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat auto-flip when filter state is unchanged", () => {
+    const { rerender } = render(<ProxyBuilderPage />);
+
+    mocks.setFlipped.mockClear();
+    mocks.idsToFlip = [{ uuid: "new-array-same-filter", targetState: true }];
+    rerender(<ProxyBuilderPage />);
+
+    expect(mocks.setFlipped).not.toHaveBeenCalled();
+  });
+
+  it("auto-flips only front faces when no back faces match filters", () => {
+    mocks.idsToFlip = [{ uuid: "front-only", targetState: true }];
+
+    render(<ProxyBuilderPage />);
+
+    expect(mocks.setFlipped).toHaveBeenCalledWith(["front-only"], true);
+    expect(mocks.setFlipped).not.toHaveBeenCalledWith([], false);
   });
 
   it("handles layout checks for alternate mobile predicates and missing current project", async () => {
@@ -670,6 +702,73 @@ describe("ProxyBuilderPage", () => {
     });
 
     expect(mocks.ensureProcessed).toHaveBeenCalledWith(card, "low");
+    vi.useRealTimers();
+  });
+
+  it("queues startup processing when effective existing bleed is unspecified", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getEffectiveExistingBleedMm).mockReturnValueOnce(undefined);
+    const card = { uuid: "startup-unspecified", imageId: "img-unspecified" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-unspecified",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 1,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).toHaveBeenCalledWith(card, "low");
+    vi.useRealTimers();
+  });
+
+  it("skips startup processing when existing metadata matches", async () => {
+    vi.useFakeTimers();
+    const card = { uuid: "startup-processed", imageId: "img-processed" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-processed",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 

@@ -471,7 +471,7 @@ export default function ProxyBuilderPage() {
             : undefined;
         const isExistingBleedMatch =
           effectiveExistingBleedMm !== undefined &&
-          Math.abs(img.generatedExistingBleedMm! - (effectiveExistingBleedMm ?? 0)) < 0.001;
+          Math.abs(img.generatedExistingBleedMm! - effectiveExistingBleedMm) < 0.001;
 
         const isProcessed =
           isDpiMatch &&
