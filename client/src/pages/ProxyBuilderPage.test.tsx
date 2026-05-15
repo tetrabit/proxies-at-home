@@ -318,6 +318,7 @@ describe("ProxyBuilderPage", () => {
     mocks.settingsState.noBleedTargetMode = "add";
     mocks.settingsState.noBleedTargetAmount = 3;
     mocks.settingsState.dpi = 800;
+    mocks.projectState.currentProjectId = "project-1";
     mocks.filteredAndSortedCards = [];
     mocks.idsToFlip = [
       { uuid: "front", targetState: true },
@@ -452,7 +453,12 @@ describe("ProxyBuilderPage", () => {
 
     render(<ProxyBuilderPage />);
 
-    await waitFor(() => expect(screen.getByText("Upload")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("page-view")).toHaveAttribute(
+        "data-mobile",
+        "false"
+      )
+    );
   });
 
   it("expands collapsed desktop panels from reset handles", () => {
