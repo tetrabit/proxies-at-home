@@ -600,6 +600,17 @@ describe("useSettingsStore", () => {
             expect(migrated.noBleedTargetAmount).toBe(2);
         });
 
+        it("should use default bleed amounts when legacy values are missing", () => {
+            const migrated = migrateLegacySettings({
+                overrideWithBleedGenerate: true,
+                overrideNoBleedGenerate: true,
+            }, 7);
+
+            expect(migrated.withBleedSourceAmount).toBe(3.175);
+            expect(migrated.withBleedTargetAmount).toBe(3.175);
+            expect(migrated.noBleedTargetAmount).toBe(3.175);
+        });
+
         it("should handle legacy bleed fields when no manual overrides exist", () => {
             const migrated = migrateLegacySettings({
                 withBleedAmount: 2,
@@ -636,6 +647,22 @@ describe("useSettingsStore", () => {
             }, 9);
 
             expect(migrated.settingsPanelState?.order).toEqual(["projects", "layout", "export"]);
+        });
+
+        it("should leave panel order unchanged when export is already present", () => {
+            const migrated = migrateLegacySettings({
+                settingsPanelState: { order: ["projects", "export", "application"], collapsed: {} },
+            }, 9);
+
+            expect(migrated.settingsPanelState?.order).toEqual(["projects", "export", "application"]);
+        });
+
+        it("should tolerate missing panel order during version 10 migration", () => {
+            const migrated = migrateLegacySettings({
+                settingsPanelState: { collapsed: {} },
+            }, 9);
+
+            expect(migrated.settingsPanelState?.collapsed).toEqual({});
         });
 
         it("should return persisted settings unchanged for modern versions", () => {
