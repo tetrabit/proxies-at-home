@@ -160,7 +160,7 @@ describe("CardGuides", () => {
         );
         const rounded = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
         expect(rounded.style.top).toBe("calc(-2.44094px)");
-        expect(rounded.style.borderRadius).toBe("calc(2.5mm + 10px)");
+        expect(rounded.style.borderRadius).toBe("calc(19.4488px)");
         expect(rounded.style.border).toBe("10px solid rgb(0, 255, 0)");
     });
 });
