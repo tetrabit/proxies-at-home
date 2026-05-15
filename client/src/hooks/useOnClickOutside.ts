@@ -2,6 +2,10 @@ import { useEffect, type RefObject } from "react";
 
 type Event = MouseEvent | TouchEvent;
 
+export function resolveClickOutsideTarget(event: Event): Node | null {
+    return (event?.target as Node) || null;
+}
+
 export function useOnClickOutside<T extends HTMLElement = HTMLElement>(
     ref: RefObject<T | null>,
     handler: (event: Event) => void
@@ -9,7 +13,7 @@ export function useOnClickOutside<T extends HTMLElement = HTMLElement>(
     useEffect(() => {
         const listener = (event: Event) => {
             const el = ref?.current;
-            if (!el || el.contains((event?.target as Node) || null)) {
+            if (!el || el.contains(resolveClickOutsideTarget(event))) {
                 return;
             }
 
