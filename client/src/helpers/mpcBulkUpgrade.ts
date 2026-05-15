@@ -74,9 +74,7 @@ interface PreferenceContext {
  * Prepares the preference context (trained model and visual profiles)
  * used to score candidates when no explicit user replay exists.
  */
-async function preparePreferenceContext(
-  signal?: AbortSignal
-): Promise<PreferenceContext> {
+async function preparePreferenceContext(): Promise<PreferenceContext> {
   await hydrateMpcPreferences();
   const calibrationCases = await listDefaultMpcCalibrationCases();
 
@@ -162,7 +160,6 @@ async function processImageGroup(
       ? undefined
       : await (async () => {
           const { model, profiles } = prefContext;
-          if (!model) return undefined;
 
           const metadataScores = buildMpcPreferenceScoreMap(
             model,
@@ -179,13 +176,13 @@ async function processImageGroup(
           return Object.fromEntries(
             exactMatches.map((candidate) => [
               candidate.identifier,
-              (metadataScores[candidate.identifier] ?? 0) +
+              metadataScores[candidate.identifier] +
                 (visualScores[candidate.identifier] ?? 0),
             ])
           );
         })();
 
-  const matchResult = await selectBestCandidate({
+  const matchResult = (await selectBestCandidate({
     candidates: exactMatches,
     set: representative.set,
     collectorNumber: representative.number,
@@ -197,13 +194,7 @@ async function processImageGroup(
     preferredIdentifier,
     preferenceProfile,
     unseenPreferenceScores,
-  });
-
-  if (!matchResult) {
-    // Should not happen (exactMatches is non-empty), but guard for TypeScript
-    result.skipped = group.length;
-    return result;
-  }
+  }))!;
 
   const bestCard = matchResult.card;
 
@@ -263,7 +254,7 @@ export async function bulkUpgradeToMpcAutofill(
   const { projectId, onProgress, signal } = options;
 
   // Prepare preference context once before starting the loop
-  const prefContext = await preparePreferenceContext(signal);
+  const prefContext = await preparePreferenceContext();
 
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
@@ -352,4 +343,3 @@ export async function bulkUpgradeToMpcAutofill(
 
   return summary;
 }
-
