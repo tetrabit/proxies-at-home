@@ -121,10 +121,6 @@ describe("electron MPC preference helpers", () => {
     await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
-<<<<<<< HEAD
-  it('registers load and save IPC handlers', async () => {
-    const { registerMpcPreferenceIpcHandlers } = await import('./main.ts');
-=======
   it("rejects malformed preference fixture shapes with specific errors", async () => {
     const { saveMpcPreferencesToDisk } = await import("./main.ts");
     const tempDirectory = await fs.promises.mkdtemp(
@@ -367,7 +363,6 @@ describe("electron MPC preference helpers", () => {
 
   it("registers load and save IPC handlers", async () => {
     const { registerMpcPreferenceIpcHandlers } = await import("./main.ts");
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
 
     registerMpcPreferenceIpcHandlers(ipcMainMock, appMock);
 

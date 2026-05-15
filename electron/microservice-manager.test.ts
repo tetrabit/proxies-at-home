@@ -9,28 +9,17 @@ const appMock = {
 const existsSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
 const spawnMock = vi.fn();
-<<<<<<< HEAD
-let connectSucceeds = true;
-=======
 let connectMode: "success" | "error" | "timeout" = "success";
 let lastChildProcess: ReturnType<typeof createChildProcess> | null = null;
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
 
 class SocketMock extends EventEmitter {
   destroy = vi.fn();
 
   connect(_port: number, _host: string, callback: () => void) {
-<<<<<<< HEAD
-    if (connectSucceeds) {
-      callback();
-    } else {
-      this.emit('error', new Error('connection refused'));
-=======
     if (connectMode === "success") {
       callback();
     } else if (connectMode === "error") {
       setTimeout(() => this.emit("error", new Error("connection refused")), 0);
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
     }
     return this;
   }
@@ -61,6 +50,7 @@ function createChildProcess() {
     child.emit("exit", 0, signal ?? null);
     return true;
   });
+  lastChildProcess = child;
   return child;
 }
 
@@ -71,14 +61,9 @@ describe("MicroserviceManager", () => {
       checkedPath.includes("cache-bin")
     );
     mkdirSyncMock.mockReturnValue(undefined);
-<<<<<<< HEAD
-    connectSucceeds = true;
-    spawnMock.mockReturnValue(createChildProcess());
-=======
     connectMode = "success";
     lastChildProcess = null;
     spawnMock.mockImplementation(() => createChildProcess());
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
     appMock.isPackaged = false;
     appMock.getPath.mockReturnValue("/tmp/proxxied-user-data");
   });
@@ -151,11 +136,6 @@ describe("MicroserviceManager", () => {
     await manager.stop();
   });
 
-<<<<<<< HEAD
-  it('fails when the microservice binary is missing', async () => {
-    existsSyncMock.mockReturnValue(false);
-    const { MicroserviceManager } = await import('./microservice-manager');
-=======
   it("uses packaged binary paths and preserves an existing database directory", async () => {
     appMock.isPackaged = true;
     Object.defineProperty(process, "resourcesPath", {
@@ -270,7 +250,6 @@ describe("MicroserviceManager", () => {
     });
     existsSyncMock.mockReturnValue(true);
     const { MicroserviceManager } = await import("./microservice-manager");
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
     const manager = new MicroserviceManager({
       name: "Cache",
       binaryName: "cache-bin",

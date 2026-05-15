@@ -17,14 +17,7 @@
     ],
     "exclude": [
         "src/**/*.test.ts",
-<<<<<<< HEAD
-        "src/repro_*.ts",
-        "../shared/**/*.test.ts",
-        "../shared/vitest.config.ts",
-        "../shared/scryfall-client/**/*"
-=======
         "../shared/**/*.test.ts",
         "src/repro_*.ts"
->>>>>>> 655a91d6 (Prove Electron coverage can reach the project gate)
     ]
 }
