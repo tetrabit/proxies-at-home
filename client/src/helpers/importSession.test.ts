@@ -162,6 +162,7 @@ describe("ImportSession", () => {
 
             session.markProcessingStart();
             expect(session.processingStartTime).toBeDefined();
+            expect(session.getStats().processingTimeMs).toBe(0);
 
             session.markProcessingComplete();
             expect(session.processingEndTime).toBeDefined();
@@ -178,9 +179,11 @@ describe("ImportSession", () => {
             // Manually finish before processing all cards
             const stats1 = session.finish();
             const stats2 = session.finish();
+            const stats3 = session.forceFinish();
 
             expect(stats1).not.toBeNull();
             expect(stats2).toBeNull();
+            expect(stats3).toBeNull();
 
             logSpy.mockRestore();
         });
