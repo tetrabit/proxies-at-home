@@ -4,6 +4,8 @@ import {
     createShader,
     createProgram,
     createTextureFromBitmap,
+    holoEffectToInt,
+    holoAreaModeToInt,
     updateUniforms,
     overridesToRenderParams,
     hasAdvancedOverrides,
@@ -107,6 +109,23 @@ describe("cardCanvasWorker", () => {
             expect(darkenModeToInt("unknown" as never)).toBe(0);
         });
     });
+
+    describe("holographic enum conversions", () => {
+        it("should convert all holographic effect modes", () => {
+            expect(holoEffectToInt("none")).toBe(0);
+            expect(holoEffectToInt("rainbow")).toBe(1);
+            expect(holoEffectToInt("glitter")).toBe(2);
+            expect(holoEffectToInt("stars")).toBe(3);
+            expect(holoEffectToInt("unknown" as never)).toBe(0);
+        });
+
+        it("should convert holographic area modes", () => {
+            expect(holoAreaModeToInt("full")).toBe(0);
+            expect(holoAreaModeToInt("bright")).toBe(1);
+            expect(holoAreaModeToInt("unknown" as never)).toBe(0);
+        });
+    });
+
 
     describe("createShader", () => {
         it("should create and compile a shader", () => {
@@ -266,6 +285,68 @@ describe("cardCanvasWorker", () => {
             expect(gl.uniform1f).toHaveBeenCalled();
             expect(gl.uniform3f).toHaveBeenCalled();
         });
+
+        it("should set enabled preview and color replacement flags", () => {
+            const gl = createMockGl();
+            const uniforms = {
+                u_baseTexture: { name: "u_baseTexture" },
+                u_resolution: { name: "u_resolution" },
+                u_brightness: { name: "u_brightness" },
+                u_contrast: { name: "u_contrast" },
+                u_saturation: { name: "u_saturation" },
+                u_sharpness: { name: "u_sharpness" },
+                u_pop: { name: "u_pop" },
+                u_hueShift: { name: "u_hueShift" },
+                u_sepia: { name: "u_sepia" },
+                u_tintColor: { name: "u_tintColor" },
+                u_tintAmount: { name: "u_tintAmount" },
+                u_redBalance: { name: "u_redBalance" },
+                u_greenBalance: { name: "u_greenBalance" },
+                u_blueBalance: { name: "u_blueBalance" },
+                u_cyanBalance: { name: "u_cyanBalance" },
+                u_magentaBalance: { name: "u_magentaBalance" },
+                u_yellowBalance: { name: "u_yellowBalance" },
+                u_blackBalance: { name: "u_blackBalance" },
+                u_shadowsIntensity: { name: "u_shadowsIntensity" },
+                u_midtonesIntensity: { name: "u_midtonesIntensity" },
+                u_highlightsIntensity: { name: "u_highlightsIntensity" },
+                u_noiseReduction: { name: "u_noiseReduction" },
+                u_cmykPreview: { name: "u_cmykPreview" },
+                u_holoEffect: { name: "u_holoEffect" },
+                u_holoStrength: { name: "u_holoStrength" },
+                u_holoAreaMode: { name: "u_holoAreaMode" },
+                u_holoAreaThreshold: { name: "u_holoAreaThreshold" },
+                u_holoAngle: { name: "u_holoAngle" },
+                u_holoSweepWidth: { name: "u_holoSweepWidth" },
+                u_holoStarSize: { name: "u_holoStarSize" },
+                u_holoStarVariety: { name: "u_holoStarVariety" },
+                u_holoBlur: { name: "u_holoBlur" },
+                u_holoProbability: { name: "u_holoProbability" },
+                u_holoUvOffset: { name: "u_holoUvOffset" },
+                u_holoUvScale: { name: "u_holoUvScale" },
+                u_colorReplaceEnabled: { name: "u_colorReplaceEnabled" },
+                u_colorReplaceSource: { name: "u_colorReplaceSource" },
+                u_colorReplaceTarget: { name: "u_colorReplaceTarget" },
+                u_colorReplaceThreshold: { name: "u_colorReplaceThreshold" },
+                u_gamma: { name: "u_gamma" },
+                u_vignetteAmount: { name: "u_vignetteAmount" },
+                u_vignetteSize: { name: "u_vignetteSize" },
+                u_vignetteFeather: { name: "u_vignetteFeather" },
+            } as unknown as Parameters<typeof updateUniforms>[1];
+
+            updateUniforms(gl, uniforms, {
+                ...DEFAULT_RENDER_PARAMS,
+                cmykPreview: true,
+                colorReplaceEnabled: true,
+                holoEffect: "stars",
+                holoAreaMode: "bright",
+            }, 800, 600);
+
+            expect(gl.uniform1f).toHaveBeenCalledWith(uniforms.u_cmykPreview, 1);
+            expect(gl.uniform1f).toHaveBeenCalledWith(uniforms.u_colorReplaceEnabled, 1);
+            expect(gl.uniform1f).toHaveBeenCalledWith(uniforms.u_holoEffect, 3);
+            expect(gl.uniform1f).toHaveBeenCalledWith(uniforms.u_holoAreaMode, 1);
+        });
     });
 
     describe("overridesToRenderParams", () => {
@@ -397,10 +478,18 @@ describe("cardCanvasWorker", () => {
         let mockGl: ReturnType<typeof createMockGl>;
         let originalOffscreenCanvas: typeof OffscreenCanvas;
         let mockConvertToBlob: ReturnType<typeof vi.fn>;
+        let mockCanvasInstances: Array<{
+            width: number;
+            height: number;
+            getContext: ReturnType<typeof vi.fn>;
+            convertToBlob: ReturnType<typeof vi.fn>;
+            addEventListener: ReturnType<typeof vi.fn>;
+        }>;
 
         beforeEach(() => {
             mockGl = createMockGl() as unknown as ReturnType<typeof createMockGl>;
             mockConvertToBlob = vi.fn(() => Promise.resolve(new Blob(["test"], { type: "image/png" })));
+            mockCanvasInstances = [];
 
             // Mock OffscreenCanvas as a class
             originalOffscreenCanvas = globalThis.OffscreenCanvas;
@@ -412,10 +501,9 @@ describe("cardCanvasWorker", () => {
                 constructor(width: number, height: number) {
                     this.width = width;
                     this.height = height;
+                    mockCanvasInstances.push(this);
                 }
-                getContext() {
-                    return mockGl;
-                }
+                getContext = vi.fn(() => mockGl);
                 convertToBlob = mockConvertToBlob;
                 addEventListener = vi.fn();
             }
@@ -448,6 +536,41 @@ describe("cardCanvasWorker", () => {
 
             expect(result).toBeInstanceOf(Blob);
             expect(result.type).toBe("image/png");
+        });
+
+        it("should reuse and resize the persistent WebGL context", async () => {
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            await renderCardWithOverridesWorker({ width: 100, height: 120 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            await renderCardWithOverridesWorker({ width: 120, height: 80 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            await renderCardWithOverridesWorker({ width: 120, height: 80 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            expect(mockCanvasInstances).toHaveLength(1);
+            expect(mockCanvasInstances[0].width).toBe(120);
+            expect(mockCanvasInstances[0].height).toBe(80);
+            expect(mockGl.viewport).toHaveBeenCalledWith(0, 0, 100, 120);
+            expect(mockGl.viewport).toHaveBeenCalledWith(0, 0, 120, 80);
+        });
+
+        it("should recreate the context after a silent context loss", async () => {
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            (mockGl.isContextLost as ReturnType<typeof vi.fn>).mockReturnValueOnce(true);
+
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            expect(mockCanvasInstances).toHaveLength(2);
+        });
+
+        it("should recreate the context after a context lost event", async () => {
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            const lostHandler = mockCanvasInstances[0].addEventListener.mock.calls
+                .find(([eventName]) => eventName === "webglcontextlost")?.[1] as ((event: Event) => void);
+            const event = { preventDefault: vi.fn() } as unknown as Event;
+
+            lostHandler(event);
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            expect(event.preventDefault).toHaveBeenCalled();
+            expect(mockCanvasInstances).toHaveLength(2);
         });
 
         it("should call uniform1f for rendering parameters", async () => {
@@ -491,6 +614,13 @@ describe("cardCanvasWorker", () => {
 
             await expect(renderCardWithOverridesWorker(mockBitmap, DEFAULT_RENDER_PARAMS))
                 .rejects.toThrow("WebGL2 not supported");
+        });
+
+        it("should throw when the render VAO cannot be created", async () => {
+            (mockGl.createVertexArray as ReturnType<typeof vi.fn>).mockReturnValue(null);
+
+            await expect(renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS))
+                .rejects.toThrow("Failed to create VAO");
         });
 
         it("should clean up WebGL resources after rendering", async () => {
@@ -571,6 +701,19 @@ describe("cardCanvasWorker", () => {
             // Verify cleanup was called
             expect(errorGl.deleteVertexArray).toHaveBeenCalled();
             expect(errorGl.deleteProgram).toHaveBeenCalled();
+        });
+
+        it("should delete the base texture when canvas blob conversion fails", async () => {
+            const error = new Error("blob failed");
+            mockConvertToBlob.mockRejectedValueOnce(error);
+
+            await expect(renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS))
+                .rejects.toThrow("blob failed");
+
+            expect(mockGl.deleteTexture).toHaveBeenCalled();
+            expect(mockGl.deleteBuffer).toHaveBeenCalled();
+            expect(mockGl.deleteVertexArray).toHaveBeenCalled();
+            expect(mockGl.deleteProgram).toHaveBeenCalled();
         });
     });
 });

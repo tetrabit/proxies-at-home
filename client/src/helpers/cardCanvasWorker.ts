@@ -11,14 +11,11 @@ import { hasActiveAdjustments } from './adjustmentUtils';
 import { debugLog } from './debug';
 
 // WebGL Debug Logging
-const WEBGL_DEBUG = true;
 let webglContextCount = 0;
 let webglContextsCreated = 0;
 
 function webglLog(message: string, ...args: unknown[]) {
-    if (WEBGL_DEBUG) {
-        debugLog(`[WebGL-CardCanvas] ${message}`, ...args);
-    }
+    debugLog(`[WebGL-CardCanvas] ${message}`, ...args);
 }
 
 function trackContextCreation(source: string): number {
@@ -27,11 +24,6 @@ function trackContextCreation(source: string): number {
     const id = webglContextsCreated;
     webglLog(`Context CREATED #${id} by ${source} (active: ${webglContextCount})`);
     return id;
-}
-
-function trackContextRelease(id: number, source: string) {
-    webglContextCount--;
-    webglLog(`Context RELEASED #${id} by ${source} (active: ${webglContextCount})`);
 }
 
 /**
@@ -96,33 +88,6 @@ class WebGLContextManager {
         webglLog(`Context manager created new context for ${this.purpose}: ${width}x${height}`);
 
         return { canvas: this.canvas, gl: this.gl, isNew: true };
-    }
-
-    /**
-     * Mark the context as lost. Next getContext() will create a new one.
-     */
-    handleContextLost() {
-        if (this.contextId > 0) {
-            trackContextRelease(this.contextId, this.purpose);
-        }
-        this.isContextLost = true;
-        this.gl = null;
-        this.canvas = null;
-        webglLog(`Context lost for ${this.purpose}`);
-    }
-
-    /**
-     * Explicitly release the context. Use only when done with all processing.
-     */
-    release() {
-        if (this.gl && !this.isContextLost) {
-            this.gl.getExtension("WEBGL_lose_context")?.loseContext();
-            trackContextRelease(this.contextId, this.purpose);
-        }
-        this.gl = null;
-        this.canvas = null;
-        this.isContextLost = false;
-        this.contextId = 0;
     }
 
     /**
