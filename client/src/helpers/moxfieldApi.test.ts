@@ -262,17 +262,20 @@ describe("moxfieldApi", () => {
 
     it("should normalize custom board names and tolerate missing optional boards", () => {
       const deck = {
-        ...createMockDeck({
-          mainboard: {
-            main1: createDeckCard(
-              "Custom Board Card",
-              1,
-              "1",
-              "ABC",
-              "special board"
-            ),
-          },
-        }),
+        id: "deck-id",
+        name: "Test Deck",
+        format: "commander",
+        publicId: "abc123",
+        publicUrl: "https://moxfield.com/decks/abc123",
+        mainboard: {
+          main1: createDeckCard(
+            "Custom Board Card",
+            1,
+            "1",
+            "ABC",
+            "special board"
+          ),
+        },
         commanders: undefined,
         companions: undefined,
         sideboard: undefined,
