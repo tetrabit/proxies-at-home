@@ -312,6 +312,31 @@ describe("useShareUrl", () => {
       c: 3,
       r: 2,
       dpi: 600,
+      bl: true,
+      blMm: 1.5,
+      wbSrc: 0.25,
+      wbTm: "crop",
+      wbTa: 0.5,
+      nbTm: "trim",
+      nbTa: 0.25,
+      dk: "contrast",
+      dkC: 1.2,
+      dkE: 2,
+      dkA: 0.3,
+      dkB: 0.4,
+      dkAd: true,
+      gs: "solid",
+      gc: "#00ff00",
+      gw: 2,
+      gp: "inside",
+      cgL: 5,
+      cls: "solid",
+      spc: 1.25,
+      pX: 0.1,
+      pY: 0.2,
+      ucbo: true,
+      bpX: 0.3,
+      bpY: 0.4,
       pas: "mpc",
       gl: "en",
       ait: true,
@@ -360,6 +385,31 @@ describe("useShareUrl", () => {
     expect(settingsStore.setColumns).toHaveBeenCalledWith(3);
     expect(settingsStore.setRows).toHaveBeenCalledWith(2);
     expect(settingsStore.setDpi).toHaveBeenCalledWith(600);
+    expect(settingsStore.setBleedEdge).toHaveBeenCalledWith(true);
+    expect(settingsStore.setBleedEdgeWidth).toHaveBeenCalledWith(1.5);
+    expect(settingsStore.setWithBleedSourceAmount).toHaveBeenCalledWith(0.25);
+    expect(settingsStore.setWithBleedTargetMode).toHaveBeenCalledWith("crop");
+    expect(settingsStore.setWithBleedTargetAmount).toHaveBeenCalledWith(0.5);
+    expect(settingsStore.setNoBleedTargetMode).toHaveBeenCalledWith("trim");
+    expect(settingsStore.setNoBleedTargetAmount).toHaveBeenCalledWith(0.25);
+    expect(settingsStore.setDarkenMode).toHaveBeenCalledWith("contrast");
+    expect(settingsStore.setDarkenContrast).toHaveBeenCalledWith(1.2);
+    expect(settingsStore.setDarkenEdgeWidth).toHaveBeenCalledWith(2);
+    expect(settingsStore.setDarkenAmount).toHaveBeenCalledWith(0.3);
+    expect(settingsStore.setDarkenBrightness).toHaveBeenCalledWith(0.4);
+    expect(settingsStore.setDarkenAutoDetect).toHaveBeenCalledWith(true);
+    expect(settingsStore.setPerCardGuideStyle).toHaveBeenCalledWith("solid");
+    expect(settingsStore.setGuideColor).toHaveBeenCalledWith("#00ff00");
+    expect(settingsStore.setGuideWidth).toHaveBeenCalledWith(2);
+    expect(settingsStore.setGuidePlacement).toHaveBeenCalledWith("inside");
+    expect(settingsStore.setCutGuideLengthMm).toHaveBeenCalledWith(5);
+    expect(settingsStore.setCutLineStyle).toHaveBeenCalledWith("solid");
+    expect(settingsStore.setCardSpacingMm).toHaveBeenCalledWith(1.25);
+    expect(settingsStore.setCardPositionX).toHaveBeenCalledWith(0.1);
+    expect(settingsStore.setCardPositionY).toHaveBeenCalledWith(0.2);
+    expect(settingsStore.setUseCustomBackOffset).toHaveBeenCalledWith(true);
+    expect(settingsStore.setCardBackPositionX).toHaveBeenCalledWith(0.3);
+    expect(settingsStore.setCardBackPositionY).toHaveBeenCalledWith(0.4);
     expect(settingsStore.setPreferredArtSource).toHaveBeenCalledWith("mpc");
     expect(settingsStore.setGlobalLanguage).toHaveBeenCalledWith("en");
     expect(settingsStore.setAutoImportTokens).toHaveBeenCalledWith(true);
