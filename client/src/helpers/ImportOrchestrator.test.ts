@@ -292,13 +292,13 @@ describe('ImportOrchestrator', () => {
 
         await new Promise((resolve) => setTimeout(resolve, 0));
 
-        expect(addSpy).toHaveBeenCalledWith(expect.arrayContaining([
+        expect(addSpy).toHaveBeenCalledWith([
             expect.objectContaining({
                 name: 'Delver of Secrets',
                 imageId: 'local-image-1',
-                needsEnrichment: true,
+                isUserUpload: true,
             }),
-        ]));
+        ]);
         expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
             expect.objectContaining({
                 frontUuid: 'local-uuid',
@@ -459,7 +459,7 @@ describe('ImportOrchestrator', () => {
                 name: 'MPC Card',
                 imageId: expect.stringContaining('http://mpc.com/image.jpg'),
                 hasBuiltInBleed: true,
-                needsEnrichment: true  // Default to true for auto-enrichment
+                needsEnrichment: false,
             }));
         });
 
