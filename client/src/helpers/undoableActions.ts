@@ -124,7 +124,7 @@ export async function undoableDeleteCardsBatch(uuids: string[]): Promise<void> {
             for (let i = 0; i < imageIds.length; i++) {
                 const image = images[i];
                 if (image) {
-                    const decrement = imageRefDecrements.get(imageIds[i]) || 0;
+                    const decrement = imageRefDecrements.get(imageIds[i])!;
                     const newRefCount = image.refCount - decrement;
                     if (newRefCount > 0) {
                         imageUpdates.push({ key: imageIds[i], changes: { refCount: newRefCount } });
@@ -226,7 +226,7 @@ export async function undoableDeleteCardsBatch(uuids: string[]): Promise<void> {
                     for (let i = 0; i < imageIds.length; i++) {
                         const image = images[i];
                         if (image) {
-                            const decrement = imageRefDecrements.get(imageIds[i]) || 0;
+                            const decrement = imageRefDecrements.get(imageIds[i])!;
                             const newRefCount = image.refCount - decrement;
                             if (newRefCount > 0) {
                                 imageUpdates.push({ key: imageIds[i], changes: { refCount: newRefCount } });
@@ -395,7 +395,7 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
             for (let i = 0; i < imageIds.length; i++) {
                 const image = images[i];
                 if (image) {
-                    const increment = imageRefIncrements.get(imageIds[i]) || 0;
+                    const increment = imageRefIncrements.get(imageIds[i])!;
                     imageUpdates.push({ key: imageIds[i], changes: { refCount: image.refCount + increment } });
                 }
             }
@@ -441,7 +441,7 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
                     for (let i = 0; i < imageIds.length; i++) {
                         const img = images[i];
                         if (img) {
-                            const dec = imageRefDecrements.get(imageIds[i]) || 0;
+                            const dec = imageRefDecrements.get(imageIds[i])!;
                             const newRef = img.refCount - dec;
                             if (newRef > 0) imageUpdates.push({ key: imageIds[i], changes: { refCount: newRef } });
                             else imagesToDelete.push(imageIds[i]);
@@ -549,7 +549,7 @@ export async function undoableAddCards(
                 for (let i = 0; i < imageIds.length; i++) {
                     const image = images[i];
                     const imageId = imageIds[i];
-                    const decrement = imageRefDecrements.get(imageId) || 0;
+                    const decrement = imageRefDecrements.get(imageId)!;
 
                     if (image) {
                         const newRefCount = image.refCount - decrement;
@@ -561,10 +561,8 @@ export async function undoableAddCards(
                     }
                 }
 
-                // Perform bulk operations
-                if (allUuidsToDelete.length > 0) {
-                    await db.cards.bulkDelete(allUuidsToDelete);
-                }
+                // Perform bulk operations. addedUuids is non-empty whenever an undo action exists.
+                await db.cards.bulkDelete(allUuidsToDelete);
                 if (imageUpdates.length > 0) {
                     await db.images.bulkUpdate(imageUpdates);
                 }

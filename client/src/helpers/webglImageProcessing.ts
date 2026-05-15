@@ -16,14 +16,11 @@ import { darkenModeToInt } from "../components/CardCanvas/types";
 import { debugLog } from "./debug";
 
 // WebGL Debug Logging
-const WEBGL_DEBUG = true;
 let webglContextCount = 0;
 let webglContextsCreated = 0;
 
 function webglLog(message: string, ...args: unknown[]) {
-    if (WEBGL_DEBUG) {
-        debugLog(`[WebGL] ${message}`, ...args);
-    }
+    debugLog(`[WebGL] ${message}`, ...args);
 }
 
 function trackContextCreation(source: string): number {
