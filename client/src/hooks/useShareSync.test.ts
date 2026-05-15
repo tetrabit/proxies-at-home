@@ -1,8 +1,8 @@
-import { renderHook, act } from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useShareSync } from "./useShareSync";
 
-let currentProject: any = null;
+let currentProject: { id: string; lastSharedAt?: number } | null = null;
 
 vi.mock("dexie-react-hooks", () => ({
   useLiveQuery: vi.fn(() => currentProject),

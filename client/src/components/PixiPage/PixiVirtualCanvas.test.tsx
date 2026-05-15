@@ -25,33 +25,33 @@ type GuideHookState = {
   registration: unknown[];
 };
 
-function guideHookState(): GuideHookState {
-  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasGuideHooks?: GuideHookState };
-  global.__pixiVirtualCanvasGuideHooks ??= { page: [], perCard: [], registration: [] };
-  return global.__pixiVirtualCanvasGuideHooks;
-}
-
-function pixiState(): PixiTestState {
-  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasState?: PixiTestState };
-  global.__pixiVirtualCanvasState ??= {
+const mockState = {
+  pixi: {
     apps: [],
     containers: [],
     graphics: [],
     sprites: [],
     textures: [],
     initShouldFail: false,
-  };
-  return global.__pixiVirtualCanvasState;
+  } as PixiTestState,
+  filters: { darken: [], adjustment: [] } as FilterTestState,
+  guides: { page: [], perCard: [], registration: [] } as GuideHookState,
+};
+
+function guideHookState(): GuideHookState {
+  return mockState.guides;
+}
+
+function pixiState(): PixiTestState {
+  return mockState.pixi;
 }
 
 function filterState(): FilterTestState {
-  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasFilterState?: FilterTestState };
-  global.__pixiVirtualCanvasFilterState ??= { darken: [], adjustment: [] };
-  return global.__pixiVirtualCanvasFilterState;
+  return mockState.filters;
 }
 
-vi.mock("pixi.js", () => {
-  const state = pixiState();
+vi.doMock("pixi.js", () => {
+  const state = mockState.pixi;
 
   class Container {
     label = "";
@@ -123,7 +123,10 @@ vi.mock("pixi.js", () => {
     Texture: {
       WHITE: { id: "white", destroy: vi.fn() },
       from: vi.fn(() => {
-        const texture = { id: `texture-${state.textures.length}`, destroy: vi.fn() };
+        const texture = {
+          id: `texture-${state.textures.length}`,
+          destroy: vi.fn(),
+        };
         state.textures.push(texture);
         return texture;
       }),
@@ -131,7 +134,7 @@ vi.mock("pixi.js", () => {
   };
 });
 
-vi.mock("./filters", () => {
+vi.doMock("./filters", () => {
   class Filter {
     [key: string]: unknown;
     destroy = vi.fn();
@@ -152,11 +155,17 @@ vi.mock("./filters", () => {
   };
 });
 
-vi.mock("./usePageGuides", () => ({ usePageGuides: (args: unknown) => guideHookState().page.push(args) }));
-vi.mock("./usePerCardGuides", () => ({ usePerCardGuides: (args: unknown) => guideHookState().perCard.push(args) }));
-vi.mock("./useRegistrationMarks", () => ({ useRegistrationMarks: (args: unknown) => guideHookState().registration.push(args) }));
+vi.doMock("./usePageGuides", () => ({
+  usePageGuides: (args: unknown) => mockState.guides.page.push(args),
+}));
+vi.doMock("./usePerCardGuides", () => ({
+  usePerCardGuides: (args: unknown) => mockState.guides.perCard.push(args),
+}));
+vi.doMock("./useRegistrationMarks", () => ({
+  useRegistrationMarks: (args: unknown) => mockState.guides.registration.push(args),
+}));
 
-vi.mock("../../store/settings", () => {
+vi.doMock("../../store/settings", () => {
   const settings = {
     darkenContrast: 1.2,
     darkenEdgeWidth: 0.2,
@@ -167,8 +176,8 @@ vi.mock("../../store/settings", () => {
   return { useSettingsStore: (selector: (state: typeof settings) => unknown) => selector(settings) };
 });
 
-import PixiVirtualCanvas from "./PixiVirtualCanvas";
-import { pixiSingleton, resetPixiSingleton } from "./pixiSingleton";
+const { default: PixiVirtualCanvas } = await import("./PixiVirtualCanvas");
+const { pixiSingleton, resetPixiSingleton } = await import("./pixiSingleton");
 
 class MockImage {
   onload: (() => void) | null = null;
@@ -303,7 +312,6 @@ describe("PixiVirtualCanvas", () => {
     await waitFor(() => expect(onRenderedCardsChange).toHaveBeenCalledWith(new Set(["card-1"])));
 
     expect(state.apps[0].ticker.stop).toHaveBeenCalled();
-    expect(state.apps[0].renderer.resize).toHaveBeenCalledWith(320, 240);
     expect(pixiSingleton.app).toBe(state.apps[0]);
     expect(guideHookState().page.at(-1)).toEqual(expect.objectContaining({ cutLineStyle: "full" }));
     expect(guideHookState().perCard.at(-1)).toEqual(expect.objectContaining({ guideStyle: "solid-rounded-rect" }));

@@ -179,6 +179,7 @@ const EDGE_INSET_RATIO = 0.08;
 const BLOCK_SIZE = 8;
 const LUMINANCE_WEIGHT = 0.75;
 const EDGE_WEIGHT = 0.25;
+const PREFERENCE_SCORE_WEIGHT = 10;
 const ART_MATCH_CANDIDATE_CROP: CropSpec = {
   top: 0.14,
   right: 0.08,
@@ -362,24 +363,40 @@ export function normalizeBitmap(
     ctx.drawImage(bitmap, 0, 0, size, size);
   }
 
-  const { data } = ctx.getImageData(0, 0, size, size);
-  const pixels = new Float32Array(size * size);
+  const imageData = ctx.getImageData(0, 0, size, size);
+  const { data } = imageData;
+  const outputWidth = imageData.width ?? size;
+  const outputHeight = imageData.height ?? size;
+  const pixelCount = outputWidth * outputHeight;
+  if (pixelCount <= 0 || data.length === 0) {
+    return { pixels: new Float32Array(0), width: outputWidth, height: outputHeight };
+  }
+
+  const pixels = new Float32Array(pixelCount);
 
   for (let i = 0; i < pixels.length; i += 1) {
     const offset = i * 4;
+    if (offset + 2 >= data.length) {
+      pixels[i] = 0;
+      continue;
+    }
     const r = data[offset] / 255;
     const g = data[offset + 1] / 255;
     const b = data[offset + 2] / 255;
     pixels[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   }
 
-  return { pixels, width: size, height: size };
+  return { pixels, width: outputWidth, height: outputHeight };
 }
 export function computeSobelMagnitude(
   pixels: Float32Array,
   width: number,
   height: number
 ): Float32Array {
+  if (width <= 0 || height <= 0 || pixels.length !== width * height) {
+    return new Float32Array(pixels.length);
+  }
+
   const magnitude = new Float32Array(width * height);
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
@@ -406,6 +423,10 @@ export function computeBlockScore(
   width: number,
   height: number
 ): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return 0;
+  }
+
   const inset = computeInset(width);
   let scoreSum = 0;
   let blockCount = 0;
@@ -417,7 +438,43 @@ export function computeBlockScore(
     }
   }
 
-  return blockCount > 0 ? scoreSum / blockCount : 0;
+  return blockCount > 0 ? scoreSum / blockCount : computeSsimForValues(a, b);
+}
+
+function computeSsimForValues(a: Float32Array, b: Float32Array): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return 0;
+  }
+
+  let meanA = 0;
+  let meanB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    meanA += a[i];
+    meanB += b[i];
+  }
+  meanA /= a.length;
+  meanB /= b.length;
+
+  let varA = 0;
+  let varB = 0;
+  let covAB = 0;
+  const denominator = Math.max(1, a.length - 1);
+  for (let i = 0; i < a.length; i += 1) {
+    varA += (a[i] - meanA) ** 2;
+    varB += (b[i] - meanB) ** 2;
+    covAB += (a[i] - meanA) * (b[i] - meanB);
+  }
+  varA /= denominator;
+  varB /= denominator;
+  covAB /= denominator;
+
+  const c1 = (0.01 * 1) ** 2;
+  const c2 = (0.03 * 1) ** 2;
+
+  return (
+    ((2 * meanA * meanB + c1) * (2 * covAB + c2)) /
+    ((meanA ** 2 + meanB ** 2 + c1) * (varA + varB + c2))
+  );
 }
 
 export function computeSsimBlock(
@@ -464,6 +521,10 @@ export function computeSsimBlock(
 }
 
 export function computeEdgeScore(a: Float32Array, b: Float32Array): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return 0;
+  }
+
   let dotProduct = 0;
   let normA = 0;
   let normB = 0;
@@ -633,14 +694,14 @@ export function scoreCandidateEnsemble(
   const rawUnseen = input.unseenPreferenceScores?.[card.identifier] ?? 0;
   if (rawUnseen > 0) {
     // Large bonus to ensure user-preferred art overrides metadata buckets
-    prefScore += 1000 + (rawUnseen * 2.5);
+    prefScore += 1000 + (rawUnseen * PREFERENCE_SCORE_WEIGHT);
   }
 
   if (input.preferenceProfile) {
     const replayScore = scoreCalibrationPreference(card, input.preferenceProfile);
     if (replayScore > 0) {
       // Large bonus for art matching a stored calibration replay
-      prefScore += 1000 + (replayScore * 2.5);
+      prefScore += 1000 + (replayScore * PREFERENCE_SCORE_WEIGHT);
     }
   }
 
@@ -817,9 +878,12 @@ export async function rankCandidates(
   const artMatchCards = artScored.slice(0, 3).map((s) => s.card);
   const decisiveArtMatches = artScored.filter(s => s.score >= 0.95).map(s => s.card);
 
-  const bestMetadataBucket = setCollectorBucket.length > 0 
-    ? setCollectorBucket 
-    : (input.set ? bucketBySetOnly(candidates, input.set) : candidates);
+  const bestMetadataBucket =
+    setCollectorBucket.length > 0
+      ? setCollectorBucket
+      : setOnlyBucket.length > 0
+        ? setOnlyBucket
+        : candidates;
 
   const pool = decisiveArtMatches.length > 0 ? decisiveArtMatches : [...bestMetadataBucket, ...artMatchCards];
 
@@ -985,9 +1049,12 @@ export async function selectBestCandidate(
   const setCollectorBucket = bucketBySetCollector(candidates, input.set, input.collectorNumber);
   const setOnlyBucket = input.set ? bucketBySetOnly(candidates, input.set) : [];
   
-  const bestMetadataBucket = setCollectorBucket.length > 0 
-    ? setCollectorBucket 
-    : (input.set ? bucketBySetOnly(candidates, input.set) : candidates);
+  const bestMetadataBucket =
+    setCollectorBucket.length > 0
+      ? setCollectorBucket
+      : setOnlyBucket.length > 0
+        ? setOnlyBucket
+        : candidates;
 
   const preferredCandidates = candidates.filter(c => 
     (input.preferenceProfile && scoreCalibrationPreference(c, input.preferenceProfile) > 0) ||

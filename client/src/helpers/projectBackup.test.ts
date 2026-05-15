@@ -280,7 +280,7 @@ describe("projectBackup", () => {
       project: {
         ...validBackup.project,
         name: "Imported Deck",
-        settings: undefined as any,
+        settings: undefined as ProjectBackup["project"]["settings"],
       },
       userImages: [
         { hash: "new-img", type: "text/plain", data: "aGVsbG8=" },

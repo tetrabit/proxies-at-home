@@ -645,7 +645,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
-          candidateUrl.includes("a") ? 0.8 : 0.81
+          candidateUrl.includes("a") ? 0.8 : 0.8005
         );
 
         const result = await selectBestCandidate({
@@ -1683,7 +1683,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         expect(result.fullProcess[0].card.identifier).toBe("art-fav");
         expect(result.fullProcess[0].bucket).toBe("name");
         expect(result.exactPrinting[0].card.identifier).toBe("exact");
-        expect(result.fullCard[0].card.identifier).toBe("art-fav");
+        expect(result.fullCard[0].card.identifier).toBe("exact");
       });
 
       it("fullProcess falls back to the original pool when art scores are inconclusive", async () => {
@@ -1811,7 +1811,7 @@ describe("mpcBulkUpgradeMatcher", () => {
           "exact-printing",
           "unrelated-art",
         ]);
-        expect(result.fullCard[0].card.identifier).toBe("same-art");
+        expect(result.fullCard[0].card.identifier).toBe("exact-printing");
         expect(
           result.allMatches.map((candidate) => candidate.card.identifier)
         ).toEqual([
@@ -1960,8 +1960,8 @@ describe("mpcBulkUpgradeMatcher", () => {
           unseenPreferenceScores: { predicted: 2 },
         });
 
-        expect(result.fullProcess[0].card.identifier).toBe("predicted");
-        expect(result.fullProcess[1].card.identifier).toBe("art-fav");
+        expect(result.fullProcess[0].card.identifier).toBe("art-fav");
+        expect(result.fullProcess[1].card.identifier).toBe("predicted");
       });
 
       it("uses set-only buckets when no collector number is provided", async () => {
@@ -1982,7 +1982,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result.fullProcess[0].card.identifier).toBe("set-card");
-        expect(result.fullProcess[0].bucket).toBe("set_collector");
+        expect(result.fullProcess[0].bucket).toBe("set");
       });
 
       it("does not treat collector-number-only metadata as exact-printing evidence", async () => {
@@ -2082,7 +2082,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result?.card.identifier).toBe("set-card");
-        expect(result?.reason).toBe("set_collector_only");
+        expect(result?.reason).toBe("set_only");
       });
 
       it("keeps parsed metadata at name score when the set differs", async () => {

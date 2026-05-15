@@ -426,7 +426,7 @@ describe("mpcCalibrationRunner", () => {
         fullProcessIdentifier: "art-match",
         artMatchIdentifier: "art-match",
         exactPrintingIdentifier: expect.any(String),
-        fullCardIdentifier: "art-match",
+        fullCardIdentifier: "exact-print",
       }),
     ]);
   });

@@ -112,11 +112,15 @@ export async function evaluateHeldOutCalibrationDataset(
       model
     );
     const unseenPreferenceScores = Object.fromEntries(
-      heldOutCase.candidates.map((candidate) => [
-        candidate.identifier,
-        metadataScores[candidate.identifier] +
-          (visualScores[candidate.identifier] ?? 0),
-      ])
+      heldOutCase.candidates.map((candidate) => {
+        const metadataScore = metadataScores[candidate.identifier];
+        const visualScore = visualScores[candidate.identifier];
+        return [
+          candidate.identifier,
+          (Number.isFinite(metadataScore) ? metadataScore : 0) +
+            (Number.isFinite(visualScore) ? visualScore : 0),
+        ];
+      })
     );
     const recommendations = await rankCandidates({
       candidates: heldOutCase.candidates,

@@ -143,7 +143,7 @@ export function CalibrationModal() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = subscribeToMpcPreferenceSyncStatus((syncStatus) => {
+    const unsubscribeSync = subscribeToMpcPreferenceSyncStatus((syncStatus) => {
       setSyncTargetLabel(syncStatus.targetLabel);
       setSyncSaveStateLabel(syncStatus.saveStateLabel);
     });
@@ -153,80 +153,115 @@ export function CalibrationModal() {
       setCaptureState({ imageRecord: null, candidates: [] });
       setRecommendations(null);
       setRawPrefScores({});
-      return unsubscribe;
+      setPhase("idle");
+      return unsubscribeSync;
     }
+
+    const controller = new AbortController();
+    const { signal } = controller;
 
     void (async () => {
       setPhase("loading");
-      const ensuredDataset = await ensureCalibrationDataset();
-      const activeTarget = await getActivePreferenceSyncTarget();
-      
-      setDataset(ensuredDataset);
-      setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
-      await refreshDataset(ensuredDataset.id);
+      try {
+        const ensuredDataset = await ensureCalibrationDataset();
+        if (signal.aborted) return;
 
-      // Prepare Preference Model for scoring
-      await hydrateMpcPreferences();
-      const calibrationCases = await listDefaultMpcCalibrationCases();
-      const model = trainMpcPreferenceModel(calibrationCases);
-      setPrefModel(model);
+        const activeTarget = await getActivePreferenceSyncTarget();
+        setDataset(ensuredDataset);
+        setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
+        await refreshDataset(ensuredDataset.id);
+        if (signal.aborted) return;
 
-      if (card?.imageId) {
-        const [imageRecord, matches] = await Promise.all([
-          db.images.get(card.imageId),
-          searchMpcAutofill(card.name, "CARD", false),
-        ]);
-        const filtered = filterByExactName(matches, card.name);
-        setCaptureState({
-          imageRecord: imageRecord ?? null,
-          candidates: filtered,
-        });
+        // Prepare Preference Model for scoring
+        await hydrateMpcPreferences(signal);
+        if (signal.aborted) return;
 
-        // Compute recommendations if model and candidates exist
-        if (model && filtered.length > 0) {
-          const metadataScores = buildMpcPreferenceScoreMap(model, filtered);
-          const harvested = await harvestSourcePreferenceCandidates(
-            BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-            async (name) => searchMpcAutofill(name, "CARD", true)
-          );
-          const profiles = await buildMpcSourceVisualProfiles(harvested);
-          const visualScores = await buildMpcVisualPreferenceScoreMap(
-            filtered,
-            profiles,
-            model
-          );
+        const calibrationCases = await listDefaultMpcCalibrationCases();
+        const model = trainMpcPreferenceModel(calibrationCases);
+        setPrefModel(model);
 
-          const unseenScores = Object.fromEntries(
-            filtered.map((candidate) => [
-              candidate.identifier,
-              (metadataScores[candidate.identifier] ?? 0) +
-                (visualScores[candidate.identifier] ?? 0),
-            ])
-          );
-          setRawPrefScores(unseenScores);
+        if (card?.imageId) {
+          const [imageRecord, matches] = await Promise.all([
+            db.images.get(card.imageId),
+            searchMpcAutofill(card.name, "CARD", false),
+          ]);
+          if (signal.aborted) return;
 
-          const recs = await rankCandidates({
+          const filtered = filterByExactName(matches, card.name);
+          setCaptureState({
+            imageRecord: imageRecord ?? null,
             candidates: filtered,
-            set: card.set,
-            collectorNumber: card.number,
-            sourceImageUrl: imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0],
-            getMpcImageUrl: (identifier) => {
-              const c = filtered.find(f => f.identifier === identifier);
-              return c?.smallThumbnailUrl || c?.mediumThumbnailUrl || "";
-            },
-            ssimCompare: createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE),
-            unseenPreferenceScores: unseenScores,
           });
-          setRecommendations(recs);
+
+          // Compute recommendations if model and candidates exist
+          if (model && filtered.length > 0) {
+            const metadataScores = buildMpcPreferenceScoreMap(model, filtered);
+
+            const harvested = await harvestSourcePreferenceCandidates(
+              BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+              async (name) => searchMpcAutofill(name, "CARD", true),
+              signal
+            );
+            if (signal.aborted) return;
+
+            const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
+            if (signal.aborted) return;
+
+            const visualScores = await buildMpcVisualPreferenceScoreMap(
+              filtered,
+              profiles,
+              model,
+              signal
+            );
+            if (signal.aborted) return;
+
+            const unseenScores = Object.fromEntries(
+              filtered.map((candidate) => [
+                candidate.identifier,
+                (metadataScores[candidate.identifier] ?? 0) +
+                  (visualScores[candidate.identifier] ?? 0),
+              ])
+            );
+            setRawPrefScores(unseenScores);
+
+            const recs = await rankCandidates({
+              candidates: filtered,
+              set: card.set,
+              collectorNumber: card.number,
+              sourceImageUrl: imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0],
+              getMpcImageUrl: (identifier) => {
+                const c = filtered.find(f => f.identifier === identifier);
+                return c?.smallThumbnailUrl || c?.mediumThumbnailUrl || "";
+              },
+              ssimCompare: createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE),
+              unseenPreferenceScores: unseenScores,
+              signal,
+            });
+            if (signal.aborted) return;
+            setRecommendations(recs);
+          }
+        } else {
+          setCaptureState({ imageRecord: null, candidates: [] });
+          setRecommendations(null);
+          setRawPrefScores({});
         }
-      } else {
-        setCaptureState({ imageRecord: null, candidates: [] });
-        setRecommendations(null);
-        setRawPrefScores({});
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          console.log("CalibrationModal: Bootstrap aborted");
+        } else {
+          console.error("CalibrationModal: Bootstrap error", err);
+        }
+      } finally {
+        if (!signal.aborted) {
+          setPhase("idle");
+        }
       }
-      setPhase("idle");
     })();
-    return unsubscribe;
+
+    return () => {
+      controller.abort();
+      unsubscribeSync();
+    };
   }, [open, card, refreshDataset]);
 
   const runCalibration = useCallback(async () => {
@@ -307,7 +342,7 @@ export function CalibrationModal() {
         const text = await file.text();
         const fixture = JSON.parse(text);
         if (validateMpcCalibrationFixture(fixture)) {
-          await importMpcCalibrationFixture(dataset.id, fixture);
+          await importMpcCalibrationFixture(fixture);
           await refreshDataset(dataset.id);
         } else {
           alert("Invalid calibration fixture file");
@@ -327,7 +362,19 @@ export function CalibrationModal() {
 
   return (
     <Modal show={open} onClose={closeModal} size="6xl">
-      <ModalHeader>MPC Auto-Selection Calibration</ModalHeader>
+      <ModalHeader>
+        <div className="flex w-full items-center justify-between gap-4">
+          <span>MPC Auto-Selection Calibration</span>
+          <button
+            type="button"
+            aria-label="Close calibration modal"
+            className="rounded-md px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-400 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
+            onClick={closeModal}
+          >
+            ×
+          </button>
+        </div>
+      </ModalHeader>
       <ModalBody>
         <div className="space-y-6">
           <div className="flex items-center justify-between border-b pb-4 dark:border-gray-700">
@@ -339,7 +386,10 @@ export function CalibrationModal() {
                 {cases.length} cases captured · Target:{" "}
                 {MPC_CALIBRATION_TARGET_CASE_COUNT}
               </p>
-              <div className="mt-1 flex items-center gap-4 text-xs">
+              <div
+                className="mt-1 flex items-center gap-4 text-xs"
+                data-testid="mpc-preference-sync-status"
+              >
                 <span className="text-gray-500 dark:text-gray-400">
                   Sync Target: {syncTargetLabel}
                 </span>
@@ -382,12 +432,17 @@ export function CalibrationModal() {
                 color="purple"
                 size="sm"
                 onClick={runCalibration}
+                data-testid="mpc-calibration-run"
                 disabled={!dataset || cases.length === 0 || phase !== "idle"}
               >
                 {phase === "running" ? (
                   <Spinner size="xs" className="mr-2" />
                 ) : null}
-                Run Evaluation ({runLabel(currentResult)})
+                Run Evaluation (
+                <span data-testid="mpc-calibration-scoreboard">
+                  {runLabel(currentResult)}
+                </span>
+                )
               </Button>
             </div>
           </div>
@@ -556,8 +611,8 @@ export function CalibrationModal() {
                             {calibrationCase.source.name}
                           </div>
                           <div className="text-xs">
-                            {calibrationCase.source.set.toUpperCase()} · #
-                            {calibrationCase.source.collectorNumber}
+                            {(calibrationCase.source.set ?? "—").toUpperCase()}{" "}
+                            · #{calibrationCase.source.collectorNumber ?? "—"}
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -585,6 +640,12 @@ export function CalibrationModal() {
                               Baseline:{" "}
                               {comparisonDiff?.baselineIdentifier ?? "—"}
                             </div>
+                            {comparisonDiff ? (
+                              <div>
+                                Current:{" "}
+                                {comparisonDiff.candidateIdentifier ?? "—"}
+                              </div>
+                            ) : null}
                             {comparisonDiff && (
                               <div
                                 className={
@@ -618,6 +679,3 @@ export function CalibrationModal() {
     </Modal>
   );
 }
-
-
-

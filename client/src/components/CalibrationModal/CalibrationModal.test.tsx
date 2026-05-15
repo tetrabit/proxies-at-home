@@ -6,6 +6,7 @@ const {
   mockListDatasets,
   mockCreateDataset,
   mockListCases,
+  mockListDefaultCases,
   mockListRuns,
   mockListAssets,
   mockSearchMpcAutofill,
@@ -38,6 +39,7 @@ const {
   mockListDatasets: vi.fn(),
   mockCreateDataset: vi.fn(),
   mockListCases: vi.fn(),
+  mockListDefaultCases: vi.fn(),
   mockListRuns: vi.fn(),
   mockListAssets: vi.fn(),
   mockSearchMpcAutofill: vi.fn(),
@@ -73,7 +75,33 @@ vi.mock("@/helpers/mpcAutofillApi", () => ({
 }));
 
 vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
+  createSsimCompare: vi.fn(() => vi.fn()),
+  FULL_CARD_NORMALIZED_SIZE: 1024,
   filterByExactName: mockFilterByExactName,
+  rankCandidates: vi.fn(),
+  scoreCandidateEnsemble: vi.fn(() => ({
+    total: 0,
+    metadata: 0,
+    visual: 0,
+    preference: 0,
+    dpi: 0,
+  })),
+}));
+
+vi.mock("@/helpers/mpcPreferenceModel", () => ({
+  buildMpcPreferenceScoreMap: vi.fn(() => ({})),
+  trainMpcPreferenceModel: vi.fn(() => null),
+}));
+
+vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
+  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: [],
+  harvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+  hydrateMpcPreferences: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/helpers/mpcVisualPreference", () => ({
+  buildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
+  buildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@/helpers/mpcCalibrationCapture", () => ({
@@ -84,6 +112,7 @@ vi.mock("@/helpers/mpcCalibrationStorage", () => ({
   createMpcCalibrationDataset: mockCreateDataset,
   listMpcCalibrationDatasets: mockListDatasets,
   listMpcCalibrationCases: mockListCases,
+  listDefaultMpcCalibrationCases: mockListDefaultCases,
   listMpcCalibrationRuns: mockListRuns,
   listMpcCalibrationAssets: mockListAssets,
   saveMpcCalibrationCase: mockSaveCase,
@@ -138,10 +167,21 @@ describe("CalibrationModal", () => {
     version: 1,
   };
 
+  const frozenCase = {
+    id: "case-1",
+    datasetId: dataset.id,
+    createdAt: 1,
+    updatedAt: 1,
+    source: { name: "Sol Ring", set: "C21", collectorNumber: "267" },
+    candidates: [],
+    expectedIdentifier: "cand-1",
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockListDatasets.mockResolvedValue([dataset]);
     mockListCases.mockResolvedValue([]);
+    mockListDefaultCases.mockResolvedValue([]);
     mockListRuns.mockResolvedValue([]);
     mockListAssets.mockResolvedValue([]);
     mockDbImagesGet.mockResolvedValue({
@@ -215,7 +255,10 @@ describe("CalibrationModal", () => {
       ).toBeTruthy();
       expect(
         screen.getByTestId("mpc-preference-sync-status").textContent
-      ).toContain("Sync target: Mock Sync Target · Idle");
+      ).toContain("Sync Target: Mock Sync Target");
+      expect(
+        screen.getByTestId("mpc-preference-sync-status").textContent
+      ).toContain("Idle");
     });
 
     const button = await screen.findByRole("button", {
@@ -225,12 +268,18 @@ describe("CalibrationModal", () => {
 
     await waitFor(() => {
       expect(mockCaptureCase).toHaveBeenCalled();
-      expect(mockSaveCase).toHaveBeenCalled();
-      expect(mockSaveAssets).toHaveBeenCalled();
+      expect(mockCaptureCase).toHaveBeenCalledWith(
+        dataset.id,
+        mockCalibrationState.card,
+        expect.objectContaining({ id: "image-1" }),
+        expect.any(Array),
+        "cand-1"
+      );
     });
   });
 
   it("runs the current algorithm and updates the scoreboard", async () => {
+    mockListCases.mockResolvedValue([frozenCase]);
     mockEvaluateDataset.mockResolvedValue({
       algorithmId: "current",
       algorithmLabel: "Current algorithm",
@@ -257,17 +306,7 @@ describe("CalibrationModal", () => {
   });
 
   it("shows baseline and current predictions after comparison", async () => {
-    mockListCases.mockResolvedValue([
-      {
-        id: "case-1",
-        datasetId: dataset.id,
-        createdAt: 1,
-        updatedAt: 1,
-        source: { name: "Sol Ring" },
-        candidates: [],
-        expectedIdentifier: "cand-1",
-      },
-    ]);
+    mockListCases.mockResolvedValue([frozenCase]);
     mockCompareAlgorithms.mockResolvedValue({
       baseline: {
         algorithmId: "baseline",

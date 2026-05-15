@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CardOption } from "@/types";
 
 const mocks = vi.hoisted(() => ({
   save: vi.fn(async () => new Uint8Array([1, 2, 3])),
@@ -67,6 +68,14 @@ const baseSettings = {
   cardBackPositionX: 0,
   cardBackPositionY: 0,
 };
+
+const testCard = (overrides: Partial<CardOption> = {}): CardOption => ({
+  uuid: "card-1",
+  name: "Card",
+  order: 0,
+  isUserUpload: false,
+  ...overrides,
+});
 
 class MockWorker {
   static instances: MockWorker[] = [];
@@ -151,7 +160,7 @@ describe("exportProxyPagesToPdf", () => {
   it("honors maxPages zero with returnBuffer", async () => {
     const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
     const result = await exportProxyPagesToPdf({
-      cards: [{ uuid: "c1", name: "Card" }] as any,
+      cards: [testCard({ uuid: "c1" })],
       imagesById: new Map(),
       pdfSettings: baseSettings,
       pagesPerPdf: 1,
@@ -168,14 +177,14 @@ describe("exportProxyPagesToPdf", () => {
     const onProgress = vi.fn();
     const result = await exportProxyPagesToPdf({
       cards: [
-        { uuid: "c1", name: "One" },
-        {
+        testCard({ uuid: "c1", name: "One" }),
+        testCard({
           uuid: "c2",
           name: "Two",
           imageId: "img",
           overrides: { brightness: 1 },
-        },
-      ] as any,
+        }),
+      ],
       imagesById: new Map(),
       pdfSettings: {
         ...baseSettings,
@@ -205,7 +214,7 @@ describe("exportProxyPagesToPdf", () => {
     const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
 
     await exportProxyPagesToPdf({
-      cards: [{ uuid: "c1", name: "One" }] as any,
+      cards: [testCard({ uuid: "c1", name: "One" })],
       imagesById: new Map(),
       pdfSettings: baseSettings,
       pagesPerPdf: 0,
@@ -228,13 +237,13 @@ describe("exportProxyPagesToPdf", () => {
 
     await exportProxyPagesToPdf({
       cards: [
-        {
+        testCard({
           uuid: "c1",
           name: "One",
           imageId: "img",
           overrides: { brightness: 2 },
-        },
-      ] as any,
+        }),
+      ],
       imagesById: new Map(),
       pdfSettings: baseSettings,
       pagesPerPdf: 1,
@@ -254,13 +263,13 @@ describe("exportProxyPagesToPdf", () => {
 
     await exportProxyPagesToPdf({
       cards: [
-        {
+        testCard({
           uuid: "c1",
           name: "One",
           imageId: "img",
           overrides: { brightness: 2 },
-        },
-      ] as any,
+        }),
+      ],
       imagesById: new Map(),
       pdfSettings: baseSettings,
       pagesPerPdf: 1,
@@ -277,7 +286,7 @@ describe("exportProxyPagesToPdf", () => {
     vi.mocked(global.fetch).mockRejectedValueOnce("string failure");
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -294,7 +303,7 @@ describe("exportProxyPagesToPdf", () => {
     );
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -330,7 +339,7 @@ describe("exportProxyPagesToPdf", () => {
 
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -354,7 +363,7 @@ describe("exportProxyPagesToPdf", () => {
     vi.stubGlobal("Worker", NativeErrorWorker);
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -371,7 +380,7 @@ describe("exportProxyPagesToPdf", () => {
     vi.stubGlobal("Worker", EventWorker);
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -385,7 +394,7 @@ describe("exportProxyPagesToPdf", () => {
     const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,
@@ -406,7 +415,7 @@ describe("exportProxyPagesToPdf", () => {
     vi.stubGlobal("Worker", ErrorWorker);
     await expect(
       exportProxyPagesToPdf({
-        cards: [{ uuid: "c1", name: "One" }] as any,
+        cards: [testCard({ uuid: "c1", name: "One" })],
         imagesById: new Map(),
         pdfSettings: baseSettings,
         pagesPerPdf: 1,

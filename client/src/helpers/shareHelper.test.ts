@@ -734,7 +734,7 @@ describe("shareHelper", () => {
           number: "2",
           imageId: "scryfall/abc/2",
           isUserUpload: false,
-          overrides: { customKey: 42 } as any,
+          overrides: { customKey: 42 } as unknown as CardOption["overrides"],
         },
       ] as CardOption[]);
       expect(serialized.shareCards[0][4]).toBeNull();
@@ -744,7 +744,9 @@ describe("shareHelper", () => {
         v: 1,
         c: [["s", "abc/2", 0, null, { customKey: 42 }]],
       });
-      expect((imported.cards[0].overrides as any).customKey).toBe(42);
+      expect(
+        (imported.cards[0].overrides as Record<string, unknown>).customKey
+      ).toBe(42);
     });
 
     it("does not skip placeholders or unidentifiable non-custom cards", () => {

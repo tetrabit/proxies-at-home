@@ -11,9 +11,6 @@ import {
   listMpcCalibrationAssets,
   listMpcCalibrationCases,
   listMpcCalibrationRuns,
-  saveMpcCalibrationAssets,
-  saveMpcCalibrationCase,
-  saveMpcCalibrationRun,
 } from "./mpcCalibrationStorage";
 import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
 
@@ -245,28 +242,46 @@ export async function importMpcCalibrationFixture(
   fixture: MpcCalibrationFixture
 ): Promise<string> {
   const validFixture = validateMpcCalibrationFixture(fixture);
+  const timestamp = Date.now();
 
-  await db.mpcCalibrationDatasets.put(validFixture.dataset);
-  await Promise.all(
-    validFixture.cases.map((calibrationCase) =>
-      saveMpcCalibrationCase(calibrationCase)
-    )
+  await db.transaction(
+    "rw",
+    [db.mpcCalibrationDatasets, db.mpcCalibrationCases, db.mpcCalibrationAssets, db.mpcCalibrationRuns],
+    async () => {
+      // 1. Update dataset
+      await db.mpcCalibrationDatasets.put(validFixture.dataset);
+
+      // 2. Batch put cases
+      const casesWithTimestamp = validFixture.cases.map(c => ({
+        ...c,
+        updatedAt: timestamp
+      }));
+      await db.mpcCalibrationCases.bulkPut(casesWithTimestamp);
+
+      // 3. Batch put assets
+      const assets = validFixture.assets.map((asset) => ({
+        id: asset.id,
+        datasetId: asset.datasetId,
+        caseId: asset.caseId,
+        role: asset.role,
+        candidateIdentifier: asset.candidateIdentifier,
+        sourceUrl: asset.sourceUrl,
+        mimeType: asset.mimeType,
+        blob: base64ToBlob(asset.data, asset.mimeType),
+        createdAt: asset.createdAt,
+        hash: asset.hash,
+      }));
+      await db.mpcCalibrationAssets.bulkPut(assets);
+
+      // 4. Batch put runs
+      await db.mpcCalibrationRuns.bulkPut(validFixture.runs);
+
+      // 5. Update dataset timestamp
+      await db.mpcCalibrationDatasets.update(validFixture.dataset.id, {
+        updatedAt: timestamp,
+      });
+    }
   );
-  await saveMpcCalibrationAssets(
-    validFixture.assets.map((asset) => ({
-      id: asset.id,
-      datasetId: asset.datasetId,
-      caseId: asset.caseId,
-      role: asset.role,
-      candidateIdentifier: asset.candidateIdentifier,
-      sourceUrl: asset.sourceUrl,
-      mimeType: asset.mimeType,
-      blob: base64ToBlob(asset.data, asset.mimeType),
-      createdAt: asset.createdAt,
-      hash: asset.hash,
-    }))
-  );
-  await Promise.all(validFixture.runs.map((run) => saveMpcCalibrationRun(run)));
 
   markMpcPreferenceSyncDirty();
 
