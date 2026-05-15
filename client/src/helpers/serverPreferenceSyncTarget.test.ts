@@ -37,6 +37,42 @@ describe('serverPreferenceSyncTarget', () => {
     await expect(serverPreferenceSyncTarget.load()).resolves.toEqual(fixture);
   });
 
+  it('throws on invalid fixture shapes from the server', async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: () => Promise.resolve({ version: '1', exportedAt: 123, cases: null }),
+    });
+
+    await expect(serverPreferenceSyncTarget.load()).rejects.toThrow(
+      'Invalid preference fixture response'
+    );
+  });
+
+  it('throws on non-record fixture payloads', async () => {
+    mockFetch.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: () => Promise.resolve(null),
+    });
+
+    await expect(serverPreferenceSyncTarget.load()).rejects.toThrow(
+      'Invalid preference fixture response'
+    );
+  });
+
+  it('throws on load failures that are not 404s', async () => {
+    mockFetch.mockResolvedValue({
+      status: 500,
+      ok: false,
+      statusText: 'Server Error',
+    });
+
+    await expect(serverPreferenceSyncTarget.load()).rejects.toThrow(
+      'Failed to load preferences: 500 Server Error'
+    );
+  });
+
   it('writes a fixture with PUT', async () => {
     mockFetch.mockResolvedValue({
       status: 200,

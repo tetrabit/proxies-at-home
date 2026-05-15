@@ -1,8 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { extractCardInfo, parseDeckToInfos, cardKey } from "./cardInfoHelper";
+import {
+  extractCardInfo,
+  parseDeckToInfos,
+  cardKey,
+  hasIncompleteTagSyntax,
+} from "./cardInfoHelper";
 
 describe('CardInfoHelper', () => {
   describe('extractCardInfo', () => {
+    it('should detect incomplete tag syntax only at the end of the query', () => {
+      expect(hasIncompleteTagSyntax('set:')).toBe(true);
+      expect(hasIncompleteTagSyntax('lightning set:')).toBe(true);
+      expect(hasIncompleteTagSyntax('set:lea bolt')).toBe(false);
+    });
+
     it('should parse a standard line with set and number', () => {
       const input = '1x Sol Ring (CMM) 432';
       expect(extractCardInfo(input)).toEqual({
@@ -179,6 +190,26 @@ describe('CardInfoHelper', () => {
       });
     });
 
+    it('should parse [Set] without a collector number and keep the name', () => {
+      const input = '1x Brainstorm [M21]';
+      expect(extractCardInfo(input)).toEqual({
+        name: 'Brainstorm',
+        quantity: 1,
+        set: 'm21',
+        number: undefined,
+      });
+    });
+
+    it('should strip bare {Number} suffixes without recording the number', () => {
+      const input = '1x Path to Exile {123}';
+      expect(extractCardInfo(input)).toEqual({
+        name: 'Path to Exile',
+        quantity: 1,
+        set: undefined,
+        number: undefined,
+      });
+    });
+
     it('should parse t: prefix for token cards', () => {
       const input = 't:treasure';
       expect(extractCardInfo(input)).toEqual({
@@ -328,6 +359,21 @@ describe('CardInfoHelper', () => {
         set: undefined,
         number: undefined,
         isToken: true,
+      });
+    });
+
+    it('should strip trailing bracket and caret metadata without disturbing the name', () => {
+      expect(extractCardInfo('1x Lightning Bolt [foil]')).toEqual({
+        name: 'Lightning Bolt',
+        quantity: 1,
+        set: undefined,
+        number: undefined,
+      });
+      expect(extractCardInfo('1x Counterspell ^promo^')).toEqual({
+        name: 'Counterspell',
+        quantity: 1,
+        set: undefined,
+        number: undefined,
       });
     });
 

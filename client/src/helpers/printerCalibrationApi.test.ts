@@ -62,6 +62,12 @@ describe("printerCalibrationApi – network error normalization", () => {
       expect(err).not.toBeInstanceOf(CalibrationApiUnavailableError);
       expect((err as Error).message).toBe("internal server error");
     });
+
+    it("falls back to the default message when the error body has no error field", async () => {
+      mockFetch.mockResolvedValueOnce(makeErrorResponse(500, {}));
+      const err = await getPrinterProfiles().catch((e: unknown) => e);
+      expect((err as Error).message).toBe("Failed to fetch printer profiles");
+    });
   });
 
   describe("createPrinterProfile", () => {
@@ -156,6 +162,22 @@ describe("printerCalibrationApi – network error normalization", () => {
         calculateProfile({ front_x_measured_mm: 0, front_y_measured_mm: 0, back_x_measured_mm: 0, back_y_measured_mm: 0 })
       ).rejects.toBeInstanceOf(CalibrationApiUnavailableError);
     });
+
+    it("preserves server error on non-ok response", async () => {
+      mockFetch.mockResolvedValueOnce(
+        makeErrorResponse(422, { error: "invalid measurement data" })
+      );
+
+      const err = await calculateProfile({
+        front_x_measured_mm: 1,
+        front_y_measured_mm: 2,
+        back_x_measured_mm: 3,
+        back_y_measured_mm: 4,
+      }).catch((e: unknown) => e);
+
+      expect(err).not.toBeInstanceOf(CalibrationApiUnavailableError);
+      expect((err as Error).message).toBe("invalid measurement data");
+    });
   });
 
   describe("deletePrinterProfile", () => {
@@ -168,6 +190,12 @@ describe("printerCalibrationApi – network error normalization", () => {
       mockFetch.mockResolvedValueOnce(makeErrorResponse(404, { error: "profile not found" }));
       const err = await deletePrinterProfile("missing").catch((e: unknown) => e);
       expect((err as Error).message).toBe("profile not found");
+    });
+
+    it("marks non-Error failures as raw rethrows", async () => {
+      mockFetch.mockRejectedValueOnce("offline");
+      const err = await getPrinterProfiles().catch((e: unknown) => e);
+      expect(err).toBe("offline");
     });
   });
 });
