@@ -446,6 +446,20 @@ describe("mpcBulkUpgradeMatcher", () => {
       });
       expect(result[1]).toBe(layer[0]);
     });
+
+    it("returns the layer unchanged when the preferred card cannot be found", () => {
+      const layer: RankedCandidate[] = [
+        {
+          card: makeCard({ identifier: "fallback" }),
+          reason: "set_only",
+          bucket: "set",
+        },
+      ];
+
+      expect(
+        prioritizePreferredCandidate(layer, [layer[0].card], "missing")
+      ).toBe(layer);
+    });
   });
 
   describe("bucketBySetOnly", () => {
@@ -564,6 +578,42 @@ describe("mpcBulkUpgradeMatcher", () => {
         restoreOffscreenCanvas(originalOffscreenCanvas);
       }
     });
+
+    it("falls back to the requested size when image data omits dimensions", () => {
+      const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+      class SizeFallbackOffscreenCanvas {
+        constructor(
+          public width: number,
+          public height: number
+        ) {}
+
+        getContext() {
+          return {
+            drawImage: vi.fn(),
+            getImageData: () => ({
+              data: new Uint8ClampedArray([255, 255, 255, 255]),
+              width: undefined,
+              height: undefined,
+            }),
+          };
+        }
+      }
+
+      Object.defineProperty(globalThis, "OffscreenCanvas", {
+        configurable: true,
+        writable: true,
+        value: SizeFallbackOffscreenCanvas,
+      });
+
+      try {
+        const normalized = normalizeBitmap(makeBitmap(), undefined, 4);
+        expect(normalized.width).toBe(4);
+        expect(normalized.height).toBe(4);
+        expect(normalized.pixels).toHaveLength(16);
+      } finally {
+        restoreOffscreenCanvas(originalOffscreenCanvas);
+      }
+    });
   });
 
   describe("SSIM math helpers", () => {
@@ -581,6 +631,17 @@ describe("mpcBulkUpgradeMatcher", () => {
       const pixels = new Float32Array(64).fill(0.5);
 
       expect(computeSsimBlock(pixels, pixels, 0, 0, 8)).toBeCloseTo(1);
+    });
+
+    it("uses the block SSIM loop when blocks fit", () => {
+      const source = new Float32Array(256);
+      const candidate = new Float32Array(256);
+      for (let i = 0; i < source.length; i += 1) {
+        source[i] = (i % 7) / 7;
+        candidate[i] = source[i];
+      }
+
+      expect(computeBlockScore(source, candidate, 16, 16)).toBeCloseTo(1);
     });
   });
 
@@ -846,6 +907,35 @@ describe("mpcBulkUpgradeMatcher", () => {
 
         expect(result?.card.identifier).toBe("showcase");
         expect(result?.reason).toBe("name_ssim");
+      });
+
+      it("keeps a decisive winner on the metadata fallback path when SSIM stays below threshold", async () => {
+        const cardA = makeCard({
+          identifier: "a",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const cardB = makeCard({
+          identifier: "b",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 600,
+        });
+
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("a") ? 0.78 : 0.74
+        );
+
+        const result = await selectBestCandidate({
+          candidates: [cardA, cardB],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result?.card.identifier).toBe("a");
+        expect(result?.reason).toBe("set_collector_dpi_fallback");
       });
     });
 
