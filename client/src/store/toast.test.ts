@@ -94,6 +94,19 @@ describe("useToastStore", () => {
         });
     });
 
+    describe("updateToast", () => {
+        it("should update an existing toast by ID", () => {
+            const { addToast, updateToast } = useToastStore.getState();
+            const id = addToast({ type: "processing", message: "Test", dismissible: true });
+
+            updateToast(id, { message: "Updated", progress: 0.5 });
+
+            const toast = useToastStore.getState().toasts[0];
+            expect(toast.message).toBe("Updated");
+            expect(toast.progress).toBe(0.5);
+        });
+    });
+
     describe("clearToasts", () => {
         it("should remove all toasts", () => {
             const { addToast, clearToasts } = useToastStore.getState();
