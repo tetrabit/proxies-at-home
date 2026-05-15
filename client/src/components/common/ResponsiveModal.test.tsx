@@ -71,6 +71,22 @@ describe("ResponsiveModal", () => {
             expect(onClose).toHaveBeenCalled();
         });
 
+        it("should ignore backdrop clicks when a child of the backdrop is clicked", () => {
+            const onClose = vi.fn();
+            render(
+                <ResponsiveModal isOpen={true} onClose={onClose}>
+                    <div>Modal Content</div>
+                </ResponsiveModal>
+            );
+
+            const backdrop = document.querySelector('.fixed.inset-0') as HTMLElement;
+            const strayChild = document.createElement("div");
+            backdrop.appendChild(strayChild);
+            fireEvent.click(strayChild);
+
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
         it("should ignore non-Escape keys", () => {
             const onClose = vi.fn();
             render(
