@@ -169,6 +169,17 @@ describe('usePerCardGuides', () => {
     rerender({ guideStyle: 'none', guideWidth: 1, cards: [cardA] });
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 0, cards: [cardA] });
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 1, cards: [] });
+    renderHook(() => usePerCardGuides({
+      isReady: true,
+      container: container as never,
+      app: null,
+      cards: [] as never,
+      guideStyle: 'none',
+      guideColor: 0x000000,
+      guidePlacement: 'inside',
+      guideWidth: 1,
+      cutGuideLengthMm: 3,
+    }));
     expect(app.render).toHaveBeenCalled();
   });
 
@@ -190,5 +201,26 @@ describe('usePerCardGuides', () => {
     }));
 
     expect(mocks.contextInstances[0].rect.mock.calls[0][0]).toBe(0);
+  });
+
+  it('skips fallback drawing for non-rect empty command sets', () => {
+    const container = makeContainer();
+    const app = makeApp();
+    mocks.generatePerCardGuide.mockReturnValue([]);
+
+    renderHook(() => usePerCardGuides({
+      isReady: true,
+      container: container as never,
+      app: app as never,
+      cards: [cardA] as never,
+      guideStyle: 'corners',
+      guideColor: 0x000000,
+      guidePlacement: 'outside',
+      guideWidth: 1,
+      cutGuideLengthMm: 3,
+    }));
+
+    expect(mocks.contextInstances[0].rect).not.toHaveBeenCalled();
+    expect(mocks.contextInstances[0].roundRect).not.toHaveBeenCalled();
   });
 });

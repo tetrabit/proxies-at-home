@@ -67,6 +67,18 @@ describe('usePageGuides', () => {
 
     expect(container.addChild).not.toHaveBeenCalled();
     expect(app.render).not.toHaveBeenCalled();
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: null,
+      app: app as never,
+      pages: [page] as never,
+      cards: [baseCard] as never,
+      cutLineStyle: 'full',
+      guideWidth: 1,
+    }));
+
+    expect(container.addChild).not.toHaveBeenCalled();
   });
 
   it('draws full-page guides for card cut positions and reuses graphics on rerender', () => {
@@ -178,5 +190,42 @@ describe('usePageGuides', () => {
     const graphics = mocks.graphicsInstances[0];
     expect(graphics.moveTo).not.toHaveBeenCalled();
     expect(graphics.stroke).toHaveBeenCalledWith({ color: 0x000000, width: 1 });
+  });
+
+  it('handles shared cut positions and optional app rendering', () => {
+    const container = makeContainer();
+    const cardWidthMm = 20;
+    const cardHeightMm = 30;
+    const cardWidthPx = cardWidthMm * (96 / 25.4);
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: container as never,
+      app: null,
+      pages: [page] as never,
+      cards: [
+        {
+          card: { uuid: 'left' },
+          globalX: 0,
+          globalY: 0,
+          bleedMm: 0,
+          baseCardWidthMm: cardWidthMm,
+          baseCardHeightMm: cardHeightMm,
+        },
+        {
+          card: { uuid: 'right' },
+          globalX: cardWidthPx,
+          globalY: 0,
+          bleedMm: 0,
+          baseCardWidthMm: cardWidthMm,
+          baseCardHeightMm: cardHeightMm,
+        },
+      ] as never,
+      cutLineStyle: 'full',
+      guideWidth: 1,
+    }));
+
+    expect(container.addChild).toHaveBeenCalledTimes(1);
+    expect(mocks.graphicsInstances[0].stroke).toHaveBeenCalled();
   });
 });
