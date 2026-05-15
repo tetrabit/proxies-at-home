@@ -82,7 +82,9 @@ describe("handleAutoImportTokens", () => {
     hoisted.imagesBulkGet.mockResolvedValue([]);
     hoisted.imagesBulkUpdate.mockResolvedValue(undefined);
     hoisted.imagesBulkDelete.mockResolvedValue(undefined);
-    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) => cb());
+    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) =>
+      cb()
+    );
   });
 
   it("does not run when autoImportTokens=false and force is not set", async () => {
@@ -99,7 +101,13 @@ describe("handleAutoImportTokens", () => {
     const controller = new AbortController();
     const onComplete = vi.fn();
     const onNoTokens = vi.fn();
-    await handleAutoImportTokens({ force: true, signal: controller.signal, onComplete, onNoTokens, silent: true });
+    await handleAutoImportTokens({
+      force: true,
+      signal: controller.signal,
+      onComplete,
+      onNoTokens,
+      silent: true,
+    });
     expect(hoisted.importMissingTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         signal: controller.signal,
@@ -107,6 +115,52 @@ describe("handleAutoImportTokens", () => {
         onNoTokens,
       })
     );
+  });
+
+  it("ignores aborted auto imports", async () => {
+    const abortError = new Error("stopped");
+    abortError.name = "AbortError";
+    hoisted.importMissingTokens.mockRejectedValueOnce(abortError);
+
+    await expect(
+      handleAutoImportTokens({ force: true })
+    ).resolves.toBeUndefined();
+  });
+
+  it("logs and swallows non-abort auto import failures when silent", async () => {
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(
+      handleAutoImportTokens({ force: true, silent: true })
+    ).resolves.toBeUndefined();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to auto-import tokens:",
+      failure
+    );
+    consoleError.mockRestore();
+  });
+
+  it("rethrows non-abort auto import failures when not silent", async () => {
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(
+      handleAutoImportTokens({ force: true, silent: false })
+    ).rejects.toThrow(failure);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to auto-import tokens:",
+      failure
+    );
+    consoleError.mockRestore();
   });
 });
 
@@ -122,7 +176,9 @@ describe("handleManualTokenImport", () => {
     hoisted.imagesBulkGet.mockResolvedValue([]);
     hoisted.imagesBulkUpdate.mockResolvedValue(undefined);
     hoisted.imagesBulkDelete.mockResolvedValue(undefined);
-    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) => cb());
+    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) =>
+      cb()
+    );
   });
 
   it("always runs regardless of autoImportTokens setting", async () => {
@@ -145,7 +201,11 @@ describe("handleManualTokenImport", () => {
     const controller = new AbortController();
     const onComplete = vi.fn();
     const onNoTokens = vi.fn();
-    await handleManualTokenImport({ signal: controller.signal, onComplete, onNoTokens });
+    await handleManualTokenImport({
+      signal: controller.signal,
+      onComplete,
+      onNoTokens,
+    });
     expect(hoisted.importMissingTokens).toHaveBeenCalledWith(
       expect.objectContaining({
         skipExisting: true,
@@ -155,6 +215,50 @@ describe("handleManualTokenImport", () => {
         onNoTokens,
       })
     );
+  });
+
+  it("ignores aborted manual imports", async () => {
+    const abortError = new Error("stopped");
+    abortError.name = "AbortError";
+    hoisted.importMissingTokens.mockRejectedValueOnce(abortError);
+
+    await expect(handleManualTokenImport()).resolves.toBeUndefined();
+  });
+
+  it("logs and swallows non-abort manual import failures when silent", async () => {
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(
+      handleManualTokenImport({ silent: true })
+    ).resolves.toBeUndefined();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to import tokens:",
+      failure
+    );
+    consoleError.mockRestore();
+  });
+
+  it("rethrows non-abort manual import failures when not silent", async () => {
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(handleManualTokenImport({ silent: false })).rejects.toThrow(
+      failure
+    );
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to import tokens:",
+      failure
+    );
+    consoleError.mockRestore();
   });
 });
 
@@ -171,9 +275,27 @@ describe("createShuffledTwoSidedTokenPairs", () => {
 
   it("pairs every token with a different token identity and image", () => {
     const cards = [
-      token({ uuid: "treasure", name: "Treasure", imageId: "treasure-img", scryfall_id: "token-treasure", order: 10 }),
-      token({ uuid: "soldier", name: "Soldier", imageId: "soldier-img", scryfall_id: "token-soldier", order: 20 }),
-      token({ uuid: "zombie", name: "Zombie", imageId: "zombie-img", scryfall_id: "token-zombie", order: 30 }),
+      token({
+        uuid: "treasure",
+        name: "Treasure",
+        imageId: "treasure-img",
+        scryfall_id: "token-treasure",
+        order: 10,
+      }),
+      token({
+        uuid: "soldier",
+        name: "Soldier",
+        imageId: "soldier-img",
+        scryfall_id: "token-soldier",
+        order: 20,
+      }),
+      token({
+        uuid: "zombie",
+        name: "Zombie",
+        imageId: "zombie-img",
+        scryfall_id: "token-zombie",
+        order: 30,
+      }),
     ];
 
     const pairs = createShuffledTwoSidedTokenPairs(cards);
@@ -188,11 +310,62 @@ describe("createShuffledTwoSidedTokenPairs", () => {
 
   it("does not create an invalid pair when only same-token options exist", () => {
     const cards = [
-      token({ uuid: "treasure-1", name: "Treasure", imageId: "treasure-img-1", order: 10 }),
-      token({ uuid: "treasure-2", name: "Treasure", imageId: "treasure-img-2", order: 20 }),
+      token({
+        uuid: "treasure-1",
+        name: "Treasure",
+        imageId: "treasure-img-1",
+        order: 10,
+      }),
+      token({
+        uuid: "treasure-2",
+        name: "Treasure",
+        imageId: "treasure-img-2",
+        order: 20,
+      }),
     ];
 
     expect(createShuffledTwoSidedTokenPairs(cards)).toEqual([]);
+  });
+
+  it("returns no pairs for fewer than two tokens", () => {
+    expect(createShuffledTwoSidedTokenPairs([token({ uuid: "solo" })])).toEqual(
+      []
+    );
+  });
+
+  it("falls back to recursive assignment after repeated invalid shuffles", () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const cards = [
+      token({
+        uuid: "treasure",
+        name: "Treasure",
+        imageId: "treasure-img",
+        scryfall_id: "token-treasure",
+        order: 10,
+      }),
+      token({
+        uuid: "soldier",
+        name: "Soldier",
+        imageId: "soldier-img",
+        scryfall_id: "token-soldier",
+        order: 20,
+      }),
+      token({
+        uuid: "zombie",
+        name: "Zombie",
+        imageId: "zombie-img",
+        scryfall_id: "token-zombie",
+        order: 30,
+      }),
+    ];
+
+    const pairs = createShuffledTwoSidedTokenPairs(cards);
+
+    expect(pairs).toHaveLength(3);
+    expect(pairs.every((pair) => pair.front.uuid !== pair.back.uuid)).toBe(
+      true
+    );
+    random.mockRestore();
   });
 });
 
@@ -205,12 +378,20 @@ describe("handleManualTwoSidedTokenImport", () => {
     hoisted.cardsBulkAdd.mockResolvedValue(undefined);
     hoisted.imagesBulkUpdate.mockResolvedValue(undefined);
     hoisted.imagesBulkDelete.mockResolvedValue(undefined);
-    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) => cb());
+    hoisted.transaction.mockImplementation((_mode, _cards, _images, cb) =>
+      cb()
+    );
   });
 
   it("imports missing tokens, then replaces their backs with shuffled token art", async () => {
     const beforeCards = [
-      { uuid: "source", name: "Token Maker", order: 1, isUserUpload: false, projectId: "project-1" },
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
     ];
     const afterCards = [
       ...beforeCards,
@@ -268,8 +449,18 @@ describe("handleManualTwoSidedTokenImport", () => {
       { id: "treasure-img", refCount: 1 },
     ]);
     hoisted.importMissingTokens.mockResolvedValue([
-      { name: "Treasure", scryfallId: "token-treasure", quantity: 1, isToken: true },
-      { name: "Soldier", scryfallId: "token-soldier", quantity: 1, isToken: true },
+      {
+        name: "Treasure",
+        scryfallId: "token-treasure",
+        quantity: 1,
+        isToken: true,
+      },
+      {
+        name: "Soldier",
+        scryfallId: "token-soldier",
+        quantity: 1,
+        isToken: true,
+      },
     ]);
 
     const onComplete = vi.fn();
@@ -517,5 +708,215 @@ describe("handleManualTwoSidedTokenImport", () => {
         }),
       }),
     ]);
+  });
+
+  it("returns no tokens when no project is selected", async () => {
+    hoisted.projectState.currentProjectId = "";
+    const onNoTokens = vi.fn();
+
+    const result = await handleManualTwoSidedTokenImport({ onNoTokens });
+
+    expect(result).toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+    expect(onNoTokens).toHaveBeenCalledTimes(1);
+    expect(hoisted.importMissingTokens).not.toHaveBeenCalled();
+  });
+
+  it("returns no tokens when import and existing associations find none", async () => {
+    const projectCards = [
+      {
+        uuid: "source",
+        name: "Plain Card",
+        order: 1,
+        isUserUpload: false,
+        projectId: "project-1",
+      },
+    ];
+    hoisted.cardsToArray.mockResolvedValue(projectCards);
+    hoisted.importMissingTokens.mockImplementation(async (options) => {
+      options.onNoTokens?.();
+      return [];
+    });
+    const onNoTokens = vi.fn();
+
+    const result = await handleManualTwoSidedTokenImport({ onNoTokens });
+
+    expect(result).toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+    expect(onNoTokens).toHaveBeenCalledTimes(1);
+    expect(hoisted.cardsBulkUpdate).not.toHaveBeenCalled();
+  });
+
+  it("creates new back cards for newly imported name-matched tokens without existing backs", async () => {
+    const beforeCards = [
+      {
+        uuid: "source",
+        name: "Token Maker",
+        order: 1,
+        isUserUpload: true,
+        projectId: "project-1",
+      },
+    ];
+    const afterCards = [
+      ...beforeCards,
+      {
+        uuid: "ignored-old",
+        name: "Treasure",
+        order: 5,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "old-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "ignored-linked",
+        name: "Treasure",
+        order: 6,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "linked-img",
+        linkedFrontId: "source",
+        projectId: "project-1",
+      },
+      {
+        uuid: "ignored-no-image",
+        name: "Treasure",
+        order: 7,
+        isUserUpload: false,
+        isToken: true,
+        projectId: "project-1",
+      },
+      {
+        uuid: "ignored-non-token",
+        name: "Goblin",
+        order: 8,
+        isUserUpload: false,
+        imageId: "goblin-img",
+        projectId: "project-1",
+      },
+      {
+        uuid: "treasure-front",
+        name: "  Trésor  ",
+        order: 10,
+        isUserUpload: true,
+        type_line: "Token Artifact — Treasure",
+        imageId: "treasure-img",
+        hasBuiltInBleed: true,
+        projectId: "project-1",
+      },
+      {
+        uuid: "soldier-front",
+        name: "Soldier",
+        order: 20,
+        isUserUpload: false,
+        isToken: true,
+        imageId: "soldier-img",
+        projectId: "project-1",
+      },
+    ];
+    const randomUuid = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce(
+        "new-back-1" as `${string}-${string}-${string}-${string}-${string}`
+      )
+      .mockReturnValueOnce(
+        "new-back-2" as `${string}-${string}-${string}-${string}-${string}`
+      );
+    hoisted.cardsToArray
+      .mockResolvedValueOnce(beforeCards)
+      .mockResolvedValueOnce(afterCards)
+      .mockResolvedValueOnce(afterCards);
+    hoisted.cardsBulkGet.mockResolvedValue([
+      afterCards.find((card) => card.uuid === "treasure-front"),
+      afterCards.find((card) => card.uuid === "soldier-front"),
+    ]);
+    hoisted.imagesBulkGet.mockResolvedValue([
+      { id: "soldier-img", refCount: 1 },
+      { id: "treasure-img", refCount: 1 },
+    ]);
+    hoisted.importMissingTokens.mockResolvedValue([
+      { name: "Tresor", quantity: 1, isToken: true },
+      { name: "Soldier", quantity: 1, isToken: true },
+    ]);
+
+    const result = await handleManualTwoSidedTokenImport();
+
+    expect(result).toEqual({
+      importedTokenCount: 2,
+      pairedTokenCount: 2,
+      unpairedTokenCount: 0,
+    });
+    expect(hoisted.cardsBulkAdd).toHaveBeenCalledWith([
+      expect.objectContaining({
+        uuid: "new-back-1",
+        linkedFrontId: "treasure-front",
+        imageId: "soldier-img",
+      }),
+      expect.objectContaining({
+        uuid: "new-back-2",
+        linkedFrontId: "soldier-front",
+        imageId: "treasure-img",
+      }),
+    ]);
+    expect(hoisted.cardsBulkUpdate).toHaveBeenCalledWith([
+      { key: "treasure-front", changes: { linkedBackId: "new-back-1" } },
+      { key: "soldier-front", changes: { linkedBackId: "new-back-2" } },
+    ]);
+    randomUuid.mockRestore();
+  });
+
+  it("ignores aborted two-sided imports and handles silent failures", async () => {
+    const abortError = new Error("stopped");
+    abortError.name = "AbortError";
+    hoisted.cardsToArray.mockResolvedValue([]);
+    hoisted.importMissingTokens.mockRejectedValueOnce(abortError);
+
+    await expect(handleManualTwoSidedTokenImport()).resolves.toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(
+      handleManualTwoSidedTokenImport({ silent: true })
+    ).resolves.toEqual({
+      importedTokenCount: 0,
+      pairedTokenCount: 0,
+      unpairedTokenCount: 0,
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to import two-sided tokens:",
+      failure
+    );
+    consoleError.mockRestore();
+  });
+
+  it("rethrows non-abort two-sided import failures when not silent", async () => {
+    const failure = new Error("network down");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    hoisted.cardsToArray.mockResolvedValue([]);
+    hoisted.importMissingTokens.mockRejectedValueOnce(failure);
+
+    await expect(handleManualTwoSidedTokenImport()).rejects.toThrow(failure);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to import two-sided tokens:",
+      failure
+    );
+    consoleError.mockRestore();
   });
 });
