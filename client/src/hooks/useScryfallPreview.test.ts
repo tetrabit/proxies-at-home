@@ -59,4 +59,38 @@ describe("useScryfallPreview", () => {
     expect(result.current.setVariations).toHaveLength(1);
     expect(result.current.isLoading).toBe(false);
   });
+
+  it("skips searching when the tag syntax is incomplete", async () => {
+    mockHasIncompleteTagSyntax.mockReturnValue(true);
+
+    renderHook(() => useScryfallPreview("Forest ["));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).not.toHaveBeenCalled();
+    expect(mockFetchCardBySetAndNumber).not.toHaveBeenCalled();
+  });
+
+  it("reuses cached specific-card results on repeated queries", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
+    mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Darksteel Citadel" });
+
+    const { rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Dark [abc] 12" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: "Dark [abc] 12" });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(1);
+  });
 });

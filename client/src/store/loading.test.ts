@@ -46,4 +46,21 @@ describe('useLoadingStore', () => {
         const state = useLoadingStore.getState();
         expect(state.onCancel).toBe(onCancel);
     });
+
+    it('should increment image version immediately', () => {
+        useLoadingStore.getState().incrementImageVersion();
+        expect(useLoadingStore.getState().imageVersion).toBe(1);
+    });
+
+    it('should debounce image version increments', async () => {
+        vi.useFakeTimers();
+        useLoadingStore.getState().incrementImageVersionDebounced();
+        useLoadingStore.getState().incrementImageVersionDebounced();
+
+        expect(useLoadingStore.getState().imageVersion).toBe(0);
+
+        await vi.advanceTimersByTimeAsync(200);
+
+        expect(useLoadingStore.getState().imageVersion).toBe(1);
+    });
 });

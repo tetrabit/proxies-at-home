@@ -65,6 +65,36 @@ describe('useScryfallSearch', () => {
         });
     });
 
+    describe('cache behavior', () => {
+        it('should reuse cached results on repeated queries', async () => {
+            mockSearchCards.mockResolvedValue([
+                {
+                    name: 'Sol Ring',
+                    set: 'cmd',
+                    number: '129',
+                    imageUrls: ['https://example.com/sol-ring.jpg'],
+                    lang: 'en',
+                },
+            ]);
+
+            const { rerender, result } = renderHook(
+                ({ query }) => useScryfallSearch(query),
+                { initialProps: { query: 'Sol Ring' } }
+            );
+
+            await vi.waitFor(() => {
+                expect(result.current.hasSearched).toBe(true);
+            }, { timeout: 1000 });
+
+            rerender({ query: 'Sol Ring' });
+
+            await new Promise((r) => setTimeout(r, 10));
+
+            expect(mockSearchCards).toHaveBeenCalledTimes(1);
+            expect(result.current.cards).toHaveLength(1);
+        });
+    });
+
     describe('autoSearch option', () => {
         it('should not search when autoSearch is false', async () => {
             renderHook(() => useScryfallSearch('Sol Ring', { autoSearch: false }));
@@ -142,6 +172,17 @@ describe('useScryfallSearch', () => {
             await new Promise(r => setTimeout(r, 600));
 
             expect(mockSearchCards).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('short query handling', () => {
+        it('should not search when query is shorter than two characters', async () => {
+            renderHook(() => useScryfallSearch('A'));
+
+            await new Promise(r => setTimeout(r, 600));
+
+            expect(mockSearchCards).not.toHaveBeenCalled();
+            expect(mockFetchCardBySetAndNumber).not.toHaveBeenCalled();
         });
     });
 
