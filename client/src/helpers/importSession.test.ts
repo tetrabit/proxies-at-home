@@ -54,7 +54,7 @@ describe("ImportSession", () => {
         it("should track failed cards", () => {
             const session = new ImportSession({
                 importType: "mpc",
-                cardUuids: ["card-1"],
+                cardUuids: ["card-1", "card-2"],
             });
 
             session.markFailed("card-1");
@@ -179,6 +179,7 @@ describe("ImportSession", () => {
 
             session.markProcessingComplete();
             expect(session.processingEndTime).toBeDefined();
+            expect(session.getStats().processingTimeMs).toBeGreaterThanOrEqual(0);
         });
 
         it("should prevent double-finishing", () => {
