@@ -518,12 +518,36 @@ describe("useSettingsStore", () => {
             expect(migrated.noBleedTargetAmount).toBe(2);
         });
 
+        it("should handle legacy bleed fields when no manual overrides exist", () => {
+            const migrated = migrateLegacySettings({
+                withBleedAmount: 2,
+                withBleedMode: "none",
+                noBleedMode: "none",
+            }, 7);
+
+            expect(migrated.withBleedTargetMode).toBe("none");
+            expect(migrated.noBleedTargetMode).toBe("none");
+        });
+
         it("should inject export into the panel order for version 10", () => {
             const migrated = migrateLegacySettings({
                 settingsPanelState: { order: ["projects", "application"], collapsed: {} },
             }, 9);
 
             expect(migrated.settingsPanelState?.order).toEqual(["projects", "export", "application"]);
+        });
+
+        it("should append export when application is missing from the panel order", () => {
+            const migrated = migrateLegacySettings({
+                settingsPanelState: { order: ["projects", "layout"], collapsed: {} },
+            }, 9);
+
+            expect(migrated.settingsPanelState?.order).toEqual(["projects", "layout", "export"]);
+        });
+
+        it("should return persisted settings unchanged for modern versions", () => {
+            const persisted = { columns: 4 } as Partial<Store>;
+            expect(migrateLegacySettings(persisted, 10)).toEqual(persisted);
         });
     });
 });
