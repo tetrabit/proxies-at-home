@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { useSettingsStore } from "./settings";
+import { useSettingsStore, migrateLegacySettings } from "./settings";
 
 // Mock dependencies
 vi.mock("./undoRedo", () => ({
@@ -460,6 +460,70 @@ describe("useSettingsStore", () => {
             expect(state.rows).toBe(3);
             expect(state.zoom).toBe(1);
             expect(state.sortBy).toBe("manual");
+        });
+    });
+
+    describe("migrateLegacySettings", () => {
+        it("should return defaults for invalid persisted state", () => {
+            expect(migrateLegacySettings(null as never)).toMatchObject({
+                pageWidth: 8.5,
+                pageHeight: 11,
+                pageSizeUnit: "in",
+            });
+        });
+
+        it("should strip deprecated page-size fields for very old versions", () => {
+            const migrated = migrateLegacySettings({
+                pageWidth: 99,
+                pageHeight: 100,
+                pageSizeUnit: "mm",
+                columns: 4,
+            }, 1);
+
+            expect(migrated.pageWidth).toBe(8.5);
+            expect(migrated.pageHeight).toBe(11);
+            expect(migrated.columns).toBe(4);
+        });
+
+        it("should preserve state for version 3 migrations", () => {
+            const migrated = migrateLegacySettings({ columns: 6 }, 3);
+            expect(migrated.columns).toBe(6);
+        });
+
+        it("should force manual sort for version 4 migrations", () => {
+            const migrated = migrateLegacySettings({ sortBy: "name" }, 3);
+            expect(migrated.sortBy).toBe("manual");
+        });
+
+        it("should set corners guide style for version 7 migrations", () => {
+            const migrated = migrateLegacySettings({ perCardGuideStyle: "none" }, 6);
+            expect(migrated.perCardGuideStyle).toBe("corners");
+        });
+
+        it("should migrate legacy bleed fields for version 8", () => {
+            const migrated = migrateLegacySettings({
+                withBleedAmount: 4,
+                overrideWithBleedGenerate: true,
+                withBleedGenerateAmount: 5,
+                withBleedMode: "none",
+                overrideNoBleedGenerate: true,
+                noBleedGenerateAmount: 2,
+                noBleedMode: "none",
+            }, 7);
+
+            expect(migrated.withBleedSourceAmount).toBe(4);
+            expect(migrated.withBleedTargetMode).toBe("manual");
+            expect(migrated.withBleedTargetAmount).toBe(5);
+            expect(migrated.noBleedTargetMode).toBe("manual");
+            expect(migrated.noBleedTargetAmount).toBe(2);
+        });
+
+        it("should inject export into the panel order for version 10", () => {
+            const migrated = migrateLegacySettings({
+                settingsPanelState: { order: ["projects", "application"], collapsed: {} },
+            }, 9);
+
+            expect(migrated.settingsPanelState?.order).toEqual(["projects", "export", "application"]);
         });
     });
 });

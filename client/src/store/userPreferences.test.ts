@@ -59,6 +59,29 @@ describe("useUserPreferencesStore", () => {
             expect(addedPrefs.settings.columns).toBe(5);
             expect(useUserPreferencesStore.getState().preferences).toEqual(addedPrefs);
         });
+
+        it("should repair legacy UI state when loading old preferences", async () => {
+            const legacyPrefs = {
+                id: "default",
+                settings: {},
+                favoriteCardbacks: [],
+                favoriteMpcSources: [],
+                favoriteMpcTags: [],
+                favoriteMpcDpi: null,
+                favoriteMpcSort: null,
+                settingsPanelState: {
+                    order: ["Application", "Layout", "Bleed & Guides", "Card", "Export"],
+                },
+            };
+            (db.userPreferences.get as Mock).mockResolvedValue(legacyPrefs);
+
+            await useUserPreferencesStore.getState().load();
+
+            const loaded = useUserPreferencesStore.getState().preferences;
+            expect(loaded?.settingsPanelState?.collapsed).toEqual({});
+            expect(loaded?.settingsPanelState?.order[0]).toBe("projects");
+            expect(loaded?.settingsPanelState?.order.at(-1)).toBe("application");
+        });
     });
 
     describe("saveCurrentAsDefaults", () => {
@@ -166,6 +189,17 @@ describe("useUserPreferencesStore", () => {
             prefs = useUserPreferencesStore.getState().preferences;
             expect(prefs?.favoriteMpcSources).not.toContain("source1");
             expect(db.userPreferences.put).toHaveBeenCalledTimes(2);
+        });
+
+        it("should ignore preference updates when no preferences are loaded", async () => {
+            useUserPreferencesStore.setState({ preferences: null });
+
+            await useUserPreferencesStore.getState().toggleFavoriteMpcTag("tag1");
+            await useUserPreferencesStore.getState().setFavoriteMpcDpi(300);
+            await useUserPreferencesStore.getState().setFavoriteMpcSort("name");
+            await useUserPreferencesStore.getState().setSettingsPanelWidth(480);
+
+            expect(db.userPreferences.put).not.toHaveBeenCalled();
         });
     });
 });
