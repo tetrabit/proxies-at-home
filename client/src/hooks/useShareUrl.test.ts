@@ -1,4 +1,5 @@
 import { renderHook, waitFor } from "@testing-library/react";
+import { createElement, StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useShareUrl } from "./useShareUrl";
 
@@ -312,8 +313,18 @@ describe("useShareUrl", () => {
       r: 2,
       dpi: 600,
       pas: "mpc",
+      gl: "en",
+      ait: true,
+      mfs: true,
+      spt: true,
       sb: "name",
       so: "asc",
+      fmc: "any",
+      fcol: "W,U",
+      ftyp: "Creature",
+      fcat: "Token",
+      ffeat: "Flying",
+      fmt: "contains",
       em: "grid",
       dsa: true,
     };
@@ -350,8 +361,18 @@ describe("useShareUrl", () => {
     expect(settingsStore.setRows).toHaveBeenCalledWith(2);
     expect(settingsStore.setDpi).toHaveBeenCalledWith(600);
     expect(settingsStore.setPreferredArtSource).toHaveBeenCalledWith("mpc");
+    expect(settingsStore.setGlobalLanguage).toHaveBeenCalledWith("en");
+    expect(settingsStore.setAutoImportTokens).toHaveBeenCalledWith(true);
+    expect(settingsStore.setMpcFuzzySearch).toHaveBeenCalledWith(true);
+    expect(settingsStore.setShowProcessingToasts).toHaveBeenCalledWith(true);
     expect(settingsStore.setSortBy).toHaveBeenCalledWith("name");
     expect(settingsStore.setSortOrder).toHaveBeenCalledWith("asc");
+    expect(settingsStore.setFilterManaCost).toHaveBeenCalledWith("any");
+    expect(settingsStore.setFilterColors).toHaveBeenCalledWith("W,U");
+    expect(settingsStore.setFilterTypes).toHaveBeenCalledWith("Creature");
+    expect(settingsStore.setFilterCategories).toHaveBeenCalledWith("Token");
+    expect(settingsStore.setFilterFeatures).toHaveBeenCalledWith("Flying");
+    expect(settingsStore.setFilterMatchType).toHaveBeenCalledWith("contains");
     expect(settingsStore.setExportMode).toHaveBeenCalledWith("grid");
     expect(settingsStore.setDecklistSortAlpha).toHaveBeenCalledWith(true);
     expect(settingsStore.setPageSizePreset).toHaveBeenCalledTimes(2);
@@ -392,8 +413,10 @@ describe("useShareUrl", () => {
         { mpcIdentifier: "mpc-back-b", order: 3 },
         { name: "Front C", order: 4 },
         { set: "xyz", number: "8", order: 5 },
+        { name: "Front D", order: 6 },
+        { order: 7 },
       ],
-      dfcLinks: [[0, 1], [2, 3], [4, 5]],
+      dfcLinks: [[0, 1], [2, 3], [4, 5], [6, 7]],
       settings: undefined,
     });
     mockProjectsWhere.mockReturnValueOnce({
@@ -412,6 +435,7 @@ describe("useShareUrl", () => {
     expect(capturedIntents[0]).toMatchObject({ linkedBackName: "Cardback" });
     expect(capturedIntents[1]).toMatchObject({ linkedBackName: "Back" });
     expect(capturedIntents[2]).toMatchObject({ linkedBackName: "Back" });
+    expect(capturedIntents[3]).not.toHaveProperty("linkedBackImageId");
   });
 
   it("forks a dirty existing project and creates a new shared copy", async () => {
@@ -627,5 +651,28 @@ describe("useShareUrl", () => {
 
     await waitFor(() => expect(result.current.error).toBe("Shared deck contains no cards"));
     expect(mockShowErrorToast).toHaveBeenCalledWith("Shared deck contains no cards");
+  });
+
+  it("only loads once under StrictMode guard", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Island" }],
+      st: {},
+    };
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Island" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+
+    renderHook(() => useShareUrl(), {
+      wrapper: ({ children }) => createElement(StrictMode, null, children),
+    });
+
+    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
   });
 });
