@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('pixi.js', () => ({
-  Graphics: vi.fn(function Graphics() {
+  Graphics: vi.fn().mockImplementation(() => {
     const g = {
       clear: vi.fn(),
       moveTo: vi.fn(),
