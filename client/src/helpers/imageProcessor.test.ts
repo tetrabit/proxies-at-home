@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ImageProcessor, Priority } from "./imageProcessor";
 
+type TrackedMockWorker = Worker & {
+    postMessage: ReturnType<typeof vi.fn>;
+    terminate: ReturnType<typeof vi.fn>;
+    onmessage: ((event: MessageEvent) => void) | null;
+    onerror: ((event: ErrorEvent) => void) | null;
+};
+
+type TrackedWorkerConstructor = typeof Worker & {
+    instances: TrackedMockWorker[];
+};
+
+function workerInstances() {
+    return (global.Worker as unknown as TrackedWorkerConstructor).instances;
+}
+
 describe("ImageProcessor", () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -13,11 +28,14 @@ describe("ImageProcessor", () => {
 
         // Mock Worker
         global.Worker = class MockWorker {
+            static instances: MockWorker[] = [];
             postMessage = vi.fn();
             terminate = vi.fn();
-            onmessage = null;
-            onerror = null;
-            constructor() { }
+            onmessage: ((event: MessageEvent) => void) | null = null;
+            onerror: ((event: ErrorEvent) => void) | null = null;
+            constructor() {
+                MockWorker.instances.push(this);
+            }
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any;
 
@@ -122,6 +140,53 @@ describe("ImageProcessor", () => {
         // @ts-expect-error: Accessing private member for testing
         expect(instance.baseMaxWorkers).toBe(1);
     });
+
+    it("should use Firefox worker limits and hardware fallback", () => {
+        Object.defineProperty(navigator, 'userAgent', {
+            value: 'Mozilla/5.0 Firefox/120',
+            configurable: true,
+        });
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            value: undefined,
+            configurable: true,
+        });
+
+        const instance = ImageProcessor.getInstance();
+
+        // Fallback concurrency is 4, so the pool reserves one core.
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.baseMaxWorkers).toBe(3);
+    });
+
+    it("should prewarm workers and retire idle workers after timeout", () => {
+        const instance = ImageProcessor.getInstance();
+
+        instance.prewarm(1);
+
+        const [worker] = workerInstances();
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.idleWorkers).toHaveLength(1);
+
+        vi.runOnlyPendingTimers();
+
+        expect(worker.terminate).toHaveBeenCalled();
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.allWorkers.size).toBe(0);
+    });
+
+    it("should not prewarm beyond the worker cap", () => {
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            value: 1,
+            configurable: true,
+        });
+        const instance = ImageProcessor.getInstance();
+
+        instance.prewarm(1);
+        instance.prewarm(1);
+
+        expect(workerInstances()).toHaveLength(1);
+    });
+
     it("should prioritize HIGH priority tasks", async () => {
         const instance = ImageProcessor.getInstance();
 
@@ -189,6 +254,37 @@ describe("ImageProcessor", () => {
         await expect(p1).rejects.toThrow("Promoted to high priority");
     });
 
+    it("should promote a queued task through the explicit promotion API", async () => {
+        const instance = ImageProcessor.getInstance();
+
+        for (let i = 0; i < 8; i++) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            instance.process({ uuid: `fill-${i}` } as any).catch(() => { });
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const queued = instance.process({ uuid: "manual-promote" } as any, Priority.LOW);
+        queued.catch(() => { });
+
+        instance.promoteToHighPriority("manual-promote");
+
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.lowPriorityQueue).toHaveLength(0);
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.highPriorityQueue[0].message.uuid).toBe("manual-promote");
+    });
+
+    it("should ignore explicit promotion when the task is not queued", () => {
+        const instance = ImageProcessor.getInstance();
+
+        instance.promoteToHighPriority("missing");
+
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.highPriorityQueue).toHaveLength(0);
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.lowPriorityQueue).toHaveLength(0);
+    });
+
     it("should reject when queue exceeds MAX_QUEUE_SIZE", async () => {
         const instance = ImageProcessor.getInstance();
 
@@ -226,5 +322,136 @@ describe("ImageProcessor", () => {
         // we'll verify the listener was registered and called on start.
 
         unsubscribe();
+    });
+
+    it("should resolve worker responses, reuse idle workers, and notify inactive state", async () => {
+        const instance = ImageProcessor.getInstance();
+        const callback = vi.fn();
+        instance.onActivityChange(callback);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const first = instance.process({ uuid: "first" } as any, Priority.HIGH);
+        const [worker] = workerInstances();
+
+        worker.onmessage?.({
+            data: { uuid: "first", error: "done" },
+        } as MessageEvent);
+
+        await expect(first).resolves.toEqual({ uuid: "first", error: "done" });
+        expect(callback).toHaveBeenCalledWith(false);
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.idleWorkers).toHaveLength(1);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const second = instance.process({ uuid: "second" } as any, Priority.HIGH);
+        expect(workerInstances()).toHaveLength(1);
+        worker.onmessage?.({
+            data: { uuid: "second", error: "done" },
+        } as MessageEvent);
+
+        await expect(second).resolves.toEqual({ uuid: "second", error: "done" });
+        expect(worker.postMessage).toHaveBeenCalledWith({ uuid: "second" });
+    });
+
+    it("should keep activity active until all concurrent tasks complete", async () => {
+        const instance = ImageProcessor.getInstance();
+        const callback = vi.fn();
+        instance.onActivityChange(callback);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const first = instance.process({ uuid: "first" } as any);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const second = instance.process({ uuid: "second" } as any);
+        const [firstWorker, secondWorker] = workerInstances();
+
+        firstWorker.onmessage?.({
+            data: { uuid: "first", error: "done" },
+        } as MessageEvent);
+
+        await expect(first).resolves.toEqual({ uuid: "first", error: "done" });
+        expect(callback).not.toHaveBeenCalledWith(false);
+
+        secondWorker.onmessage?.({
+            data: { uuid: "second", error: "done" },
+        } as MessageEvent);
+        await expect(second).resolves.toEqual({ uuid: "second", error: "done" });
+        expect(callback).toHaveBeenCalledWith(false);
+    });
+
+    it("should terminate failed workers and reject the active task", async () => {
+        const instance = ImageProcessor.getInstance();
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const task = instance.process({ uuid: "boom" } as any);
+        const [worker] = workerInstances();
+        const error = new ErrorEvent("error", { message: "worker failed" });
+
+        worker.onerror?.(error);
+
+        await expect(task).rejects.toBe(error);
+        expect(worker.terminate).toHaveBeenCalled();
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.allWorkers.size).toBe(0);
+        errorSpy.mockRestore();
+    });
+
+    it("should cancel cleanly when no tasks are active", () => {
+        const instance = ImageProcessor.getInstance();
+        const callback = vi.fn();
+        instance.onActivityChange(callback);
+
+        instance.cancelAll();
+
+        expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("should destroy manually seeded idle workers without timeout handles", () => {
+        const instance = ImageProcessor.getInstance();
+        const worker = new Worker("mock-url");
+        // @ts-expect-error: Accessing private member for testing
+        instance.idleWorkers.push({ worker, timeoutId: null });
+        // @ts-expect-error: Accessing private member for testing
+        instance.allWorkers.add(worker);
+
+        instance.destroy();
+
+        expect(worker.terminate).toHaveBeenCalled();
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.allWorkers.size).toBe(0);
+    });
+
+    it("should reuse manually seeded idle workers without timeout handles", async () => {
+        const instance = ImageProcessor.getInstance();
+        const worker = new Worker("mock-url");
+        // @ts-expect-error: Accessing private member for testing
+        instance.idleWorkers.push({ worker, timeoutId: null });
+        // @ts-expect-error: Accessing private member for testing
+        instance.allWorkers.add(worker);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const task = instance.process({ uuid: "manual-idle" } as any);
+        worker.onmessage?.({
+            data: { uuid: "manual-idle", error: "done" },
+        } as MessageEvent);
+
+        await expect(task).resolves.toEqual({ uuid: "manual-idle", error: "done" });
+        expect(worker.postMessage).toHaveBeenCalledWith({ uuid: "manual-idle" });
+    });
+
+    it("should tolerate terminating workers that are idle-only or already absent", () => {
+        const instance = ImageProcessor.getInstance();
+        const idleOnlyWorker = new Worker("mock-url");
+        // @ts-expect-error: Accessing private member for testing
+        instance.idleWorkers.push({ worker: idleOnlyWorker, timeoutId: null });
+
+        // @ts-expect-error: Accessing private member for testing
+        instance.terminateWorker(idleOnlyWorker);
+        // @ts-expect-error: Accessing private member for testing
+        instance.terminateWorker(new Worker("mock-url"));
+
+        expect(idleOnlyWorker.terminate).not.toHaveBeenCalled();
+        // @ts-expect-error: Accessing private member for testing
+        expect(instance.idleWorkers).toHaveLength(0);
     });
 });
