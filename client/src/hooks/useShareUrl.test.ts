@@ -90,8 +90,7 @@ describe("useShareUrl", () => {
     const { result } = renderHook(() => useShareUrl());
 
     await waitFor(() => expect(mockLoadShare).toHaveBeenCalledWith("abc"));
-
-    expect(result.current.error).toBe("share failed");
+    await waitFor(() => expect(result.current.error).toBe("share failed"));
     expect(mockShowErrorToast).toHaveBeenCalledWith("share failed");
   });
 
