@@ -114,7 +114,7 @@ export async function evaluateHeldOutCalibrationDataset(
     const unseenPreferenceScores = Object.fromEntries(
       heldOutCase.candidates.map((candidate) => [
         candidate.identifier,
-        (metadataScores[candidate.identifier] ?? 0) +
+        metadataScores[candidate.identifier] +
           (visualScores[candidate.identifier] ?? 0),
       ])
     );
