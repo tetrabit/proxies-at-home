@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SplitButton } from './SplitButton';
 
+const TestIcon = () => <svg data-testid="test-icon" />;
+
 describe('SplitButton', () => {
     const mockOptions = [
         { value: 'mode1' as const, label: 'Mode 1', description: 'First mode' },
@@ -211,6 +213,46 @@ describe('SplitButton', () => {
         const labelSpan = screen.getByText('Small Label');
         expect(labelSpan.className).toContain('text-sm');
     });
+
+    it('should render custom mainContent', () => {
+        render(
+            <SplitButton
+                label="Ignored"
+                color="blue"
+                onClick={vi.fn()}
+                isOpen={false}
+                onToggle={vi.fn()}
+                onClose={vi.fn()}
+                options={mockOptions}
+                value="mode1"
+                onSelect={vi.fn()}
+                mainContent={<span>Custom Content</span>}
+            />
+        );
+
+        expect(screen.getByText('Custom Content')).toBeDefined();
+        expect(screen.queryByText('Ignored')).toBeNull();
+    });
+
+    it('should render the icon when provided', () => {
+        render(
+            <SplitButton
+                label="Icon Button"
+                color="blue"
+                onClick={vi.fn()}
+                isOpen={false}
+                onToggle={vi.fn()}
+                onClose={vi.fn()}
+                options={mockOptions}
+                value="mode1"
+                onSelect={vi.fn()}
+                icon={TestIcon}
+            />
+        );
+
+        expect(screen.getByTestId('test-icon')).toBeDefined();
+    });
+
     it('should call onClose when clicking outside', () => {
         const onClose = vi.fn();
         render(
@@ -231,4 +273,3 @@ describe('SplitButton', () => {
         expect(onClose).toHaveBeenCalled();
     });
 });
-
