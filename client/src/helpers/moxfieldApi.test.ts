@@ -113,6 +113,35 @@ describe("moxfieldApi", () => {
   });
 
   describe("fetchMoxfieldDeck", () => {
+    it("uses the Electron bridge when available", async () => {
+      const mockDeck = createMockDeck({ name: "Electron Deck" });
+      const fetchMoxfieldDeck = vi.fn().mockResolvedValue(mockDeck);
+      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof fetchMoxfieldDeck } }).electronAPI =
+        {
+          fetchMoxfieldDeck,
+        };
+
+      const result = await fetchMoxfieldDeck("abc123");
+
+      expect(result.name).toBe("Electron Deck");
+      expect(fetchMoxfieldDeck).toHaveBeenCalledWith("abc123");
+    });
+
+    it("logs and rethrows non-Error Electron failures", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const electronFetch = vi.fn().mockRejectedValue("boom");
+      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof electronFetch } }).electronAPI =
+        {
+          fetchMoxfieldDeck: electronFetch,
+        };
+
+      await expect(fetchMoxfieldDeck("abc123")).rejects.toBe("boom");
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[moxfieldApi] Electron IPC failed: boom"
+      );
+      consoleErrorSpy.mockRestore();
+    });
+
     it("should fetch and return deck data", async () => {
       const mockDeck = createMockDeck({ name: "Fetched Deck" });
       mockFetch.mockResolvedValue({
@@ -150,6 +179,19 @@ describe("moxfieldApi", () => {
 
       await expect(fetchMoxfieldDeck("abc123")).rejects.toThrow(
         "Failed to fetch deck: 500"
+      );
+    });
+
+    it("falls back to status text when the error body is not JSON", async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 502,
+        statusText: "Bad Gateway",
+        json: () => Promise.reject(new Error("not json")),
+      });
+
+      await expect(fetchMoxfieldDeck("abc123")).rejects.toThrow(
+        "Failed to fetch deck: 502 Bad Gateway"
       );
     });
 
@@ -217,6 +259,31 @@ describe("moxfieldApi", () => {
       expect(categories).toContain("Maybeboard");
     });
 
+    it("should normalize custom board names and tolerate missing optional boards", () => {
+      const deck = {
+        ...createMockDeck({
+          mainboard: {
+            main1: createDeckCard(
+              "Custom Board Card",
+              1,
+              "1",
+              "ABC",
+              "special board"
+            ),
+          },
+        }),
+        commanders: undefined,
+        companions: undefined,
+        sideboard: undefined,
+        maybeboard: undefined,
+      } as unknown as MoxfieldDeck;
+
+      const cards = extractCardsFromDeck(deck);
+
+      expect(cards).toHaveLength(1);
+      expect(cards[0].category).toBe("Special board");
+    });
+
     it("should lowercase set codes", () => {
       const deck = createMockDeck({
         mainboard: {
@@ -239,6 +306,18 @@ describe("moxfieldApi", () => {
       const cards = extractCardsFromDeck(deck);
 
       expect(cards[0].scryfallId).toBe("scryfall-Test Card");
+    });
+
+    it("should preserve board category fallback when the board type is empty", () => {
+      const deck = createMockDeck({
+        mainboard: {
+          card1: createDeckCard("Fallback Card", 1, "1", "ABC", ""),
+        },
+      });
+
+      const cards = extractCardsFromDeck(deck);
+
+      expect(cards[0].category).toBe("Mainboard");
     });
 
     it("should detect token cards from type_line", () => {
