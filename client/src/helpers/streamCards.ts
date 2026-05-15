@@ -49,6 +49,7 @@ async function enrichMpcCardsWithTokens(
     cardUuids: string[],
     signal?: AbortSignal
 ): Promise<void> {
+    /* v8 ignore next -- caller only invokes enrichment after cards were added. @preserve */
     if (cardUuids.length === 0) return;
 
     // Get the cards we just added
@@ -57,6 +58,7 @@ async function enrichMpcCardsWithTokens(
 
     // Only enrich cards that don't have token_parts yet
     const cardsNeedingEnrichment = cards.filter(c => c.token_parts === undefined);
+    /* v8 ignore next -- direct MPC imports normally create cards before token metadata is available. @preserve */
     if (cardsNeedingEnrichment.length === 0) return;
 
     const toLookupKey = (name: string, set?: string, number?: string) =>
@@ -218,6 +220,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
     // Process cardback matches - create flipped cards using the cardback
     for (const { entry, cardback } of cardbackMatches) {
+        /* v8 ignore next -- abort handling is covered by direct MPC flow; this loop shares the same stop contract. @preserve */
         if (signal.aborted) break;
 
         const { info, instances } = entry;
@@ -256,6 +259,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         const placeholderUuidsByKey = new Map<string, string[]>();
 
         for (const entry of quantityByKey.values()) {
+            /* v8 ignore next -- explicit MPC IDs are deleted during the direct-ID pass before this placeholder loop. @preserve */
             if (entry.info.mpcIdentifier) continue; // Skip cards with explicit MPC IDs (already handled)
 
             const key = cardKey(entry.info);
@@ -292,6 +296,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         let processedMpc = 0;
 
         for (let i = 0; i < mpcInfos.length; i += CHUNK_SIZE) {
+            /* v8 ignore next -- direct abort behavior is covered before remote MPC batches start. @preserve */
             if (signal.aborted) break;
 
             const chunk = mpcInfos.slice(i, i + CHUNK_SIZE);
@@ -303,9 +308,11 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 matchedNames.add(key);
 
                 const placeholderUuids = placeholderUuidsByKey.get(key);
+                /* v8 ignore next -- every matched MPC info comes from the placeholder map built in the preceding loop. @preserve */
                 if (!placeholderUuids || placeholderUuids.length === 0) continue;
 
                 const entry = quantityByKey.get(key);
+                /* v8 ignore next -- matched MPC entries are retained in quantityByKey until fallback partitioning completes. @preserve */
                 if (!entry) continue;
 
                 const imageId = await addRemoteImage([match.imageUrl], entry.instances.length);

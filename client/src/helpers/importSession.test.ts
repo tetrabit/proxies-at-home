@@ -106,6 +106,17 @@ describe("ImportSession", () => {
             expect(stats.persistentCacheHits).toBe(1);
         });
 
+        it("should buffer early processed network fetches", () => {
+            const session = new ImportSession({
+                importType: "mpc",
+            });
+
+            session.markProcessed("card-1", false);
+            session.registerUuids(["card-1"]);
+
+            expect(session.getStats().networkFetches).toBe(1);
+        });
+
         it("should buffer early failed cards until uuids are registered", () => {
             const session = new ImportSession({
                 importType: "scryfall",
