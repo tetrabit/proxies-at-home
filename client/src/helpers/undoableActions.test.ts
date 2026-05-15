@@ -631,6 +631,39 @@ describe("undoableActions", () => {
         expect.objectContaining({ generatedBleedMode: undefined })
       );
     });
+
+
+    it("invalidates regular image caches for bleed undo and redo", async () => {
+      const imageCard = {
+        uuid: "image-card",
+        name: "Image Card",
+        order: 0,
+        imageId: "img-regular",
+        isUserUpload: true,
+      } as CardOption;
+      vi.mocked(db.cards.where).mockImplementation(
+        (field: string) =>
+          ({
+            anyOf: vi.fn(() => ({
+              toArray: vi.fn().mockResolvedValue(field === "uuid" ? [imageCard] : []),
+            })),
+            equals: vi.fn(() => ({
+              first: vi.fn(),
+              toArray: vi.fn().mockResolvedValue(field === "imageId" ? [imageCard] : []),
+            })),
+          }) as ReturnType<typeof db.cards.where>
+      );
+
+      await undoableUpdateCardBleedSettings(["image-card"], { bleedMode: "none" });
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.images.update).toHaveBeenCalledWith(
+        "img-regular",
+        expect.objectContaining({ generatedBleedMode: undefined })
+      );
+    });
   });
 
   describe("undoableChangeCardback", () => {
@@ -734,6 +767,28 @@ describe("undoableActions", () => {
         "New Back",
         { hasBuiltInBleed: false, usesDefaultCardback: false }
       );
+    });
+
+
+    it("decrements image refs instead of deleting when undoing newly created backs with shared images", async () => {
+      vi.mocked(db.cards.where).mockReturnValue({
+        anyOf: vi.fn(() => ({
+          toArray: vi.fn().mockResolvedValue([frontWithoutBack]),
+        })),
+      } as never);
+      vi.mocked(db.cards.bulkGet).mockResolvedValue([]);
+
+      await undoableChangeCardback(["front-new"], "img-new", "New Back", false);
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce({ ...frontWithoutBack, linkedBackId: "new-back" } as CardOption)
+        .mockResolvedValueOnce({ uuid: "new-back", imageId: "img-new" } as CardOption);
+      vi.mocked(db.images.get).mockResolvedValueOnce({ id: "img-new", refCount: 2 } as never);
+
+      await pushedAction.undo();
+
+      expect(db.images.update).toHaveBeenCalledWith("img-new", { refCount: 1 });
+      expect(db.cards.delete).toHaveBeenCalledWith("new-back");
     });
   });
 });
