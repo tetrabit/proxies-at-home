@@ -154,6 +154,54 @@ describe("useScryfallPreview", () => {
     ]);
   });
 
+  it("passes raw Scryfall syntax through unchanged", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "", set: null, number: null });
+    mockSearchCards.mockResolvedValue([{ name: "Artifact" }]);
+
+    const { result } = renderHook(() => useScryfallPreview("type:artifact"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).toHaveBeenCalledWith("type:artifact", expect.any(AbortSignal));
+    expect(result.current.setVariations).toHaveLength(1);
+  });
+
+  it("searches name-in-set queries with the set-specific syntax", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Forest", set: "m21", number: null });
+    mockSearchCards.mockResolvedValue([{ name: "Forest" }]);
+
+    const { result } = renderHook(() => useScryfallPreview("Forest [m21]"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).toHaveBeenCalledWith('!"Forest" set:m21 unique:prints', expect.any(AbortSignal));
+    expect(result.current.setVariations).toHaveLength(1);
+  });
+
+  it("reuses cached search results when the trimmed query stays the same", async () => {
+    mockSearchCards.mockResolvedValue([{ name: "Forest" }]);
+
+    const { rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Forest" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: "Forest " });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).toHaveBeenCalledTimes(1);
+  });
+
   it("clears results when the search API returns no cards", async () => {
     mockSearchCards.mockResolvedValue(null);
 
