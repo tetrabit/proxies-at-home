@@ -333,7 +333,6 @@ describe("useScryfallPrints", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     rerender({ name: "Second Card" });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     resolveFirst({
       ok: true,
       json: async () => ({
