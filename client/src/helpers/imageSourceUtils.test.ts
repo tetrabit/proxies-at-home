@@ -1,5 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
-import { inferImageSource, inferSourceFromUrl, getImageSourceSync, isMpcSource, isScryfallSource, isCustomSource } from './imageSourceUtils';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { inferImageSource, inferSourceFromUrl, getImageSource, getImageSourceSync, isMpcSource, isScryfallSource, isCustomSource } from './imageSourceUtils';
+
+const { imagesGet, imagesUpdate } = vi.hoisted(() => ({
+    imagesGet: vi.fn(),
+    imagesUpdate: vi.fn(),
+}));
+
+vi.mock('../db', () => ({
+    db: {
+        images: {
+            get: imagesGet,
+            update: imagesUpdate,
+        },
+    },
+}));
 
 // Mock the mpcAutofillApi
 vi.mock('./mpcAutofillApi', () => ({
@@ -19,6 +33,10 @@ vi.mock('./mpcAutofillApi', () => ({
 }));
 
 describe('imageSourceUtils', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
     describe('inferImageSource', () => {
         it('should return null for undefined/empty', () => {
             expect(inferImageSource(undefined)).toBeNull();
@@ -66,6 +84,10 @@ describe('imageSourceUtils', () => {
             const driveId = '1abc2DEF_-GhIjKlMnOpQrStUvWxYz123';
             expect(inferImageSource(driveId)).toBe('mpc');
         });
+
+        it('should return null when no source pattern matches', () => {
+            expect(inferImageSource('unknown')).toBeNull();
+        });
     });
 
     describe('inferSourceFromUrl', () => {
@@ -80,6 +102,44 @@ describe('imageSourceUtils', () => {
 
         it('should detect MPC URL', () => {
             expect(inferSourceFromUrl('/api/cards/images/mpc?id=abc123')).toBe('mpc');
+        });
+
+        it('should return null for unknown URLs', () => {
+            expect(inferSourceFromUrl('https://example.com/image.png')).toBeNull();
+        });
+    });
+
+    describe('getImageSource', () => {
+        it('should return null when the image record does not exist', async () => {
+            imagesGet.mockResolvedValue(undefined);
+
+            await expect(getImageSource('missing')).resolves.toBeNull();
+
+            expect(imagesUpdate).not.toHaveBeenCalled();
+        });
+
+        it('should return the explicit source without updating the image', async () => {
+            imagesGet.mockResolvedValue({ id: 'img-explicit', source: 'custom' });
+
+            await expect(getImageSource('img-explicit')).resolves.toBe('custom');
+
+            expect(imagesUpdate).not.toHaveBeenCalled();
+        });
+
+        it('should infer and persist a missing source when possible', async () => {
+            imagesGet.mockResolvedValue({ id: 'cardback_front' });
+
+            await expect(getImageSource('cardback_front')).resolves.toBe('cardback');
+
+            expect(imagesUpdate).toHaveBeenCalledWith('cardback_front', { source: 'cardback' });
+        });
+
+        it('should not update when a source cannot be inferred', async () => {
+            imagesGet.mockResolvedValue({ id: 'unknown' });
+
+            await expect(getImageSource('unknown')).resolves.toBeNull();
+
+            expect(imagesUpdate).not.toHaveBeenCalled();
         });
     });
 
