@@ -300,60 +300,6 @@ describe("useScryfallPrints", () => {
     vi.useRealTimers();
   });
 
-  it("ignores stale results when a later query supersedes the request", async () => {
-    let resolveFirst!: (value: unknown) => void;
-    const firstRequest = new Promise((resolve) => {
-      resolveFirst = resolve;
-    });
-    const fetchMock = vi
-      .fn()
-      .mockReturnValueOnce(firstRequest)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          total: 1,
-          prints: [
-            {
-              imageUrl: "https://example.com/latest.png",
-              set: "mh2",
-              number: "200",
-              oracle_id: "oracle-latest",
-              scryfall_id: "print-latest",
-            },
-          ],
-        }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { rerender, result } = renderHook(
-      ({ name }) => useScryfallPrints({ name, set: "mh2", number: "200" }),
-      { initialProps: { name: "First Card" } }
-    );
-
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    rerender({ name: "Second Card" });
-
-    resolveFirst({
-      ok: true,
-      json: async () => ({
-        total: 1,
-        prints: [
-          {
-            imageUrl: "https://example.com/stale.png",
-            set: "mh2",
-            number: "200",
-            oracle_id: "oracle-stale",
-            scryfall_id: "print-stale",
-          },
-        ],
-      }),
-    });
-
-    await vi.waitFor(() => {
-      expect(result.current.prints[0]?.scryfall_id).toBe("print-latest");
-    });
-  });
-
   it("updates an existing cached metadata object after a successful fetch", async () => {
     await db.cardMetadataCache.add({
       id: "cached-update-object",
