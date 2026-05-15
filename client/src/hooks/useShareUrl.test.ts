@@ -84,6 +84,53 @@ describe("useShareUrl", () => {
     });
   });
 
+  const createSettingsStoreSpies = () => ({
+    setPageSizePreset: vi.fn(),
+    setColumns: vi.fn(),
+    setRows: vi.fn(),
+    setDpi: vi.fn(),
+    setBleedEdge: vi.fn(),
+    setBleedEdgeWidth: vi.fn(),
+    setWithBleedSourceAmount: vi.fn(),
+    setWithBleedTargetMode: vi.fn(),
+    setWithBleedTargetAmount: vi.fn(),
+    setNoBleedTargetMode: vi.fn(),
+    setNoBleedTargetAmount: vi.fn(),
+    setDarkenMode: vi.fn(),
+    setDarkenContrast: vi.fn(),
+    setDarkenEdgeWidth: vi.fn(),
+    setDarkenAmount: vi.fn(),
+    setDarkenBrightness: vi.fn(),
+    setDarkenAutoDetect: vi.fn(),
+    setPerCardGuideStyle: vi.fn(),
+    setGuideColor: vi.fn(),
+    setGuideWidth: vi.fn(),
+    setGuidePlacement: vi.fn(),
+    setCutGuideLengthMm: vi.fn(),
+    setCutLineStyle: vi.fn(),
+    setCardSpacingMm: vi.fn(),
+    setCardPositionX: vi.fn(),
+    setCardPositionY: vi.fn(),
+    setUseCustomBackOffset: vi.fn(),
+    setCardBackPositionX: vi.fn(),
+    setCardBackPositionY: vi.fn(),
+    setPreferredArtSource: vi.fn(),
+    setGlobalLanguage: vi.fn(),
+    setAutoImportTokens: vi.fn(),
+    setMpcFuzzySearch: vi.fn(),
+    setShowProcessingToasts: vi.fn(),
+    setSortBy: vi.fn(),
+    setSortOrder: vi.fn(),
+    setFilterManaCost: vi.fn(),
+    setFilterColors: vi.fn(),
+    setFilterTypes: vi.fn(),
+    setFilterCategories: vi.fn(),
+    setFilterFeatures: vi.fn(),
+    setFilterMatchType: vi.fn(),
+    setExportMode: vi.fn(),
+    setDecklistSortAlpha: vi.fn(),
+  });
+
   it("surfaces a load error when the share fetch fails", async () => {
     mockLoadShare.mockRejectedValue(new Error("share failed"));
 
@@ -165,6 +212,119 @@ describe("useShareUrl", () => {
     expect(result.current.error).toBeNull();
     expect(result.current.shareData).toBe(sharedData);
     expect(window.location.search).toBe("");
+  });
+
+  it("falls back to the default shared deck name when no card has a name", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [],
+      dfc: undefined,
+      st: undefined,
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [
+        { imageId: "front-a", order: 0 },
+        { builtInCardbackId: "cardback_default", order: 1 },
+      ],
+      dfcLinks: [[0, 1]],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockCreateProject.mockResolvedValue("project-default-name");
+    mockProcess.mockResolvedValue(undefined);
+
+    await renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockCreateProject).toHaveBeenCalledWith("Shared Deck (Shared)"));
+  });
+
+  it("falls back to a generic error when the share load rejects with a non-Error value", async () => {
+    mockLoadShare.mockRejectedValue("boom");
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(result.current.error).toBe("Failed to load shared deck"));
+    expect(mockShowErrorToast).toHaveBeenCalledWith("Failed to load shared deck");
+  });
+
+  it("applies shared settings and converts all linked back types when creating a new project", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Front A" }, { name: "Front B" }, { name: "Front C" }],
+      dfc: [[0, 1], [2, 3], [4, 5]],
+      st: { pr: "A4" },
+    };
+    const settings = {
+      pr: "A4",
+      c: 3,
+      r: 2,
+      dpi: 600,
+      pas: "mpc",
+      sb: "name",
+      so: "asc",
+      em: "grid",
+      dsa: true,
+    };
+    const settingsStore = createSettingsStoreSpies();
+    mockSettingsGetState.mockReturnValue(settingsStore);
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [
+        { name: "Front A", imageId: "front-a", order: 0 },
+        { name: "Back A", builtInCardbackId: "cardback_default", order: 1 },
+        { name: "Front B", imageId: "front-b", order: 2, mpcIdentifier: "mpc-front-b" },
+        { name: "Back B", mpcIdentifier: "mpc-back-b", order: 3 },
+        { name: "Front C", imageId: "front-c", order: 4, set: "abc", number: "7" },
+        { name: "Back C", set: "xyz", number: "8", order: 5 },
+      ],
+      dfcLinks: [[0, 1], [2, 3], [4, 5]],
+      settings,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockCreateProject.mockResolvedValue("project-settings");
+    let capturedIntents: unknown[] = [];
+    mockProcess.mockImplementation(async (intents) => {
+      capturedIntents = intents as unknown[];
+    });
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+
+    expect(settingsStore.setPageSizePreset).toHaveBeenCalledWith("A4");
+    expect(settingsStore.setColumns).toHaveBeenCalledWith(3);
+    expect(settingsStore.setRows).toHaveBeenCalledWith(2);
+    expect(settingsStore.setDpi).toHaveBeenCalledWith(600);
+    expect(settingsStore.setPreferredArtSource).toHaveBeenCalledWith("mpc");
+    expect(settingsStore.setSortBy).toHaveBeenCalledWith("name");
+    expect(settingsStore.setSortOrder).toHaveBeenCalledWith("asc");
+    expect(settingsStore.setExportMode).toHaveBeenCalledWith("grid");
+    expect(settingsStore.setDecklistSortAlpha).toHaveBeenCalledWith(true);
+    expect(settingsStore.setPageSizePreset).toHaveBeenCalledTimes(2);
+
+    expect(capturedIntents).toHaveLength(3);
+    expect(capturedIntents[0]).toMatchObject({
+      name: "Front A",
+      linkedBackImageId: "cardback_default",
+      linkedBackName: "Back A",
+    });
+    expect(capturedIntents[1]).toMatchObject({
+      name: "Front B",
+      linkedBackImageId: "mpc-back-b",
+      linkedBackName: "Back B",
+    });
+    expect(capturedIntents[2]).toMatchObject({
+      name: "Front C",
+      linkedBackSet: "xyz",
+      linkedBackNumber: "8",
+      linkedBackName: "Back C",
+    });
   });
 
   it("forks a dirty existing project and creates a new shared copy", async () => {

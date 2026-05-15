@@ -107,4 +107,147 @@ describe("useScryfallPrints", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("set=mh2");
     expect(String(fetchMock.mock.calls[1][0])).toContain("oracle_id=oracle-xyz");
   });
+
+  it("uses a full local cache hit without calling the network", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-oracle",
+      name: "Cached Card",
+      set: "abc",
+      number: "12",
+      oracle_id: "oracle-cache",
+      data: { prints: [{ imageUrl: "https://example.com/cached.png" }] },
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: true,
+    } as never);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Cached Card",
+        oracleId: "oracle-cache",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+      expect(result.current.prints).toHaveLength(1);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("updates an existing cached metadata object after a successful fetch", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-update-object",
+      name: "Update Card",
+      set: "upd",
+      number: "1",
+      oracle_id: "oracle-update-object",
+      data: { existing: true },
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: false,
+    } as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/update-object.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Update Card",
+        oracleId: "oracle-update-object",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const stored = await db.cardMetadataCache.get("cached-update-object");
+    expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
+  it("updates a null metadata payload after a successful fetch", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-update-null",
+      name: "Null Card",
+      set: "nul",
+      number: "2",
+      data: null,
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: false,
+    } as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/update-null.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Null Card",
+        set: "nul",
+        number: "2",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const stored = await db.cardMetadataCache.get("cached-update-null");
+    expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
+  it("handles a non-ok response by clearing results", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: vi.fn(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Broken Card",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    expect(result.current.prints).toEqual([]);
+  });
+
+  it("handles a fetch rejection by clearing results", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Broken Card",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    expect(result.current.prints).toEqual([]);
+  });
 });
