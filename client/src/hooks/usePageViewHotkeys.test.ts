@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { usePageViewHotkeys } from "./usePageViewHotkeys";
 import { useSelectionStore } from "../store/selection";
 import { useUndoRedoStore } from "../store/undoRedo";
@@ -14,6 +14,36 @@ vi.mock("../store/selection", () => ({
 vi.mock("../store/undoRedo", () => ({
     useUndoRedoStore: {
         getState: vi.fn(),
+    },
+}));
+
+const mockOpenShortcutsModal = vi.fn();
+const mockUndoableDeleteCardsBatch = vi.fn().mockResolvedValue(undefined);
+const mockUndoableDuplicateCardsBatch = vi.fn().mockResolvedValue(undefined);
+const mockClipboardWriteText = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("../store/keyboardShortcuts", () => ({
+    useKeyboardShortcutsStore: {
+        getState: vi.fn(() => ({ openModal: mockOpenShortcutsModal })),
+    },
+}));
+
+vi.mock("../helpers/undoableActions", () => ({
+    undoableDeleteCardsBatch: (...args: unknown[]) => mockUndoableDeleteCardsBatch(...args),
+    undoableDuplicateCardsBatch: (...args: unknown[]) => mockUndoableDuplicateCardsBatch(...args),
+}));
+
+vi.mock("../db", () => ({
+    db: {
+        cards: {
+            bulkGet: vi.fn(async (uuids: string[]) =>
+                uuids.map((uuid) =>
+                    uuid === "card-2"
+                        ? { name: "Island", set: "lea", number: "1", usesDefaultCardback: false }
+                        : { name: "Sol Ring", set: "cmd", number: "235", usesDefaultCardback: false }
+                )
+            ),
+        },
     },
 }));
 
@@ -39,6 +69,13 @@ describe("usePageViewHotkeys", () => {
         (useUndoRedoStore.getState as Mock).mockReturnValue({
             undo: mockUndo,
             redo: mockRedo,
+        });
+
+        Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: {
+                writeText: mockClipboardWriteText,
+            },
         });
     });
 
@@ -170,6 +207,49 @@ describe("usePageViewHotkeys", () => {
             document.dispatchEvent(event);
 
             expect(mockRedo).toHaveBeenCalled();
+        });
+    });
+
+    describe("clipboard and destructive shortcuts", () => {
+        it("should copy selected cards with Ctrl+C", async () => {
+        renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+        const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true });
+        document.dispatchEvent(event);
+
+            await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalled());
+            expect(mockClipboardWriteText).toHaveBeenCalledWith("1x Sol Ring (cmd) 235\n1x Island (lea) 1");
+        });
+
+        it("should open shortcuts modal on Ctrl+/ and delete selected cards on Ctrl+Delete", async () => {
+            renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+            Object.defineProperty(navigator, "platform", {
+                value: "Win32",
+                configurable: true,
+            });
+
+            const helpEvent = new KeyboardEvent("keydown", { key: "/", ctrlKey: true });
+            document.dispatchEvent(helpEvent);
+            expect(mockOpenShortcutsModal).toHaveBeenCalled();
+
+            const deleteEvent = new KeyboardEvent("keydown", { key: "Delete", ctrlKey: true });
+            document.dispatchEvent(deleteEvent);
+
+            await waitFor(() => expect(mockUndoableDeleteCardsBatch).toHaveBeenCalledWith(["card-1", "card-2"]));
+            expect(mockClearSelection).toHaveBeenCalled();
+        });
+
+        it("should ignore shortcuts when the event target is an input", () => {
+            renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+            const input = document.createElement("input");
+            const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true });
+            Object.defineProperty(event, "target", { value: input });
+            document.dispatchEvent(event);
+
+            expect(mockClipboardWriteText).not.toHaveBeenCalled();
+            expect(mockUndoableDeleteCardsBatch).not.toHaveBeenCalled();
         });
     });
 
