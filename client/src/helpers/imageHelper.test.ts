@@ -358,6 +358,11 @@ describe("ImageHelper", () => {
       expect(parseImageIdFromUrl(url)).toBe("abc123xyz");
     });
 
+    it("should keep MPC/Drive URLs when the id query value is empty", () => {
+      const url = "http://localhost:3001/api/cards/images/mpc?id=";
+      expect(parseImageIdFromUrl(url)).toBe(url);
+    });
+
     it("should return as-is for other URLs", () => {
       const url = "https://example.com/image.jpg";
       expect(parseImageIdFromUrl(url)).toBe("https://example.com/image.jpg");

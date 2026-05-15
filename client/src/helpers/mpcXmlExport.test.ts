@@ -95,6 +95,30 @@ describe("mpcXmlExport", () => {
             expect(backsSection).toContain("<name>DFC Back</name>");
         });
 
+        it("should use the second split name for DFC back faces", () => {
+            const cards = [
+                createTestCard({ uuid: "front", name: "Front Face", imageId: "mpc_front", linkedBackId: "back", order: 1 }),
+                createTestCard({ uuid: "back", name: "Front Face // Back Face", imageId: "mpc_back", linkedFrontId: "front", order: 1.1 }),
+            ];
+            const backsSection = buildMpcXml(cards).split("<backs>")[1].split("</backs>")[0];
+
+            expect(backsSection).toContain("<name>Back Face</name>");
+            expect(backsSection).toContain("<query>Back Face</query>");
+        });
+
+        it("should omit backs when linked back cards are missing or non-MPC", () => {
+            const missingBackXml = buildMpcXml([
+                createTestCard({ uuid: "front", name: "Front", imageId: "mpc_front", linkedBackId: "missing" }),
+            ]);
+            const nonMpcBackXml = buildMpcXml([
+                createTestCard({ uuid: "front", name: "Front", imageId: "mpc_front", linkedBackId: "back" }),
+                createTestCard({ uuid: "back", name: "Back", imageId: "scryfall_back", linkedFrontId: "front" }),
+            ]);
+
+            expect(missingBackXml.split("<backs>")[1].split("</backs>")[0]).not.toContain("<card>");
+            expect(nonMpcBackXml.split("<backs>")[1].split("</backs>")[0]).not.toContain("<card>");
+        });
+
         it("should escape special XML characters in card names", () => {
             const cards = [
                 createTestCard({ name: "Fire & Ice <Test> \"Special\"", imageId: "mpc_test123" }),

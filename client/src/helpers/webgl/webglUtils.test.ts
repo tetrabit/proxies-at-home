@@ -107,4 +107,56 @@ describe("webglUtils", () => {
     expect(buffer).toEqual({ buffer: true });
     expect(gl.bufferData).toHaveBeenCalled();
   });
+
+  it("creates textures with explicit pixel formats and data", () => {
+    const data = new Uint8Array([1, 2, 3, 4]);
+
+    const texture = createTexture(gl, 1, 1, data, 1, 2, 3);
+
+    expect(texture).toEqual({ texture: true });
+    expect(gl.texImage2D).toHaveBeenCalledWith(
+      gl.TEXTURE_2D,
+      0,
+      1,
+      1,
+      1,
+      0,
+      2,
+      3,
+      data
+    );
+  });
+
+  it("throws when WebGL object creation returns null", () => {
+    expect(() =>
+      createShader(makeGl({ createShader: vi.fn(() => null) }), 0x8B31, "")
+    ).toThrow("Failed to create shader");
+    expect(() =>
+      createProgram(
+        makeGl({ createProgram: vi.fn(() => null) }),
+        {} as WebGLShader,
+        {} as WebGLShader
+      )
+    ).toThrow("Failed to create program");
+    expect(() =>
+      createTexture(makeGl({ createTexture: vi.fn(() => null) }), 1, 1)
+    ).toThrow("Failed to create texture");
+    expect(() =>
+      createFramebuffer(
+        makeGl({ createFramebuffer: vi.fn(() => null) }),
+        {} as WebGLTexture
+      )
+    ).toThrow("Failed to create framebuffer");
+    expect(() =>
+      createQuadBuffer(makeGl({ createBuffer: vi.fn(() => null) }))
+    ).toThrow("Failed to create buffer");
+  });
+
+  it("throws when framebuffer completeness validation fails", () => {
+    gl.checkFramebufferStatus = vi.fn(() => 0);
+
+    expect(() =>
+      createFramebuffer(gl, { texture: true } as unknown as WebGLTexture)
+    ).toThrow("Framebuffer is not complete");
+  });
 });

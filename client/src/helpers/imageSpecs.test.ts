@@ -143,6 +143,14 @@ describe("imageSpecs", () => {
             const card = createTestCard({ imageId: "cardback_custom" });
             expect(getEffectiveExistingBleedMm(card, defaultSettings, { hasBuiltInBleed: true })).toBe(3);
         });
+
+        it("should fall back to the standard MPC bleed amount when source amount is zero", () => {
+            const card = createTestCard({ hasBuiltInBleed: true });
+            expect(getEffectiveExistingBleedMm(card, {
+                ...defaultSettings,
+                withBleedSourceAmount: 0,
+            })).toBe(3.175);
+        });
     });
 
     describe("getExpectedBleedWidth", () => {

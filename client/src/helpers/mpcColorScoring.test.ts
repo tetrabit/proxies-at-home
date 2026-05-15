@@ -47,4 +47,13 @@ describe("mpcColorScoring", () => {
     expect(similarScore).toBeGreaterThan(0.9);
     expect(differentScore).toBeLessThan(0.5);
   });
+
+  it("returns zero when profile histogram lengths differ", () => {
+    expect(
+      computeColorProfileSimilarity(
+        { histogram: new Float32Array([1]), mean: [0, 0, 0] },
+        { histogram: new Float32Array([1, 0]), mean: [0, 0, 0] }
+      )
+    ).toBe(0);
+  });
 });
