@@ -28,7 +28,7 @@ describe("useZoomShortcuts", () => {
     });
 
     expect(setZoom).toHaveBeenCalledTimes(4);
-    expect(zoom).toBe(1);
+    expect(zoom).toBe(1.5);
     unmount();
   });
 

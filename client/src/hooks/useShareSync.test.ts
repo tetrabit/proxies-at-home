@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useShareSync } from "./useShareSync";
 
@@ -45,16 +45,20 @@ describe("useShareSync", () => {
     expect(result.current.syncStatus).toBe("idle");
   });
 
-  it("returns to idle after the synced toast timeout expires", () => {
+  it("returns to idle after the synced toast timeout expires", async () => {
     currentProject = { id: "p1", lastSharedAt: 111 };
     const { result, rerender } = renderHook(() => useShareSync());
 
-    currentProject = { id: "p1", lastSharedAt: 222 };
-    rerender();
+    act(() => {
+      currentProject = { id: "p1", lastSharedAt: 222 };
+      rerender();
+    });
 
     expect(result.current.syncStatus).toBe("synced");
 
-    vi.advanceTimersByTime(3000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
 
     expect(result.current.syncStatus).toBe("idle");
   });
