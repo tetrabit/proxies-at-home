@@ -58,8 +58,6 @@ export function UpdateChannelSelector() {
     };
 
     const handleAutoUpdateChange = async (enabled: boolean) => {
-        if (!isElectron) return;
-
         try {
             await window.electronAPI!.setAutoUpdateEnabled(enabled);
             setAutoUpdateEnabled(enabled);
