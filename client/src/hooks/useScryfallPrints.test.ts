@@ -199,6 +199,50 @@ describe("useScryfallPrints", () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain("oracle_id=oracle-xyz");
   });
 
+  it("keeps the initial set+number results when the secondary oracle lookup is empty", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 1,
+          oracle_id: "oracle-xyz",
+          prints: [
+            {
+              imageUrl: "https://example.com/single-print.png",
+              set: "mh2",
+              number: "200",
+              oracle_id: "oracle-xyz",
+              scryfall_id: "print-single",
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          total: 0,
+          prints: [],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Sheoldred",
+        set: "mh2",
+        number: "200",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+      expect(result.current.prints.length).toBe(1);
+    });
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain("oracle_id=oracle-xyz");
+  });
+
   it("uses a full local cache hit without calling the network", async () => {
     await db.cardMetadataCache.add({
       id: "cached-oracle",
