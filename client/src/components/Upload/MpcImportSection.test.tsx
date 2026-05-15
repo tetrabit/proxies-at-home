@@ -127,4 +127,16 @@ describe('MpcImportSection', () => {
         fireEvent.click(fileInput);
         expect(fileInput.value).toBe('');
     });
+
+    it('imports parsed MPC XML without completion callback and clears the input', async () => {
+        render(<MpcImportSection />);
+
+        const fileInput = input();
+        uploadXml('<cards><card name="Island" /></cards>');
+
+        await waitFor(() => expect(mocks.processCards).toHaveBeenCalledWith([{ name: 'Test Card', quantity: 1, mpcId: '123' }]));
+        expect(mocks.parseMpcXml).toHaveBeenCalledWith('<cards><card name="Island" /></cards>');
+        expect(mocks.setSortBy).toHaveBeenCalledWith('manual');
+        expect(fileInput.value).toBe('');
+    });
 });
