@@ -97,6 +97,18 @@ describe('microservice metrics', () => {
     expect(warnSpy).toHaveBeenCalledWith('[MicroserviceMetrics] ⚠️  PERFORMANCE DEGRADED');
   });
 
+  it('logs a clean summary without errors or degraded warning', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    metricsCollector.recordRequest('/fast', 25);
+
+    logMicroserviceMetrics();
+
+    expect(logSpy).toHaveBeenCalledWith('  Total Requests: 1');
+    expect(logSpy).not.toHaveBeenCalledWith('  Top Errors:');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('reports microservice availability success and failure', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });

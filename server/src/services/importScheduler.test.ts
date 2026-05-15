@@ -58,17 +58,22 @@ describe('import scheduler', () => {
   });
 
   it('logs current state and schedules without startup import when data is fresh', async () => {
-    const { startImportScheduler } = await import('./importScheduler.js');
+    const { getNextRunTime, startImportScheduler } = await import('./importScheduler.js');
     shouldImport.mockReturnValue(false);
+    getLastImportTime.mockReturnValueOnce(null);
 
     startImportScheduler();
 
     expect(console.log).toHaveBeenCalledWith('[Scheduler] Starting import scheduler...');
-    expect(console.log).toHaveBeenCalledWith('[Scheduler] Last import: 2026-01-01T00:00:00.000Z');
+    expect(console.log).toHaveBeenCalledWith('[Scheduler] Last import: never');
     expect(console.log).toHaveBeenCalledWith('[Scheduler] Cards in database: 123 (2.0 KB)');
     expect(console.log).toHaveBeenCalledWith('[Scheduler] Database is up to date. Next import: every Wednesday at 03:00 UTC');
     expect(cron.schedule).toHaveBeenCalledWith('0 3 * * 3', expect.any(Function), { timezone: 'UTC' });
     expect(downloadAndImportBulkData).not.toHaveBeenCalled();
+    expect(getNextRunTime('bad')).toBe('unknown');
+    expect(getNextRunTime('* * * * *')).toBe('every minute (TESTING MODE)');
+    expect(getNextRunTime('15 * * * *')).toBe('cron: 15 * * * *');
+    expect(getNextRunTime('0 3 * * 9')).toBe('every day 9 at 03:00 UTC');
   });
 
   it('runs startup and scheduled imports, refreshes catalogs, and skips overlapping runs', async () => {
@@ -104,5 +109,18 @@ describe('import scheduler', () => {
     expect(console.warn).toHaveBeenCalledWith('[Scheduler] Import failed: network down. Retrying in 30 minutes...');
     expect(console.warn).toHaveBeenCalledWith('[Scheduler] Import failed: network down. Retrying in 120 minutes...');
     expect(console.error).toHaveBeenCalledWith('[Scheduler] Import failed after 3 retries: network down');
+  });
+
+  it('normalizes non-Error import failures during retry logging', async () => {
+    const { startImportScheduler } = await import('./importScheduler.js');
+    shouldImport.mockReturnValue(true);
+    downloadAndImportBulkData.mockRejectedValue('offline');
+
+    startImportScheduler();
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(console.warn).toHaveBeenCalledWith('[Scheduler] Import failed: offline. Retrying in 5 minutes...');
+    expect(console.error).toHaveBeenCalledWith('[Scheduler] Import failed after 3 retries: offline');
   });
 });

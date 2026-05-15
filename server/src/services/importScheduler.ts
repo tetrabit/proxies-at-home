@@ -13,7 +13,7 @@ const CRON_EXPRESSION = '0 3 * * 3';
 /**
  * Calculate the next run time for a cron expression.
  */
-function getNextRunTime(cronExpr: string): string {
+export function getNextRunTime(cronExpr: string): string {
     // Parse cron expression to determine next run
     const parts = cronExpr.split(' ');
     if (parts.length !== 5) return 'unknown';

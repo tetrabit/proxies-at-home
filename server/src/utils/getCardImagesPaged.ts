@@ -19,7 +19,7 @@ class Mutex {
   private mutex = Promise.resolve();
 
   lock(): Promise<() => void> {
-    let unlock: () => void = () => { };
+    let unlock!: () => void;
     const nextMutex = new Promise<void>((resolve) => {
       unlock = resolve;
     });

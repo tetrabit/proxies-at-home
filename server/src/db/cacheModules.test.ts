@@ -69,6 +69,7 @@ describe('database-backed cache modules', () => {
   it('inserts cards, looks up by set/number and name, uses caches, and formats database size', async () => {
     const { lookupModule, sqliteCache } = await loadDbModules();
     lookupModule.insertOrUpdateCard(sampleCard());
+    lookupModule.insertOrUpdateCard(sampleCard({ id: 'card-2', collector_number: '160', image_uris: { png: 'https://example.test/bolt2.png' } }));
 
     const bySet = lookupModule.lookupCardBySetNumber('LEA', '161', 'EN');
     expect(bySet?.name).toBe('Lightning Bolt');
@@ -82,12 +83,13 @@ describe('database-backed cache modules', () => {
 
     expect(lookupModule.batchInsertCards([sampleCard({ id: 'batch-card', name: 'Batch Card', collector_number: '162' })])).toEqual({ inserted: 1, updated: 0 });
     lookupModule.insertOrUpdateCard({ name: 'Minimal Card' });
+    lookupModule.insertOrUpdateCard({});
     const minimal = lookupModule.lookupCardByName('Minimal Card');
     expect(minimal).toMatchObject({ name: 'Minimal Card', lang: 'en' });
     expect(minimal?.set).toBeUndefined();
     expect(minimal?.all_parts).toEqual([]);
 
-    expect(lookupModule.getCardCount()).toBe(3);
+    expect(lookupModule.getCardCount()).toBe(5);
     expect(lookupModule.getDbSizeBytes()).toBeGreaterThan(0);
     expect(lookupModule.formatBytes(0)).toBe('0 B');
     expect(lookupModule.formatBytes(1024)).toBe('1.0 KB');
@@ -135,6 +137,19 @@ describe('database-backed cache modules', () => {
       cacheModule.cacheMpcSearch(`q${i}`, 'CARD', cards);
     }
     expect(cacheModule.getMpcCacheStats().count).toBeLessThan(10200);
+
+    const db = dbModule.getDatabase();
+    const originalPrepare = db.prepare.bind(db);
+    vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (sql.includes('SELECT COUNT(*) as count FROM mpc_search_cache')) {
+        throw new Error('count unavailable');
+      }
+      return originalPrepare(sql);
+    });
+    for (let i = 0; i < 100; i++) {
+      cacheModule.cacheMpcSearch(`trim-error-${i}`, 'CARD', cards);
+    }
+    vi.mocked(db.prepare).mockRestore();
 
     dbModule.closeDatabase();
     expect(cacheModule.getCachedMpcSearch('x', 'CARD')).toBeNull();
