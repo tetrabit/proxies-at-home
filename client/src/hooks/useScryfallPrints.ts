@@ -216,7 +216,7 @@ export function useScryfallPrints({
                 (!hasName || entry.name === trimmedName)
               )
               .modify(updateEntries);
-          } else if (hasName) {
+          } else {
             await db.cardMetadataCache
               .where("name")
               .equals(trimmedName)
