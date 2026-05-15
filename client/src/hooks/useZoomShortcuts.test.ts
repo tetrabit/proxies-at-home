@@ -24,6 +24,7 @@ describe("useZoomShortcuts", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", ctrlKey: true }));
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "-", metaKey: true }));
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "0", ctrlKey: true }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "x", ctrlKey: true }));
       target.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, ctrlKey: true }));
     });
 

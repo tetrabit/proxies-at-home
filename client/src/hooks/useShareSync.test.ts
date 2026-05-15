@@ -33,6 +33,11 @@ describe("useShareSync", () => {
 
     expect(result.current.lastSyncedAt).toBe(222);
     expect(result.current.syncStatus).toBe("synced");
+
+    rerender();
+
+    expect(result.current.lastSyncedAt).toBe(222);
+    expect(result.current.syncStatus).toBe("synced");
   });
 
   it("stays idle when there is no project and resets on project switches", () => {

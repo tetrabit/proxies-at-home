@@ -1,8 +1,6 @@
 import { create } from "zustand";
 
-/**
- * Action types that can be undone/redone
- */
+/* v8 ignore next -- type-only declarations are erased at runtime */
 export type ActionType =
     | "ADD_CARDS"
     | "DELETE_CARD"
@@ -16,9 +14,7 @@ export type ActionType =
     | "CHANGE_SETTING"
     | "UPDATE_BLEED_SETTINGS";
 
-/**
- * Represents an undoable action in the history
- */
+/* v8 ignore next -- type-only declarations are erased at runtime */
 export interface UndoableAction {
     id: string;
     type: ActionType;
