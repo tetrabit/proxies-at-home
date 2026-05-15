@@ -64,6 +64,26 @@ describe("useAutoBackup", () => {
     );
   });
 
+  it("returns true without sending when the backup has no main cards", async () => {
+    mockExportProject.mockResolvedValue({
+      project: { name: "Project 1" },
+      cards: [{ linkedFrontId: "back-1" }],
+    });
+
+    await expect(backupProject("project-1")).resolves.toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns false when the server rejects the backup", async () => {
+    mockExportProject.mockResolvedValue({
+      project: { name: "Project 1" },
+      cards: [{ linkedFrontId: null }],
+    });
+    mockFetch.mockResolvedValue({ ok: false });
+
+    await expect(backupProject("project-1")).resolves.toBe(false);
+  });
+
   it("schedules a backup when the change signal changes", async () => {
     currentProjectId = "project-2";
     mockExportProject.mockResolvedValue({
