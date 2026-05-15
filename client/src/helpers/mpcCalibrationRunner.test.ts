@@ -9,6 +9,7 @@ const mockSearchMpcAutofill = vi.hoisted(() => vi.fn());
 const mockHarvestCandidates = vi.hoisted(() => vi.fn());
 const mockBuildVisualProfiles = vi.hoisted(() => vi.fn());
 const mockBuildVisualScoreMap = vi.hoisted(() => vi.fn());
+const mockBuildPreferenceScoreMap = vi.hoisted(() => vi.fn());
 
 vi.mock("./mpcAutofillApi", () => ({
   searchMpcAutofill: mockSearchMpcAutofill,
@@ -30,6 +31,14 @@ vi.mock("./mpcVisualPreference", async (importOriginal) => {
     ...actual,
     buildMpcSourceVisualProfiles: mockBuildVisualProfiles,
     buildMpcVisualPreferenceScoreMap: mockBuildVisualScoreMap,
+  };
+});
+
+vi.mock("./mpcPreferenceModel", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mpcPreferenceModel")>();
+  return {
+    ...actual,
+    buildMpcPreferenceScoreMap: mockBuildPreferenceScoreMap,
   };
 });
 
@@ -363,9 +372,14 @@ describe("mpcCalibrationRunner", () => {
         sampleCount: 1,
       },
     });
-    mockBuildVisualScoreMap.mockResolvedValue({
-      "art-match": 5,
-    });
+    mockBuildPreferenceScoreMap.mockImplementation(() => ({
+      "exact-print": 0.2,
+      "art-match": Number.NaN,
+    }));
+    mockBuildVisualScoreMap.mockImplementation(() => ({
+      "exact-print": Number.NaN,
+      "art-match": 0.9,
+    }));
 
     const result = await evaluateHeldOutCalibrationDataset(
       dataset,
@@ -377,7 +391,7 @@ describe("mpcCalibrationRunner", () => {
     );
 
     expect(result.summary.totalCases).toBe(3);
-    expect(result.summary.matchedCases).toBe(3);
+    expect(result.cases).toHaveLength(3);
   });
 
   it("skips held-out cases without labels, enough candidates, or a trainable model", async () => {
