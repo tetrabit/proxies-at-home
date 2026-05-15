@@ -1,8 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useNormalizedInput, usePositionInput } from "./useInputHooks";
 
 describe("useInputHooks", () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     describe("useNormalizedInput", () => {
         it("should initialize with default value", () => {
             const onChange = vi.fn();
@@ -110,6 +114,47 @@ describe("useInputHooks", () => {
 
             expect(onChange).toHaveBeenCalledWith(0.5);
         });
+
+        it("should restore the placeholder value on blur when the field is empty", () => {
+            const onChange = vi.fn();
+            const { result } = renderHook(() => useNormalizedInput(10, onChange));
+            const event = {
+                target: {
+                    value: "",
+                    placeholder: "10",
+                },
+            } as React.FocusEvent<HTMLInputElement>;
+
+            act(() => {
+                result.current.handleBlur(event);
+            });
+
+            expect(event.target.value).toBe("10");
+            expect(onChange).toHaveBeenCalledWith(10);
+        });
+
+        it("should clear clamp warnings after the timeout", async () => {
+            vi.useFakeTimers();
+
+            const onChange = vi.fn();
+            const { result } = renderHook(() =>
+                useNormalizedInput(5, onChange, { min: 1, max: 10 })
+            );
+
+            act(() => {
+                result.current.handleChange({
+                    target: { value: "100" },
+                } as React.ChangeEvent<HTMLInputElement>);
+            });
+
+            expect(result.current.warning).toBeTruthy();
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(2000);
+            });
+
+            expect(result.current.warning).toBeNull();
+        });
     });
 
     describe("usePositionInput", () => {
@@ -164,6 +209,24 @@ describe("useInputHooks", () => {
             });
 
             expect(onChange).not.toHaveBeenCalled();
+        });
+
+        it("should restore the placeholder value on blur when empty", () => {
+            const onChange = vi.fn();
+            const { result } = renderHook(() => usePositionInput(12, onChange));
+            const event = {
+                target: {
+                    value: "",
+                    placeholder: "12",
+                },
+            } as React.FocusEvent<HTMLInputElement>;
+
+            act(() => {
+                result.current.handleBlur(event);
+            });
+
+            expect(event.target.value).toBe("12");
+            expect(onChange).toHaveBeenCalledWith(12);
         });
     });
 });
