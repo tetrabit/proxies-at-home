@@ -400,8 +400,6 @@ export default function ProxyBuilderPage() {
   useAutoBackup();
 
   useEffect(() => {
-    if (!allCards) return;
-
     const processUnprocessed = async () => {
       // Use efficient cursor iteration to avoid loading all huge blobs into memory at once
       const imagesById = new Map<string, Image | Cardback>();
@@ -591,7 +589,6 @@ export default function ProxyBuilderPage() {
       });
 
       const cardsToReprocess = cardsWithImages.filter((card) => {
-        if (!card.imageId) return false;
         const img = imageMap.get(card.imageId);
         if (!img) return true; // Image record missing, reprocess
 
@@ -643,9 +640,7 @@ export default function ProxyBuilderPage() {
 
             const effectTasks = cardsToReprocess
               .filter((card) => {
-                const img = card.imageId
-                  ? freshImageMap.get(card.imageId)
-                  : undefined;
+                const img = freshImageMap.get(card.imageId!);
                 return (
                   card.overrides &&
                   hasActiveAdjustments(card.overrides) &&
