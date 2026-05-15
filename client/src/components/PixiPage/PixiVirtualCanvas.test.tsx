@@ -3,16 +3,18 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { CardWithGlobalLayout, PageLayoutInfo } from "./PixiVirtualCanvas";
 
-const pixi = vi.hoisted(() => {
-  const state = {
-    apps: [] as Array<Record<string, unknown>>,
-    containers: [] as Array<Record<string, unknown>>,
-    graphics: [] as Array<Record<string, unknown>>,
-    sprites: [] as Array<Record<string, unknown>>,
-    textures: [] as Array<{ id: string; destroy: ReturnType<typeof vi.fn> }>,
-    initShouldFail: false,
-  };
+const pixi = vi.hoisted(() => ({
+  apps: [] as Array<Record<string, unknown>>,
+  containers: [] as Array<Record<string, unknown>>,
+  graphics: [] as Array<Record<string, unknown>>,
+  sprites: [] as Array<Record<string, unknown>>,
+  textures: [] as Array<{ id: string; destroy: unknown }>,
+  initShouldFail: false,
+  Application: null as null | (new () => Record<string, unknown>),
+  Container: null as null | (new () => Record<string, unknown>),
+}));
 
+vi.mock("pixi.js", () => {
   class Container {
     label = "";
     children: unknown[] = [];
@@ -25,7 +27,7 @@ const pixi = vi.hoisted(() => {
     destroy = vi.fn();
 
     constructor() {
-      state.containers.push(this);
+      pixi.containers.push(this);
     }
   }
 
@@ -36,7 +38,7 @@ const pixi = vi.hoisted(() => {
 
     constructor() {
       super();
-      state.graphics.push(this);
+      pixi.graphics.push(this);
     }
   }
 
@@ -53,7 +55,7 @@ const pixi = vi.hoisted(() => {
 
     constructor(texture: unknown) {
       this.texture = texture;
-      state.sprites.push(this);
+      pixi.sprites.push(this);
     }
   }
 
@@ -64,54 +66,58 @@ const pixi = vi.hoisted(() => {
     render = vi.fn();
     destroy = vi.fn();
     init = vi.fn(async () => {
-      if (state.initShouldFail) throw new Error("no webgl");
+      if (pixi.initShouldFail) throw new Error("no webgl");
     });
 
     constructor() {
-      state.apps.push(this);
+      pixi.apps.push(this);
     }
   }
 
-  return { ...state, Application, Container, Graphics, Sprite };
+  pixi.Application = Application;
+  pixi.Container = Container;
+
+  return {
+    Application,
+    Container,
+    Graphics,
+    Sprite,
+    Texture: {
+      WHITE: { id: "white", destroy: vi.fn() },
+      from: vi.fn(() => {
+        const texture = { id: `texture-${pixi.textures.length}`, destroy: vi.fn() };
+        pixi.textures.push(texture);
+        return texture;
+      }),
+    },
+  };
 });
 
-vi.mock("pixi.js", () => ({
-  Application: pixi.Application,
-  Container: pixi.Container,
-  Graphics: pixi.Graphics,
-  Sprite: pixi.Sprite,
-  Texture: {
-    WHITE: { id: "white", destroy: vi.fn() },
-    from: vi.fn(() => {
-      const texture = { id: `texture-${pixi.textures.length}`, destroy: vi.fn() };
-      pixi.textures.push(texture);
-      return texture;
-    }),
-  },
+const filterState = vi.hoisted(() => ({
+  darken: [] as Array<Record<string, unknown>>,
+  adjustment: [] as Array<Record<string, unknown>>,
 }));
 
-const filterState = vi.hoisted(() => {
+vi.mock("./filters", () => {
   class Filter {
     [key: string]: unknown;
     destroy = vi.fn();
   }
-  return { darken: [] as Filter[], adjustment: [] as Filter[], Filter };
+  return {
+    DarkenFilter: class DarkenFilter extends Filter {
+      constructor() {
+        super();
+        filterState.darken.push(this);
+      }
+    },
+    AdjustmentFilter: class AdjustmentFilter extends Filter {
+      constructor() {
+        super();
+        filterState.adjustment.push(this);
+      }
+    },
+  };
 });
-
-vi.mock("./filters", () => ({
-  DarkenFilter: class DarkenFilter extends filterState.Filter {
-    constructor() {
-      super();
-      filterState.darken.push(this);
-    }
-  },
-  AdjustmentFilter: class AdjustmentFilter extends filterState.Filter {
-    constructor() {
-      super();
-      filterState.adjustment.push(this);
-    }
-  },
-}));
 
 const guideHooks = vi.hoisted(() => ({
   page: vi.fn(),
@@ -348,13 +354,13 @@ describe("PixiVirtualCanvas", () => {
   });
 
   it("reuses in-flight and existing singleton apps and reports init failures", async () => {
-    const existing = new pixi.Application();
-    const world = new pixi.Container();
+    const existing = new pixi.Application!();
+    const world = new pixi.Container!();
     pixiSingleton.app = existing as never;
     pixiSingleton.worldContainer = world as never;
-    pixiSingleton.pagesContainer = new pixi.Container() as never;
-    pixiSingleton.cardsContainer = new pixi.Container() as never;
-    pixiSingleton.guidesContainer = new pixi.Container() as never;
+    pixiSingleton.pagesContainer = new pixi.Container!() as never;
+    pixiSingleton.cardsContainer = new pixi.Container!() as never;
+    pixiSingleton.guidesContainer = new pixi.Container!() as never;
 
     const { unmount } = renderCanvas({ zoom: 1.5 });
     await waitFor(() => expect(world.scale.set).toHaveBeenCalledWith(1.5));
@@ -363,14 +369,14 @@ describe("PixiVirtualCanvas", () => {
 
     cleanup();
     resetPixiSingleton();
-    const pending = new pixi.Application();
+    const pending = new pixi.Application!();
     pixiSingleton.isInitializing = true;
     pixiSingleton.initPromise = Promise.resolve();
     pixiSingleton.app = pending as never;
-    pixiSingleton.worldContainer = new pixi.Container() as never;
-    pixiSingleton.pagesContainer = new pixi.Container() as never;
-    pixiSingleton.cardsContainer = new pixi.Container() as never;
-    pixiSingleton.guidesContainer = new pixi.Container() as never;
+    pixiSingleton.worldContainer = new pixi.Container!() as never;
+    pixiSingleton.pagesContainer = new pixi.Container!() as never;
+    pixiSingleton.cardsContainer = new pixi.Container!() as never;
+    pixiSingleton.guidesContainer = new pixi.Container!() as never;
     renderCanvas({ zoom: 1.25 });
     await waitFor(() => expect(pixiSingleton.worldContainer?.scale.set).toHaveBeenCalledWith(1.25));
 
