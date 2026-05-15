@@ -175,6 +175,7 @@ describe('ImportOrchestrator', () => {
         ];
 
         await ImportOrchestrator.process(intents);
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
         // Verify the card was added
         expect(addSpy).toHaveBeenCalledTimes(1);
