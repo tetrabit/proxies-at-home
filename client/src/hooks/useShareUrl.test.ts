@@ -166,4 +166,118 @@ describe("useShareUrl", () => {
     expect(result.current.shareData).toBe(sharedData);
     expect(window.location.search).toBe("");
   });
+
+  it("forks a dirty existing project and creates a new shared copy", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Fork Me" }],
+      dfc: [],
+      st: {},
+    };
+    const existingProject = {
+      id: "project-dirty",
+      name: "Dirty Deck",
+      lastSyncedHash: undefined,
+      settings: {},
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Fork Me" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]), delete: vi.fn().mockResolvedValue(undefined) })),
+    });
+    mockCalculateStateHash.mockResolvedValue("local-dirty-hash");
+    mockCreateProject.mockResolvedValue("project-forked");
+    vi.stubGlobal("crypto", {
+      subtle: {
+        digest: vi.fn(async () => new Uint8Array(32).fill(2).buffer),
+      },
+    });
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockCreateProject).toHaveBeenCalledWith("Fork Me (Shared)"));
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+
+    expect(mockShowInfoToast).toHaveBeenCalledWith("Local changes detected. Created new copy of shared deck.");
+    expect(result.current.error).toBeNull();
+    expect(result.current.shareData).toBe(sharedData);
+  });
+
+  it("overwrites a clean but out-of-date project", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Overwrite Me" }],
+      dfc: [],
+      st: {},
+    };
+    const existingProject = {
+      id: "project-clean",
+      name: "Clean Deck",
+      lastSyncedHash: "local-clean-hash",
+      settings: {},
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Overwrite Me" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({
+        toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]),
+        delete: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    mockCalculateStateHash.mockResolvedValue("local-clean-hash");
+    mockProcess.mockImplementation(async (_intents, options) => {
+      await options.onComplete();
+    });
+    vi.stubGlobal("crypto", {
+      subtle: {
+        digest: vi.fn(async () => new Uint8Array(32).fill(3).buffer),
+      },
+    });
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+    await waitFor(() => expect(mockShowSuccessToast).toHaveBeenCalledWith('Updated "Clean Deck" from share'));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.shareData).toBe(sharedData);
+  });
+
+  it("reports an error when the shared deck has no cards", async () => {
+    mockLoadShare.mockResolvedValue({
+      v: 1 as const,
+      c: [],
+      dfc: [],
+      st: {},
+    });
+    mockDeserializeForImport.mockReturnValue({
+      cards: [],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(result.current.error).toBe("Shared deck contains no cards"));
+    expect(mockShowErrorToast).toHaveBeenCalledWith("Shared deck contains no cards");
+  });
 });
