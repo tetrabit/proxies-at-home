@@ -208,7 +208,7 @@ describe('DarkenSection', () => {
         it('should show a plus sign for positive brightness values', () => {
             mockState.darkenBrightness = 20;
             render(<DarkenSection />);
-            expect(screen.getByText('+20')).toBeDefined();
+            expect(screen.getByDisplayValue('20').getAttribute('data-display')).toBe('+20');
         });
     });
 
