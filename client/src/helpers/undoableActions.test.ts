@@ -141,6 +141,7 @@ describe("undoableActions", () => {
       await undoableReorderCards("card-123", 0, 2);
 
       const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.update).mockClear();
       await pushedAction.undo();
       await pushedAction.redo();
 
@@ -189,15 +190,16 @@ describe("undoableActions", () => {
       await undoableReorderMultipleCards(adjustments);
 
       const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.update).mockClear();
       await pushedAction.undo();
       await pushedAction.redo();
 
-      expect(db.cards.bulkUpdate).toHaveBeenNthCalledWith(1, [
-        { key: "card-1", changes: { order: 0 } },
-      ]);
-      expect(db.cards.bulkUpdate).toHaveBeenNthCalledWith(2, [
-        { key: "card-1", changes: { order: 2 } },
-      ]);
+      expect(db.cards.update).toHaveBeenNthCalledWith(1, "card-1", {
+        order: 0,
+      });
+      expect(db.cards.update).toHaveBeenNthCalledWith(2, "card-1", {
+        order: 2,
+      });
     });
   });
   describe("undoableDeleteCard", () => {
