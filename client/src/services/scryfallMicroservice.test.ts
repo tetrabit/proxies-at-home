@@ -1,19 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const clientMethods = {
-  searchCards: vi.fn(),
-  getCardByName: vi.fn(),
-  getCard: vi.fn(),
-  getStats: vi.fn(),
-  health: vi.fn(),
-};
+const scryfallMocks = vi.hoisted(() => {
+  const clientMethods = {
+    searchCards: vi.fn(),
+    getCardByName: vi.fn(),
+    getCard: vi.fn(),
+    getStats: vi.fn(),
+    health: vi.fn(),
+  };
+  const constructClient = vi.fn();
 
-const ScryfallCacheClient = vi.fn(function (_options: unknown) {
-  return clientMethods;
+  function ScryfallCacheClient(options: unknown) {
+    constructClient(options);
+    return clientMethods;
+  }
+
+  return { clientMethods, constructClient, ScryfallCacheClient };
 });
 
+const { clientMethods, constructClient } = scryfallMocks;
+
 vi.mock("@tetrabit/scryfall-cache-client", () => ({
-  ScryfallCacheClient,
+  ScryfallCacheClient: scryfallMocks.ScryfallCacheClient,
 }));
 
 const loadModule = async () => {
@@ -25,6 +33,7 @@ describe("scryfallMicroservice", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.values(clientMethods).forEach((method) => method.mockReset());
+    constructClient.mockClear();
     vi.stubGlobal("window", {
       electronAPI: {
         getMicroserviceUrl: vi.fn().mockResolvedValue("http://127.0.0.1:4567"),
@@ -41,7 +50,7 @@ describe("scryfallMicroservice", () => {
     expect(first).toBe(clientMethods);
     expect(second).toBe(first);
     expect(window.electronAPI.getMicroserviceUrl).toHaveBeenCalledTimes(1);
-    expect(ScryfallCacheClient).toHaveBeenCalledWith({
+    expect(constructClient).toHaveBeenCalledWith({
       baseUrl: "http://127.0.0.1:4567",
       timeout: 30000,
     });

@@ -3,25 +3,51 @@ import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_RENDER_PARAMS } from "../../CardCanvas";
+import { darkenModeToInt } from "../../CardCanvas/types";
+import { ColorEffectsSection } from "./ColorEffectsSection";
 import { ColorReplaceSection } from "./ColorReplaceSection";
 import { EnhanceSection } from "./EnhanceSection";
 import { GammaSection } from "./GammaSection";
 import { HolographicSection } from "./HolographicSection";
 
 vi.mock("../../common/StyledSlider", () => ({
-  StyledSlider: ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => (
+  StyledSlider: ({
+    label,
+    value,
+    onChange,
+  }: {
+    label: string;
+    value: number;
+    onChange: (v: number) => void;
+  }) => (
     <label>
       {label}
-      <input aria-label={label} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
     </label>
   ),
 }));
 
 vi.mock("../../common/ColorPicker", () => ({
-  ColorPicker: ({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) => (
+  ColorPicker: ({
+    label,
+    value,
+    onChange,
+  }: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+  }) => (
     <label>
       {label}
-      <input aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} />
+      <input
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </label>
   ),
 }));
@@ -29,13 +55,74 @@ vi.mock("../../common/ColorPicker", () => ({
 describe("residual CardEditor sections", () => {
   const updateParam = vi.fn();
 
+  const selectByLabelText = (label: string) => {
+    const select = screen
+      .getByText(label)
+      .parentElement?.querySelector("select");
+    expect(select).toBeInstanceOf(HTMLSelectElement);
+    return select as HTMLSelectElement;
+  };
+
+  const checkboxByText = (label: string) => {
+    const checkbox = screen
+      .getByText(label)
+      .closest("label")
+      ?.querySelector('input[type="checkbox"]');
+    expect(checkbox).toBeInstanceOf(HTMLInputElement);
+    return checkbox as HTMLInputElement;
+  };
+
   beforeEach(() => {
     updateParam.mockClear();
   });
 
+  it("renders color effect balance controls", () => {
+    render(
+      <ColorEffectsSection
+        params={DEFAULT_RENDER_PARAMS}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
+
+    [
+      ["Hue Shift", "12", "hueShift", 12],
+      ["Sepia", "0.5", "sepia", 0.5],
+      ["Tint Color", "#abcdef", "tintColor", "#abcdef"],
+      ["Tint Amount", "0.75", "tintAmount", 0.75],
+      ["Red", "10", "redBalance", 10],
+      ["Green", "-10", "greenBalance", -10],
+      ["Blue", "20", "blueBalance", 20],
+      ["Cyan", "11", "cyanBalance", 11],
+      ["Magenta", "-12", "magentaBalance", -12],
+      ["Yellow", "13", "yellowBalance", 13],
+      ["Black", "-14", "blackBalance", -14],
+      ["Shadows", "15", "shadowsIntensity", 15],
+      ["Midtones", "-16", "midtonesIntensity", -16],
+      ["Highlights", "17", "highlightsIntensity", 17],
+    ].forEach(([label, value, param, expected]) => {
+      fireEvent.change(screen.getByLabelText(label as string), {
+        target: { value },
+      });
+      expect(updateParam).toHaveBeenCalledWith(param, expected);
+    });
+  });
+
+  it("maps darken modes for shader uniform consumers", () => {
+    expect(darkenModeToInt("none")).toBe(0);
+    expect(darkenModeToInt("darken-all")).toBe(1);
+    expect(darkenModeToInt("contrast-edges")).toBe(2);
+    expect(darkenModeToInt("contrast-full")).toBe(3);
+    expect(darkenModeToInt("unexpected" as never)).toBe(0);
+  });
+
   it("renders disabled color replacement and enables nested controls", () => {
     const { rerender } = render(
-      <ColorReplaceSection params={DEFAULT_RENDER_PARAMS} defaultParams={DEFAULT_RENDER_PARAMS} updateParam={updateParam} />
+      <ColorReplaceSection
+        params={DEFAULT_RENDER_PARAMS}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
     );
 
     fireEvent.click(screen.getByLabelText("Enable Color Replace"));
@@ -49,9 +136,15 @@ describe("residual CardEditor sections", () => {
         updateParam={updateParam}
       />
     );
-    fireEvent.change(screen.getByLabelText("Source Color"), { target: { value: "#123456" } });
-    fireEvent.change(screen.getByLabelText("Target Color"), { target: { value: "#654321" } });
-    fireEvent.change(screen.getByLabelText("Threshold"), { target: { value: "44" } });
+    fireEvent.change(screen.getByLabelText("Source Color"), {
+      target: { value: "#123456" },
+    });
+    fireEvent.change(screen.getByLabelText("Target Color"), {
+      target: { value: "#654321" },
+    });
+    fireEvent.change(screen.getByLabelText("Threshold"), {
+      target: { value: "44" },
+    });
 
     expect(updateParam).toHaveBeenCalledWith("colorReplaceSource", "#123456");
     expect(updateParam).toHaveBeenCalledWith("colorReplaceTarget", "#654321");
@@ -59,12 +152,22 @@ describe("residual CardEditor sections", () => {
   });
 
   it("renders enhancement controls and CMYK toggle", () => {
-    render(<EnhanceSection params={DEFAULT_RENDER_PARAMS} defaultParams={DEFAULT_RENDER_PARAMS} updateParam={updateParam} />);
+    render(
+      <EnhanceSection
+        params={DEFAULT_RENDER_PARAMS}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
 
-    fireEvent.change(screen.getByLabelText("Sharpness"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Sharpness"), {
+      target: { value: "2" },
+    });
     fireEvent.change(screen.getByLabelText("Pop"), { target: { value: "33" } });
-    fireEvent.change(screen.getByLabelText("Noise Reduction"), { target: { value: "12" } });
-    fireEvent.click(screen.getByLabelText("CMYK Preview"));
+    fireEvent.change(screen.getByLabelText("Noise Reduction"), {
+      target: { value: "12" },
+    });
+    fireEvent.click(checkboxByText("CMYK Preview"));
 
     expect(updateParam).toHaveBeenCalledWith("sharpness", 2);
     expect(updateParam).toHaveBeenCalledWith("pop", 33);
@@ -73,9 +176,17 @@ describe("residual CardEditor sections", () => {
   });
 
   it("renders gamma control", () => {
-    render(<GammaSection params={DEFAULT_RENDER_PARAMS} defaultParams={DEFAULT_RENDER_PARAMS} updateParam={updateParam} />);
+    render(
+      <GammaSection
+        params={DEFAULT_RENDER_PARAMS}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
 
-    fireEvent.change(screen.getByLabelText("Gamma"), { target: { value: "1.75" } });
+    fireEvent.change(screen.getByLabelText("Gamma"), {
+      target: { value: "1.75" },
+    });
 
     expect(updateParam).toHaveBeenCalledWith("gamma", 1.75);
   });
@@ -87,20 +198,50 @@ describe("residual CardEditor sections", () => {
       holoAreaMode: "bright" as const,
       holoAnimation: "sweep" as const,
     };
-    render(<HolographicSection params={params} defaultParams={DEFAULT_RENDER_PARAMS} updateParam={updateParam} />);
+    render(
+      <HolographicSection
+        params={params}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
 
-    fireEvent.change(screen.getByLabelText("Effect Type"), { target: { value: "stars" } });
-    fireEvent.change(screen.getByLabelText("Star Size"), { target: { value: "75" } });
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "25" } });
-    fireEvent.change(screen.getByLabelText("Shift Position"), { target: { value: "15" } });
-    fireEvent.change(screen.getByLabelText("Blur"), { target: { value: "35" } });
-    fireEvent.change(screen.getByLabelText("Strength"), { target: { value: "80" } });
-    fireEvent.change(screen.getByLabelText("Apply To"), { target: { value: "full" } });
-    fireEvent.change(screen.getByLabelText("Brightness Threshold"), { target: { value: "60" } });
-    fireEvent.change(screen.getByLabelText("Animation"), { target: { value: "twinkle" } });
-    fireEvent.change(screen.getByLabelText("Speed"), { target: { value: "8" } });
-    fireEvent.change(screen.getByLabelText("Band Width"), { target: { value: "40" } });
-    fireEvent.change(screen.getByLabelText("Export Mode"), { target: { value: "none" } });
+    fireEvent.change(selectByLabelText("Effect Type"), {
+      target: { value: "stars" },
+    });
+    fireEvent.change(screen.getByLabelText("Glitter Size"), {
+      target: { value: "75" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "25" },
+    });
+    fireEvent.change(screen.getByLabelText("Shift Position"), {
+      target: { value: "15" },
+    });
+    fireEvent.change(screen.getByLabelText("Blur"), {
+      target: { value: "35" },
+    });
+    fireEvent.change(screen.getByLabelText("Strength"), {
+      target: { value: "80" },
+    });
+    fireEvent.change(selectByLabelText("Apply To"), {
+      target: { value: "full" },
+    });
+    fireEvent.change(screen.getByLabelText("Brightness Threshold"), {
+      target: { value: "60" },
+    });
+    fireEvent.change(selectByLabelText("Animation"), {
+      target: { value: "twinkle" },
+    });
+    fireEvent.change(screen.getByLabelText("Speed"), {
+      target: { value: "8" },
+    });
+    fireEvent.change(screen.getByLabelText("Band Width"), {
+      target: { value: "40" },
+    });
+    fireEvent.change(selectByLabelText("Export Mode"), {
+      target: { value: "none" },
+    });
 
     expect(updateParam).toHaveBeenCalledWith("holoEffect", "stars");
     expect(updateParam).toHaveBeenCalledWith("holoStarSize", 75);
@@ -117,9 +258,15 @@ describe("residual CardEditor sections", () => {
   });
 
   it("hides holographic effect controls when no effect is selected", () => {
-    render(<HolographicSection params={DEFAULT_RENDER_PARAMS} defaultParams={DEFAULT_RENDER_PARAMS} updateParam={updateParam} />);
+    render(
+      <HolographicSection
+        params={DEFAULT_RENDER_PARAMS}
+        defaultParams={DEFAULT_RENDER_PARAMS}
+        updateParam={updateParam}
+      />
+    );
 
-    expect(screen.getByLabelText("Effect Type")).toBeInTheDocument();
+    expect(screen.getByText("Effect Type")).toBeInTheDocument();
     expect(screen.queryByLabelText("Strength")).not.toBeInTheDocument();
     expect(screen.queryByText("Twinkle")).not.toBeInTheDocument();
   });
