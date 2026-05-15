@@ -13,13 +13,19 @@ vi.mock("./imageHelper", () => ({
 }));
 
 import {
+  bucketBySetOnly,
+  computeBlockScore,
+  normalizeBitmap,
+  prioritizePreferredCandidate,
   selectBestCandidate,
   rankCandidates,
   createSsimCompare,
   filterByExactName,
+  sortByDpiThenId,
   normalizeName,
   computeSobelMagnitude,
   computeEdgeScore,
+  type RankedCandidate,
   type SsimCompareFn,
 } from "./mpcBulkUpgradeMatcher";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
