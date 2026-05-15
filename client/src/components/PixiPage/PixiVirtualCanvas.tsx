@@ -935,7 +935,8 @@ const CARD_SHALLOW_KEYS: (keyof CardWithGlobalLayout)[] = [
     'frontImageId', 'backImageId', // Important for detecting artwork changes even if blob refs stay same
 ];
 
-function arePropsEqual(prevProps: PixiVirtualCanvasProps, nextProps: PixiVirtualCanvasProps): boolean {
+// eslint-disable-next-line react-refresh/only-export-components
+export function arePixiVirtualCanvasPropsEqual(prevProps: PixiVirtualCanvasProps, nextProps: PixiVirtualCanvasProps): boolean {
     // Check all shallow-compare props
     for (const key of SHALLOW_COMPARE_KEYS) {
         if (prevProps[key] !== nextProps[key]) return false;
@@ -966,5 +967,5 @@ function arePropsEqual(prevProps: PixiVirtualCanvasProps, nextProps: PixiVirtual
     return true;
 }
 
-const PixiVirtualCanvas = memo(PixiVirtualCanvasInner, arePropsEqual);
+const PixiVirtualCanvas = memo(PixiVirtualCanvasInner, arePixiVirtualCanvasPropsEqual);
 export default PixiVirtualCanvas;
