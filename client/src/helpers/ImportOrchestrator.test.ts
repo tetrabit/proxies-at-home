@@ -695,19 +695,66 @@ describe('ImportOrchestrator', () => {
             expect(intents).toHaveLength(0);
         });
 
+        it('buildMissingTokenIntents extracts token print metadata from valid URIs and ignores malformed URLs', () => {
+            const cards = [
+                {
+                    uuid: 'front-1',
+                    name: 'Token Maker',
+                    isUserUpload: false,
+                    token_parts: [
+                        { name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' },
+                        { name: 'Clue', uri: 'bad-url' },
+                    ],
+                },
+            ] as CardOption[];
+
+            const intents = ImportOrchestrator.buildMissingTokenIntents(cards);
+
+            expect(intents).toEqual([
+                expect.objectContaining({
+                    name: 'Treasure',
+                    set: 'tfdn',
+                    number: '42',
+                    tokenAddedFrom: ['Token Maker'],
+                }),
+                expect.objectContaining({
+                    name: 'Clue',
+                    set: undefined,
+                    number: undefined,
+                }),
+            ]);
+        });
+
         it('enrichTokenData fetches token parts for cards without them', async () => {
-            // This test verifies the method exists and can be called
-            // Full integration testing requires DB and API mocks
-            const spy = vi.spyOn(ImportOrchestrator, 'enrichTokenData');
+            const tokenFetchSpy = vi.mocked(tokenApiModule.fetchTokenParts).mockResolvedValue({
+                success: true,
+                data: [
+                    {
+                        name: 'Treasure Maker',
+                        set: 'abc',
+                        number: '1',
+                        token_parts: [{ name: 'Treasure Token' }],
+                    },
+                ],
+            });
 
-            // Mock the db import - since we're testing the interface, just verify it's callable
-            try {
-                await ImportOrchestrator.enrichTokenData();
-            } catch {
-                // Expected to fail due to mocked dependencies
-            }
+            const cards = [
+                {
+                    uuid: 'maker-1',
+                    name: 'Treasure Maker',
+                    set: 'abc',
+                    number: '1',
+                    isUserUpload: false,
+                },
+            ] as CardOption[];
 
-            expect(spy).toHaveBeenCalled();
+            await ImportOrchestrator.enrichTokenData(undefined, cards, false);
+
+            expect(tokenFetchSpy).toHaveBeenCalledWith([{ name: 'Treasure Maker', set: 'abc', number: '1' }], undefined);
+            expect(dbState.update).toHaveBeenCalledWith('maker-1', expect.objectContaining({
+                token_parts: [{ name: 'Treasure Token' }],
+                needs_token: true,
+            }));
         });
 
         it('importMissingTokens calls enrichTokenData with fetched cards', async () => {

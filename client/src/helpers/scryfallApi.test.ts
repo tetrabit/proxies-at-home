@@ -91,6 +91,56 @@ describe('scryfallApi', () => {
         it('should return an empty array when the response has no data', () => {
             expect(mapResponseToCards({})).toEqual([]);
         });
+
+        it('should map raw and card-face metadata from microservice-style responses', () => {
+            const cards = mapResponseToCards({
+                data: [
+                    {
+                        name: 'Split Card',
+                        set: 'sp1',
+                        collector_number: '7',
+                        lang: 'en',
+                        image_uris: { png: 'http://example.com/split.png' },
+                        card_faces: [
+                            { name: 'Split Front', image_uris: { large: 'http://example.com/front-large.jpg' } },
+                            { image_uris: { normal: 'http://example.com/back-normal.jpg' } },
+                        ],
+                        all_parts: [
+                            { object: 'related_card', id: 'tok-1', component: 'token', name: 'Split Token', type_line: 'Token', uri: 'https://example.com/tok-1' },
+                        ],
+                    },
+                    {
+                        name: 'Fallback Card',
+                        set: 'sp2',
+                        collector_number: '8',
+                        lang: 'en',
+                        card_faces: [
+                            { image_uris: { normal: 'http://example.com/fallback-front.jpg' } },
+                            { image_uris: { large: 'http://example.com/fallback-back.jpg' } },
+                        ],
+                    },
+                ],
+            });
+
+            expect(cards[0]).toMatchObject({
+                name: 'Split Card',
+                imageUrls: ['http://example.com/split.png'],
+                card_faces: [
+                    { name: 'Split Front', imageUrl: 'http://example.com/front-large.jpg' },
+                    { name: 'Split Card', imageUrl: 'http://example.com/back-normal.jpg' },
+                ],
+                token_parts: [{ name: 'Split Token', id: 'tok-1', uri: 'https://example.com/tok-1' }],
+                needs_token: true,
+            });
+            expect(cards[1]).toMatchObject({
+                name: 'Fallback Card',
+                imageUrls: ['http://example.com/fallback-front.jpg', 'http://example.com/fallback-back.jpg'],
+                card_faces: [
+                    { name: 'Fallback Card', imageUrl: 'http://example.com/fallback-front.jpg' },
+                    { name: '', imageUrl: 'http://example.com/fallback-back.jpg' },
+                ],
+            });
+        });
     });
 
     describe('searchCards', () => {
@@ -135,6 +185,36 @@ describe('scryfallApi', () => {
                 number: '7',
                 imageUrls: ['http://example.com/micro-ring.jpg'],
             });
+        });
+
+        it('should fall back to server search when the microservice returns an unsuccessful response', async () => {
+            const searchCardsMock = vi.fn().mockResolvedValue({ success: false, data: null });
+            microserviceState.client = {
+                searchCards: searchCardsMock,
+                autocomplete: vi.fn(),
+                getCardByName: vi.fn(),
+            };
+            (window as typeof window & { electronAPI?: { getMicroserviceUrl: () => string } }).electronAPI = {
+                getMicroserviceUrl: () => 'http://microservice.test',
+            };
+            mockGet.mockResolvedValue({
+                data: {
+                    data: [
+                        {
+                            name: 'Server Ring',
+                            set: 'srv',
+                            collector_number: '9',
+                            image_uris: { normal: 'http://example.com/server-ring.jpg' },
+                            lang: 'en',
+                        },
+                    ],
+                },
+            });
+
+            const result = await searchCards('Server Ring');
+
+            expect(searchCardsMock).toHaveBeenCalled();
+            expect(result[0]).toMatchObject({ name: 'Server Ring', set: 'srv' });
         });
 
         it('should fall back to server search when the microservice fails', async () => {
