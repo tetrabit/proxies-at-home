@@ -56,4 +56,20 @@ describe('AutoTooltip', () => {
     act(() => vi.advanceTimersByTime(300));
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
+
+  it('cleans up pending timers on unmount', () => {
+    const { unmount } = render(
+      <AutoTooltip mobile timeout={100} content="Tap help">
+        <button>?</button>
+      </AutoTooltip>
+    );
+
+    fireEvent.click(screen.getByText('?'));
+    expect(screen.getByRole('tooltip')).toBeDefined();
+
+    unmount();
+    act(() => vi.advanceTimersByTime(1000));
+
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
 });
