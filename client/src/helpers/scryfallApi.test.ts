@@ -392,6 +392,30 @@ describe('scryfallApi', () => {
         });
     });
 
+    describe('fetchCardBySetAndNumber', () => {
+        it('should fetch and map a specific printing by set and collector number', async () => {
+            mockGet.mockResolvedValue({
+                data: {
+                    name: 'Set Card',
+                    set: 'set',
+                    collector_number: '27',
+                    image_uris: { png: 'http://example.com/set-card.png' },
+                    lang: 'en',
+                },
+            });
+
+            const result = await fetchCardBySetAndNumber('set', '27');
+
+            expect(mockGet).toHaveBeenCalledWith('/cards/set/27', expect.objectContaining({ signal: undefined }));
+            expect(result).toMatchObject({
+                name: 'Set Card',
+                set: 'set',
+                number: '27',
+                imageUrls: ['http://example.com/set-card.png'],
+            });
+        });
+    });
+
     describe('fetchCardWithPrints', () => {
         beforeEach(() => {
             // Mock global fetch for this suite
