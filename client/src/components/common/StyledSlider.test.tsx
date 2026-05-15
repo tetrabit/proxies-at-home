@@ -120,6 +120,17 @@ describe('StyledSlider', () => {
             expect(defaultProps.onChange).not.toHaveBeenCalled();
         });
 
+        it('should restore decimal formatting on Escape when step is less than 1', () => {
+            render(<StyledSlider {...defaultProps} value={0.5} step={0.1} />);
+            const input = screen.getByRole('textbox') as HTMLInputElement;
+
+            fireEvent.focus(input);
+            fireEvent.change(input, { target: { value: '0.75' } });
+            fireEvent.keyDown(input, { key: 'Escape' });
+
+            expect(input.value).toBe('0.50');
+        });
+
         it('should ignore unrelated keys while editing', () => {
             render(<StyledSlider {...defaultProps} value={50} />);
             const input = screen.getByRole('textbox') as HTMLInputElement;
