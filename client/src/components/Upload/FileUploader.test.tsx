@@ -41,12 +41,12 @@ vi.mock('@/db', () => ({
 }));
 
 vi.mock('../common', () => ({
-  SplitButton: ({ label, sublabel, htmlFor, isOpen, onToggle, onSelect, options }: { label: string; sublabel?: string; htmlFor: string; isOpen: boolean; onToggle: () => void; onSelect: (value: string) => void; options: Array<{ value: string; label: string }> }) => (
+  SplitButton: ({ label, sublabel, htmlFor, isOpen, onToggle, onSelect, onClose, options }: { label: string; sublabel?: string; htmlFor: string; isOpen: boolean; onToggle: () => void; onSelect: (value: string) => void; onClose: () => void; options: Array<{ value: string; label: string }> }) => (
     <div>
       <label htmlFor={htmlFor}>{label}</label>
       <span>{sublabel}</span>
       <button onClick={onToggle}>modes</button>
-      {isOpen && options.map((option) => <button key={option.value} onClick={() => onSelect(option.value)}>{option.label}</button>)}
+      {isOpen && options.map((option) => <button key={option.value} onClick={() => { onSelect(option.value); onClose(); }}>{option.label}</button>)}
     </div>
   ),
 }));
@@ -101,6 +101,7 @@ describe('FileUploader', () => {
     uploadFiles([new File(['std'], 'std.jpg', { type: 'image/jpeg' })]);
     await waitFor(() => expect(mocks.addCustomImage).toHaveBeenCalledWith(expect.any(File), '-std'));
 
+    fireEvent.click(screen.getByText('modes'));
     fireEvent.click(screen.getByText('With Bleed'));
     uploadFiles([new File(['mpc'], 'mpc.jpg', { type: 'image/jpeg' })]);
     await waitFor(() => expect(mocks.addCustomImage).toHaveBeenCalledWith(expect.any(File), '-mpc'));
@@ -124,6 +125,18 @@ describe('FileUploader', () => {
       displayName: 'Back One',
       hasBuiltInBleed: true,
     });
+  });
+
+  it('shows the singular cardback toast when only one file is uploaded', async () => {
+    render(<FileUploader />);
+    fireEvent.click(screen.getByText('modes'));
+    fireEvent.click(screen.getByText('Cardback'));
+
+    const file = new File(['back'], 'Solo Back.png', { type: 'image/png' });
+    uploadFiles([file]);
+
+    await waitFor(() => expect(mocks.cardbacksAdd).toHaveBeenCalledTimes(1));
+    expect(mocks.showSuccessToast).toHaveBeenCalledWith('cardback to library');
   });
 
   it('clears the hidden file input on click and ignores empty changes', () => {
