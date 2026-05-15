@@ -549,6 +549,47 @@ describe("useShareUrl", () => {
     expect(settingsStore.setDpi).toHaveBeenCalledWith(300);
   });
 
+  it("skips shared-setting setters when the share payload includes an empty settings object", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Minimal" }],
+      dfc: [],
+      st: {},
+    };
+    const settingsStore = createSettingsStoreSpies();
+    const existingProject = {
+      id: "project-empty-settings",
+      name: "Empty Settings Deck",
+      lastSyncedHash: "local-clean-hash",
+      settings: {},
+    };
+
+    mockSettingsGetState.mockReturnValue(settingsStore);
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Minimal" }],
+      dfcLinks: [],
+      settings: {},
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]), delete: vi.fn().mockResolvedValue(undefined) })),
+    });
+    mockCalculateStateHash.mockResolvedValue("local-clean-hash");
+    mockProcess.mockImplementation(async (_intents, options) => {
+      await options.onComplete();
+    });
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+    expect(settingsStore.setPageSizePreset).not.toHaveBeenCalled();
+    expect(settingsStore.setColumns).not.toHaveBeenCalled();
+    expect(settingsStore.setDpi).not.toHaveBeenCalled();
+  });
+
   it("reports an error when the shared deck has no cards", async () => {
     mockLoadShare.mockResolvedValue({
       v: 1 as const,
