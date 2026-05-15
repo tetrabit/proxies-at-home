@@ -565,6 +565,60 @@ describe("useScryfallPrints", () => {
     vi.useRealTimers();
   });
 
+  it("drops a stale cached oracle lookup after the oracle id changes", async () => {
+    const firstLookup = deferred<
+      | {
+          hasFullPrints: true;
+          data: { prints: Array<{ imageUrl: string }> };
+        }
+      | undefined
+    >();
+    let lookupCount = 0;
+
+    vi.spyOn(db.cardMetadataCache, "where").mockImplementation((column: string) => {
+      expect(column).toBe("oracle_id");
+      lookupCount += 1;
+      return {
+        equals: vi.fn(() => ({
+          first: vi.fn(() =>
+            lookupCount === 1 ? firstLookup.promise : Promise.resolve(undefined)
+          ),
+        })),
+      } as never;
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/fresh-cache.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderHook(
+      ({ oracleId }) =>
+        useScryfallPrints({
+          name: "Cache Race",
+          oracleId,
+        }),
+      { initialProps: { oracleId: "oracle-race-a" } }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    rerender({ oracleId: "oracle-race-b" });
+    await new Promise((resolve) => setTimeout(resolve, 140));
+
+    firstLookup.resolve({
+      hasFullPrints: true,
+      data: { prints: [{ imageUrl: "https://example.com/stale-cache.png" }] },
+    });
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+  });
+
   it("handles a successful response that omits the prints array", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
