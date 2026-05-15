@@ -70,6 +70,19 @@ describe("printerCalibrationApi – network error normalization", () => {
       expect(err).toBeInstanceOf(CalibrationApiUnavailableError);
       expect((err as Error).message).toMatch(/printer calibration service is unavailable/i);
     });
+
+    it("falls back to the default message when the error body is not JSON", async () => {
+      mockFetch.mockResolvedValueOnce({
+        status: 500,
+        ok: false,
+        statusText: "Server Error",
+        json: () => Promise.reject(new Error("not json")),
+      } as unknown as Response);
+
+      const err = await getPrinterProfiles().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CalibrationApiUnavailableError);
+      expect((err as Error).message).toMatch(/printer calibration service is unavailable/i);
+    });
   });
 
   describe("createPrinterProfile", () => {

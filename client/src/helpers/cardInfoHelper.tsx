@@ -80,8 +80,8 @@ export function extractCardInfo(input: string, quantity: number = 1): CardInfo {
   const setColonTail = /\s*(?:set:|\bs:)([a-z0-9]+)\s*$/i;
   const numColonTail = /\s*(?:num:|cn:)([a-z0-9]+)\s*$/i;
 
-  let parsing = true;
-  while (parsing) {
+  let parsing = false;
+  do {
     parsing = false;
 
     // 1. Try to extract Set/Num from [Set] {Num} or [Set]
@@ -89,7 +89,7 @@ export function extractCardInfo(input: string, quantity: number = 1): CardInfo {
       const m = s.match(setNumBrackets);
       if (m) {
         setCode = m[1].toLowerCase();
-        if (m[2]) number = m[2];
+        number = m[2];
         s = s.replace(setNumBrackets, "").trim();
         parsing = true;
         continue;
@@ -152,7 +152,8 @@ export function extractCardInfo(input: string, quantity: number = 1): CardInfo {
       parsing = true;
       continue;
     }
-  }
+
+  } while (parsing);
 
   return { name: s, quantity, set: setCode, number, mpcIdentifier, isToken };
 }
