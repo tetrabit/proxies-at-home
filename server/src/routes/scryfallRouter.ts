@@ -572,7 +572,12 @@ router.get("/prints", async (req: Request, res: Response) => {
         }
         const filteredPrints = prints
             .filter((print) => !(print.isFoilOnly && imageHasNonfoil.get(print.imageUrl)))
-            .map(({ isFoilOnly: _isFoilOnly, hasNonfoil: _hasNonfoil, ...print }) => print);
+            .map((print) => {
+                const { isFoilOnly, hasNonfoil, ...publicPrint } = print;
+                void isFoilOnly;
+                void hasNonfoil;
+                return publicPrint;
+            });
 
         const result = {
             name: name || null,

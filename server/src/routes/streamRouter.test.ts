@@ -315,7 +315,7 @@ describe("Stream Router", () => {
     });
 
     it("returns metadata for batch hits, fallback hits, misses, per-card errors, empty input, and fatal failures", async () => {
-        let batchResults = new Map();
+        const batchResults = new Map();
         batchResults.set("sol ring", {
             name: "Sol Ring",
             image_uris: { png: "sol.png" },
