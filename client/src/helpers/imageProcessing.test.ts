@@ -285,12 +285,13 @@ describe('imageProcessing', () => {
             const canvas = new OffscreenCanvas(20, 20);
             const ctx = canvas.getContext('2d')!;
 
-            // Fill with noise
+            // Fill deterministic high-variance, non-black pixels so the later
+            // flat patch exercises the "replace current best" branch.
             const imgData = ctx.createImageData(20, 20);
             for (let i = 0; i < imgData.data.length; i += 4) {
-                imgData.data[i] = Math.floor(Math.random() * 255);
-                imgData.data[i + 1] = Math.floor(Math.random() * 255);
-                imgData.data[i + 2] = Math.floor(Math.random() * 255);
+                imgData.data[i] = 255;
+                imgData.data[i + 1] = 0;
+                imgData.data[i + 2] = 128;
                 imgData.data[i + 3] = 255;
             }
 
@@ -307,6 +308,35 @@ describe('imageProcessing', () => {
 
             const result = getPatchNearCorner(ctx, 0, 0, 4);
             expect(result).toEqual({ sx: 4, sy: 4 });
+        });
+
+        it('should replace the initial qualifying patch when a lower-variance patch is found', () => {
+            const canvas = new OffscreenCanvas(8, 4);
+            const ctx = canvas.getContext('2d')!;
+            const imgData = ctx.createImageData(8, 4);
+
+            for (let y = 0; y < 4; y++) {
+                for (let x = 0; x < 4; x++) {
+                    const idx = (y * 8 + x) * 4;
+                    imgData.data[idx] = 255;
+                    imgData.data[idx + 1] = 0;
+                    imgData.data[idx + 2] = 0;
+                    imgData.data[idx + 3] = 255;
+                }
+            }
+            for (let y = 0; y < 4; y++) {
+                for (let x = 4; x < 8; x++) {
+                    const idx = (y * 8 + x) * 4;
+                    imgData.data[idx] = 100;
+                    imgData.data[idx + 1] = 100;
+                    imgData.data[idx + 2] = 100;
+                    imgData.data[idx + 3] = 255;
+                }
+            }
+            ctx.putImageData(imgData, 0, 0);
+
+            const result = getPatchNearCorner(ctx, 0, 0, 4);
+            expect(result).toEqual({ sx: 4, sy: 0 });
         });
 
         it('should count black pixels', () => {

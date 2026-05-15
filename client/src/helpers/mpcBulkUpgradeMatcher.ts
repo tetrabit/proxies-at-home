@@ -96,7 +96,7 @@ type CropSpec = {
 };
 
 type ImageCache = Map<string, Promise<NormalizedImage | null>>;
-type EdgeCache = Map<string, Promise<Float32Array | null>>;
+type EdgeCache = Map<string, Float32Array>;
 
 export function prioritizePreferredCandidate(
   layer: RankedCandidate[],
@@ -280,39 +280,24 @@ async function loadNormalizedImage(
   return loadPromise;
 }
 
-async function loadEdgeMap(
+function loadEdgeMap(
   imageUrl: string,
-  signal: AbortSignal | undefined,
-  imageCache: ImageCache,
   edgeCache: EdgeCache,
-  normalizedSize: number
-): Promise<Float32Array | null> {
-  const cacheKey = `${normalizedSize}:${imageUrl}`;
+  normalized: NormalizedImage
+): Float32Array {
+  const cacheKey = imageUrl;
   const cached = edgeCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const edgePromise = (async () => {
-    const normalized = await loadNormalizedImage(
-      imageUrl,
-      signal,
-      imageCache,
-      normalizedSize
-    );
-    if (!normalized) {
-      return null;
-    }
-
-    return computeSobelMagnitude(
-      normalized.pixels,
-      normalized.width,
-      normalized.height
-    );
-  })();
-
-  edgeCache.set(cacheKey, edgePromise);
-  return edgePromise;
+  const edges = computeSobelMagnitude(
+    normalized.pixels,
+    normalized.width,
+    normalized.height
+  );
+  edgeCache.set(cacheKey, edges);
+  return edges;
 }
 
 export function createSsimCompare(
@@ -346,29 +331,13 @@ export function createSsimCompare(
       source.height
     );
 
-    try {
-      const [sourceEdges, candidateEdges] = await Promise.all([
-        loadEdgeMap(sourceImageUrl, signal, cache, edgeCache, normalizedSize),
-        loadEdgeMap(
-          candidateImageUrl,
-          signal,
-          cache,
-          edgeCache,
-          normalizedSize
-        ),
-      ]);
+    const sourceEdges = loadEdgeMap(sourceImageUrl, edgeCache, source);
+    const candidateEdges = loadEdgeMap(candidateImageUrl, edgeCache, candidate);
 
-      if (!sourceEdges || !candidateEdges) {
-        return luminanceScore;
-      }
-
-      return blendVisualScores(
-        luminanceScore,
-        computeEdgeScore(sourceEdges, candidateEdges)
-      );
-    } catch {
-      return luminanceScore;
-    }
+    return blendVisualScores(
+      luminanceScore,
+      computeEdgeScore(sourceEdges, candidateEdges)
+    );
   };
 }
 
@@ -1087,8 +1056,7 @@ export async function selectBestCandidate(
     a.card.identifier.localeCompare(b.card.identifier)
   );
 
-  const top = ensembleResults[0];
-  if (!top) return null;
+  const top = ensembleResults[0]!;
 
   let prefix: "set_collector" | "set" | "name" = "name";
   if (setCollectorBucket.some(c => c.identifier === top.card.identifier)) {
