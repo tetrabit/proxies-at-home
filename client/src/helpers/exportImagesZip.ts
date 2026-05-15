@@ -59,20 +59,6 @@ async function processCardForExport(
   const image = c.imageId ? imagesById.get(c.imageId) : undefined;
   let url = image?.sourceUrl || "";
 
-  if (!url && !image?.originalBlob) {
-    return null; // empty slot
-  }
-
-  // If it’s not a user upload, run it through the proxy to get the bleed version
-  if (!c.isUserUpload) {
-    url = getLocalBleedImageUrl(preferPng(url));
-  }
-
-  const baseName = sanitizeFilename(c.name || `Card ${index + 1}`);
-  const idx = String(index + 1).padStart(3, "0");
-
-  let blob: Blob;
-
   // Prefer exportBlob (has bleed/processing applied) over originalBlob
   // Then select the appropriate darken mode version
   const darkenMode = useSettingsStore.getState().darkenMode;
@@ -92,6 +78,20 @@ async function processCardForExport(
     selectedBlob = image?.exportBlob;
   }
 
+  if (!url && !image?.originalBlob && !selectedBlob) {
+    return null; // empty slot
+  }
+
+  // If it’s not a user upload, run it through the proxy to get the bleed version
+  if (!c.isUserUpload && url) {
+    url = getLocalBleedImageUrl(preferPng(url));
+  }
+
+  const baseName = sanitizeFilename(c.name || `Card ${index + 1}`);
+  const idx = String(index + 1).padStart(3, "0");
+
+  let blob: Blob;
+
   if (selectedBlob) {
     blob = selectedBlob;
 
@@ -110,7 +110,7 @@ async function processCardForExport(
     }
   } else if (image?.originalBlob) {
     blob = image.originalBlob;
-  } else if (url) {
+  } else {
     try {
       const res = await fetch(url, { mode: "cors", credentials: "omit" });
       if (!res.ok) {
@@ -122,9 +122,6 @@ async function processCardForExport(
       console.warn(`[Export skipped] Error fetching ${url}`, err);
       return null;
     }
-  /* v8 ignore next 4 -- an empty URL without a blob is returned above before blob selection. @preserve */
-  } else {
-    return null;
   }
 
   // de-dupe filenames per printed order
