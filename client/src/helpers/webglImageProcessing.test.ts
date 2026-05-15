@@ -304,6 +304,32 @@ describe("webglImageProcessing test internals", () => {
     expect(fallback.width).toBeGreaterThan(0);
   });
 
+
+
+  it("covers no-input-bleed generation and display-context failure fallback", async () => {
+    const generated = await generateBleedCanvasWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      { dpi: 20 }
+    );
+    expect(generated.width).toBeGreaterThan(0);
+
+    class NoDisplay2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (kind === "2d") return null;
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoDisplay2dCanvas);
+
+    await expect(
+      processCardImageWebGL({ width: 20, height: 30 } as ImageBitmap, 1, {
+        exportDpi: 20,
+        displayDpi: 10,
+      })
+    ).rejects.toThrow("Failed to get 2d context for display canvas");
+  });
+
   it("processes generated-bleed card images for each darken output family", async () => {
     const base = await processCardImageWebGL(
       { width: 20, height: 30 } as ImageBitmap,
