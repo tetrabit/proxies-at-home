@@ -139,6 +139,20 @@ describe("useScryfallPrints", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("does not fetch when disabled or missing lookup identity", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() =>
+      useScryfallPrints({
+        name: "",
+        enabled: false,
+      })
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("updates an existing cached metadata object after a successful fetch", async () => {
     await db.cardMetadataCache.add({
       id: "cached-update-object",
@@ -210,6 +224,41 @@ describe("useScryfallPrints", () => {
     });
 
     const stored = await db.cardMetadataCache.get("cached-update-null");
+    expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
+  it("updates a name-based cache entry after a successful fetch", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-update-name",
+      name: "Name Card",
+      set: "",
+      number: "",
+      data: {},
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: false,
+    } as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/update-name.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Name Card",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const stored = await db.cardMetadataCache.get("cached-update-name");
     expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
   });
 
