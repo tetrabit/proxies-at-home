@@ -1,4 +1,4 @@
-import { describe, beforeEach, afterEach, it, expect } from 'vitest';
+import { describe, beforeEach, afterEach, it, expect, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
@@ -238,5 +238,134 @@ describe('Database Layer', () => {
             const result = db.pragma('mmap_size') as { mmap_size: number }[];
             expect(result[0].mmap_size).toBe(mmapSize);
         });
+    });
+});
+
+describe('Database module lifecycle and migrations', () => {
+    const originalServerDataDir = process.env.SERVER_DATA_DIR;
+    let tempDir: string;
+
+    async function importDbModule() {
+        vi.resetModules();
+        process.env.SERVER_DATA_DIR = tempDir;
+        return import('./db.js');
+    }
+
+    function createLegacyDatabase(schemaVersion: string, setupSql = '') {
+        fs.mkdirSync(tempDir, { recursive: true });
+        const legacyDb = new Database(path.join(tempDir, 'proxxied-cards.db'));
+        legacyDb.exec(`
+            CREATE TABLE IF NOT EXISTS cards (
+                id TEXT PRIMARY KEY,
+                oracle_id TEXT,
+                name TEXT NOT NULL,
+                set_code TEXT,
+                collector_number TEXT,
+                lang TEXT DEFAULT 'en',
+                colors TEXT,
+                mana_cost TEXT,
+                cmc REAL,
+                type_line TEXT,
+                rarity TEXT,
+                layout TEXT,
+                image_uris TEXT,
+                card_faces TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '${schemaVersion}');
+            ${setupSql}
+        `);
+        legacyDb.close();
+    }
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxxied-db-module-'));
+        vi.restoreAllMocks();
+        vi.resetModules();
+    });
+
+    afterEach(() => {
+        process.env.SERVER_DATA_DIR = originalServerDataDir;
+        vi.resetModules();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('initializes a fresh database, returns the singleton, clears cards, and closes cleanly', async () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+        const dbModule = await importDbModule();
+
+        const initialized = dbModule.initDatabase();
+        const schemaVersion = initialized
+            .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+            .get() as { value: string };
+        initialized.prepare("INSERT INTO cards (id, name) VALUES (?, ?)").run('card-id', 'Sol Ring');
+
+        expect(schemaVersion.value).toBe('6');
+        expect(dbModule.getDatabase()).toBe(initialized);
+        expect(dbModule.clearCardsCache()).toBe(1);
+
+        dbModule.closeDatabase();
+        expect(() => dbModule.getDatabase()).toThrow('Database not initialized');
+        expect(consoleLogSpy).toHaveBeenCalledWith('[DB] Database connection closed.');
+    });
+
+    it('recognizes an up-to-date existing schema without running migrations', async () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+        createLegacyDatabase('6');
+        const dbModule = await importDbModule();
+
+        const initialized = dbModule.initDatabase();
+
+        expect(consoleLogSpy).toHaveBeenCalledWith('[DB] Schema is up to date (version 6)');
+        dbModule.closeDatabase();
+        initialized.close();
+    });
+
+    it('warns and keeps newer database schemas untouched', async () => {
+        const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+        createLegacyDatabase('99');
+        const dbModule = await importDbModule();
+
+        dbModule.initDatabase();
+
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+            '[DB] Warning: Database schema version 99 is newer than code version 6. This may cause issues.'
+        );
+        dbModule.closeDatabase();
+    });
+
+    it('runs pending migrations for older database schemas', async () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+        createLegacyDatabase('1');
+        const dbModule = await importDbModule();
+
+        const initialized = dbModule.initDatabase();
+        const schemaVersion = initialized
+            .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+            .get() as { value: string };
+        const backupTable = initialized
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'backups'")
+            .get();
+
+        expect(schemaVersion.value).toBe('6');
+        expect(backupTable).toBeDefined();
+        expect(consoleLogSpy).toHaveBeenCalledWith('[DB] All migrations complete. Now at version 6');
+        dbModule.closeDatabase();
+    });
+
+    it('logs and rethrows migration failures', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+        createLegacyDatabase('2', 'ALTER TABLE cards ADD COLUMN all_parts TEXT;');
+        const dbModule = await importDbModule();
+
+        expect(() => dbModule.initDatabase()).toThrow();
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+            '[DB] Migration 3 failed:',
+            expect.any(Error)
+        );
     });
 });

@@ -79,10 +79,13 @@ describe('microservice metrics', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     metricsCollector.recordRequest('/slow', 3001);
+    metricsCollector.recordError('/slow', 'TypeError');
 
     logMicroserviceMetrics();
 
     expect(logSpy).toHaveBeenCalledWith('[MicroserviceMetrics] Performance Summary:');
+    expect(logSpy).toHaveBeenCalledWith('  Top Errors:');
+    expect(logSpy).toHaveBeenCalledWith('    - TypeError: 1');
     expect(warnSpy).toHaveBeenCalledWith('[MicroserviceMetrics] ⚠️  PERFORMANCE DEGRADED');
   });
 

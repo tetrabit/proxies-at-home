@@ -108,6 +108,23 @@ describe('scryfallCatalog', () => {
             expect(isValidScryfallType('artifact')).toBe(true);
             expect(isValidScryfallType('creature')).toBe(true);
         });
+
+        it('uses fallback types when catalog construction fails synchronously', async () => {
+            const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
+            const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+            mockFetch.mockImplementation(() => {
+                throw new Error('fetch unavailable');
+            });
+
+            await expect(initCatalogs()).resolves.not.toThrow();
+
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                '[Catalog] Failed to load catalogs from Scryfall:',
+                expect.any(Error)
+            );
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[Catalog] Using'));
+            expect(isValidScryfallType('kindred')).toBe(true);
+        });
     });
 
     describe('isValidScryfallType', () => {
