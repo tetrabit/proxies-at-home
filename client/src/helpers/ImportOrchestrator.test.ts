@@ -1,5 +1,5 @@
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ImportOrchestrator } from './ImportOrchestrator';
 import * as streamCardsModule from './streamCards';
 import * as undoableActionsModule from './undoableActions';
@@ -13,6 +13,24 @@ import type { ResolvedCardData } from './cardConverter';
 
 import * as dbUtilsModule from './dbUtils';
 
+const projectStoreState = vi.hoisted(() => ({
+    currentProjectId: 'test-project-id' as string | null,
+}));
+
+const settingsStoreState = vi.hoisted(() => ({
+    preferredArtSource: 'scryfall' as 'scryfall' | 'mpc',
+    globalLanguage: 'en',
+    autoImportTokens: true,
+}));
+
+const dbState = vi.hoisted(() => ({
+    reads: 0,
+    firstCards: [] as CardOption[],
+    secondCards: [] as CardOption[],
+    update: vi.fn(),
+    transaction: vi.fn((_mode: string, _table: unknown, fn: () => unknown) => fn()),
+}));
+
 // Mock dependencies that are imported directly by the Orchestrator
 vi.mock('./scryfallApi');
 vi.mock('./mpcAutofillApi');
@@ -21,18 +39,31 @@ vi.mock('./dbUtils', () => ({
     addRemoteImage: vi.fn((urls) => Promise.resolve(urls[0] || 'mock_image_id')),
     createLinkedBackCardsBulk: vi.fn()
 }));
-vi.mock('../db');      // Mock the database itself
+vi.mock('../db', () => ({
+    db: {
+        cards: {
+            update: dbState.update,
+            where: vi.fn(() => ({
+                equals: vi.fn(() => ({
+                    toArray: vi.fn(async () => {
+                        const result = dbState.reads === 0 ? dbState.firstCards : dbState.secondCards;
+                        dbState.reads += 1;
+                        return result;
+                    }),
+                })),
+            })),
+        },
+        transaction: dbState.transaction,
+    },
+}));
 
 // Mock the store for project ID access
 vi.mock('@/store', () => ({
     useProjectStore: {
-        getState: () => ({ currentProjectId: 'test-project-id' })
+        getState: () => projectStoreState,
     },
     useSettingsStore: {
-        getState: () => ({
-            preferredArtSource: 'scryfall',
-            autoImportTokens: true
-        })
+        getState: () => settingsStoreState,
     },
     useUserPreferencesStore: {
         getState: () => ({
@@ -47,9 +78,20 @@ vi.mock('@/store', () => ({
 
 describe('ImportOrchestrator', () => {
     beforeEach(() => {
-        vi.resetAllMocks();
+        vi.clearAllMocks();
+        projectStoreState.currentProjectId = 'test-project-id';
+        settingsStoreState.preferredArtSource = 'scryfall';
+        settingsStoreState.globalLanguage = 'en';
+        settingsStoreState.autoImportTokens = true;
+        dbState.reads = 0;
+        dbState.firstCards = [];
+        dbState.secondCards = [];
         // Restore default implementation cleared by resetAllMocks
         vi.mocked(dbUtilsModule.addRemoteImage).mockImplementation((urls) => Promise.resolve(urls[0] || 'mock_image_id'));
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
     });
 
     it('routes preloaded intents to direct DB add', async () => {
@@ -204,6 +246,46 @@ describe('ImportOrchestrator', () => {
         expect(streamSpy).toHaveBeenCalledWith(expect.objectContaining({ artSource: 'scryfall' }));
     });
 
+    it('reports progress and completion callbacks across direct and streamed work', async () => {
+        const addSpy = vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'direct-1' } as CardOption]);
+        const streamSpy = vi.spyOn(streamCardsModule, 'streamCards').mockImplementation(async ({ onComplete }) => {
+            onComplete?.();
+            return { addedCardUuids: [], totalCardsAdded: 0 };
+        });
+        const onProgress = vi.fn();
+        const onComplete = vi.fn();
+
+        await ImportOrchestrator.process([
+            { name: 'Preloaded', quantity: 1, isToken: false, preloadedData: { name: 'Preloaded' } },
+            { name: 'MPC', quantity: 1, isToken: false, sourcePreference: 'mpc' },
+            { name: 'Scryfall', quantity: 1, isToken: false, sourcePreference: 'scryfall' },
+        ], {
+            onProgress,
+            onComplete,
+            settings: {
+                preferredArtSource: 'scryfall',
+                globalLanguage: 'en',
+                autoImportTokens: true,
+                projectId: 'test-project-id',
+            },
+        });
+
+        expect(addSpy).toHaveBeenCalledTimes(1);
+        expect(streamSpy).toHaveBeenCalledTimes(2);
+        expect(onProgress).toHaveBeenCalledWith(1, 3);
+        expect(onProgress).toHaveBeenCalledWith(2, 3);
+        expect(onProgress).toHaveBeenCalledWith(3, 3);
+        expect(onComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws when there is no active project', async () => {
+        projectStoreState.currentProjectId = null;
+
+        await expect(
+            ImportOrchestrator.process([{ name: 'Card', quantity: 1, isToken: false, sourcePreference: 'scryfall' }])
+        ).rejects.toThrow('No active project');
+    });
+
     describe('resolve', () => {
         it('resolves using preloadedData directly', async () => {
             const intent: ImportIntent = {
@@ -221,6 +303,33 @@ describe('ImportOrchestrator', () => {
                 set: 'abc',
                 number: '123'
             }));
+        });
+
+        it('resolves preloaded DFC cards and adds the back face task', async () => {
+            vi.mocked(dbUtilsModule.addRemoteImage).mockResolvedValueOnce('front-image').mockResolvedValueOnce('back-image');
+
+            const intent: ImportIntent = {
+                name: 'DF Card',
+                quantity: 2,
+                isToken: false,
+                preloadedData: {
+                    name: 'DF Card',
+                    imageUrls: ['front.jpg'],
+                    card_faces: [
+                        { name: 'Front', imageUrl: 'front.jpg' },
+                        { name: 'Back', imageUrl: 'back.jpg' },
+                    ],
+                },
+            };
+
+            const result = await ImportOrchestrator.resolve(intent, 'test-project');
+
+            expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['front.jpg'], 2, undefined);
+            expect(result.cardsToAdd).toHaveLength(2);
+            expect(result.backCardTasks).toEqual([
+                expect.objectContaining({ frontIndex: 0, backImageId: 'back-image', backName: 'Back' }),
+                expect.objectContaining({ frontIndex: 1, backImageId: 'back-image', backName: 'Back' }),
+            ]);
         });
 
         it('resolves using MPC ID', async () => {
@@ -243,6 +352,34 @@ describe('ImportOrchestrator', () => {
                 hasBuiltInBleed: true,
                 needsEnrichment: true  // Default to true for auto-enrichment
             }));
+        });
+
+        it('resolves MPC IDs with explicit non-cardback backs', async () => {
+            vi.spyOn(mpcAutofillApiModule, 'getMpcAutofillImageUrl')
+                .mockImplementation((id: string) => `https://mpc.example/${id}.jpg`);
+            vi.mocked(scryfallApiModule.fetchCardWithPrints).mockResolvedValue(undefined as unknown as ScryfallCard);
+
+            const intent: ImportIntent = {
+                name: 'MPC Backed Card',
+                quantity: 1,
+                isToken: false,
+                mpcId: 'mpc_front',
+                linkedBackImageId: 'mpc_back',
+                linkedBackName: 'Back Face',
+                sourcePreference: 'mpc'
+            };
+
+            const result = await ImportOrchestrator.resolve(intent, 'test-project');
+
+            expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc_front.jpg'], 1);
+            expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc_back.jpg'], 1);
+            expect(result.backCardTasks).toEqual([
+                expect.objectContaining({
+                    frontIndex: 0,
+                    backName: 'Back Face',
+                    hasBleed: true,
+                }),
+            ]);
         });
 
         it('resolves using Scryfall set/number', async () => {
@@ -362,6 +499,37 @@ describe('ImportOrchestrator', () => {
             ]);
         });
 
+        it('buildMissingTokenIntents dedupes normalized token names without ids and skips malformed URIs', () => {
+            const cards = [
+                {
+                    uuid: 'front-1',
+                    name: 'Æther Maker',
+                    isUserUpload: false,
+                    token_parts: [
+                        { name: 'Ángel Token', uri: 'not-a-url' },
+                    ],
+                },
+                {
+                    uuid: 'front-2',
+                    name: 'Aether Maker',
+                    isUserUpload: false,
+                    token_parts: [
+                        { name: 'angel token' },
+                    ],
+                },
+            ] as CardOption[];
+
+            const intents = ImportOrchestrator.buildMissingTokenIntents(cards);
+
+            expect(intents).toHaveLength(1);
+            expect(intents[0]).toEqual(expect.objectContaining({
+                name: 'Ángel Token',
+                tokenAddedFrom: ['Æther Maker', 'Aether Maker'],
+            }));
+            expect(intents[0].set).toBeUndefined();
+            expect(intents[0].number).toBeUndefined();
+        });
+
         it('buildMissingTokenIntents skips existing token ids when skipExisting=true', () => {
             const cards = [
                 {
@@ -469,6 +637,59 @@ describe('ImportOrchestrator', () => {
 
             // If enrichTokenData succeeds and db returns empty, onNoTokens should be called
             // This tests the interface behavior
+        });
+
+        it('importMissingTokens returns early when no active project or no cards are present', async () => {
+            const onNoTokens = vi.fn();
+
+            projectStoreState.currentProjectId = null;
+            await expect(ImportOrchestrator.importMissingTokens({ onNoTokens })).resolves.toEqual([]);
+            expect(onNoTokens).toHaveBeenCalledTimes(1);
+
+            projectStoreState.currentProjectId = 'test-project-id';
+            dbState.firstCards = [];
+            await expect(ImportOrchestrator.importMissingTokens({ onNoTokens })).resolves.toEqual([]);
+            expect(onNoTokens).toHaveBeenCalledTimes(2);
+        });
+
+        it('importMissingTokens processes immediate and discovered token imports in two phases', async () => {
+            dbState.firstCards = [
+                {
+                    uuid: 'maker-1',
+                    name: 'Token Maker',
+                    type_line: 'Creature',
+                    isUserUpload: false,
+                    token_parts: [
+                        { id: 'tok-1', name: 'Treasure', uri: 'https://api.scryfall.com/cards/tfdn/42' },
+                    ],
+                },
+            ] as CardOption[];
+            dbState.secondCards = [
+                ...dbState.firstCards,
+                {
+                    uuid: 'maker-2',
+                    name: 'Token Maker 2',
+                    type_line: 'Creature',
+                    isUserUpload: false,
+                    token_parts: [
+                        { name: 'Clue', uri: 'https://api.scryfall.com/cards/tclu/1' },
+                    ],
+                },
+            ] as CardOption[];
+
+            const processSpy = vi.spyOn(ImportOrchestrator, 'process').mockResolvedValue(undefined);
+            const enrichSpy = vi.spyOn(ImportOrchestrator, 'enrichTokenData').mockResolvedValue();
+            const onComplete = vi.fn();
+
+            const result = await ImportOrchestrator.importMissingTokens({ onComplete });
+
+            expect(processSpy).toHaveBeenCalledTimes(2);
+            expect(enrichSpy).toHaveBeenCalledWith(undefined, dbState.firstCards, false);
+            expect(onComplete).toHaveBeenCalledTimes(1);
+            expect(result).toEqual([
+                expect.objectContaining({ name: 'Treasure', scryfallId: 'tok-1' }),
+                expect.objectContaining({ name: 'Clue' }),
+            ]);
         });
     });
 
