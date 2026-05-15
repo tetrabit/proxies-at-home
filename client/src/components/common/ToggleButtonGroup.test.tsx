@@ -178,6 +178,25 @@ describe("ToggleButtonGroup", () => {
             expect(activeButton.className).toContain("text-white");
             expect((activeButton as HTMLElement).style.backgroundColor).toBe("rgb(255, 0, 0)");
         });
+
+        it("should keep the default selected style when no highlightColor is provided", () => {
+            const options = [
+                { id: "option1", label: "Option 1" },
+                { id: "option2", label: "Option 2" },
+            ];
+
+            render(
+                <ToggleButtonGroup
+                    options={options}
+                    value="option1"
+                    onChange={() => { }}
+                />
+            );
+
+            const activeButton = screen.getByText("Option 1");
+            expect(activeButton.className).toContain("bg-white");
+            expect((activeButton as HTMLElement).style.backgroundColor).toBe("");
+        });
     });
 
     describe("custom className", () => {
