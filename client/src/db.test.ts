@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  cleanSelfReferentialTokensUpgrade,
   clearCardMetadataCacheUpgrade,
+  clearTokenCardDependenciesUpgrade,
   createDefaultProjectUpgrade,
   db,
   METADATA_CACHE_VERSION,
@@ -112,5 +114,116 @@ describe("db schema", () => {
         lastProjectId: "empty-project",
       })
     );
+  });
+
+  it("uses runtime uuid and clock defaults for project upgrade", async () => {
+    const uuidSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue("runtime-id");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(9876);
+    const addProject = vi.fn();
+    const addPrefs = vi.fn();
+    const tx = {
+      table: vi.fn(
+        (name: string) =>
+          ({
+            cards: { count: vi.fn().mockResolvedValue(1) },
+            settings: { get: vi.fn().mockResolvedValue({ value: { theme: "dark" } }) },
+            projects: { add: addProject },
+            userPreferences: { add: addPrefs },
+          })[name]
+      ),
+    };
+
+    await createDefaultProjectUpgrade(tx);
+
+    expect(addProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "runtime-id",
+        createdAt: 9876,
+        lastOpenedAt: 9876,
+        cardCount: 1,
+        settings: { theme: "dark" },
+      })
+    );
+    expect(addPrefs).toHaveBeenCalledWith(
+      expect.objectContaining({ lastProjectId: "runtime-id" })
+    );
+    uuidSpy.mockRestore();
+    nowSpy.mockRestore();
+  });
+
+  it("cleans self-referential token parts during card upgrade", async () => {
+    const cards = [
+      {
+        name: "Treasure",
+        needs_token: true,
+        token_parts: [{ name: "TREASURE" }, { name: "Clue" }, {}],
+      },
+      {
+        name: "Copy",
+        needs_token: true,
+        token_parts: [{ name: "Copy" }],
+      },
+      { name: "Ignored", needs_token: false, token_parts: [{ name: "Ignored" }] },
+    ];
+    const tx = {
+      table: vi.fn(() => ({
+        filter: (predicate: (card: (typeof cards)[number]) => boolean) => ({
+          modify: async (mutator: (card: (typeof cards)[number]) => void) => {
+            cards.filter(predicate).forEach(mutator);
+          },
+        }),
+      })),
+    };
+
+    await cleanSelfReferentialTokensUpgrade(tx);
+
+    expect(cards[0]).toMatchObject({
+      token_parts: [{ name: "Clue" }, {}],
+      needs_token: true,
+    });
+    expect(cards[1]).toMatchObject({ token_parts: [], needs_token: false });
+    expect(cards[2]).toMatchObject({
+      token_parts: [{ name: "Ignored" }],
+      needs_token: false,
+    });
+  });
+
+  it("clears token dependencies from token cards during card upgrade", async () => {
+    const cards = [
+      {
+        name: "Goblin",
+        type_line: "Token Creature — Goblin",
+        needs_token: true,
+        token_parts: [{ name: "Goblin" }],
+      },
+      {
+        name: "Spell",
+        type_line: "Sorcery",
+        needs_token: true,
+        token_parts: [{ name: "Treasure" }],
+      },
+      { name: "No type", needs_token: true, token_parts: [{ name: "Clue" }] },
+    ];
+    const tx = {
+      table: vi.fn(() => ({
+        filter: (predicate: (card: (typeof cards)[number]) => boolean) => ({
+          modify: async (mutator: (card: (typeof cards)[number]) => void) => {
+            cards.filter(predicate).forEach(mutator);
+          },
+        }),
+      })),
+    };
+
+    await clearTokenCardDependenciesUpgrade(tx);
+
+    expect(cards[0]).toMatchObject({ token_parts: [], needs_token: false });
+    expect(cards[1]).toMatchObject({
+      token_parts: [{ name: "Treasure" }],
+      needs_token: true,
+    });
+    expect(cards[2]).toMatchObject({
+      token_parts: [{ name: "Clue" }],
+      needs_token: true,
+    });
   });
 });

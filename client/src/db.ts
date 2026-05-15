@@ -268,6 +268,13 @@ export type UpgradeTransactionLike = {
       key: string
     ) => Promise<{ value?: Json } | undefined> | { value?: Json } | undefined;
     add?: (record: unknown) => Promise<unknown> | unknown;
+    filter?: (
+      predicate: (record: CardOption) => boolean
+    ) => {
+      modify: (
+        mutator: (record: CardOption) => void
+      ) => Promise<unknown> | unknown;
+    };
   };
 };
 
@@ -304,6 +311,41 @@ export async function createDefaultProjectUpgrade(
     favoriteCardbacks: [],
     lastProjectId: defaultProjectId,
   });
+}
+
+export async function cleanSelfReferentialTokensUpgrade(
+  tx: UpgradeTransactionLike
+) {
+  await tx
+    .table("cards")
+    .filter?.((card) => Boolean(card.needs_token))
+    .modify((card) => {
+      if (card.token_parts && card.token_parts.length > 0) {
+        const validParts = card.token_parts.filter(
+          (part: { name?: string }) =>
+            !part.name || part.name.toLowerCase() !== card.name.toLowerCase()
+        );
+
+        if (validParts.length !== card.token_parts.length) {
+          card.token_parts = validParts;
+          card.needs_token = validParts.length > 0;
+        }
+      }
+    });
+}
+
+export async function clearTokenCardDependenciesUpgrade(
+  tx: UpgradeTransactionLike
+) {
+  await tx
+    .table("cards")
+    .filter?.((card) => Boolean(card.needs_token))
+    .modify((card) => {
+      if (card.type_line && card.type_line.toLowerCase().includes("token")) {
+        card.token_parts = [];
+        card.needs_token = false;
+      }
+    });
 }
 
 class ProxxiedDexie extends Dexie {
@@ -442,10 +484,7 @@ class ProxxiedDexie extends Dexie {
         effectCache: "&key, cachedAt",
         mpcSearchCache: "&[query+cardType], cachedAt",
       })
-      .upgrade((tx) => {
-        // Clear all cached metadata to force re-enrichment with correct DFC handling
-        return tx.table("cardMetadataCache").clear();
-      });
+      .upgrade(clearCardMetadataCacheUpgrade);
     // Version 11: Add source field for explicit image source tracking
     // No schema change needed (source is optional), but version bump ensures clean upgrade
     this.version(11).stores({
@@ -488,27 +527,7 @@ class ProxxiedDexie extends Dexie {
         effectCache: "&key, cachedAt",
         mpcSearchCache: "&[query+cardType], cachedAt",
       })
-      .upgrade(async (tx) => {
-        // Iterate only cards that flagged as needing tokens
-        // We use the index for performance since we just added it in v12, but we query it via filtering to avoid key errors
-        await tx
-          .table("cards")
-          .filter((c) => c.needs_token)
-          .modify((card) => {
-            if (card.token_parts && card.token_parts.length > 0) {
-              // Filter out parts that have the same name as the card (case-insensitive)
-              const validParts = card.token_parts.filter(
-                (p: { name?: string }) =>
-                  !p.name || p.name.toLowerCase() !== card.name.toLowerCase()
-              );
-
-              if (validParts.length !== card.token_parts.length) {
-                card.token_parts = validParts;
-                card.needs_token = validParts.length > 0;
-              }
-            }
-          });
-      });
+      .upgrade(cleanSelfReferentialTokensUpgrade);
     // Version 14: Strict cleanup - Tokens should NOT have token_parts
     // This removes spurious links (e.g. Treasure -> Smaug)
     this.version(14)
@@ -524,21 +543,7 @@ class ProxxiedDexie extends Dexie {
         effectCache: "&key, cachedAt",
         mpcSearchCache: "&[query+cardType], cachedAt",
       })
-      .upgrade(async (tx) => {
-        await tx
-          .table("cards")
-          .filter((c) => c.needs_token)
-          .modify((card) => {
-            // If card itself is a token, clear dependencies
-            if (
-              card.type_line &&
-              card.type_line.toLowerCase().includes("token")
-            ) {
-              card.token_parts = [];
-              card.needs_token = false;
-            }
-          });
-      });
+      .upgrade(clearTokenCardDependenciesUpgrade);
     // Version 15: Clear cardMetadataCache to force re-enrichment with token_parts
     // Previous cached data doesn't include token_parts, causing needs_token to not be set
     this.version(15)
