@@ -72,10 +72,6 @@ export function deriveSourceBleedPixelsFromGeometry(
     const totalWidthMm = CARD_CONTENT_WIDTH_MM + inputBleedMm * 2;
     const totalHeightMm = CARD_CONTENT_HEIGHT_MM + inputBleedMm * 2;
 
-    if (totalWidthMm <= 0 || totalHeightMm <= 0) {
-        return { bleedPxX: 0, bleedPxY: 0 };
-    }
-
     const bleedPxX = Math.round((widthPx * inputBleedMm) / totalWidthMm);
     const bleedPxY = Math.round((heightPx * inputBleedMm) / totalHeightMm);
 

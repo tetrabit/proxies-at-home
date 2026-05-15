@@ -208,6 +208,28 @@ describe("webglImageProcessing test internals", () => {
     );
   });
 
+
+
+  it("covers defensive bleed geometry and WebGL2 unsupported errors", () => {
+    expect(deriveSourceBleedPixelsFromGeometry(100, 100, -40)).toEqual({
+      bleedPxX: 0,
+      bleedPxY: 0,
+    });
+
+    class NoWebGlCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (kind === "webgl2") return null;
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoWebGlCanvas);
+    const manager = new __webglImageProcessingTestInternals.WebGLContextManager(
+      "unsupported"
+    );
+
+    expect(() => manager.getContext(1, 1)).toThrow("WebGL2 not supported");
+  });
+
   it("computes and caches darkness factor and falls back without 2d context", () => {
     const img = { width: 2, height: 1 } as ImageBitmap;
     const first =

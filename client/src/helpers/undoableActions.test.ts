@@ -211,6 +211,37 @@ describe("undoableActions", () => {
         order: 2,
       });
     });
+
+
+    it("adds missing linked partners for multiple-card reorders", async () => {
+      const front = {
+        uuid: "front-linked",
+        order: 10,
+        linkedBackId: "back-linked",
+      } as CardOption;
+      const back = {
+        uuid: "back-linked",
+        order: 10,
+        linkedFrontId: "front-linked",
+      } as CardOption;
+      vi.mocked(db.cards.bulkGet)
+        .mockResolvedValueOnce([undefined, front] as unknown as CardOption[])
+        .mockResolvedValueOnce([back] as unknown as CardOption[]);
+
+      await undoableReorderMultipleCards([
+        { uuid: "missing", oldOrder: 1, newOrder: 20 },
+        { uuid: "front-linked", oldOrder: 10, newOrder: 30 },
+      ]);
+
+      expect(db.cards.update).toHaveBeenCalledWith("back-linked", { order: 30 });
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.update).mockClear();
+      await pushedAction.undo();
+      await pushedAction.redo();
+
+      expect(db.cards.update).toHaveBeenCalledWith("back-linked", { order: 10 });
+      expect(db.cards.update).toHaveBeenCalledWith("back-linked", { order: 30 });
+    });
   });
   describe("undoableDeleteCard", () => {
     it("does not push an action when the card no longer exists", async () => {
@@ -403,6 +434,43 @@ describe("undoableActions", () => {
           options: { hasBuiltInBleed: true, usesDefaultCardback: true },
         },
       ]);
+    });
+
+
+    it("continues redo after missing image refetch retries fail", async () => {
+      vi.useFakeTimers();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const cardsToAdd = [
+        { name: "Retry Card", lang: "en", isUserUpload: false, imageId: "missing-image" },
+      ];
+      const added = [
+        { uuid: "added-retry", name: "Retry Card", imageId: "missing-image" },
+      ] as CardOption[];
+      vi.mocked(addCards)
+        .mockResolvedValueOnce(added)
+        .mockResolvedValueOnce(added);
+      vi.mocked(db.images.bulkGet)
+        .mockResolvedValueOnce([undefined] as never)
+        .mockResolvedValueOnce([undefined] as never)
+        .mockResolvedValueOnce([undefined] as never);
+      vi.mocked(addRemoteImage).mockRejectedValue(new Error("network down"));
+
+      await undoableAddCards(cardsToAdd);
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      const redoPromise = pushedAction.redo();
+
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1000);
+      await redoPromise;
+
+      expect(addRemoteImage).toHaveBeenCalledTimes(3);
+      expect(addRemoteImage).toHaveBeenCalledWith(["missing-image"], 1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[Redo] Failed to re-fetch image after 3 attempts: missing-image",
+        expect.any(Error)
+      );
+      expect(addCards).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
     });
   });
 
