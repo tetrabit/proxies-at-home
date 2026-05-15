@@ -126,4 +126,71 @@ describe("mpcCalibrationCapture", () => {
       }),
     ]);
   });
+
+  it("uses image URL fallbacks and default mime types for source assets", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["source-without-type"]),
+    });
+
+    const result = await captureMpcCalibrationCase({
+      datasetId: "dataset-1",
+      card,
+      imageRecord: {
+        id: "image-1",
+        refCount: 1,
+        imageUrls: ["https://example.com/source.jpg"],
+      },
+      candidates: [],
+    });
+
+    expect(result.caseRecord.source.sourceImageUrl).toBe(
+      "https://example.com/source.jpg"
+    );
+    expect(result.caseRecord.source.sourceArtImageUrl).toBeUndefined();
+    expect(result.assets).toEqual([
+      expect.objectContaining({
+        role: "source",
+        mimeType: "application/octet-stream",
+      }),
+    ]);
+    expect(result.assetErrors).toEqual([]);
+  });
+
+  it("captures candidate fetch errors when no source image is available", async () => {
+    fetchMock.mockRejectedValue("offline");
+
+    const result = await captureMpcCalibrationCase({
+      datasetId: "dataset-1",
+      card,
+      imageRecord: null,
+      candidateImageSize: "full",
+      candidates: [
+        {
+          identifier: "candidate-full",
+          name: "Sol Ring",
+          rawName: "Sol Ring [C21] {267}",
+          smallThumbnailUrl: "",
+          mediumThumbnailUrl: "",
+          dpi: 600,
+          tags: [],
+          sourceName: "Source A",
+          source: "source-a",
+          extension: "png",
+          size: 100,
+        },
+      ],
+    });
+
+    expect(result.caseRecord.source.sourceImageUrl).toBeUndefined();
+    expect(result.caseRecord.candidates[0].imageUrl).not.toContain("size=");
+    expect(result.assets).toEqual([]);
+    expect(result.assetErrors).toEqual([
+      expect.objectContaining({
+        role: "candidate-small",
+        candidateIdentifier: "candidate-full",
+        message: "offline",
+      }),
+    ]);
+  });
 });

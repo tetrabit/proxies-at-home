@@ -4,6 +4,8 @@ import {
   buildBootstrappedSourcePreferenceDataset,
   buildMpcPreferenceScoreMap,
   evaluateHeldOutPreferenceModel,
+  rankMpcCandidatesByPreference,
+  scoreMpcCandidatePreference,
   trainMpcPreferenceModel,
 } from "./mpcPreferenceModel";
 
@@ -62,6 +64,188 @@ function makeCase(
 }
 
 describe("mpcPreferenceModel", () => {
+  it("returns null when the minimum case count is not met", () => {
+    expect(trainMpcPreferenceModel([makeCase("Sol Ring", "A", "B")])).toBeNull();
+  });
+
+  it("scores plain-name candidates with the plain-name format weight", () => {
+    expect(
+      scoreMpcCandidatePreference(
+        {
+          bias: 1,
+          sourceWeights: {},
+          tagWeights: {},
+          formatWeights: {
+            hasBracketSet: 0,
+            hasParenText: 0,
+            plainName: 2,
+            dpi: 0,
+          },
+          trainingCaseCount: 0,
+        },
+        {
+          identifier: "plain",
+          name: "Plain Candidate",
+          rawName: undefined,
+          dpi: 0,
+          tags: [],
+          sourceName: "Unknown",
+        }
+      )
+    ).toBe(3);
+  });
+
+  it("learns plain-name deltas and ignores labels that are not candidates", () => {
+    const expected = makeCandidate({
+      identifier: "plain-expected",
+      name: "Sol Ring",
+      rawName: "Sol Ring",
+      sourceName: "PlainSource",
+    });
+    const other = makeCandidate({
+      identifier: "paren-other",
+      name: "Sol Ring",
+      rawName: "Sol Ring (Alt)",
+      sourceName: "ParenSource",
+    });
+    const missingExpected = makeCase("Missing", "A", "B");
+    missingExpected.expectedIdentifier = "not-present";
+
+    const model = trainMpcPreferenceModel(
+      [
+        {
+          id: "plain-case",
+          datasetId: "dataset",
+          createdAt: 1,
+          updatedAt: 1,
+          source: { name: "Sol Ring" },
+          candidates: [expected, other],
+          expectedIdentifier: expected.identifier,
+        },
+        missingExpected,
+      ],
+      { minCaseCount: 1 }
+    );
+
+    expect(model?.formatWeights.plainName).toBeGreaterThan(0);
+    expect(model?.formatWeights.hasParenText).toBeLessThan(0);
+  });
+
+  it("learns bracket and same-source reliability edge cases", () => {
+    const bracketExpected = makeCandidate({
+      identifier: "bracket-expected",
+      name: "Sol Ring",
+      rawName: "Sol Ring [C21] {267}",
+      sourceName: "Shared",
+    });
+    const plainOther = makeCandidate({
+      identifier: "plain-other",
+      name: "Sol Ring",
+      rawName: "Sol Ring",
+      sourceName: "Shared",
+    });
+
+    const model = trainMpcPreferenceModel(
+      [
+        {
+          id: "bracket-case",
+          datasetId: "dataset",
+          createdAt: 1,
+          updatedAt: 1,
+          source: { name: "Sol Ring" },
+          candidates: [bracketExpected, plainOther],
+          expectedIdentifier: bracketExpected.identifier,
+        },
+      ],
+      { minCaseCount: 1 }
+    );
+
+    expect(model?.formatWeights.hasBracketSet).toBeGreaterThan(0);
+    expect(model?.formatWeights.plainName).toBeLessThan(0);
+    expect(model?.sourceWeights.Shared).toBeGreaterThan(0);
+  });
+
+  it("skips empty source names while still training non-source features", () => {
+    const expected = makeCandidate({
+      identifier: "expected-empty-source",
+      rawName: "Sol Ring",
+      sourceName: "",
+      source: "",
+      tags: ["preferred"],
+    });
+    const other = makeCandidate({
+      identifier: "other-empty-source",
+      rawName: "Sol Ring (Alt)",
+      sourceName: "",
+      source: "",
+      tags: ["other"],
+    });
+    delete (expected as Partial<typeof expected>).rawName;
+    delete (other as Partial<typeof other>).rawName;
+
+    const model = trainMpcPreferenceModel(
+      [
+        {
+          id: "empty-source-case",
+          datasetId: "dataset",
+          createdAt: 1,
+          updatedAt: 1,
+          source: { name: "Sol Ring" },
+          candidates: [expected, other],
+          expectedIdentifier: expected.identifier,
+        },
+      ],
+      { minCaseCount: 1 }
+    );
+
+    expect(model?.sourceWeights).toEqual({});
+    expect(model?.tagWeights.preferred).toBe(1);
+    expect(model?.tagWeights.other).toBe(-1);
+  });
+
+  it("uses dpi and identifier tiebreakers when preference scores tie", () => {
+    const model = {
+      bias: 0,
+      sourceWeights: {},
+      tagWeights: {},
+      formatWeights: {
+        hasBracketSet: 0,
+        hasParenText: 0,
+        plainName: 0,
+        dpi: 0,
+      },
+      trainingCaseCount: 0,
+    };
+
+    const ranked = rankMpcCandidatesByPreference(model, [
+      makeCandidate({ identifier: "b", dpi: 600, sourceName: "Tie" }),
+      makeCandidate({ identifier: "c", dpi: 800, sourceName: "Tie" }),
+      makeCandidate({ identifier: "a", dpi: 600, sourceName: "Tie" }),
+    ]);
+
+    expect(ranked.map(({ candidate }) => candidate.identifier)).toEqual([
+      "c",
+      "a",
+      "b",
+    ]);
+  });
+
+  it("skips held-out cases without labels and when training cannot build a model", () => {
+    const unlabeled = makeCase("No Label", "A", "B");
+    unlabeled.expectedIdentifier = undefined;
+    const singleCandidate = makeCase("One Candidate", "A", "B");
+    singleCandidate.candidates = [singleCandidate.candidates[0]];
+
+    expect(
+      evaluateHeldOutPreferenceModel([
+        unlabeled,
+        singleCandidate,
+        makeCase("Too Few A", "A", "B"),
+        makeCase("Too Few B", "B", "A"),
+      ])
+    ).toEqual({ total: 0, top1: 0 });
+  });
+
   it("trains source and formatting preferences from calibration cases", () => {
     const cases = [
       makeCase("Windborn Muse", "Hathwellcrisping", "Chilli_Axe"),
