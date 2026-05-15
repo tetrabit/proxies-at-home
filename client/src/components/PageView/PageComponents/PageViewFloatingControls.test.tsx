@@ -136,5 +136,18 @@ describe("PageViewFloatingControls", () => {
             expect(screen.queryByTestId("zoom-controls")).toBeNull();
             addEventListenerSpy.mockRestore();
         });
+
+        it("should close zoom controls via useOnClickOutside", () => {
+            render(<PageViewFloatingControls hasCards={true} mobile={true} />);
+
+            fireEvent.click(screen.getByRole("button"));
+            expect(screen.getByTestId("zoom-controls")).toBeDefined();
+
+            act(() => {
+                (window as unknown as { __outsideHandler?: () => void }).__outsideHandler?.();
+            });
+
+            expect(screen.queryByTestId("zoom-controls")).toBeNull();
+        });
     });
 });
