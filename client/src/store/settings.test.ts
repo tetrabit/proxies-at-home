@@ -347,20 +347,45 @@ describe("useSettingsStore", () => {
                 setRegistrationMarks,
                 setRegistrationMarksPortrait,
                 setFilterFeatures,
+                setAllSettings,
+                setDarkenContrast,
+                setDarkenEdgeWidth,
+                setDarkenAmount,
+                setDarkenBrightness,
+                setDarkenAutoDetect,
+                setUseCustomBackOffset,
+                setCardBackPositionX,
             } = useSettingsStore.getState();
 
+            setAllSettings({ columns: 6, rows: 7 });
             setAutoImportTokens(true);
             setMpcFuzzySearch(false);
             setPreferredArtSource("mpc");
+            setDarkenContrast(4);
+            setDarkenEdgeWidth(0.2);
+            setDarkenAmount(0.5);
+            setDarkenBrightness(-10);
+            setDarkenAutoDetect(false);
+            setUseCustomBackOffset(true);
+            setCardBackPositionX(9);
             setCardBackPositionY(12);
             setCutGuideLengthMm(7);
             setRegistrationMarks("4");
             setRegistrationMarksPortrait(true);
             setFilterFeatures(["flying"]);
 
+            expect(useSettingsStore.getState().columns).toBe(6);
+            expect(useSettingsStore.getState().rows).toBe(7);
             expect(useSettingsStore.getState().autoImportTokens).toBe(true);
             expect(useSettingsStore.getState().mpcFuzzySearch).toBe(false);
             expect(useSettingsStore.getState().preferredArtSource).toBe("mpc");
+            expect(useSettingsStore.getState().darkenContrast).toBe(4);
+            expect(useSettingsStore.getState().darkenEdgeWidth).toBe(0.2);
+            expect(useSettingsStore.getState().darkenAmount).toBe(0.5);
+            expect(useSettingsStore.getState().darkenBrightness).toBe(-10);
+            expect(useSettingsStore.getState().darkenAutoDetect).toBe(false);
+            expect(useSettingsStore.getState().useCustomBackOffset).toBe(true);
+            expect(useSettingsStore.getState().cardBackPositionX).toBe(9);
             expect(useSettingsStore.getState().cardBackPositionY).toBe(12);
             expect(useSettingsStore.getState().cutGuideLengthMm).toBe(7);
             expect(useSettingsStore.getState().registrationMarks).toBe("4");
