@@ -171,6 +171,7 @@ function runProcess(
 
 async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
   const runners = resolveRunners();
+  /* v8 ignore next 3 -- resolveRunners always appends python and binary fallbacks; this guards future configuration changes. @preserve */
   if (!runners.length) {
     throw new Error("Printer calibration is not configured.");
   }
@@ -632,3 +633,13 @@ export function createPrinterCalibrationRouter(
 }
 
 export const printerCalibrationRouter = createPrinterCalibrationRouter();
+
+export const __printerCalibrationTestInternals = {
+  resolveRunners,
+  runProcess,
+  runPrinterCalibrationCli,
+  buildTempFilePath,
+  unlinkQuiet,
+  unavailableStatus,
+  safeNumber,
+};

@@ -6,6 +6,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CALIBRATION_UPLOAD_LIMIT_BYTES,
+  __printerCalibrationTestInternals,
   buildPythonCliArgs,
   calculatePrinterCalibrationProfile,
   createPrinterCalibrationRouter,
