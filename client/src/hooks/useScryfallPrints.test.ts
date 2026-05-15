@@ -566,7 +566,6 @@ describe("useScryfallPrints", () => {
   });
 
   it("drops a stale cached result after a newer query has started", async () => {
-    vi.useFakeTimers();
     const cachedResult = {
       hasFullPrints: true,
       data: { prints: [{ imageUrl: "https://example.com/stale-cache.png" }] },
@@ -602,20 +601,18 @@ describe("useScryfallPrints", () => {
         useScryfallPrints({
           name,
           oracleId: "oracle-stale-cache",
-        }),
+      }),
       { initialProps: { name: "First Cached Card" } }
     );
 
-    await vi.advanceTimersByTimeAsync(100);
+    await new Promise((resolve) => setTimeout(resolve, 120));
     rerender({ name: "Second Cached Card" });
-    await vi.advanceTimersByTimeAsync(100);
+    await new Promise((resolve) => setTimeout(resolve, 120));
 
     cacheLookup.resolve(cachedResult);
     await Promise.resolve();
     await Promise.resolve();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    vi.useRealTimers();
   });
 
   it("handles a successful response that omits the prints array", async () => {
