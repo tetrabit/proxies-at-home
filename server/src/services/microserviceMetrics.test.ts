@@ -75,6 +75,14 @@ describe('microservice metrics', () => {
     expect(getMicroserviceMetrics()).toMatchObject({ totalRequests: 2, successRate: 50, errorRate: 50 });
   });
 
+  it('tracks non-Error thrown values as unknown errors', async () => {
+    await expect(trackMicroserviceCall('/weird', async () => {
+      throw 'offline';
+    })).rejects.toBe('offline');
+
+    expect(getMicroserviceMetrics().topErrors).toEqual([{ type: 'UnknownError', count: 1 }]);
+  });
+
   it('logs summaries and degraded warnings', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

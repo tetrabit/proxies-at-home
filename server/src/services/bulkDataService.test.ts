@@ -135,6 +135,33 @@ describe('bulk data service', () => {
     expect(getCardCount).toHaveBeenCalled();
   });
 
+  it('flushes full import batches before stream completion', async () => {
+    const { downloadAndImportBulkData } = await import('./bulkDataService.js');
+    const cards = Array.from({ length: 10_000 }, (_, index) => ({
+      id: `bulk-${index}`,
+      name: `Bulk Card ${index}`,
+      set: 'tst',
+      collector_number: String(index),
+      lang: 'en',
+      type_line: index % 2 === 0 ? 'Creature — Human' : undefined,
+    }));
+
+    vi.mocked(axios.get)
+      .mockResolvedValueOnce({ data: { download_uri: 'https://bulk.test/large.json', size: 50 * 1024 * 1024 } })
+      .mockResolvedValueOnce({ data: Readable.from([JSON.stringify(cards)]) });
+    batchInsertCards.mockImplementationOnce((batch: unknown[]) => ({ inserted: batch.length, updated: 3 }));
+
+    const result = await downloadAndImportBulkData();
+
+    expect(result).toEqual({ cardsImported: 10_000, cardsNew: 10_000, cardsUpdated: 3, durationMs: 0 });
+    expect(batchInsertCards).toHaveBeenCalledTimes(1);
+    expect(batchInsertCards.mock.calls[0]?.[0]).toHaveLength(10_000);
+    expect(batchInsertCardTypes).toHaveBeenCalledWith(
+      expect.arrayContaining([{ cardId: 'bulk-0', type: 'creature', isToken: false }])
+    );
+    expect(batchInsertTokenNames).toHaveBeenCalledWith([]);
+  });
+
   it('throws stream parse errors and skips metadata update on invalid JSON', async () => {
     const { downloadAndImportBulkData } = await import('./bulkDataService.js');
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
