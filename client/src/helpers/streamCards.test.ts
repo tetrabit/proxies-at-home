@@ -204,6 +204,34 @@ describe("streamCards", () => {
     expect(result).toEqual({ addedCardUuids: [], totalCardsAdded: 0 });
   });
 
+  it("should dedupe repeated queries and ignore unknown SSE events after a successful open", async () => {
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onopen({ ok: true });
+        opts.onmessage({ event: "heartbeat", data: "" });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Repeated" }, { name: "Repeated" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(fetchEventSource).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        body: JSON.stringify({
+          cardQueries: [{ name: "Repeated" }],
+          language: "en",
+        }),
+      })
+    );
+    expect(result).toEqual({ addedCardUuids: [], totalCardsAdded: 0 });
+  });
+
   it("should map all_parts tokens and preserve tokenAddedFrom on Scryfall results", async () => {
     (undoableAddCards as any).mockResolvedValue([
       { uuid: "uuid-token-parent", name: "Token Maker" },

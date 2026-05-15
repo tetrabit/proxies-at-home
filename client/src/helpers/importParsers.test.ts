@@ -91,6 +91,11 @@ describe('importParsers', () => {
             expect(parseLineToIntent('Island {301}')).toEqual(expect.objectContaining({
                 name: 'Island',
             }));
+            expect(parseLineToIntent('Forest (abc)')).toEqual(expect.objectContaining({
+                name: 'Forest',
+                set: 'abc',
+                number: undefined,
+            }));
         });
     });
 
@@ -191,6 +196,36 @@ describe('importParsers', () => {
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('different backs per slot'));
             warnSpy.mockRestore();
         });
+
+        it('handles missing MPC XML ids, slots, and card names defensively', () => {
+            const xml = `
+              <order>
+                <fronts>
+                  <card>
+                    <id></id>
+                    <name></name>
+                    <query></query>
+                    <slots>0,1</slots>
+                  </card>
+                </fronts>
+                <backs>
+                  <card><id></id><name></name><slots></slots></card>
+                  <card><id>shared_back_1</id><name>Shared Back</name><slots>0,1</slots></card>
+                </backs>
+              </order>`;
+
+            const intents = parseMpcXml(xml);
+
+            expect(intents).toEqual([
+                expect.objectContaining({
+                    name: 'Custom Card',
+                    quantity: 2,
+                    mpcId: undefined,
+                    linkedBackImageId: 'shared_back_1',
+                    linkedBackName: 'Shared Back',
+                }),
+            ]);
+        });
     });
 
     describe('createIntentFromPreloaded', () => {
@@ -202,6 +237,17 @@ describe('importParsers', () => {
                 quantity: 4,
                 isToken: false,
                 sourcePreference: 'manual'
+            }));
+        });
+
+        it('uses safe defaults for incomplete preloaded card data', () => {
+            const intent = createIntentFromPreloaded({});
+
+            expect(intent).toEqual(expect.objectContaining({
+                name: 'Unknown Card',
+                quantity: 1,
+                isToken: false,
+                sourcePreference: 'manual',
             }));
         });
     });
