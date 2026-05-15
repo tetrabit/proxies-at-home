@@ -646,6 +646,48 @@ exit 1
     expect(unavailable.status).toBe(501);
   });
 
+  it("stringifies non-Error failures from sheet and profile routes", async () => {
+    const stringErrorApp = express();
+    stringErrorApp.use(express.json());
+    stringErrorApp.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory,
+        runCli: async (args: string[]) => {
+          const [command, subcommand] = args;
+          if (command === "sheet") throw "plain sheet failure";
+          if (command === "profile" && subcommand === "list") throw "plain list failure";
+          if (command === "profile" && subcommand === "show") throw "plain not found";
+          if (command === "profile" && subcommand === "set") throw "plain put failure";
+          if (command === "profile" && subcommand === "delete") throw "plain delete failure";
+          return { stdout: "", stderr: "" };
+        },
+      })
+    );
+
+    const sheet = await request(stringErrorApp).get("/api/printer-calibration/sheet");
+    expect(sheet.status).toBe(500);
+    expect(sheet.body.error).toBe("plain sheet failure");
+
+    const list = await request(stringErrorApp).get("/api/printer-calibration/profiles");
+    expect(list.status).toBe(500);
+    expect(list.body.error).toBe("plain list failure");
+
+    const get = await request(stringErrorApp).get("/api/printer-calibration/profiles/office");
+    expect(get.status).toBe(404);
+    expect(get.body.error).toBe("plain not found");
+
+    const put = await request(stringErrorApp)
+      .put("/api/printer-calibration/profiles/office")
+      .send({ front_x_mm: 0, front_y_mm: 0, back_x_mm: 0, back_y_mm: 0 });
+    expect(put.status).toBe(500);
+    expect(put.body.error).toBe("plain put failure");
+
+    const deleted = await request(stringErrorApp).delete("/api/printer-calibration/profiles/office");
+    expect(deleted.status).toBe(500);
+    expect(deleted.body.error).toBe("plain delete failure");
+  });
+
   it("returns apply validation and execution errors", async () => {
     const missingProfile = await request(app)
       .post("/api/printer-calibration/apply")
