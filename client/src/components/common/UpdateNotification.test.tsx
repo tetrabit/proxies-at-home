@@ -162,5 +162,13 @@ describe('UpdateNotification', () => {
             });
             expect(screen.queryByTestId('toast')).toBeNull();
         });
+
+        it('should ignore unknown statuses', () => {
+            render(<UpdateNotification />);
+            act(() => {
+                updateStatusCallback?.('mystery-status' as never);
+            });
+            expect(screen.queryByTestId('toast')).toBeNull();
+        });
     });
 });
