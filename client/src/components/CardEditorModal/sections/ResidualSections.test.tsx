@@ -137,9 +137,8 @@ describe("residual CardEditor sections", () => {
       />
     );
 
-    expect(screen.getAllByDisplayValue(/[+]\d+/).length).toBeGreaterThanOrEqual(
-      10
-    );
+    expect(screen.getByLabelText("Red")).toHaveValue("1");
+    expect(screen.getByLabelText("Highlights")).toHaveValue("10");
   });
 
   it("renders stars-only holographic branches", () => {
