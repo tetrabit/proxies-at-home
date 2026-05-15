@@ -230,6 +230,46 @@ describe('useArtworkModalStore', () => {
         expect(state.index).toBeNull();
     });
 
+    it('should ignore navigation when the next card slot is missing', () => {
+        const cards = [
+            { uuid: '1', name: 'Card 1', imageId: '1.jpg', order: 0, isUserUpload: false },
+            , // intentionally sparse to exercise the defensive early return
+        ] as unknown as CardOption[];
+
+        useArtworkModalStore.setState({
+            open: true,
+            card: cards[0],
+            index: 0,
+            allCards: cards,
+        });
+
+        useArtworkModalStore.getState().goToNextCard();
+
+        const state = useArtworkModalStore.getState();
+        expect(state.card).toEqual(cards[0]);
+        expect(state.index).toBe(0);
+    });
+
+    it('should ignore navigation when the previous card slot is missing', () => {
+        const cards = [
+            , // intentionally sparse to exercise the defensive early return
+            { uuid: '2', name: 'Card 2', imageId: '2.jpg', order: 1, isUserUpload: false },
+        ] as unknown as CardOption[];
+
+        useArtworkModalStore.setState({
+            open: true,
+            card: cards[1],
+            index: 1,
+            allCards: cards,
+        });
+
+        useArtworkModalStore.getState().goToPrevCard();
+
+        const state = useArtworkModalStore.getState();
+        expect(state.card).toEqual(cards[1]);
+        expect(state.index).toBe(1);
+    });
+
     it('should set advanced search zoom directly and via updater', () => {
         useArtworkModalStore.getState().setAdvancedSearchZoom(2);
         expect(useArtworkModalStore.getState().advancedSearchZoom).toBe(2);
