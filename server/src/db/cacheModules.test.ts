@@ -74,12 +74,20 @@ describe('database-backed cache modules', () => {
     expect(bySet?.name).toBe('Lightning Bolt');
     expect(sqliteCache.hotCardCache.has('lea:161:en')).toBe(true);
     expect(lookupModule.lookupCardBySetNumber('LEA', '161', 'EN')).toEqual(bySet);
+    expect(lookupModule.lookupCardBySetNumber('missing', '404')).toBeNull();
 
     const byName = lookupModule.lookupCardByName('lightning bolt', 'EN');
     expect(byName?.image_uris?.png).toContain('bolt.png');
     expect(lookupModule.lookupCardByName('lightning bolt', 'EN')).toEqual(byName);
 
-    expect(lookupModule.getCardCount()).toBe(1);
+    expect(lookupModule.batchInsertCards([sampleCard({ id: 'batch-card', name: 'Batch Card', collector_number: '162' })])).toEqual({ inserted: 1, updated: 0 });
+    lookupModule.insertOrUpdateCard({ name: 'Minimal Card' });
+    const minimal = lookupModule.lookupCardByName('Minimal Card');
+    expect(minimal).toMatchObject({ name: 'Minimal Card', lang: 'en' });
+    expect(minimal?.set).toBeUndefined();
+    expect(minimal?.all_parts).toEqual([]);
+
+    expect(lookupModule.getCardCount()).toBe(3);
     expect(lookupModule.getDbSizeBytes()).toBeGreaterThan(0);
     expect(lookupModule.formatBytes(0)).toBe('0 B');
     expect(lookupModule.formatBytes(1024)).toBe('1.0 KB');

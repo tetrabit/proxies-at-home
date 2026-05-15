@@ -33,7 +33,7 @@ export function scoreCardMatch(card: ScryfallApiCard, queryName: string, rowColl
 
     // Use collector number as final tiebreaker (lower = earlier in set = more likely main card)
     if (rowCollectorNumber) {
-        const collectorNum = parseInt(rowCollectorNumber || '999', 10);
+        const collectorNum = parseInt(rowCollectorNumber, 10);
         if (!isNaN(collectorNum)) {
             score += (1000 - Math.min(collectorNum, 999)) / 10000; // Small tiebreaker < 0.1
         }

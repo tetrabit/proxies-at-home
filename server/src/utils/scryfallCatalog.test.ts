@@ -193,10 +193,14 @@ describe('scryfallCatalog database write branches', () => {
         expect(run).toHaveBeenCalledWith('card', 'creature', 1);
 
         const { batchInsertCardTypes, batchInsertTokenNames } = await import('./scryfallCatalog.js');
-        batchInsertCardTypes([{ cardId: 'c1', type: 'Goblin', isToken: false }]);
+        batchInsertCardTypes([
+            { cardId: 'c1', type: 'Goblin', isToken: false },
+            { cardId: 'c2', type: 'Treasure', isToken: true },
+        ]);
         batchInsertTokenNames(['Gold']);
         expect(transaction).toHaveBeenCalled();
         expect(run).toHaveBeenCalledWith('c1', 'goblin', 0);
+        expect(run).toHaveBeenCalledWith('c2', 'treasure', 1);
         expect(run).toHaveBeenCalledWith('gold');
     });
 

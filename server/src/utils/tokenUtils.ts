@@ -21,10 +21,10 @@ export function extractTokenParts(card: ScryfallApiCard | null | undefined): Tok
         .filter((part) => part && (part.component === "token" || part.type_line?.toLowerCase().includes("token")))
         // Exclude self-referential parts (e.g. "Treasure" token lists "Treasure" as a part)
         // This prevents tokens from needing themselves
-        .filter((part) => part.name && part.name !== card.name)
+        .filter((part): part is typeof part & { name: string } => Boolean(part.name && part.name !== card.name))
         .map((part) => ({
             id: part.id,
-            name: part.name || "",
+            name: part.name,
             type_line: part.type_line,
             uri: part.uri,
         }))
