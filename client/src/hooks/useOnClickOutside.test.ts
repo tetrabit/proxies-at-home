@@ -1,6 +1,6 @@
 import { renderHook } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { useOnClickOutside } from "./useOnClickOutside";
+import { resolveClickOutsideTarget, useOnClickOutside } from "./useOnClickOutside";
 
 describe("useOnClickOutside", () => {
     it("should call handler when clicking outside", () => {
@@ -41,5 +41,9 @@ describe("useOnClickOutside", () => {
 
         document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
         expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("should resolve a missing event target to null", () => {
+        expect(resolveClickOutsideTarget({} as MouseEvent)).toBeNull();
     });
 });

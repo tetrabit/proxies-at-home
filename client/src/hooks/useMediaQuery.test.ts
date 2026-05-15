@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { getInitialMediaQueryMatch, useMediaQuery } from "./useMediaQuery";
 
 describe("useMediaQuery", () => {
@@ -78,6 +78,29 @@ describe("useMediaQuery", () => {
 
         // Verify listener was registered
         expect(capturedListener).not.toBeNull();
+    });
+
+    it("should update when the media query match changes", () => {
+        let capturedListener: (() => void) | null = null;
+        let currentMatches = true;
+
+        mockMatchMedia.mockImplementation((query: string) => ({
+            matches: currentMatches && query === "(min-width: 768px)",
+            media: query,
+            addEventListener: (_event: string, listener: () => void) => {
+                capturedListener = listener;
+            },
+            removeEventListener: vi.fn(),
+        }));
+
+        const { result } = renderHook(() => useMediaQuery("(min-width: 768px)"));
+
+        expect(result.current).toBe(true);
+        currentMatches = false;
+        act(() => {
+            capturedListener?.();
+        });
+        expect(result.current).toBe(false);
     });
 
     it("should handle query parameter changes", () => {
