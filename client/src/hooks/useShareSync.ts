@@ -46,7 +46,7 @@ export function useShareSync(): UseShareSyncResult {
             setSyncStatus('synced');
 
             const timer = setTimeout(() => {
-                setSyncStatus((current) => current === 'synced' ? 'idle' : current);
+                setSyncStatus('idle');
             }, 3000);
             return () => clearTimeout(timer);
         }

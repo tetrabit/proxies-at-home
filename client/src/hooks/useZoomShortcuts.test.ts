@@ -79,7 +79,7 @@ describe("useZoomShortcuts", () => {
     );
 
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "x", ctrlKey: true }));
       window.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
     });
 
