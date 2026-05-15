@@ -915,11 +915,18 @@ describe("mpcBulkUpgradeMatcher", () => {
           rawName: "Sol Ring [C21] {267}",
           dpi: 300,
         });
+        const cardB = makeCard({
+          identifier: "b",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 600,
+        });
 
-        const ssimCompare: SsimCompareFn = vi.fn(async () => 0.78);
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("a") ? 0.78 : 0.74
+        );
 
         const result = await selectBestCandidate({
-          candidates: [cardA],
+          candidates: [cardA, cardB],
           set: "C21",
           collectorNumber: "267",
           sourceImageUrl: scryfallSourceUrl,
@@ -928,7 +935,7 @@ describe("mpcBulkUpgradeMatcher", () => {
         });
 
         expect(result?.card.identifier).toBe("a");
-        expect(result?.reason).toBe("set_collector_only");
+        expect(result?.reason).toBe("set_collector_dpi_fallback");
       });
     });
 
