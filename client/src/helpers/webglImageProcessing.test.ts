@@ -65,3 +65,196 @@ describe("deriveSourceBleedPixelsFromGeometry", () => {
     expect(actualAspect).toBeCloseTo(expectedAspect, 2);
   });
 });
+
+describe("webglImageProcessing test internals", () => {
+  const makeGl = () => {
+    const calls: string[] = [];
+    return {
+      calls,
+      VERTEX_SHADER: 1,
+      FRAGMENT_SHADER: 2,
+      FRAMEBUFFER: 3,
+      TEXTURE0: 10,
+      TEXTURE1: 11,
+      TEXTURE_2D: 12,
+      TRIANGLES: 13,
+      ARRAY_BUFFER: 14,
+      FLOAT: 15,
+      COLOR_BUFFER_BIT: 16,
+      TEXTURE_MIN_FILTER: 17,
+      TEXTURE_MAG_FILTER: 18,
+      LINEAR: 19,
+      RG32F: 20,
+      RG: 21,
+      isContextLost: vi.fn(() => false),
+      viewport: vi.fn((...args: unknown[]) =>
+        calls.push(`viewport:${args.join(",")}`)
+      ),
+      getExtension: vi.fn(() => ({ loseContext: vi.fn() })),
+      deleteShader: vi.fn(),
+      useProgram: vi.fn(),
+      uniform2f: vi.fn(),
+      getUniformLocation: vi.fn((_program, name: string) => ({ name })),
+      uniform1i: vi.fn(),
+      uniform1f: vi.fn(),
+      bindFramebuffer: vi.fn(),
+      activeTexture: vi.fn(),
+      bindTexture: vi.fn(),
+      drawArrays: vi.fn(),
+      bindBuffer: vi.fn(),
+      enableVertexAttribArray: vi.fn(),
+      vertexAttribPointer: vi.fn(),
+      clearColor: vi.fn(),
+      clear: vi.fn(),
+      texParameteri: vi.fn(),
+      deleteTexture: vi.fn(),
+      deleteFramebuffer: vi.fn(),
+      deleteProgram: vi.fn(),
+      deleteBuffer: vi.fn(),
+    } as unknown as WebGL2RenderingContext & { calls: string[] };
+  };
+
+  class MockOffscreenCanvas {
+    width: number;
+    height: number;
+    listeners: Record<string, (event: { preventDefault(): void }) => void> = {};
+    gl = makeGl();
+
+    constructor(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+    }
+
+    getContext(kind: string) {
+      if (kind === "webgl2") return this.gl;
+      if (kind === "2d") {
+        return {
+          imageSmoothingQuality: "low",
+          drawImage: vi.fn(),
+          getImageData: vi.fn(() => ({
+            data: new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255]),
+          })),
+        };
+      }
+      return null;
+    }
+
+    addEventListener(
+      type: string,
+      listener: (event: { preventDefault(): void }) => void
+    ) {
+      this.listeners[type] = listener;
+    }
+
+    convertToBlob() {
+      return Promise.resolve(new Blob(["canvas"]));
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("OffscreenCanvas", MockOffscreenCanvas);
+  });
+
+  it("manages WebGL context reuse, resize, silent loss, explicit loss, and release", () => {
+    const manager = new __webglImageProcessingTestInternals.WebGLContextManager(
+      "test"
+    );
+
+    const first = manager.getContext(10, 20);
+    expect(first.isNew).toBe(true);
+    const second = manager.getContext(30, 40);
+    expect(second.isNew).toBe(false);
+    expect(second.canvas.width).toBe(30);
+    expect(second.canvas.height).toBe(40);
+
+    vi.mocked(second.gl.isContextLost).mockReturnValueOnce(true);
+    const third = manager.getContext(5, 6);
+    expect(third.isNew).toBe(true);
+
+    third.canvas.listeners.webglcontextlost({ preventDefault: vi.fn() });
+    const fourth = manager.getContext(7, 8);
+    expect(fourth.isNew).toBe(true);
+
+    manager.handleContextLost();
+    manager.release();
+  });
+
+  it("computes and caches darkness factor and falls back without 2d context", () => {
+    const img = { width: 2, height: 1 } as ImageBitmap;
+    const first =
+      __webglImageProcessingTestInternals.computeDarknessFactor(img);
+    const second =
+      __webglImageProcessingTestInternals.computeDarknessFactor(img);
+    expect(second).toBe(first);
+
+    class No2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        return kind === "2d" ? null : super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", No2dCanvas);
+    expect(
+      __webglImageProcessingTestInternals.computeDarknessFactor({
+        width: 1,
+        height: 1,
+      } as ImageBitmap)
+    ).toBe(0.5);
+  });
+
+  it("initializes programs, runs JFA steps, and calculates both placement branches", () => {
+    const gl = makeGl();
+    const programs = __webglImageProcessingTestInternals.initWebGLPrograms(gl);
+    expect(programs).toHaveProperty("init");
+    expect(gl.deleteShader).toHaveBeenCalledTimes(4);
+
+    const resultTexture = __webglImageProcessingTestInternals.runJfaSteps(
+      gl,
+      { kind: "step" } as unknown as WebGLProgram,
+      { kind: "texA" } as unknown as WebGLTexture,
+      { kind: "texB" } as unknown as WebGLTexture,
+      { kind: "fbA" } as unknown as WebGLFramebuffer,
+      { kind: "fbB" } as unknown as WebGLFramebuffer,
+      4,
+      2
+    );
+    expect(resultTexture).toEqual({ kind: "texA" });
+    expect(gl.drawArrays).toHaveBeenCalledTimes(2);
+
+    expect(
+      __webglImageProcessingTestInternals.calculateImagePlacement(
+        { width: 8, height: 2 } as ImageBitmap,
+        4,
+        4
+      )
+    ).toMatchObject({
+      drawHeight: 4,
+      drawWidth: 16,
+      offsetX: 6,
+      offsetY: 0,
+    });
+    expect(
+      __webglImageProcessingTestInternals.calculateImagePlacement(
+        { width: 2, height: 8 } as ImageBitmap,
+        4,
+        4
+      )
+    ).toMatchObject({
+      drawWidth: 4,
+      drawHeight: 16,
+      offsetX: 0,
+      offsetY: 6,
+    });
+  });
+
+  it("renders a direct bleed canvas through the mocked WebGL path", async () => {
+    const canvas = await renderBleedCanvasDirect(
+      { width: 2, height: 2 } as ImageBitmap,
+      6,
+      8,
+      { mimeType: "image/png", darkenMode: 2 }
+    );
+
+    expect(canvas.width).toBe(6);
+    expect(canvas.height).toBe(8);
+  });
+});
