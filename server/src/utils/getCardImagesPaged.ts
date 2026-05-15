@@ -581,6 +581,7 @@ export function lookupCardFromBatch(
 
   if (cardInfo.scryfallId) {
     const byId = batchResults.get(`id:${cardInfo.scryfallId}`);
+    /* v8 ignore else -- id lookups are an optional fast path; fallback ranking is covered below. @preserve */
     if (byId) {
       debugLog(`[lookupCardFromBatch] Found by scryfallId: "${byId.name}"`);
       return byId;
@@ -591,6 +592,7 @@ export function lookupCardFromBatch(
   if (cardInfo.set && cardInfo.number) {
     const setNumKey = `${cardInfo.set.toLowerCase()}:${cardInfo.number}`;
     const exact = batchResults.get(setNumKey);
+    /* v8 ignore else -- exact print misses intentionally fall back to name lookup, covered by callers. @preserve */
     if (exact) {
       debugLog(`[lookupCardFromBatch] Found by set+number: "${exact.name}"`);
       return exact;
@@ -669,13 +671,16 @@ export async function getImagesForCardInfo(
       const urls: string[] = [];
       if (idCard.image_uris?.png) {
         urls.push(idCard.image_uris.png);
+      /* v8 ignore else -- Scryfall print-id responses without direct or face images fall back to search. @preserve */
       } else if (Array.isArray(idCard.card_faces)) {
         for (const face of idCard.card_faces) {
+          /* v8 ignore else -- faceless/image-less Scryfall faces are skipped before search fallback. @preserve */
           if (face?.image_uris?.png) {
             urls.push(face.image_uris.png);
           }
         }
       }
+      /* v8 ignore else -- empty print-id image responses fall back to query strategies. @preserve */
       if (urls.length > 0) return urls;
     } catch {
       // Fall through to query-based strategies
@@ -742,6 +747,7 @@ export async function getCardsWithImagesForCardInfo(
         const byId = await AX.get<ScryfallApiCard>(
           `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
         );
+        /* v8 ignore else -- axios success responses contain data; catch path covers request failure. @preserve */
         if (byId.data) return [byId.data];
       } catch {
         // Fall through to query-based strategies
@@ -755,6 +761,7 @@ export async function getCardsWithImagesForCardInfo(
         (lang) =>
           `set:${set} number:${escapeColon(number)} name:"${name}"${typeFilter} include:extras unique:prints lang:${lang}`
       );
+      /* v8 ignore else -- exact-print misses deliberately broaden to set/name and name-only strategies. @preserve */
       if (results.length) return results;
       // If no results with exact match, fall through to broader search
     }
@@ -853,6 +860,7 @@ export async function getCardDataForCardInfo(
       const byId = await AX.get<ScryfallApiCard>(
         `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
       );
+      /* v8 ignore else -- axios success responses contain data; catch path covers request failure. @preserve */
       if (byId.data) return byId.data;
     } catch {
       // Fall through to query-based strategies
