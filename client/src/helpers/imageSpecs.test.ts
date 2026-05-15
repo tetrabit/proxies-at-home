@@ -65,6 +65,24 @@ describe("imageSpecs", () => {
             })).toBe(true);
         });
 
+        it("should use cardback source metadata before stale copied card metadata", () => {
+            const card = createTestCard({
+                imageId: "cardback_Gemini_Generated_Image_ekgwjgekgw_resized",
+                hasBuiltInBleed: false,
+            });
+
+            expect(getHasBuiltInBleed(card, { hasBuiltInBleed: true })).toBe(true);
+        });
+
+        it("should use false cardback source metadata before stale copied card metadata", () => {
+            const card = createTestCard({
+                imageId: "cardback_Gemini_Generated_Image_ekgwjgekgw_resized",
+                hasBuiltInBleed: true,
+            });
+
+            expect(getHasBuiltInBleed(card, { hasBuiltInBleed: false })).toBe(false);
+        });
+
         it("should prefer hasBuiltInBleed over hasBakedBleed", () => {
             const card = createTestCard({ hasBuiltInBleed: false }) as CardOption & { hasBakedBleed?: boolean };
             card.hasBakedBleed = true;
@@ -116,6 +134,20 @@ describe("imageSpecs", () => {
             const settings = { ...defaultSettings, withBleedTargetMode: "none" as const };
             expect(getEffectiveBleedMode(card, settings, { hasBuiltInBleed: true })).toBe("none");
         });
+
+        it("should keep cardback target mode stable when copied card metadata disagrees", () => {
+            const card = createTestCard({
+                imageId: "cardback_Gemini_Generated_Image_ekgwjgekgw_resized",
+                hasBuiltInBleed: false,
+            });
+            const settings = {
+                ...defaultSettings,
+                withBleedTargetMode: "none" as const,
+                noBleedTargetMode: "global" as const,
+            };
+
+            expect(getEffectiveBleedMode(card, settings, { hasBuiltInBleed: true })).toBe("none");
+        });
     });
 
     describe("getEffectiveExistingBleedMm", () => {
@@ -141,6 +173,15 @@ describe("imageSpecs", () => {
 
         it("should return source amount for cardbacks with source bleed metadata", () => {
             const card = createTestCard({ imageId: "cardback_custom" });
+            expect(getEffectiveExistingBleedMm(card, defaultSettings, { hasBuiltInBleed: true })).toBe(3);
+        });
+
+        it("should derive cardback source bleed from source metadata when copied card metadata disagrees", () => {
+            const card = createTestCard({
+                imageId: "cardback_Gemini_Generated_Image_ekgwjgekgw_resized",
+                hasBuiltInBleed: false,
+            });
+
             expect(getEffectiveExistingBleedMm(card, defaultSettings, { hasBuiltInBleed: true })).toBe(3);
         });
 
@@ -211,6 +252,22 @@ describe("imageSpecs", () => {
 
         it("should use cardback metadata when calculating target bleed width", () => {
             const card = createTestCard({ imageId: "cardback_custom" });
+            const settings: GlobalSettings = {
+                ...defaultSettings,
+                withBleedTargetMode: "manual",
+                withBleedTargetAmount: 1.25,
+                noBleedTargetMode: "manual",
+                noBleedTargetAmount: 4,
+            };
+
+            expect(getExpectedBleedWidth(card, 3, settings, { hasBuiltInBleed: true })).toBe(1.25);
+        });
+
+        it("should calculate cardback target bleed from source metadata when copied card metadata disagrees", () => {
+            const card = createTestCard({
+                imageId: "cardback_Gemini_Generated_Image_ekgwjgekgw_resized",
+                hasBuiltInBleed: false,
+            });
             const settings: GlobalSettings = {
                 ...defaultSettings,
                 withBleedTargetMode: "manual",

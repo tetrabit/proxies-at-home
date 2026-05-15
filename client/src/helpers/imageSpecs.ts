@@ -17,6 +17,10 @@ export interface GlobalSettings {
     noBleedTargetAmount: number;
 }
 
+function isCardbackImageId(imageId: string | undefined): boolean {
+    return imageId?.startsWith('cardback_') ?? false;
+}
+
 /**
  * Gets the hasBuiltInBleed status for a card, handling legacy hasBakedBleed property.
  * If card setting is undefined/unknown, falls back to image/cardback metadata.
@@ -24,6 +28,10 @@ export interface GlobalSettings {
  * records the settings used for a cached processed blob.
  */
 export function getHasBuiltInBleed(card: CardOption, image?: BleedMetadataImage): boolean | undefined {
+    if (isCardbackImageId(card.imageId) && image?.hasBuiltInBleed !== undefined) {
+        return image.hasBuiltInBleed;
+    }
+
     return card.hasBuiltInBleed
         ?? (card as { hasBakedBleed?: boolean }).hasBakedBleed
         ?? image?.hasBuiltInBleed

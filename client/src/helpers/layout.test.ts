@@ -128,6 +128,22 @@ describe('getCardTargetBleed', () => {
 
         expect(getCardTargetBleed(card, settings, globalBleedWidth, { hasBuiltInBleed: true })).toBe(1.5);
     });
+
+    it('should use cardback source metadata when copied card bleed metadata is stale', () => {
+        const card = mockCard({
+            imageId: 'cardback_Gemini_Generated_Image_ekgwjgekgw_resized',
+            hasBuiltInBleed: false,
+        });
+        const settings = {
+            ...defaultSourceSettings,
+            withBleedTargetMode: 'manual' as const,
+            withBleedTargetAmount: 1.5,
+            noBleedTargetMode: 'manual' as const,
+            noBleedTargetAmount: 4,
+        };
+
+        expect(getCardTargetBleed(card, settings, globalBleedWidth, { hasBuiltInBleed: true })).toBe(1.5);
+    });
 });
 
 describe('computeCardLayouts', () => {

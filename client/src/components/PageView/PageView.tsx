@@ -44,6 +44,7 @@ import {
   getCardTargetBleed,
   chunkCards,
 } from "@/helpers/layout";
+import type { BleedMetadataImage } from "@/helpers/imageSpecs";
 import PixiVirtualCanvas, {
   type CardWithGlobalLayout,
   type PageLayoutInfo,
@@ -97,6 +98,11 @@ type PageViewProps = {
   allCards: CardOption[];
   mobile?: boolean;
   active?: boolean;
+};
+
+type ImageLayoutData = BleedMetadataImage & {
+  displayBlob?: Blob;
+  darknessFactor?: number;
 };
 
 export function PageView({
@@ -689,14 +695,14 @@ export function PageView({
 
   // Map from image ID to image blob data
   const imageDataById = useMemo(() => {
-    const map = new Map<
-      string,
-      { displayBlob?: Blob; darknessFactor?: number }
-    >();
+    const map = new Map<string, ImageLayoutData>();
     for (const img of images) {
+      const metadata = img as Image & BleedMetadataImage;
       map.set(img.id, {
         displayBlob: img.displayBlob,
         darknessFactor: img.darknessFactor,
+        hasBuiltInBleed: metadata.hasBuiltInBleed,
+        generatedHasBuiltInBleed: metadata.generatedHasBuiltInBleed,
       });
     }
     return map;
@@ -799,14 +805,20 @@ export function PageView({
       page.forEach((card, index) => {
         const col = index % columns;
         const row = Math.floor(index / columns);
-        const imageData = card.imageId
+        const frontImageData = card.imageId
           ? imageDataById.get(card.imageId)
           : undefined;
+        const backCard = backCardMap.get(card.uuid);
+        const isFlipped = flippedCards.has(card.uuid);
+        const layoutCard = isFlipped && backCard ? backCard : card;
+        const layoutImageData = layoutCard.imageId
+          ? imageDataById.get(layoutCard.imageId)
+          : undefined;
         const bleedMm = getCardTargetBleed(
-          card,
+          layoutCard,
           sourceSettings,
           effectiveBleedWidth,
-          imageData
+          layoutImageData
         );
         const layout = {
           cardWidthMm: baseCardWidthMm + bleedMm * 2,
@@ -821,7 +833,6 @@ export function PageView({
         const xMm = cellXMm + (fixedCardWidthMm - layout.cardWidthMm) / 2;
         const yMm = cellYMm + (fixedCardHeightMm - layout.cardHeightMm) / 2;
 
-        const backCard = backCardMap.get(card.uuid);
         const backImageData = backCard?.imageId
           ? imageDataById.get(backCard.imageId)
           : undefined;
@@ -831,12 +842,14 @@ export function PageView({
         // This ensures change detection works when images are still processing
         result.push({
           card,
-          imageBlob: imageData?.displayBlob,
+          imageBlob: frontImageData?.displayBlob,
           backBlob: backImageData?.displayBlob,
           frontImageId: card.imageId,
           backImageId: backCard?.imageId,
           backOverrides: backCard?.overrides, // Back card's overrides for per-face rendering
-          darknessFactor: imageData?.darknessFactor ?? 0.5,
+          darknessFactor:
+            (isFlipped ? backImageData : frontImageData)?.darknessFactor ??
+            0.5,
           globalX: xMm * MM_TO_PX,
           globalY:
             topPaddingPx +
