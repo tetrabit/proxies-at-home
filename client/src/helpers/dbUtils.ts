@@ -251,27 +251,19 @@ export interface ResetToOriginalImagesResult {
   legacy: number;
 }
 
-/**
- * Best-effort reset helper for original import art.
- *
- * The current schema does not persist per-card original-art history, so cards
- * can only be classified as already original (currently using a Scryfall image)
- * or legacy/unresettable (no original import art history available).
- */
-export async function resetCardsToOriginalImages(
-  projectId?: string
-): Promise<ResetToOriginalImagesResult> {
-  const result: ResetToOriginalImagesResult = {
+function createResetToOriginalImagesResult(): ResetToOriginalImagesResult {
+  return {
     reset: 0,
     skipped: 0,
     alreadyOriginal: 0,
     legacy: 0,
   };
+}
 
-  if (!projectId) return result;
-
-  const cards = await db.cards.where("projectId").equals(projectId).toArray();
-
+async function resetCardRecordsToOriginalImages(
+  cards: CardOption[],
+  result: ResetToOriginalImagesResult
+): Promise<ResetToOriginalImagesResult> {
   const resettableCards = cards.filter((card) => {
     if (!card.imageId) {
       result.skipped += 1;
@@ -364,6 +356,39 @@ export async function resetCardsToOriginalImages(
   });
 
   return result;
+}
+
+/**
+ * Best-effort reset helper for original import art.
+ *
+ * The current schema does not persist per-card original-art history, so cards
+ * can only be classified as already original (currently using a Scryfall image)
+ * or legacy/unresettable (no original import art history available).
+ */
+export async function resetCardsToOriginalImages(
+  projectId?: string
+): Promise<ResetToOriginalImagesResult> {
+  const result = createResetToOriginalImagesResult();
+
+  if (!projectId) return result;
+
+  const cards = await db.cards.where("projectId").equals(projectId).toArray();
+
+  return resetCardRecordsToOriginalImages(cards, result);
+}
+
+export async function resetCardToOriginalImage(
+  cardUuid: string
+): Promise<ResetToOriginalImagesResult> {
+  const result = createResetToOriginalImagesResult();
+  const card = await db.cards.get(cardUuid);
+
+  if (!card) {
+    result.skipped = 1;
+    return result;
+  }
+
+  return resetCardRecordsToOriginalImages([card], result);
 }
 
 /**

@@ -3,6 +3,7 @@ import { db } from "@/db";
 import {
   addCards,
   rebalanceCardOrders,
+  resetCardToOriginalImage,
   resetCardsToOriginalImages,
   moveMultiFaceCardsToEnd,
   checkMultiFaceCardsHaveCorrectBack,
@@ -192,6 +193,42 @@ describe("dbUtils", () => {
       await expect(resetCardsToOriginalImages()).resolves.toEqual({
         reset: 0,
         skipped: 0,
+        alreadyOriginal: 0,
+        legacy: 0,
+      });
+    });
+
+    it("resets one card to original import art by uuid", async () => {
+      await db.images.add({
+        id: "mpc-lightning-bolt",
+        refCount: 1,
+        source: "mpc",
+      });
+      await db.cards.add({
+        uuid: "single-reset-card",
+        name: "Lightning Bolt",
+        order: 10,
+        isUserUpload: false,
+        imageId: "mpc-lightning-bolt",
+      });
+
+      const result = await resetCardToOriginalImage("single-reset-card");
+
+      expect(result).toEqual({
+        reset: 1,
+        skipped: 0,
+        alreadyOriginal: 0,
+        legacy: 0,
+      });
+      const card = await db.cards.get("single-reset-card");
+      expect(card?.imageId).toBe("https://cards.scryfall.io/normal/bolt.jpg");
+      await expect(db.images.get("mpc-lightning-bolt")).resolves.toBeUndefined();
+    });
+
+    it("reports a skipped reset when the card uuid is missing", async () => {
+      await expect(resetCardToOriginalImage("missing-card")).resolves.toEqual({
+        reset: 0,
+        skipped: 1,
         alreadyOriginal: 0,
         legacy: 0,
       });

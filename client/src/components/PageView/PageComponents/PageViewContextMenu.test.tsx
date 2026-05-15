@@ -9,6 +9,14 @@ const mocks = vi.hoisted(() => ({
   openCalibrationModal: vi.fn(),
   openCardEditor: vi.fn(),
   openMpcUpgrade: vi.fn(),
+  showInfoToast: vi.fn(),
+  showErrorToast: vi.fn(),
+  resetCardToOriginalImage: vi.fn().mockResolvedValue({
+    reset: 1,
+    skipped: 0,
+    alreadyOriginal: 0,
+    legacy: 0,
+  }),
   undoableDeleteCard: vi.fn().mockResolvedValue(undefined),
   undoableDeleteCardsBatch: vi.fn().mockResolvedValue(undefined),
   undoableDuplicateCard: vi.fn().mockResolvedValue(undefined),
@@ -28,6 +36,7 @@ vi.mock('lucide-react', () => ({
   Settings: () => <span data-testid="settings-icon" />,
   Palette: () => <span data-testid="palette-icon" />,
   Sparkles: () => <span data-testid="sparkles-icon" />,
+  RotateCcw: () => <span data-testid="rotate-ccw-icon" />,
 }));
 
 vi.mock('@/store/selection', () => ({
@@ -42,6 +51,10 @@ vi.mock('@/helpers/undoableActions', () => ({
   undoableDuplicateCardsBatch: (...args: unknown[]) => mocks.undoableDuplicateCardsBatch(...args),
 }));
 
+vi.mock('@/helpers/dbUtils', () => ({
+  resetCardToOriginalImage: (...args: unknown[]) => mocks.resetCardToOriginalImage(...args),
+}));
+
 vi.mock('@/store', () => ({
   useArtworkModalStore: (selector: (state: { openModal: typeof mocks.openArtworkModal }) => unknown) =>
     selector({ openModal: mocks.openArtworkModal }),
@@ -53,11 +66,27 @@ vi.mock('@/store', () => ({
     selector({ openModal: mocks.openMpcUpgrade }),
 }));
 
+vi.mock('@/store/toast', () => ({
+  useToastStore: (selector: (state: {
+    showInfoToast: typeof mocks.showInfoToast;
+    showErrorToast: typeof mocks.showErrorToast;
+  }) => unknown) => selector({
+    showInfoToast: mocks.showInfoToast,
+    showErrorToast: mocks.showErrorToast,
+  }),
+}));
+
 vi.mock('@/db', () => ({
   db: { images: { get: (id: string) => mocks.dbImagesGet(id) } },
 }));
 
-import { PageViewContextMenu } from './PageViewContextMenu';
+import {
+  PageViewContextMenu,
+} from './PageViewContextMenu';
+import {
+  getOriginalArtResetTargetCard,
+  getOriginalArtResetToastMessage,
+} from './pageViewContextMenuUtils';
 
 const front = { uuid: 'front-1', name: 'Island', imageId: 'img-1', linkedBackId: 'back-1' };
 const back = { uuid: 'back-1', name: 'Island Back', imageId: 'img-back', linkedFrontId: 'front-1' };
@@ -83,6 +112,12 @@ describe('PageViewContextMenu', () => {
     vi.clearAllMocks();
     mocks.selectedCards = new Set();
     mocks.dbImagesGet.mockImplementation(async (id: string) => ({ id }));
+    mocks.resetCardToOriginalImage.mockResolvedValue({
+      reset: 1,
+      skipped: 0,
+      alreadyOriginal: 0,
+      legacy: 0,
+    });
   });
 
   it('renders nothing when hidden or missing a card uuid', () => {
@@ -128,6 +163,10 @@ describe('PageViewContextMenu', () => {
 
     fireEvent.click(screen.getByTestId('card-context-menu-mpc-calibration'));
     expect(mocks.openCalibrationModal).toHaveBeenCalledWith({ cardUuid: 'front-1', card: front });
+
+    fireEvent.click(screen.getByTestId('card-context-menu-reset-original-art'));
+    await waitFor(() => expect(mocks.resetCardToOriginalImage).toHaveBeenCalledWith('back-1'));
+    expect(mocks.showInfoToast).toHaveBeenCalledWith('Reset "Island Back" to original import art.');
 
     fireEvent.click(screen.getByText('Settings'));
     expect(mocks.openArtworkModal).toHaveBeenCalledWith({
@@ -207,12 +246,63 @@ describe('PageViewContextMenu', () => {
 
     fireEvent.click(screen.getByTestId('card-context-menu-mpc-upgrade'));
     fireEvent.click(screen.getByTestId('card-context-menu-mpc-calibration'));
+    fireEvent.click(screen.getByTestId('card-context-menu-reset-original-art'));
     fireEvent.click(screen.getByText('Settings'));
 
     expect(mocks.openMpcUpgrade).not.toHaveBeenCalled();
     expect(mocks.openCalibrationModal).not.toHaveBeenCalled();
+    expect(mocks.resetCardToOriginalImage).not.toHaveBeenCalled();
     expect(mocks.openArtworkModal).not.toHaveBeenCalled();
     expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
+  });
+
+  it('shows an error toast when returning to original import art fails', async () => {
+    mocks.resetCardToOriginalImage.mockRejectedValueOnce(new Error('boom'));
+    const setContextMenu = renderMenu();
+
+    fireEvent.click(screen.getByTestId('card-context-menu-reset-original-art'));
+
+    await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith(
+      'Failed to return card to original import art.'
+    ));
+    expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
+  });
+
+  it('formats return-to-original-art status messages', () => {
+    expect(getOriginalArtResetToastMessage({
+      reset: 1,
+      skipped: 0,
+      alreadyOriginal: 0,
+      legacy: 0,
+    }, 'Island')).toBe('Reset "Island" to original import art.');
+    expect(getOriginalArtResetToastMessage({
+      reset: 0,
+      skipped: 0,
+      alreadyOriginal: 1,
+      legacy: 0,
+    }, 'Island')).toBe('"Island" is already using original import art.');
+    expect(getOriginalArtResetToastMessage({
+      reset: 0,
+      skipped: 0,
+      alreadyOriginal: 0,
+      legacy: 1,
+    }, 'Island')).toBe('Cannot reset "Island" because no original import art history is available.');
+    expect(getOriginalArtResetToastMessage({
+      reset: 0,
+      skipped: 1,
+      alreadyOriginal: 0,
+      legacy: 0,
+    }, 'Island')).toBe('No original import art found for "Island".');
+  });
+
+  it('targets the visible linked back card only when the menu card is flipped', () => {
+    expect(getOriginalArtResetTargetCard(cards as never[], 'front-1', new Set())).toBe(front);
+    expect(getOriginalArtResetTargetCard(cards as never[], 'front-1', new Set(['front-1']))).toBe(back);
+    expect(getOriginalArtResetTargetCard([{ ...front, linkedBackId: 'missing-back' }] as never[], 'front-1', new Set(['front-1']))).toEqual({
+      ...front,
+      linkedBackId: 'missing-back',
+    });
+    expect(getOriginalArtResetTargetCard(cards as never[], 'missing', new Set())).toBeUndefined();
   });
 
   it('closes multi-select editor/settings actions without opening when the card is missing', async () => {

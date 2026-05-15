@@ -157,14 +157,19 @@ vi.mock("@/store", () => {
   };
 });
 
-vi.mock("@/store/toast", () => ({
-  useToastStore: {
-    getState: () => ({
-      addToast: mockAddToast,
-      removeToast: mockRemoveToast,
-    }),
-  },
-}));
+vi.mock("@/store/toast", () => {
+  const toastState = {
+    addToast: mockAddToast,
+    removeToast: mockRemoveToast,
+    showInfoToast: vi.fn(),
+    showErrorToast: vi.fn(),
+  };
+  const useToastStore = (selector: (state: typeof toastState) => unknown) =>
+    typeof selector === "function" ? selector(toastState) : toastState;
+  useToastStore.getState = () => toastState;
+
+  return { useToastStore };
+});
 
 vi.mock("@/db", () => ({
   db: {

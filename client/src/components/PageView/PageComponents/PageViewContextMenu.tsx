@@ -1,5 +1,5 @@
 import { Button } from "flowbite-react";
-import { Copy, Trash, Settings, Palette, Sparkles } from "lucide-react";
+import { Copy, RotateCcw, Trash, Settings, Palette, Sparkles } from "lucide-react";
 import { useEffect } from "react";
 import { useSelectionStore } from "@/store/selection";
 import {
@@ -9,13 +9,21 @@ import {
   undoableDuplicateCardsBatch,
 } from "@/helpers/undoableActions";
 import {
+  resetCardToOriginalImage,
+} from "@/helpers/dbUtils";
+import {
   useArtworkModalStore,
   useCalibrationModalStore,
   useCardEditorModalStore,
   useMpcUpgradeModalStore,
 } from "@/store";
+import { useToastStore } from "@/store/toast";
 import { db } from "@/db";
 import type { CardOption } from "@/types";
+import {
+  getOriginalArtResetTargetCard,
+  getOriginalArtResetToastMessage,
+} from "./pageViewContextMenuUtils";
 
 interface PageViewContextMenuProps {
   contextMenu: {
@@ -64,6 +72,8 @@ export function PageViewContextMenu({
   );
   const openCardEditor = useCardEditorModalStore((state) => state.openModal);
   const openMpcUpgrade = useMpcUpgradeModalStore((state) => state.openModal);
+  const showInfoToast = useToastStore((state) => state.showInfoToast);
+  const showErrorToast = useToastStore((state) => state.showErrorToast);
   const hasSelection = selectedCards.size > 0;
 
   useEffect(() => {
@@ -230,6 +240,32 @@ export function PageViewContextMenu({
           >
             <Sparkles className="size-3 mr-1" />
             MPC Calibration
+          </Button>
+          <Button
+            size="sm"
+            color="light"
+            data-testid="card-context-menu-reset-original-art"
+            onClick={async () => {
+              const targetCard = getOriginalArtResetTargetCard(
+                cards,
+                contextMenu.cardUuid!,
+                flippedCards
+              );
+              if (targetCard) {
+                try {
+                  const result = await resetCardToOriginalImage(targetCard.uuid);
+                  showInfoToast(
+                    getOriginalArtResetToastMessage(result, targetCard.name)
+                  );
+                } catch {
+                  showErrorToast("Failed to return card to original import art.");
+                }
+              }
+              setContextMenu({ ...contextMenu, visible: false });
+            }}
+          >
+            <RotateCcw className="size-3 mr-1" />
+            Return to Original Import Art
           </Button>
           <Button
             size="sm"
