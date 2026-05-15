@@ -321,7 +321,10 @@ describe("ProxyBuilderPage", () => {
       isSettingsPanelCollapsed: false,
       isUploadPanelCollapsed: false,
     };
-    mocks.useLiveQuery.mockImplementation(() => []);
+    mocks.useLiveQuery.mockImplementation((query: () => unknown) => {
+      void query();
+      return [];
+    });
     mocks.ensureProcessed.mockResolvedValue(undefined);
     mocks.dbCardsToArray.mockResolvedValue([]);
     mocks.dbImagesEach.mockResolvedValue(undefined);
@@ -500,6 +503,11 @@ describe("ProxyBuilderPage", () => {
         });
       }
     );
+    mocks.dbCardbacksEach.mockImplementation(
+      async (cb: (cardback: unknown) => void) => {
+        cb({ id: "cardback", displayBlob: new Blob(["cardback"]) });
+      }
+    );
 
     render(<ProxyBuilderPage />);
 
@@ -509,6 +517,39 @@ describe("ProxyBuilderPage", () => {
 
     expect(mocks.ensureProcessed).toHaveBeenCalledTimes(1);
     expect(mocks.ensureProcessed).toHaveBeenCalledWith(cards[0], "low");
+    vi.useRealTimers();
+  });
+
+  it("queues processed-looking images when generation metadata mismatches", async () => {
+    vi.useFakeTimers();
+    const card = { uuid: "mismatch", imageId: "img-mismatch" };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbImagesEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "img-mismatch",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 4,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).toHaveBeenCalledWith(card, "low");
     vi.useRealTimers();
   });
 
@@ -572,29 +613,58 @@ describe("ProxyBuilderPage", () => {
     ["missing existing bleed marker", { generatedExistingBleedMm: undefined }],
     ["mismatched existing bleed amount", { generatedExistingBleedMm: 1 }],
     ["missing processed blobs", { displayBlob: undefined }],
-  ])("reprocesses cards with %s after bleed setting changes", async (_label, overrides) => {
+  ])(
+    "reprocesses cards with %s after bleed setting changes",
+    async (_label, overrides) => {
+      vi.useFakeTimers();
+      const card = { uuid: "card", imageId: "img-card" };
+      mocks.useLiveQuery
+        .mockReturnValueOnce([card])
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([]);
+      mocks.dbCardsToArray.mockResolvedValue([card]);
+      mocks.dbImagesEach.mockImplementation(
+        async (cb: (image: unknown) => void) => {
+          cb({
+            id: "img-card",
+            displayBlob: new Blob(["display"]),
+            exportBlob: new Blob(["export"]),
+            exportDpi: 800,
+            exportBleedWidth: 3.175,
+            generatedHasBuiltInBleed: false,
+            generatedBleedMode: "add",
+            generatedExistingBleedMm: 0,
+            ...overrides,
+          });
+        }
+      );
+      mocks.dbCardbacksEach.mockImplementation(
+        async (cb: (cardback: unknown) => void) => {
+          cb({ id: "cardback", displayBlob: new Blob(["cardback"]) });
+        }
+      );
+
+      const { rerender } = render(<ProxyBuilderPage />);
+      mocks.settingsState.withBleedTargetAmount = 4;
+      rerender(<ProxyBuilderPage />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(550);
+      });
+
+      expect(mocks.reprocessSelectedImages).toHaveBeenCalledWith([card], 3.175);
+      vi.useRealTimers();
+    }
+  );
+
+  it("reprocesses cards whose image record is missing after bleed setting changes", async () => {
     vi.useFakeTimers();
-    const card = { uuid: "card", imageId: "img-card" };
+    const card = { uuid: "missing-image", imageId: "img-missing" };
     mocks.useLiveQuery
       .mockReturnValueOnce([card])
       .mockReturnValueOnce([])
       .mockReturnValueOnce([]);
     mocks.dbCardsToArray.mockResolvedValue([card]);
-    mocks.dbImagesEach.mockImplementation(
-      async (cb: (image: unknown) => void) => {
-        cb({
-          id: "img-card",
-          displayBlob: new Blob(["display"]),
-          exportBlob: new Blob(["export"]),
-          exportDpi: 800,
-          exportBleedWidth: 3.175,
-          generatedHasBuiltInBleed: false,
-          generatedBleedMode: "add",
-          generatedExistingBleedMm: 0,
-          ...overrides,
-        });
-      }
-    );
 
     const { rerender } = render(<ProxyBuilderPage />);
     mocks.settingsState.withBleedTargetAmount = 4;
