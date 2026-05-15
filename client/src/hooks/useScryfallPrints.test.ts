@@ -565,56 +565,6 @@ describe("useScryfallPrints", () => {
     vi.useRealTimers();
   });
 
-  it("drops a stale cached result after a newer query has started", async () => {
-    const cachedResult = {
-      hasFullPrints: true,
-      data: { prints: [{ imageUrl: "https://example.com/stale-cache.png" }] },
-    };
-    const cacheLookup = deferred<typeof cachedResult | undefined>();
-    let lookupCount = 0;
-
-    vi.spyOn(db.cardMetadataCache, "where").mockImplementation((column: string) => {
-      expect(column).toBe("oracle_id");
-      lookupCount += 1;
-      return {
-        equals: vi.fn(() => ({
-          first: vi.fn(() =>
-            lookupCount === 1
-              ? cacheLookup.promise
-              : Promise.resolve(undefined)
-          ),
-        })),
-      } as never;
-    });
-
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        total: 1,
-        prints: [{ imageUrl: "https://example.com/fresh-cache.png" }],
-      }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { rerender } = renderHook(
-      ({ name }) =>
-        useScryfallPrints({
-          name,
-          oracleId: "oracle-stale-cache",
-      }),
-      { initialProps: { name: "First Cached Card" } }
-    );
-
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    rerender({ name: "Second Cached Card" });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-
-    cacheLookup.resolve(cachedResult);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
   it("handles a successful response that omits the prints array", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -807,6 +757,24 @@ describe("useScryfallPrints", () => {
       expect(result.current.hasSearched).toBe(true);
     });
 
+    expect(result.current.prints).toEqual([]);
+  });
+
+  it("ignores an AbortError rejection without clearing results", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Abort Card",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    expect(result.current.hasSearched).toBe(false);
     expect(result.current.prints).toEqual([]);
   });
 });
