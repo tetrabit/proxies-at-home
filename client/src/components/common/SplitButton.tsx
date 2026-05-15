@@ -58,7 +58,7 @@ interface SplitButtonProps<T extends string> {
     /** Whether main action is disabled */
     disabled?: boolean;
     /** Click handler for main button */
-    onClick: () => void;
+    onClick?: () => void;
     /** Whether dropdown is open */
     isOpen: boolean;
     /** Toggle dropdown */

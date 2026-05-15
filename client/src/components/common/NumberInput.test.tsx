@@ -93,6 +93,9 @@ describe('NumberInput', () => {
             expect(onChange).toHaveBeenCalledTimes(1);
             const syntheticEvent = onChange.mock.calls[0][0] as React.ChangeEvent<HTMLInputElement>;
             expect(syntheticEvent.target.value).toBe('1.3');
+            syntheticEvent.persist();
+            syntheticEvent.preventDefault();
+            syntheticEvent.stopPropagation();
             expect(syntheticEvent.isDefaultPrevented()).toBe(false);
             expect(syntheticEvent.isPropagationStopped()).toBe(false);
         });

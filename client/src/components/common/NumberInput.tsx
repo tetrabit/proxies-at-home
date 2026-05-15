@@ -27,42 +27,41 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
         const triggerChange = useCallback(() => {
-            if (innerRef.current) {
-                // Dispatch native events for any non-React listeners
-                const nativeChange = new Event("change", { bubbles: true });
-                const nativeInput = new Event("input", { bubbles: true });
-                innerRef.current.dispatchEvent(nativeInput);
-                innerRef.current.dispatchEvent(nativeChange);
+            const input = innerRef.current!;
+            // Dispatch native events for any non-React listeners
+            const nativeChange = new Event("change", { bubbles: true });
+            const nativeInput = new Event("input", { bubbles: true });
+            input.dispatchEvent(nativeInput);
+            input.dispatchEvent(nativeChange);
 
-                // Explicitly call the React onChange prop if it exists
-                if (onChange) {
-                    const syntheticEvent = {
-                        target: innerRef.current,
-                        currentTarget: innerRef.current,
-                        bubbles: true,
-                        cancelable: false,
-                        defaultPrevented: false,
-                        eventPhase: 3,
-                        isTrusted: true,
-                        nativeEvent: nativeChange,
-                        persist: () => { },
-                        preventDefault: () => { },
-                        isDefaultPrevented: () => false,
-                        stopPropagation: () => { },
-                        isPropagationStopped: () => false,
-                        type: 'change',
-                    } as unknown as React.ChangeEvent<HTMLInputElement>;
+            // Explicitly call the React onChange prop if it exists
+            if (onChange) {
+                const syntheticEvent = {
+                    target: input,
+                    currentTarget: input,
+                    bubbles: true,
+                    cancelable: false,
+                    defaultPrevented: false,
+                    eventPhase: 3,
+                    isTrusted: true,
+                    nativeEvent: nativeChange,
+                    persist: () => { },
+                    preventDefault: () => { },
+                    isDefaultPrevented: () => false,
+                    stopPropagation: () => { },
+                    isPropagationStopped: () => false,
+                    type: 'change',
+                } as unknown as React.ChangeEvent<HTMLInputElement>;
 
-                    onChange(syntheticEvent);
-                }
+                onChange(syntheticEvent);
             }
         }, [onChange]);
 
         const updateValue = useCallback(
             (delta: number) => {
-                if (!innerRef.current) return;
+                const input = innerRef.current!;
 
-                const currentValue = parseFloat(innerRef.current.value) || 0;
+                const currentValue = parseFloat(input.value) || 0;
                 const newValue = currentValue + delta;
 
                 // Check bounds
@@ -73,7 +72,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
                 const precision = step.toString().split(".")[1]?.length || 0;
                 const rounded = parseFloat(newValue.toFixed(precision));
 
-                innerRef.current.value = rounded.toString();
+                input.value = rounded.toString();
                 triggerChange();
             },
             [min, max, step, triggerChange]

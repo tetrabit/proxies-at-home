@@ -27,7 +27,8 @@ export function MpcImportSection({ mobile, onUploadComplete }: Props) {
     });
 
     const handleImportMpcXml = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
+        const input = e.currentTarget;
+        const file = input.files?.[0];
         if (!file) return;
 
         // No loading modal needed - the processing toast shows progress
@@ -48,7 +49,7 @@ export function MpcImportSection({ mobile, onUploadComplete }: Props) {
                 err instanceof Error ? err.message : "Failed to parse file or import cards."
             );
         } finally {
-            if (e.target) e.target.value = "";
+            input.value = "";
         }
     };
 

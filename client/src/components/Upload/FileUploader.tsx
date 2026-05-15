@@ -82,9 +82,7 @@ export function FileUploader({ mobile, onUploadComplete }: Props) {
             intents.push(intent);
         }
 
-        if (intents.length > 0) {
-            await processCards(intents);
-        }
+        await processCards(intents);
     }
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -123,7 +121,6 @@ export function FileUploader({ mobile, onUploadComplete }: Props) {
                 icon={Upload}
                 asLabel
                 htmlFor={inputId}
-                onClick={() => { }}
                 isOpen={isDropdownOpen}
                 onToggle={() => setIsDropdownOpen(!isDropdownOpen)}
                 onClose={() => setIsDropdownOpen(false)}
