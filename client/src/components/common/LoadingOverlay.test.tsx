@@ -1,8 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, act } from '@testing-library/react';
 import LoadingOverlay from './LoadingOverlay';
 
 describe('LoadingOverlay', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     it('should render task text', () => {
         render(
             <LoadingOverlay
@@ -64,5 +72,20 @@ describe('LoadingOverlay', () => {
 
         expect(screen.queryByText('Cancel')).toBeNull();
     });
-});
 
+    it('should update elapsed time after the interval fires', () => {
+        render(
+            <LoadingOverlay
+                task="Processing"
+                progress={50}
+                onCancel={null}
+            />
+        );
+
+        act(() => {
+            vi.advanceTimersByTime(1000);
+        });
+
+        expect(screen.getByText(/Elapsed:/)).toBeDefined();
+    });
+});
