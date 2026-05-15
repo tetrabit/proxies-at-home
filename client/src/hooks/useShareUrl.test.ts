@@ -363,18 +363,18 @@ describe("useShareUrl", () => {
       equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
     });
     mockCreateProject.mockResolvedValue("project-fallbacks");
-    let capturedIntents: any[] = [];
+    let capturedIntents: unknown[] = [];
     mockProcess.mockImplementation(async (intents) => {
-      capturedIntents = intents as any[];
+      capturedIntents = intents as unknown[];
     });
 
     renderHook(() => useShareUrl());
 
     await waitFor(() => expect(mockProcess).toHaveBeenCalled());
 
-    expect(capturedIntents[0].linkedBackName).toBe("Cardback");
-    expect(capturedIntents[1].linkedBackName).toBe("Back");
-    expect(capturedIntents[2].linkedBackName).toBe("Back");
+    expect(capturedIntents[0]).toMatchObject({ linkedBackName: "Cardback" });
+    expect(capturedIntents[1]).toMatchObject({ linkedBackName: "Back" });
+    expect(capturedIntents[2]).toMatchObject({ linkedBackName: "Back" });
   });
 
   it("forks a dirty existing project and creates a new shared copy", async () => {
