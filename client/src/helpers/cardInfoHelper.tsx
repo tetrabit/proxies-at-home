@@ -72,16 +72,8 @@ export function extractCardInfo(input: string, quantity: number = 1): CardInfo {
   let setCode: string | undefined;
   let number: string | undefined;
 
-  // Check for [Set] {Number} format (e.g. [FIC] {7})
-  const setNumBrackets = /\s*\[([a-z0-9]+)\]\s*\{([a-z0-9]+)\}\s*$/i;
-  const mBrackets = s.match(setNumBrackets);
-  if (mBrackets) {
-    setCode = mBrackets[1]?.toLowerCase();
-    number = mBrackets[2];
-    s = s.replace(setNumBrackets, "").trim();
-  }
-
   // Check for {Number} only format (e.g. Name {123}) - User requested to drop number
+  const setNumBrackets = /\s*\[([a-z0-9]+)\]\s*\{([a-z0-9]+)\}\s*$/i;
   const numBracketsOnly = /\s*\{([a-z0-9]+)\}\s*$/i;
   const setNumTail = /\s*\(([a-z0-9]{2,5})\)\s*([a-z0-9-]+)?\s*$/i;
   // Use word boundary (\b) to ensure s: is not matched when part of is: (Scryfall syntax)
