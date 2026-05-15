@@ -24,10 +24,7 @@ export function toProxied(url: string, apiBase: string) {
         return `${apiBase}/api/cards/images/mpc?id=${url}`;
     }
 
-    const prefix = `${apiBase}/api/cards/images/proxy?url=`;
-    if (url.startsWith(prefix)) return url;
-
-    return `${prefix}${encodeURIComponent(url)}`;
+    return `${apiBase}/api/cards/images/proxy?url=${encodeURIComponent(url)}`;
 }
 
 // Retry with exponential backoff: 1s → 2s → 4s (gentler on servers)
@@ -154,8 +151,6 @@ export function blackenAllNearBlackPixels(
 
     const MAX_CONTRAST = 1 + 0.22 * darknessFactor;
     const MAX_BRIGHTNESS = -8 * darknessFactor;
-    const HIGHLIGHT_SOFT = 230;
-
     // --- 4. Apply adaptive edge contrast ---
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -182,13 +177,8 @@ export function blackenAllNearBlackPixels(
                 const contrast = 1 + (MAX_CONTRAST - 1) * strength;
                 const brightness = MAX_BRIGHTNESS * strength;
 
-                let nv = (v - 128) * contrast + 128 + brightness;
-
-                if (nv > HIGHLIGHT_SOFT) {
-                    nv = HIGHLIGHT_SOFT + (nv - HIGHLIGHT_SOFT) * 0.35;
-                }
-
-                d[i + c] = nv < 0 ? 0 : nv > 255 ? 255 : nv;
+                const nv = (v - 128) * contrast + 128 + brightness;
+                d[i + c] = Math.max(0, nv);
             }
         }
     }
@@ -311,8 +301,6 @@ export function applyEdgeContrastCPU(imageData: ImageData, darknessFactor: numbe
 
     const MAX_CONTRAST = 1 + 0.22 * darknessFactor;
     const MAX_BRIGHTNESS = -8 * darknessFactor;
-    const HIGHLIGHT_SOFT = 230;
-
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const i = (y * width + x) * 4;
@@ -336,13 +324,8 @@ export function applyEdgeContrastCPU(imageData: ImageData, darknessFactor: numbe
                 const contrast = 1 + (MAX_CONTRAST - 1) * strength;
                 const brightness = MAX_BRIGHTNESS * strength;
 
-                let nv = (v - 128) * contrast + 128 + brightness;
-
-                if (nv > HIGHLIGHT_SOFT) {
-                    nv = HIGHLIGHT_SOFT + (nv - HIGHLIGHT_SOFT) * 0.35;
-                }
-
-                d[i + c] = nv < 0 ? 0 : nv > 255 ? 255 : nv;
+                const nv = (v - 128) * contrast + 128 + brightness;
+                d[i + c] = Math.max(0, nv);
             }
         }
     }
@@ -360,8 +343,6 @@ export function applyContrastFullCPU(imageData: ImageData, darknessFactor: numbe
 
     const MAX_CONTRAST = 1 + 0.22 * darknessFactor;
     const MAX_BRIGHTNESS = -8 * darknessFactor;
-    const HIGHLIGHT_SOFT = 230;
-
     for (let i = 0; i < d.length; i += 4) {
         for (let c = 0; c < 3; c++) {
             const v = d[i + c];
@@ -375,13 +356,8 @@ export function applyContrastFullCPU(imageData: ImageData, darknessFactor: numbe
             const contrast = 1 + (MAX_CONTRAST - 1) * toneFactor;
             const brightness = MAX_BRIGHTNESS * toneFactor;
 
-            let nv = (v - 128) * contrast + 128 + brightness;
-
-            if (nv > HIGHLIGHT_SOFT) {
-                nv = HIGHLIGHT_SOFT + (nv - HIGHLIGHT_SOFT) * 0.35;
-            }
-
-            d[i + c] = nv < 0 ? 0 : nv > 255 ? 255 : nv;
+            const nv = (v - 128) * contrast + 128 + brightness;
+            d[i + c] = Math.max(0, nv);
         }
     }
 }
@@ -415,4 +391,3 @@ export function applyDarkenAllCPU(imageData: ImageData): void {
 export function shouldTrimBleed(targetBleedMm: number, existingBleedMm: number = IMAGE_PROCESSING.DEFAULT_MPC_BLEED_MM): boolean {
     return targetBleedMm <= existingBleedMm;
 }
-

@@ -7,8 +7,13 @@ import {
     bucketDpiFromHeight,
     calibratedBleedTrimPxForHeight,
     trimExistingBleedIfAny,
+    trimBleedByMm,
     blackenAllNearBlackPixels,
     getPatchNearCorner,
+    computeDarknessFactorFromImageData,
+    applyEdgeContrastCPU,
+    applyContrastFullCPU,
+    applyDarkenAllCPU,
     IN,
     MM_TO_PX,
     NEAR_BLACK,
@@ -140,6 +145,18 @@ describe('imageProcessing', () => {
             const proxied = toProxied(url, 'http://localhost:3000');
             expect(proxied).toBe(url);
         });
+
+        it('should preserve empty, data, and internal image URLs', () => {
+            expect(toProxied('', 'http://localhost:3000')).toBe('');
+            expect(toProxied('data:image/png;base64,abc', 'http://localhost:3000')).toBe('data:image/png;base64,abc');
+            expect(toProxied('http://localhost:3000/api/cards/images/raw/1', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/raw/1');
+        });
+
+        it('should convert saved MPC ids while proxying http and absolute path size URLs', () => {
+            expect(toProxied('abc123&size=small', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=abc123&size=small');
+            expect(toProxied('https://example.com/img.png?x=1&size=small', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/proxy?url=https%3A%2F%2Fexample.com%2Fimg.png%3Fx%3D1%26size%3Dsmall');
+            expect(toProxied('/relative.png?x=1&size=small', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/proxy?url=%2Frelative.png%3Fx%3D1%26size%3Dsmall');
+        });
     });
 
     describe('getBleedInPixels', () => {
@@ -197,6 +214,51 @@ describe('imageProcessing', () => {
             expect(global.createImageBitmap).toHaveBeenCalledTimes(2);
             expect(result).toEqual(mockTrimmed);
             expect(mockImg.close).toHaveBeenCalled();
+        });
+    });
+
+    describe('trimBleedByMm', () => {
+        it('should trim an ImageBitmap input by millimeters', async () => {
+            const img = { width: 1000, height: 1000, close: vi.fn() } as unknown as ImageBitmap;
+            const trimmed = { width: 978, height: 978 } as unknown as ImageBitmap;
+            global.createImageBitmap = vi.fn().mockResolvedValue(trimmed);
+
+            const result = await trimBleedByMm(img, 1, 3);
+
+            expect(result).toBe(trimmed);
+            expect(global.createImageBitmap).toHaveBeenCalledWith(img, 11, 11, 978, 978);
+            expect(img.close).not.toHaveBeenCalled();
+        });
+
+        it('should trim a Blob input and close the temporary bitmap', async () => {
+            const blob = new Blob(['image']);
+            const temp = { width: 1000, height: 1000, close: vi.fn() } as unknown as ImageBitmap;
+            const trimmed = { width: 978, height: 978 } as unknown as ImageBitmap;
+            global.createImageBitmap = vi.fn()
+                .mockResolvedValueOnce(temp)
+                .mockResolvedValueOnce(trimmed);
+
+            const result = await trimBleedByMm(blob, 1, 3);
+
+            expect(result).toBe(trimmed);
+            expect(temp.close).toHaveBeenCalled();
+            expect(global.createImageBitmap).toHaveBeenLastCalledWith(blob, 11, 11, 978, 978);
+        });
+
+        it('should return the original bitmap or blob bitmap when trim dimensions are invalid', async () => {
+            const img = { width: 10, height: 10, close: vi.fn() } as unknown as ImageBitmap;
+            await expect(trimBleedByMm(img, 1000, 0)).resolves.toBe(img);
+
+            const blob = new Blob(['image']);
+            const temp = { width: 10, height: 10, close: vi.fn() } as unknown as ImageBitmap;
+            const fallback = { width: 10, height: 10 } as unknown as ImageBitmap;
+            global.createImageBitmap = vi.fn()
+                .mockResolvedValueOnce(temp)
+                .mockResolvedValueOnce(fallback);
+
+            await expect(trimBleedByMm(blob, 1000, 0)).resolves.toBe(fallback);
+            expect(temp.close).toHaveBeenCalled();
+            expect(global.createImageBitmap).toHaveBeenLastCalledWith(blob);
         });
     });
 
@@ -323,6 +385,84 @@ describe('imageProcessing', () => {
             expect(data[centerIdx]).toBe(100);
             expect(data[centerIdx + 1]).toBe(100);
             expect(data[centerIdx + 2]).toBe(100);
+        });
+
+        it('should skip bright edge channels and zero-strength threshold channels', () => {
+            const imgData = {
+                width: 20,
+                height: 20,
+                data: new Uint8ClampedArray(20 * 20 * 4).fill(0),
+            } as ImageData;
+            imgData.data.set([200, 140, 5, 255], 0);
+
+            blackenAllNearBlackPixels(imgData);
+
+            expect(imgData.data[0]).toBe(200);
+            expect(imgData.data[1]).toBe(140);
+            expect(imgData.data[2]).toBeLessThan(5);
+        });
+    });
+
+    describe('CPU contrast helpers', () => {
+        function makeImageData(width: number, height: number, fill = 100): ImageData {
+            const data = new Uint8ClampedArray(width * height * 4);
+            for (let i = 0; i < data.length; i += 4) {
+                data[i] = fill;
+                data[i + 1] = fill;
+                data[i + 2] = fill;
+                data[i + 3] = 255;
+            }
+            return { width, height, data } as ImageData;
+        }
+
+        it('should compute darkness from ImageData', () => {
+            const imageData = makeImageData(2, 1, 20);
+
+            expect(computeDarknessFactorFromImageData(imageData)).toBe(1);
+        });
+
+        it('should apply edge contrast only to dark edge channels', () => {
+            const imageData = makeImageData(20, 20, 100);
+            imageData.data.set([200, 140, 5, 255], 0);
+            const center = (10 * 20 + 10) * 4;
+            imageData.data.set([100, 100, 100, 255], center);
+
+            applyEdgeContrastCPU(imageData, 1);
+
+            expect(imageData.data[0]).toBe(200);
+            expect(imageData.data[1]).toBe(140);
+            expect(imageData.data[2]).toBeLessThan(5);
+            expect(imageData.data[center]).toBe(100);
+        });
+
+        it('should apply full-card contrast to all dark pixels', () => {
+            const imageData = makeImageData(1, 1, 100);
+            imageData.data.set([200, 140, 5, 255], 0);
+
+            applyContrastFullCPU(imageData, 1);
+
+            expect(imageData.data[0]).toBe(200);
+            expect(imageData.data[1]).toBe(140);
+            expect(imageData.data[2]).toBeLessThan(5);
+        });
+
+        it('should blacken only pixels below the darken-all threshold', () => {
+            const imageData = makeImageData(4, 1, 255);
+            imageData.data.set([
+                5, 5, 5, 255,
+                5, 40, 5, 255,
+                5, 5, 40, 255,
+                40, 5, 5, 255,
+            ]);
+
+            applyDarkenAllCPU(imageData);
+
+            expect(Array.from(imageData.data.slice(0, 12))).toEqual([
+                0, 0, 0, 255,
+                5, 40, 5, 255,
+                5, 5, 40, 255,
+            ]);
+            expect(Array.from(imageData.data.slice(12, 16))).toEqual([40, 5, 5, 255]);
         });
     });
 
