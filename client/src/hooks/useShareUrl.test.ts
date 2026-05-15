@@ -141,6 +141,17 @@ describe("useShareUrl", () => {
     expect(mockShowErrorToast).toHaveBeenCalledWith("share failed");
   });
 
+  it("does nothing when no share parameter is present", async () => {
+    window.history.pushState({}, "", "/");
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockLoadShare).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(result.current.shareData).toBeNull();
+  });
+
   it("opens an existing clean project and clears the share parameter", async () => {
     const sharedData = {
       v: 1 as const,
