@@ -189,12 +189,11 @@ describe('Cardback Library', () => {
         });
 
         it('skips builtin cardbacks that already have valid original blobs', async () => {
-            const validBlob = new Blob([new Uint8Array(50_001)], { type: '' });
-            await db.cardbacks.add({
-                id: BUILTIN_CARDBACKS[0].id,
-                sourceUrl: BUILTIN_CARDBACKS[0].imageUrl,
-                originalBlob: validBlob,
-            });
+            vi.spyOn(db.cardbacks, 'get').mockImplementation(async (id: string) => (
+                id === BUILTIN_CARDBACKS[0].id
+                    ? { id, originalBlob: { type: 'image/png', size: 50_001 } } as never
+                    : undefined
+            ));
             vi.stubGlobal('fetch', vi.fn(async () => ({
                 ok: true,
                 blob: async () => new Blob([new Uint8Array(50_001)], { type: 'image/png' }),
@@ -211,7 +210,7 @@ describe('Cardback Library', () => {
                 ok: false,
                 status: 503,
                 statusText: 'Unavailable',
-                text: async () => 'server down',
+                text: async () => { throw new Error('body unavailable'); },
             })));
 
             await ensureBuiltinCardbacksInDb();
@@ -226,7 +225,7 @@ describe('Cardback Library', () => {
             const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
             vi.stubGlobal('fetch', vi.fn(async () => ({
                 ok: true,
-                blob: async () => new Blob(['tiny html'], { type: 'text/html' }),
+                blob: async () => ({ type: 'text/html', size: 9, text: async () => { throw new Error('blob text unavailable'); } }) as Blob,
             })));
 
             await ensureBuiltinCardbacksInDb();

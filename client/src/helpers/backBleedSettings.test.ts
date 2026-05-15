@@ -235,6 +235,21 @@ describe("normalizeSharedCardbackTargetBleed global residual variants", () => {
         });
     });
 
+    it("normalizes multiple shared groups after the result has already been copied", () => {
+        const cards = [
+            backCard({ uuid: "a-1", imageId: "cardback_a", bleedMode: "none" }),
+            backCard({ uuid: "a-2", imageId: "cardback_a", bleedMode: "generate", generateBleedMm: 2 }),
+            backCard({ uuid: "b-1", imageId: "cardback_b", bleedMode: "existing", existingBleedMm: 1 }),
+            backCard({ uuid: "b-2", imageId: "cardback_b", bleedMode: "none" }),
+        ];
+
+        const result = normalizeSharedCardbackTargetBleed(cards);
+
+        expect(result).not.toBe(cards);
+        expect(result[1]).toMatchObject({ bleedMode: "none", generateBleedMm: undefined });
+        expect(result[3]).toMatchObject({ bleedMode: "existing", existingBleedMm: 1, generateBleedMm: undefined });
+    });
+
     it("leaves shared cardbacks unchanged when all target keys match", () => {
         const cards = [
             backCard({ uuid: "back-1", bleedMode: "none" }),
