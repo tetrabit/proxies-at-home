@@ -133,6 +133,40 @@ describe("useScryfallPreview", () => {
     expect(result.current.isLoading).toBe(false);
   });
 
+  it("sorts by word boundary and alphabetical fallback for less relevant results", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "art", set: null, number: null });
+    mockSearchCards.mockResolvedValue([
+      { name: "Quartermaster" },
+      { name: "The Artful Dodger" },
+      { name: "Alpha Art" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("art"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual([
+      "Alpha Art",
+      "The Artful Dodger",
+      "Quartermaster",
+    ]);
+  });
+
+  it("clears results when the search API returns no cards", async () => {
+    mockSearchCards.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useScryfallPreview("Forest"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(result.current.hasSearched).toBe(true);
+  });
+
   it("aborts the in-flight search when the query changes", async () => {
     const abortSpy = vi.spyOn(AbortController.prototype, "abort");
     mockSearchCards.mockImplementation(
