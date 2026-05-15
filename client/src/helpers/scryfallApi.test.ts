@@ -96,7 +96,7 @@ describe('scryfallApi', () => {
             const cards = mapResponseToCards({
                 data: [
                     {
-                        name: 'Split Card',
+                        name: 'Split Card // Split Back',
                         set: 'sp1',
                         collector_number: '7',
                         lang: 'en',
@@ -123,11 +123,11 @@ describe('scryfallApi', () => {
             });
 
             expect(cards[0]).toMatchObject({
-                name: 'Split Card',
+                name: 'Split Card // Split Back',
                 imageUrls: ['http://example.com/split.png'],
                 card_faces: [
                     { name: 'Split Front', imageUrl: 'http://example.com/front-large.jpg' },
-                    { name: 'Split Card', imageUrl: 'http://example.com/back-normal.jpg' },
+                    { name: 'Split Back', imageUrl: 'http://example.com/back-normal.jpg' },
                 ],
                 token_parts: [{ name: 'Split Token', id: 'tok-1', uri: 'https://example.com/tok-1' }],
                 needs_token: true,
