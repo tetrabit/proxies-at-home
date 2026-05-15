@@ -214,6 +214,43 @@ describe("useShareUrl", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("falls back to the default shared deck name when no card has a name", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [],
+      dfc: undefined,
+      st: undefined,
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [
+        { imageId: "front-a", order: 0 },
+        { builtInCardbackId: "cardback_default", order: 1 },
+      ],
+      dfcLinks: [[0, 1]],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockCreateProject.mockResolvedValue("project-default-name");
+    mockProcess.mockResolvedValue(undefined);
+
+    await renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockCreateProject).toHaveBeenCalledWith("Shared Deck (Shared)"));
+  });
+
+  it("falls back to a generic error when the share load rejects with a non-Error value", async () => {
+    mockLoadShare.mockRejectedValue("boom");
+
+    const { result } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(result.current.error).toBe("Failed to load shared deck"));
+    expect(mockShowErrorToast).toHaveBeenCalledWith("Failed to load shared deck");
+  });
+
   it("applies shared settings and converts all linked back types when creating a new project", async () => {
     const sharedData = {
       v: 1 as const,

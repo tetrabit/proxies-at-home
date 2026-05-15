@@ -139,12 +139,103 @@ describe("useScryfallPrints", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("updates an existing cached metadata object after a successful fetch", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-update-object",
+      name: "Update Card",
+      set: "upd",
+      number: "1",
+      oracle_id: "oracle-update-object",
+      data: { existing: true },
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: false,
+    } as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/update-object.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Update Card",
+        oracleId: "oracle-update-object",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const stored = await db.cardMetadataCache.get("cached-update-object");
+    expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
+  it("updates a null metadata payload after a successful fetch", async () => {
+    await db.cardMetadataCache.add({
+      id: "cached-update-null",
+      name: "Null Card",
+      set: "nul",
+      number: "2",
+      data: null,
+      cachedAt: Date.now(),
+      size: 1,
+      hasFullPrints: false,
+    } as never);
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/update-null.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Null Card",
+        set: "nul",
+        number: "2",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const stored = await db.cardMetadataCache.get("cached-update-null");
+    expect((stored?.data as { prints?: unknown[] } | undefined)?.prints).toHaveLength(1);
+  });
+
   it("handles a non-ok response by clearing results", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
       json: vi.fn(),
     });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Broken Card",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    expect(result.current.prints).toEqual([]);
+  });
+
+  it("handles a fetch rejection by clearing results", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() =>
