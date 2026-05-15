@@ -72,4 +72,21 @@ describe('AutoTooltip', () => {
 
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
+
+  it('clears an existing unmount timeout on a repeated click', () => {
+    render(
+      <AutoTooltip mobile timeout={100} content="Tap help">
+        <button>?</button>
+      </AutoTooltip>
+    );
+
+    const trigger = screen.getByText('?');
+    fireEvent.click(trigger);
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByRole('tooltip')).toBeDefined();
+
+    fireEvent.click(trigger);
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByRole('tooltip')).toBeDefined();
+  });
 });
