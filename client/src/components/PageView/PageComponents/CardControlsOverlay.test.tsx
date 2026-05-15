@@ -138,8 +138,23 @@ describe("CardControlsOverlay", () => {
         expect(selectionState.toggleFlip).toHaveBeenCalledWith("card-1");
     });
 
+    it("range-selects from card clicks and handles direct checkbox/drag clicks", () => {
+        const onRangeSelect = vi.fn();
+        const { cardNode } = renderOverlay({ onRangeSelect });
+
+        fireEvent.click(cardNode, { shiftKey: true });
+        expect(onRangeSelect).toHaveBeenCalledWith(2);
+
+        fireEvent.click(screen.getByTitle("Select card"));
+        expect(selectionState.toggleSelection).toHaveBeenCalledWith("card-1", 2);
+
+        fireEvent.click(screen.getByTitle("Drag"));
+        expect(artworkState.openModal).not.toHaveBeenCalled();
+    });
+
     it("supports multi-select, placeholder error click, dragging styles, and scroll sync", () => {
         sortableState.isDragging = true;
+        selectionState.selectedCards = new Set(["other-card"]);
         const { container, scrollContainer, cardNode } = renderOverlay(
             { disabled: true },
             { hasImage: false, card: { ...card, lookupError: "missing art" } as never },
@@ -187,5 +202,22 @@ describe("CardControlsOverlay", () => {
         });
         vi.advanceTimersByTime(300);
         expect(artworkState.openModal).not.toHaveBeenCalled();
+    });
+
+    it("covers mobile selected rendering, ignored mobile context menus, and missing scroll refs", () => {
+        selectionState.selectedCards = new Set(["card-1"]);
+        const missingScrollRef = { current: null };
+        const setContextMenu = vi.fn();
+
+        const { cardNode } = renderOverlay({
+            mobile: true,
+            scrollContainerRef: missingScrollRef,
+            setContextMenu,
+        });
+
+        expect(screen.getByTitle("Select card").querySelector("svg")).toBeInTheDocument();
+
+        fireEvent.contextMenu(cardNode, { clientX: 1, clientY: 2 });
+        expect(setContextMenu).not.toHaveBeenCalled();
     });
 });
