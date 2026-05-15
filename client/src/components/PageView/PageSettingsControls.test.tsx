@@ -66,7 +66,22 @@ vi.mock('@dnd-kit/core', () => ({
   closestCenter: vi.fn(),
   useSensor: vi.fn(() => ({})),
   useSensors: vi.fn(() => []),
-  DndContext: ({ children }: { children: React.ReactNode }) => <div data-testid="dnd-context">{children}</div>,
+  DndContext: ({
+    children,
+    onDragStart,
+    onDragEnd,
+  }: {
+    children: React.ReactNode;
+    onDragStart: (event: { active: { id: string } }) => void;
+    onDragEnd: (event: { active: { id: string }; over: { id: string } | null }) => void;
+  }) => (
+    <div data-testid="dnd-context">
+      <button type="button" onClick={() => onDragStart({ active: { id: 'layout' } })}>mock drag start</button>
+      <button type="button" onClick={() => onDragEnd({ active: { id: 'layout' }, over: { id: 'projects' } })}>mock drag reorder</button>
+      <button type="button" onClick={() => onDragEnd({ active: { id: 'layout' }, over: null })}>mock drag cancel</button>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@dnd-kit/modifiers', () => ({
@@ -128,6 +143,7 @@ function renderControls(props: Partial<React.ComponentProps<typeof PageSettingsC
 describe('PageSettingsControls', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     mocks.preferences.settingsPanelState = undefined;
     mocks.preferences.isSettingsPanelCollapsed = false;
     mocks.filterManaCost = ['1'];
@@ -135,6 +151,10 @@ describe('PageSettingsControls', () => {
     mocks.filterTypes = [];
     mocks.filterCategories = ['creature'];
     mocks.isLandscape = false;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('renders the default panel order with filter badge clearing', () => {
@@ -167,14 +187,47 @@ describe('PageSettingsControls', () => {
   });
 
   it('renders collapsed icon rail and expands a collapsed target section', () => {
+    vi.useFakeTimers();
     const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+    const target = document.createElement('div');
+    target.id = 'settings-panel-export';
+    target.scrollIntoView = scrollIntoView;
+    document.body.appendChild(target);
     mocks.preferences.isSettingsPanelCollapsed = true;
     mocks.preferences.settingsPanelState = { order: ['projects', 'export'], collapsed: { export: true } };
 
-    renderControls({ mobile: true });
-    fireEvent.click(screen.getAllByRole('button')[0]);
+    const { container } = renderControls({ mobile: true });
+    fireEvent.dblClick(container.firstElementChild as HTMLElement);
     expect(mocks.setIsSettingsPanelCollapsed).toHaveBeenCalledWith(false);
+
+    fireEvent.click(screen.getAllByRole('button')[1]);
+    expect(mocks.setSettingsPanelState).toHaveBeenCalledWith({
+      order: ['projects', 'export'],
+      collapsed: { export: false },
+    });
+    vi.advanceTimersByTime(100);
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    target.remove();
+  });
+
+  it('renders every collapsed rail icon label branch', () => {
+    mocks.preferences.isSettingsPanelCollapsed = true;
+    mocks.preferences.settingsPanelState = {
+      order: ['projects', 'layout', 'bleed', 'darken', 'guides', 'card', 'filterSort', 'export', 'application'],
+      collapsed: {},
+    };
+
+    renderControls();
+
+    expect(screen.getByText('Projects').parentElement).toHaveAttribute('data-tooltip', 'Projects');
+    expect(screen.getByText('Layout').parentElement).toHaveAttribute('data-tooltip', 'Layout');
+    expect(screen.getByText('Bleed').parentElement).toHaveAttribute('data-tooltip', 'Bleed');
+    expect(screen.getByText('Darken').parentElement).toHaveAttribute('data-tooltip', 'Darken');
+    expect(screen.getByText('Guides').parentElement).toHaveAttribute('data-tooltip', 'Guides');
+    expect(screen.getByText('Card').parentElement).toHaveAttribute('data-tooltip', 'Card');
+    expect(screen.getByText('Filter & Sort').parentElement).toHaveAttribute('data-tooltip', 'Filter & Sort');
+    expect(screen.getByText('Export').parentElement).toHaveAttribute('data-tooltip', 'Export');
+    expect(screen.getByText('Application').parentElement).toHaveAttribute('data-tooltip', 'Application');
   });
 
   it('uses the mobile landscape two-column layout when requested', () => {
@@ -186,5 +239,25 @@ describe('PageSettingsControls', () => {
     expect(screen.getByText('Layout Section')).toBeDefined();
     expect(screen.getByText('Export Section 1')).toBeDefined();
     expect(screen.getByText('Application Section')).toBeDefined();
+  });
+
+  it('records scroll position and reorders panels through drag callbacks', () => {
+    const order = ['projects', 'layout', 'filterSort', 'unknown'];
+    mocks.preferences.settingsPanelState = { order, collapsed: {} };
+    const { container } = renderControls();
+
+    const scrollRoot = container.firstElementChild as HTMLElement;
+    Object.defineProperty(scrollRoot, 'scrollTop', { value: 123, writable: true });
+    fireEvent.scroll(scrollRoot);
+
+    fireEvent.click(screen.getByText('mock drag start'));
+    fireEvent.click(screen.getByText('mock drag reorder'));
+    expect(mocks.setSettingsPanelState).toHaveBeenCalledWith({
+      order: ['layout', 'projects', 'filterSort', 'unknown'],
+      collapsed: {},
+    });
+
+    fireEvent.click(screen.getByText('mock drag cancel'));
+    expect(screen.queryByText('unknown')).toBeNull();
   });
 });
