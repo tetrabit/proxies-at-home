@@ -184,6 +184,16 @@ describe("CardGuides", () => {
         expect(rounded.style.top).toBe("calc(-2.44094px)");
         expect(rounded.style.borderRadius).toBe("calc(19.4488px)");
         expect(rounded.style.border).toBe("10px solid rgb(0, 255, 0)");
+
+        rerender(
+            <CardGuides
+                {...defaultProps}
+                perCardGuideStyle="solid-rounded-rect"
+                guideOffset="3mm"
+            />
+        );
+        const stringOffset = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
+        expect(stringOffset.style.top).toBe("3mm");
     });
 
     it("handles non-positive widths and unknown offsets in rounded and rectangle modes", () => {
