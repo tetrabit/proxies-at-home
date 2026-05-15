@@ -15,6 +15,7 @@ vi.mock("./imageHelper", () => ({
 import {
   selectBestCandidate,
   rankCandidates,
+  createSsimCompare,
   filterByExactName,
   normalizeName,
   computeSobelMagnitude,
@@ -22,6 +23,7 @@ import {
   type SsimCompareFn,
 } from "./mpcBulkUpgradeMatcher";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
+import { loadImage } from "./imageProcessing";
 
 function makeCard(
   overrides: Partial<MpcAutofillCard> & Pick<MpcAutofillCard, "identifier">
@@ -44,6 +46,92 @@ function makeCard(
 const defaultGetUrl = (id: string) => `https://mpc.test/${id}`;
 const scryfallSourceUrl =
   "https://cards.scryfall.io/normal/front/c/8/c83ed3e0-82d0-4410-a6ca-b0f923eadf83.jpg?1581479572";
+const loadImageMock = vi.mocked(loadImage);
+
+type MockBitmap = ImageBitmap & {
+  luma?: number;
+  outputWidth?: number;
+  outputHeight?: number;
+};
+
+function makeBitmap(overrides: Partial<MockBitmap> = {}): MockBitmap {
+  return {
+    width: 4,
+    height: 4,
+    close: vi.fn(),
+    ...overrides,
+  } as MockBitmap;
+}
+
+function restoreOffscreenCanvas(original: typeof globalThis.OffscreenCanvas) {
+  if (original) {
+    Object.defineProperty(globalThis, "OffscreenCanvas", {
+      configurable: true,
+      writable: true,
+      value: original,
+    });
+    return;
+  }
+
+  delete (globalThis as typeof globalThis & { OffscreenCanvas?: unknown })
+    .OffscreenCanvas;
+}
+
+function installMockOffscreenCanvas(options: { contextAvailable?: boolean } = {}) {
+  const original = globalThis.OffscreenCanvas;
+  const { contextAvailable = true } = options;
+
+  class MockOffscreenCanvas {
+    width: number;
+    height: number;
+    private bitmap?: MockBitmap;
+
+    constructor(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+    }
+
+    getContext() {
+      if (!contextAvailable) {
+        return null;
+      }
+
+      return {
+        drawImage: (bitmap: MockBitmap) => {
+          this.bitmap = bitmap;
+        },
+        getImageData: (
+          _x: number,
+          _y: number,
+          width: number,
+          height: number
+        ) => {
+          const outputWidth = this.bitmap?.outputWidth ?? width;
+          const outputHeight = this.bitmap?.outputHeight ?? height;
+          const luma = this.bitmap?.luma ?? 0.5;
+          const data = new Uint8ClampedArray(outputWidth * outputHeight * 4);
+          for (let i = 0; i < data.length; i += 4) {
+            const value = Math.round(luma * 255);
+            data[i] = value;
+            data[i + 1] = value;
+            data[i + 2] = value;
+            data[i + 3] = 255;
+          }
+
+          return { data, width: outputWidth, height: outputHeight };
+        },
+      };
+    }
+  }
+
+  Object.defineProperty(globalThis, "OffscreenCanvas", {
+    configurable: true,
+    writable: true,
+    value: MockOffscreenCanvas,
+  });
+
+  return () => restoreOffscreenCanvas(original);
+}
 
 describe("mpcBulkUpgradeMatcher", () => {
   describe("edge similarity helpers", () => {
@@ -52,6 +140,12 @@ describe("mpcBulkUpgradeMatcher", () => {
       const edges = computeSobelMagnitude(pixels, 5, 5);
 
       expect(Array.from(edges)).toEqual(Array.from(new Float32Array(25)));
+    });
+
+    it("returns an empty edge map for invalid dimensions", () => {
+      const edges = computeSobelMagnitude(new Float32Array([1, 0]), 2, 2);
+
+      expect(Array.from(edges)).toEqual([0, 0]);
     });
 
     it("scores matching edge layouts higher than different layouts", () => {
@@ -80,6 +174,189 @@ describe("mpcBulkUpgradeMatcher", () => {
       const flatB = new Float32Array(25);
 
       expect(computeEdgeScore(flatA, flatB)).toBe(1);
+    });
+
+    it("returns zero for incompatible or one-sided edge maps", () => {
+      expect(computeEdgeScore(new Float32Array([1]), new Float32Array([]))).toBe(
+        0
+      );
+      expect(
+        computeEdgeScore(new Float32Array([1, 0]), new Float32Array([0, 0]))
+      ).toBe(0);
+    });
+  });
+
+  describe("createSsimCompare", () => {
+    it("uses OffscreenCanvas, crop fragments, abort signals, and cached edge maps", async () => {
+      const restoreCanvas = installMockOffscreenCanvas();
+      const signal = new AbortController().signal;
+      loadImageMock.mockReset();
+      loadImageMock.mockResolvedValue(makeBitmap({ luma: 0.5 }));
+
+      try {
+        const compare = createSsimCompare(new Map(), 4);
+        const score = await compare(
+          "https://source.test/card.png#crop=0.1,0.1,0.1,0.1",
+          "https://candidate.test/card.png#crop=bad",
+          signal
+        );
+        const cachedScore = await compare(
+          "https://source.test/card.png#crop=0.1,0.1,0.1,0.1",
+          "https://candidate.test/card.png#crop=bad",
+          signal
+        );
+
+        expect(score).toBe(1);
+        expect(cachedScore).toBe(1);
+        expect(loadImageMock).toHaveBeenCalledTimes(2);
+        expect(loadImageMock).toHaveBeenCalledWith(
+          "https://source.test/card.png",
+          { signal },
+          1
+        );
+        expect(loadImageMock).toHaveBeenCalledWith(
+          "https://candidate.test/card.png",
+          { signal },
+          1
+        );
+      } finally {
+        restoreCanvas();
+        loadImageMock.mockReset();
+      }
+    });
+
+    it("falls back to document canvas when OffscreenCanvas is unavailable", async () => {
+      const originalOffscreenCanvas = globalThis.OffscreenCanvas;
+      const originalCreateElement = document.createElement.bind(document);
+      const createElementSpy = vi
+        .spyOn(document, "createElement")
+        .mockImplementation((tagName) => {
+          if (tagName !== "canvas") {
+            return originalCreateElement(tagName);
+          }
+
+          let bitmap: MockBitmap | undefined;
+          return {
+            width: 0,
+            height: 0,
+            getContext: () => ({
+              drawImage: (drawnBitmap: MockBitmap) => {
+                bitmap = drawnBitmap;
+              },
+              getImageData: (
+                _x: number,
+                _y: number,
+                width: number,
+                height: number
+              ) => {
+                const data = new Uint8ClampedArray(width * height * 4);
+                const value = Math.round((bitmap?.luma ?? 0.5) * 255);
+                for (let i = 0; i < data.length; i += 4) {
+                  data[i] = value;
+                  data[i + 1] = value;
+                  data[i + 2] = value;
+                  data[i + 3] = 255;
+                }
+
+                return { data, width, height };
+              },
+            }),
+          } as HTMLCanvasElement;
+        });
+      delete (globalThis as typeof globalThis & { OffscreenCanvas?: unknown })
+        .OffscreenCanvas;
+      loadImageMock.mockReset();
+      loadImageMock.mockResolvedValue(makeBitmap({ luma: 0.5 }));
+
+      try {
+        const score = await createSsimCompare(new Map(), 4)(
+          "https://source.test/card.png",
+          "https://candidate.test/card.png"
+        );
+
+        expect(score).toBe(1);
+        expect(createElementSpy).toHaveBeenCalledWith("canvas");
+      } finally {
+        createElementSpy.mockRestore();
+        restoreOffscreenCanvas(originalOffscreenCanvas);
+        loadImageMock.mockReset();
+      }
+    });
+
+    it("returns null when image loading fails", async () => {
+      loadImageMock.mockReset();
+      loadImageMock.mockRejectedValue(new Error("load failed"));
+
+      try {
+        const score = await createSsimCompare(new Map(), 4)(
+          "https://source.test/card.png",
+          "https://candidate.test/card.png"
+        );
+
+        expect(score).toBeNull();
+      } finally {
+        loadImageMock.mockReset();
+      }
+    });
+
+    it("returns null when a 2d context is unavailable", async () => {
+      const restoreCanvas = installMockOffscreenCanvas({
+        contextAvailable: false,
+      });
+      loadImageMock.mockReset();
+      loadImageMock.mockResolvedValue(makeBitmap());
+
+      try {
+        const score = await createSsimCompare(new Map(), 4)(
+          "https://source.test/card.png",
+          "https://candidate.test/card.png"
+        );
+
+        expect(score).toBeNull();
+      } finally {
+        restoreCanvas();
+        loadImageMock.mockReset();
+      }
+    });
+
+    it("returns null when normalized image dimensions differ", async () => {
+      const restoreCanvas = installMockOffscreenCanvas();
+      loadImageMock.mockReset();
+      loadImageMock
+        .mockResolvedValueOnce(makeBitmap({ outputWidth: 4, outputHeight: 4 }))
+        .mockResolvedValueOnce(makeBitmap({ outputWidth: 5, outputHeight: 4 }));
+
+      try {
+        const score = await createSsimCompare(new Map(), 4)(
+          "https://source.test/card.png",
+          "https://candidate.test/card.png"
+        );
+
+        expect(score).toBeNull();
+      } finally {
+        restoreCanvas();
+        loadImageMock.mockReset();
+      }
+    });
+
+    it("returns zero for empty normalized images", async () => {
+      const restoreCanvas = installMockOffscreenCanvas();
+      loadImageMock.mockReset();
+      loadImageMock.mockResolvedValue(
+        makeBitmap({ outputWidth: 0, outputHeight: 0 })
+      );
+
+      try {
+        const score = await createSsimCompare(new Map(), 4)(
+          "https://source.test/card.png",
+          "https://candidate.test/card.png"
+        );
+
+        expect(score).toBe(0);
+      } finally {
+        restoreCanvas();
+        loadImageMock.mockReset();
+      }
     });
   });
 
@@ -1543,6 +1820,390 @@ describe("mpcBulkUpgradeMatcher", () => {
           "exact-printing",
           "unrelated-art",
         ]);
+      });
+    });
+
+    describe("coverage-critical fallback branches", () => {
+      const zeroScoreProfile = {
+        sourceName: "Different Source",
+        tags: ["Never Matched"],
+        rawName: "Different Card [ZZZ] {999}",
+        hasBracketSet: true,
+        parenText: "missing artist",
+      };
+
+      it("promotes a preferred identifier even when a decisive art shortlist excluded it", async () => {
+        const artFavorite = makeCard({
+          identifier: "art-fav",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 600,
+        });
+        const preferred = makeCard({
+          identifier: "preferred",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("art-fav") ? 0.99 : 0.5
+        );
+
+        const result = await rankCandidates({
+          candidates: [artFavorite, preferred],
+          preferredIdentifier: "preferred",
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("preferred");
+        expect(result.fullProcess[1].card.identifier).toBe("art-fav");
+      });
+
+      it("leaves ranked layers unchanged when the preferred identifier is absent", async () => {
+        const card = makeCard({ identifier: "fallback", dpi: 300 });
+
+        const result = await rankCandidates({
+          candidates: [card],
+          preferredIdentifier: "missing",
+        });
+
+        expect(result.fullProcess.map((candidate) => candidate.card.identifier))
+          .toEqual(["fallback"]);
+      });
+
+      it("leaves preference profile ranking unchanged when replay scores are zero", async () => {
+        const card = makeCard({
+          identifier: "zero-score",
+          name: "Sol Ring",
+          rawName: undefined,
+          dpi: 0,
+        });
+
+        const result = await rankCandidates({
+          candidates: [card],
+          preferenceProfile: zeroScoreProfile,
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("zero-score");
+      });
+
+      it("uses deterministic identifier fallback when profile scores tie", async () => {
+        const beta = makeCard({
+          identifier: "beta",
+          rawName: "Windborn Muse",
+          sourceName: "Preferred Source",
+          dpi: 400,
+        });
+        const alpha = makeCard({
+          identifier: "alpha",
+          rawName: "Windborn Muse",
+          sourceName: "Preferred Source",
+          dpi: 400,
+        });
+
+        const result = await rankCandidates({
+          candidates: [beta, alpha],
+          preferenceProfile: {
+            sourceName: "Preferred Source",
+            tags: [],
+            rawName: "Different Name",
+            hasBracketSet: false,
+          },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("alpha");
+      });
+
+      it("leaves unseen preference ranking unchanged when no scores match", async () => {
+        const card = makeCard({ identifier: "fallback", dpi: 300 });
+
+        const result = await rankCandidates({
+          candidates: [card],
+          unseenPreferenceScores: {},
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("fallback");
+      });
+
+      it("uses deterministic identifier fallback when unseen scores tie", async () => {
+        const beta = makeCard({ identifier: "beta", dpi: 300 });
+        const alpha = makeCard({ identifier: "alpha", dpi: 300 });
+
+        const result = await rankCandidates({
+          candidates: [beta, alpha],
+          unseenPreferenceScores: { alpha: 1, beta: 1 },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("alpha");
+      });
+
+      it("can promote unseen scores from outside a decisive art shortlist", async () => {
+        const artFavorite = makeCard({
+          identifier: "art-fav",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 600,
+        });
+        const predicted = makeCard({
+          identifier: "predicted",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("art-fav") ? 0.99 : 0.5
+        );
+
+        const result = await rankCandidates({
+          candidates: [artFavorite, predicted],
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+          unseenPreferenceScores: { predicted: 2 },
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("predicted");
+        expect(result.fullProcess[1].card.identifier).toBe("art-fav");
+      });
+
+      it("uses set-only buckets when no collector number is provided", async () => {
+        const setCard = makeCard({
+          identifier: "set-card",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const other = makeCard({
+          identifier: "other-set",
+          rawName: "Sol Ring [CMR] {395}",
+          dpi: 600,
+        });
+
+        const result = await rankCandidates({
+          candidates: [other, setCard],
+          set: "C21",
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("set-card");
+        expect(result.fullProcess[0].bucket).toBe("set_collector");
+      });
+
+      it("does not treat collector-number-only metadata as exact-printing evidence", async () => {
+        const card = makeCard({
+          identifier: "collector-only",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+
+        const result = await rankCandidates({
+          candidates: [card],
+          collectorNumber: "267",
+        });
+
+        expect(result.exactPrinting).toEqual([]);
+        expect(result.fullProcess[0].bucket).toBe("name");
+      });
+
+      it("matches name-only set data and all-zero collector numbers", async () => {
+        const card = makeCard({
+          identifier: "name-fallback",
+          name: "Sol Ring [C21] {000}",
+          rawName: undefined,
+          dpi: 300,
+        });
+
+        const result = await rankCandidates({
+          candidates: [card],
+          set: "C21",
+          collectorNumber: "000",
+        });
+
+        expect(result.fullProcess[0].card.identifier).toBe("name-fallback");
+        expect(result.exactPrinting[0].bucket).toBe("set_collector");
+      });
+
+      it("uses name and zero-DPI fallbacks in ensemble scoring", async () => {
+        const noRawName = makeCard({
+          identifier: "no-raw-name",
+          name: "Sol Ring",
+          rawName: undefined,
+          dpi: undefined,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [noRawName],
+        });
+
+        expect(result?.card.identifier).toBe("no-raw-name");
+        expect(result?.reason).toBe("name_only");
+      });
+
+      it("continues after a missing preferred id and zero replay score", async () => {
+        const card = makeCard({
+          identifier: "fallback",
+          rawName: "Sol Ring",
+          dpi: 0,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [card],
+          preferredIdentifier: "missing",
+          preferenceProfile: zeroScoreProfile,
+        });
+
+        expect(result?.card.identifier).toBe("fallback");
+      });
+
+      it("returns an existing preferred id before ensemble scoring", async () => {
+        const preferred = makeCard({ identifier: "preferred", dpi: 300 });
+        const fallback = makeCard({ identifier: "fallback", dpi: 600 });
+
+        const result = await selectBestCandidate({
+          candidates: [fallback, preferred],
+          preferredIdentifier: "preferred",
+        });
+
+        expect(result?.card.identifier).toBe("preferred");
+        expect(result?.reason).toBe("name_only");
+      });
+
+      it("scores set-only ensemble metadata when collector number is absent", async () => {
+        const setCard = makeCard({
+          identifier: "set-card",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const nameOnly = makeCard({
+          identifier: "name-only",
+          rawName: "Sol Ring",
+          dpi: 600,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [nameOnly, setCard],
+          set: "C21",
+        });
+
+        expect(result?.card.identifier).toBe("set-card");
+        expect(result?.reason).toBe("set_collector_only");
+      });
+
+      it("keeps parsed metadata at name score when the set differs", async () => {
+        const card = makeCard({
+          identifier: "parsed-other-set",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [card],
+          set: "CMR",
+        });
+
+        expect(result?.card.identifier).toBe("parsed-other-set");
+        expect(result?.reason).toBe("name_only");
+      });
+
+      it("lets positive unseen ensemble scores override metadata fallbacks", async () => {
+        const fallback = makeCard({
+          identifier: "fallback",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 600,
+        });
+        const predicted = makeCard({
+          identifier: "predicted",
+          rawName: "Sol Ring (Preferred)",
+          dpi: 300,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [fallback, predicted],
+          set: "C21",
+          collectorNumber: "267",
+          unseenPreferenceScores: { predicted: 5 },
+        });
+
+        expect(result?.card.identifier).toBe("predicted");
+      });
+
+      it("lets positive replay ensemble scores override metadata fallbacks", async () => {
+        const fallback = makeCard({
+          identifier: "fallback",
+          rawName: "Sol Ring [C21] {267}",
+          sourceName: "Default",
+          dpi: 600,
+        });
+        const replayed = makeCard({
+          identifier: "replayed",
+          rawName: "Sol Ring (Preferred Artist)",
+          sourceName: "Preferred Source",
+          dpi: 300,
+        });
+
+        const result = await selectBestCandidate({
+          candidates: [fallback, replayed],
+          set: "C21",
+          collectorNumber: "267",
+          preferenceProfile: {
+            sourceName: "Preferred Source",
+            tags: [],
+            rawName: "Sol Ring (Preferred Artist)",
+            hasBracketSet: false,
+            parenText: "preferred artist",
+          },
+        });
+
+        expect(result?.card.identifier).toBe("replayed");
+      });
+
+      it("treats missing unseen ensemble entries as zero scores", async () => {
+        const card = makeCard({ identifier: "fallback", dpi: 300 });
+
+        const result = await selectBestCandidate({
+          candidates: [card],
+          unseenPreferenceScores: { other: 1 },
+        });
+
+        expect(result?.card.identifier).toBe("fallback");
+      });
+
+      it("falls back to the original pool when only one art score is available", async () => {
+        const scored = makeCard({
+          identifier: "scored",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 300,
+        });
+        const unscoredHighDpi = makeCard({
+          identifier: "missing-score-high-dpi",
+          rawName: "Sol Ring",
+          dpi: 600,
+        });
+        const ssimCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) =>
+          candidateUrl.includes("scored") ? 0.99 : null
+        );
+
+        const result = await rankCandidates({
+          candidates: [scored, unscoredHighDpi],
+          sourceImageUrl: scryfallSourceUrl,
+          ssimCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(result.artMatch).toHaveLength(1);
+        expect(result.fullProcess[0].card.identifier).toBe("scored");
+      });
+
+      it("uses zero-DPI sort fallback when every candidate omits DPI", async () => {
+        const beta = makeCard({
+          identifier: "beta",
+          dpi: undefined,
+        });
+        const alpha = makeCard({
+          identifier: "alpha",
+          dpi: undefined,
+        });
+
+        const result = await rankCandidates({ candidates: [beta, alpha] });
+
+        expect(result.fullProcess.map((candidate) => candidate.card.identifier))
+          .toEqual(["alpha", "beta"]);
       });
     });
 

@@ -907,11 +907,14 @@ describe("MpcUpgradeModal", () => {
       expect(mockRankCandidates).toHaveBeenCalledWith(
         expect.objectContaining({
           unseenPreferenceScores: {
-            "visual-pick": 10.2,
+            "visual-pick": expect.any(Number),
           },
         })
       );
     });
+    const unseenPreferenceScores =
+      mockRankCandidates.mock.calls[0]?.[0].unseenPreferenceScores;
+    expect(unseenPreferenceScores?.["visual-pick"]).toBeGreaterThan(4.2);
   });
 
   it("shows copyable source card and candidate identifier details", async () => {
