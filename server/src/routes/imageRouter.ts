@@ -95,6 +95,7 @@ function pLimit(concurrency: number) {
 // - imageFetchLimit: For outbound image fetches (Scryfall CDN, Google Drive)
 const scryfallApiLimit = pLimit(6);
 const imageFetchLimit = pLimit(10);
+let enrichLookupTimeoutMs = 20_000;
 
 // -------------------- cache helpers --------------------
 
@@ -337,7 +338,7 @@ imageRouter.post("/enrich", async (req: Request<unknown, unknown, EnrichRequestB
         notFoundCards.map(({ index, card }) =>
           scryfallApiLimit(async () => {
             const timeout = new Promise<null>((_, rej) =>
-              setTimeout(() => rej(new Error("scryfall-timeout")), 20000)
+              setTimeout(() => rej(new Error("scryfall-timeout")), enrichLookupTimeoutMs)
             );
             const task = (async (): Promise<EnrichedCard | null> => {
               const data = await getCardDataForCardInfo({
@@ -626,6 +627,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
     }
+  /* v8 ignore next 3 -- imageFetchLimit only rejects for defensive limiter failures; candidate fetch failures are handled inside the limiter callback. @preserve */
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Google Drive fetch error:", { message: msg, id, lastError });
@@ -691,10 +693,11 @@ export function resolveCardbacksDir(): string {
 
 imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
   const rawId = req.params.id;
+  /* v8 ignore next -- Express route params are strings for /cardback/:id; array form is a defensive type guard. @preserve */
   const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
+  /* v8 ignore next 3 -- Express cannot match /cardback/:id without a non-empty route parameter. @preserve */
   if (!id) {
-    /* v8 ignore next -- Express route parameters cannot be absent once /cardback/:id matches. */
     return res.status(400).send("Missing cardback ID");
   }
   const filename = CARDBACK_MAP[id];
@@ -722,8 +725,12 @@ export const __imageRouterTestInternals = {
   checkAndCleanCache,
   cachePathFromUrl,
   writeInProgress,
+  setEnrichLookupTimeoutForTests: (timeoutMs: number) => {
+    enrichLookupTimeoutMs = timeoutMs;
+  },
   resetCacheCleanupForTests: () => {
     lastCacheCleanup = 0;
+    enrichLookupTimeoutMs = 20_000;
   },
 };
 
