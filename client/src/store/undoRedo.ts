@@ -28,12 +28,14 @@ export interface UndoableAction {
 
 const MAX_HISTORY_SIZE = 50;
 
+/* v8 ignore next -- type-only declarations are erased at runtime */
 interface UndoRedoState {
     undoStack: UndoableAction[];
     redoStack: UndoableAction[];
     isPerformingAction: boolean; // Prevents recording during undo/redo
 }
 
+/* v8 ignore next -- type-only declarations are erased at runtime */
 interface UndoRedoActions {
     /** Push a new undoable action onto the stack */
     pushAction: (action: Omit<UndoableAction, "id" | "timestamp">) => void;
@@ -53,6 +55,7 @@ interface UndoRedoActions {
     getRedoDescription: () => string | null;
 }
 
+/* v8 ignore next -- type-only declarations are erased at runtime */
 type UndoRedoStore = UndoRedoState & UndoRedoActions;
 
 export const useUndoRedoStore = create<UndoRedoStore>()((set, get) => ({
