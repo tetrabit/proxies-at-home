@@ -181,6 +181,32 @@ describe("useShareUrl", () => {
     expect(mockProcess).toHaveBeenCalledTimes(1);
   });
 
+  it("skips reloading after the initial load guard trips on rerender", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Island" }],
+      st: undefined,
+    };
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Island" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockCreateProject.mockResolvedValue("project-strict-guard");
+    mockProcess.mockResolvedValue(undefined);
+
+    const { rerender } = renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
+    rerender();
+    await waitFor(() => expect(mockLoadShare).toHaveBeenCalledTimes(1));
+    expect(mockProcess).toHaveBeenCalledTimes(1);
+  });
+
   it("opens an existing clean project and clears the share parameter", async () => {
     const sharedData = {
       v: 1 as const,

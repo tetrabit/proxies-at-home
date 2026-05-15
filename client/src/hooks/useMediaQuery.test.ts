@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { useMediaQuery } from "./useMediaQuery";
+import { getInitialMediaQueryMatch, useMediaQuery } from "./useMediaQuery";
 
 describe("useMediaQuery", () => {
     const mockMatchMedia = vi.fn();
@@ -25,6 +25,7 @@ describe("useMediaQuery", () => {
     });
 
     afterEach(() => {
+        vi.unstubAllGlobals();
         vi.restoreAllMocks();
     });
 
@@ -33,6 +34,12 @@ describe("useMediaQuery", () => {
 
         expect(result.current).toBe(true);
         expect(mockMatchMedia).toHaveBeenCalledWith("(min-width: 768px)");
+    });
+
+    it("should return false when window is unavailable during initialization", () => {
+        vi.stubGlobal("window", undefined);
+
+        expect(getInitialMediaQueryMatch("(min-width: 768px)")).toBe(false);
     });
 
     it("should return false for non-matching query", () => {
