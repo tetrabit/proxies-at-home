@@ -12,16 +12,17 @@ const mockShowSuccessToast = vi.hoisted(() => vi.fn());
 const mockSwitchProject = vi.hoisted(() => vi.fn());
 const mockCreateProject = vi.hoisted(() => vi.fn());
 const mockProjectsWhere = vi.hoisted(() => vi.fn());
+const mockProjectsUpdate = vi.hoisted(() => vi.fn());
 const mockCardsWhere = vi.hoisted(() => vi.fn());
 const mockSettingsGetState = vi.hoisted(() => vi.fn(() => ({})));
 const mockProjectGetState = vi.hoisted(() => vi.fn());
 
 vi.mock("@/db", () => ({
-  db: {
-    projects: {
-      where: mockProjectsWhere,
-      update: vi.fn(),
-    },
+    db: {
+      projects: {
+        where: mockProjectsWhere,
+        update: mockProjectsUpdate,
+      },
     cards: {
       where: mockCardsWhere,
     },
@@ -72,6 +73,7 @@ describe("useShareUrl", () => {
     mockProjectsWhere.mockReturnValue({
       equals: vi.fn(() => ({ first: vi.fn() })),
     });
+    mockProjectsUpdate.mockResolvedValue(undefined);
     mockCardsWhere.mockReturnValue({
       equals: vi.fn(() => ({ toArray: vi.fn(), delete: vi.fn() })),
     });
@@ -188,6 +190,41 @@ describe("useShareUrl", () => {
     expect(result.current.error).toBeNull();
     expect(result.current.shareData).toBe(sharedData);
     expect(window.location.search).toBe("");
+  });
+
+  it("backfills lastSyncedHash for a legacy clean project", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Island" }],
+      st: {},
+    };
+    const existingProject = {
+      id: "project-legacy",
+      name: "Legacy Deck",
+      lastSyncedHash: undefined,
+      settings: {},
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [{ name: "Island" }],
+      dfcLinks: [],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(existingProject) })),
+    });
+    mockCardsWhere.mockReturnValue({
+      equals: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([{ uuid: "card-1" }]) })),
+    });
+    mockCalculateStateHash.mockResolvedValue("0101010101010101010101010101010101010101010101010101010101010101");
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockSwitchProject).toHaveBeenCalledWith("project-legacy"));
+    expect(mockProjectsUpdate).toHaveBeenCalledWith("project-legacy", {
+      lastSyncedHash: "0101010101010101010101010101010101010101010101010101010101010101",
+    });
   });
 
   it("creates a new project and imports shared cards when none exists locally", async () => {
