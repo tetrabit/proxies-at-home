@@ -387,6 +387,15 @@ describe("useSelectionStore", () => {
 });
 
 describe("initializeFlipState", () => {
+    beforeEach(() => {
+        useSelectionStore.setState({
+            selectedCards: new Set(),
+            flippedCards: new Set(),
+            lastClickedIndex: null,
+            isMultiSelectMode: false,
+        });
+    });
+
     it("should initialize flipped cards from database", async () => {
         // Mock database to return flipped cards
         const mockDb = await import("../db");
