@@ -7,12 +7,17 @@ const loadApp = async ({
   restoredProjects,
   userPrefs,
   autoRestoreResult,
+  dbGetResult,
 }: {
   currentProjectId?: string;
   projects: Array<{ id: string }>;
   restoredProjects?: Array<{ id: string }>;
   userPrefs?: { lastProjectId?: string } | undefined;
-  autoRestoreResult?: { restoredCount: number; projectNames: string[] } | null;
+  autoRestoreResult?:
+    | { restoredCount: number; projectNames: string[] }
+    | null
+    | Promise<{ restoredCount: number; projectNames: string[] } | null>;
+  dbGetResult?: Promise<{ lastProjectId?: string } | undefined>;
 }) => {
   vi.resetModules();
   let loadCount = 0;
@@ -27,7 +32,7 @@ const loadApp = async ({
     switchProject: vi.fn().mockResolvedValue(undefined),
   };
   const preferencesState = { load: vi.fn().mockResolvedValue(undefined) };
-  const dbGet = vi.fn().mockResolvedValue(userPrefs);
+  const dbGet = vi.fn().mockImplementation(() => dbGetResult ?? Promise.resolve(userPrefs));
   const dbAdd = vi.fn().mockResolvedValue("pref-id");
   const showInfoToast = vi.fn();
   const prewarm = vi.fn();
@@ -112,6 +117,40 @@ describe("App project initialization lifecycle", () => {
     expect(state.createProject).not.toHaveBeenCalled();
   });
 
+  it("uses singular restore copy and falls through when restore reload finds no projects", async () => {
+    const restored = await loadApp({
+      projects: [],
+      restoredProjects: [{ id: "restored-project" }],
+      autoRestoreResult: { restoredCount: 1, projectNames: ["One"] },
+    });
+
+    const { unmount } = render(<restored.App />);
+
+    await waitFor(() =>
+      expect(restored.state.switchProject).toHaveBeenCalledWith(
+        "restored-project"
+      )
+    );
+    expect(restored.showInfoToast).toHaveBeenCalledWith(
+      "Restored 1 project from server: One"
+    );
+    unmount();
+
+    const emptyReload = await loadApp({
+      projects: [],
+      restoredProjects: [],
+      autoRestoreResult: { restoredCount: 1, projectNames: ["Missing"] },
+      userPrefs: undefined,
+    });
+
+    render(<emptyReload.App />);
+
+    await waitFor(() =>
+      expect(emptyReload.state.createProject).toHaveBeenCalledWith("My Project")
+    );
+    expect(emptyReload.showInfoToast).not.toHaveBeenCalled();
+  });
+
   it("creates preferences and a default project when no project can be loaded", async () => {
     const { App, state, dbGet, dbAdd } = await loadApp({
       projects: [],
@@ -133,6 +172,47 @@ describe("App project initialization lifecycle", () => {
     );
     expect(state.switchProject).toHaveBeenCalledWith("created-project");
     expect(dbGet).toHaveBeenCalledWith("default");
+  });
+
+  it("stops before creating a default project when unmounted mid-initialization", async () => {
+    let resolvePrefs: (value: undefined) => void = () => {};
+    const dbGetResult = new Promise<undefined>((resolve) => {
+      resolvePrefs = resolve;
+    });
+    const { App, state } = await loadApp({
+      projects: [],
+      autoRestoreResult: null,
+      userPrefs: undefined,
+      dbGetResult,
+    });
+
+    const { unmount } = render(<App />);
+    unmount();
+    resolvePrefs(undefined);
+
+    await waitFor(() => expect(state.loadProjects).toHaveBeenCalled());
+    await waitFor(() => expect(state.createProject).not.toHaveBeenCalled());
+    expect(state.switchProject).not.toHaveBeenCalled();
+  });
+
+  it("stops before switching projects when unmounted after target selection", async () => {
+    let resolvePrefs: (value: undefined) => void = () => {};
+    const dbGetResult = new Promise<undefined>((resolve) => {
+      resolvePrefs = resolve;
+    });
+    const { App, state } = await loadApp({
+      projects: [{ id: "first-project" }],
+      userPrefs: undefined,
+      dbGetResult,
+    });
+
+    const { unmount } = render(<App />);
+    unmount();
+    resolvePrefs(undefined);
+
+    await waitFor(() => expect(state.loadProjects).toHaveBeenCalled());
+    await waitFor(() => expect(state.switchProject).not.toHaveBeenCalled());
+    expect(state.createProject).not.toHaveBeenCalled();
   });
 
   it("prefers last project when present and otherwise falls back to the first project", async () => {
