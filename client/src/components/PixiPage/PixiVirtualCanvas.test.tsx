@@ -3,18 +3,56 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { CardWithGlobalLayout, PageLayoutInfo } from "./PixiVirtualCanvas";
 
-const pixi = vi.hoisted(() => ({
-  apps: [] as Array<Record<string, unknown>>,
-  containers: [] as Array<Record<string, unknown>>,
-  graphics: [] as Array<Record<string, unknown>>,
-  sprites: [] as Array<Record<string, unknown>>,
-  textures: [] as Array<{ id: string; destroy: unknown }>,
-  initShouldFail: false,
-  Application: null as null | (new () => Record<string, unknown>),
-  Container: null as null | (new () => Record<string, unknown>),
-}));
+type PixiTestState = {
+  apps: Array<Record<string, unknown>>;
+  containers: Array<Record<string, unknown>>;
+  graphics: Array<Record<string, unknown>>;
+  sprites: Array<Record<string, unknown>>;
+  textures: Array<{ id: string; destroy: unknown }>;
+  initShouldFail: boolean;
+  Application?: new () => Record<string, unknown>;
+  Container?: new () => Record<string, unknown>;
+};
+
+type FilterTestState = {
+  darken: Array<Record<string, unknown>>;
+  adjustment: Array<Record<string, unknown>>;
+};
+
+type GuideHookState = {
+  page: ReturnType<typeof vi.fn>;
+  perCard: ReturnType<typeof vi.fn>;
+  registration: ReturnType<typeof vi.fn>;
+};
+
+function guideHookState(): GuideHookState {
+  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasGuideHooks?: GuideHookState };
+  global.__pixiVirtualCanvasGuideHooks ??= { page: vi.fn(), perCard: vi.fn(), registration: vi.fn() };
+  return global.__pixiVirtualCanvasGuideHooks;
+}
+
+function pixiState(): PixiTestState {
+  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasState?: PixiTestState };
+  global.__pixiVirtualCanvasState ??= {
+    apps: [],
+    containers: [],
+    graphics: [],
+    sprites: [],
+    textures: [],
+    initShouldFail: false,
+  };
+  return global.__pixiVirtualCanvasState;
+}
+
+function filterState(): FilterTestState {
+  const global = globalThis as typeof globalThis & { __pixiVirtualCanvasFilterState?: FilterTestState };
+  global.__pixiVirtualCanvasFilterState ??= { darken: [], adjustment: [] };
+  return global.__pixiVirtualCanvasFilterState;
+}
 
 vi.mock("pixi.js", () => {
+  const state = pixiState();
+
   class Container {
     label = "";
     children: unknown[] = [];
@@ -27,7 +65,7 @@ vi.mock("pixi.js", () => {
     destroy = vi.fn();
 
     constructor() {
-      pixi.containers.push(this);
+      state.containers.push(this as unknown as Record<string, unknown>);
     }
   }
 
@@ -38,7 +76,7 @@ vi.mock("pixi.js", () => {
 
     constructor() {
       super();
-      pixi.graphics.push(this);
+      state.graphics.push(this as unknown as Record<string, unknown>);
     }
   }
 
@@ -55,7 +93,7 @@ vi.mock("pixi.js", () => {
 
     constructor(texture: unknown) {
       this.texture = texture;
-      pixi.sprites.push(this);
+      state.sprites.push(this as unknown as Record<string, unknown>);
     }
   }
 
@@ -66,16 +104,16 @@ vi.mock("pixi.js", () => {
     render = vi.fn();
     destroy = vi.fn();
     init = vi.fn(async () => {
-      if (pixi.initShouldFail) throw new Error("no webgl");
+      if (state.initShouldFail) throw new Error("no webgl");
     });
 
     constructor() {
-      pixi.apps.push(this);
+      state.apps.push(this as unknown as Record<string, unknown>);
     }
   }
 
-  pixi.Application = Application;
-  pixi.Container = Container;
+  state.Application = Application as unknown as new () => Record<string, unknown>;
+  state.Container = Container as unknown as new () => Record<string, unknown>;
 
   return {
     Application,
@@ -85,18 +123,13 @@ vi.mock("pixi.js", () => {
     Texture: {
       WHITE: { id: "white", destroy: vi.fn() },
       from: vi.fn(() => {
-        const texture = { id: `texture-${pixi.textures.length}`, destroy: vi.fn() };
-        pixi.textures.push(texture);
+        const texture = { id: `texture-${state.textures.length}`, destroy: vi.fn() };
+        state.textures.push(texture);
         return texture;
       }),
     },
   };
 });
-
-const filterState = vi.hoisted(() => ({
-  darken: [] as Array<Record<string, unknown>>,
-  adjustment: [] as Array<Record<string, unknown>>,
-}));
 
 vi.mock("./filters", () => {
   class Filter {
@@ -107,37 +140,32 @@ vi.mock("./filters", () => {
     DarkenFilter: class DarkenFilter extends Filter {
       constructor() {
         super();
-        filterState.darken.push(this);
+        filterState().darken.push(this as unknown as Record<string, unknown>);
       }
     },
     AdjustmentFilter: class AdjustmentFilter extends Filter {
       constructor() {
         super();
-        filterState.adjustment.push(this);
+        filterState().adjustment.push(this as unknown as Record<string, unknown>);
       }
     },
   };
 });
 
-const guideHooks = vi.hoisted(() => ({
-  page: vi.fn(),
-  perCard: vi.fn(),
-  registration: vi.fn(),
-}));
-vi.mock("./usePageGuides", () => ({ usePageGuides: guideHooks.page }));
-vi.mock("./usePerCardGuides", () => ({ usePerCardGuides: guideHooks.perCard }));
-vi.mock("./useRegistrationMarks", () => ({ useRegistrationMarks: guideHooks.registration }));
+vi.mock("./usePageGuides", () => ({ usePageGuides: guideHookState().page }));
+vi.mock("./usePerCardGuides", () => ({ usePerCardGuides: guideHookState().perCard }));
+vi.mock("./useRegistrationMarks", () => ({ useRegistrationMarks: guideHookState().registration }));
 
-const settings = vi.hoisted(() => ({
-  darkenContrast: 1.2,
-  darkenEdgeWidth: 0.2,
-  darkenAmount: 0.8,
-  darkenBrightness: -10,
-  darkenAutoDetect: true,
-}));
-vi.mock("../../store/settings", () => ({
-  useSettingsStore: (selector: (state: typeof settings) => unknown) => selector(settings),
-}));
+vi.mock("../../store/settings", () => {
+  const settings = {
+    darkenContrast: 1.2,
+    darkenEdgeWidth: 0.2,
+    darkenAmount: 0.8,
+    darkenBrightness: -10,
+    darkenAutoDetect: true,
+  };
+  return { useSettingsStore: (selector: (state: typeof settings) => unknown) => selector(settings) };
+});
 
 import PixiVirtualCanvas from "./PixiVirtualCanvas";
 import { pixiSingleton, resetPixiSingleton } from "./pixiSingleton";
@@ -224,14 +252,16 @@ function renderCanvas(overrides: Partial<React.ComponentProps<typeof PixiVirtual
 describe("PixiVirtualCanvas", () => {
   beforeEach(() => {
     cleanup();
-    pixi.apps = [];
-    pixi.containers = [];
-    pixi.graphics = [];
-    pixi.sprites = [];
-    pixi.textures = [];
-    pixi.initShouldFail = false;
-    filterState.darken = [];
-    filterState.adjustment = [];
+    const state = pixiState();
+    state.apps = [];
+    state.containers = [];
+    state.graphics = [];
+    state.sprites = [];
+    state.textures = [];
+    state.initShouldFail = false;
+    const filters = filterState();
+    filters.darken = [];
+    filters.adjustment = [];
     vi.clearAllMocks();
     vi.stubGlobal("Image", MockImage);
     vi.stubGlobal("URL", {
@@ -249,6 +279,7 @@ describe("PixiVirtualCanvas", () => {
   });
 
   it("initializes the singleton app, paints pages, syncs scroll, renders sprites, and cleans up resources", async () => {
+    const state = pixiState();
     const onRenderedCardsChange = vi.fn();
     const scrollHost = document.createElement("div");
     scrollHost.scrollTop = 23;
@@ -262,20 +293,20 @@ describe("PixiVirtualCanvas", () => {
     expect(canvas.height).toBe(240);
     expect(canvas.className).toContain("pixi-test");
 
-    await waitFor(() => expect(pixi.apps[0]?.init).toHaveBeenCalled());
-    await waitFor(() => expect(pixi.graphics.length).toBeGreaterThanOrEqual(2));
-    await waitFor(() => expect(pixi.sprites.length).toBe(1));
+    await waitFor(() => expect(state.apps[0]?.init).toHaveBeenCalled());
+    await waitFor(() => expect(state.graphics.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(state.sprites.length).toBe(1));
     await waitFor(() => expect(onRenderedCardsChange).toHaveBeenCalledWith(new Set(["card-1"])));
 
-    expect(pixi.apps[0].ticker.stop).toHaveBeenCalled();
-    expect(pixi.apps[0].renderer.resize).toHaveBeenCalledWith(320, 240);
-    expect(pixiSingleton.app).toBe(pixi.apps[0]);
-    expect(guideHooks.page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
-    expect(guideHooks.perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "solid-rounded-rect" }));
-    expect(guideHooks.registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "4" }));
+    expect(state.apps[0].ticker.stop).toHaveBeenCalled();
+    expect(state.apps[0].renderer.resize).toHaveBeenCalledWith(320, 240);
+    expect(pixiSingleton.app).toBe(state.apps[0]);
+    expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
+    expect(guideHookState().perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "solid-rounded-rect" }));
+    expect(guideHookState().registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "4" }));
 
     scrollHost.dispatchEvent(new Event("scroll"));
-    expect(pixi.apps[0].render).toHaveBeenCalled();
+    expect(state.apps[0].render).toHaveBeenCalled();
 
     rerender(
       <PixiVirtualCanvas
@@ -303,16 +334,17 @@ describe("PixiVirtualCanvas", () => {
       />,
     );
 
-    await waitFor(() => expect(pixi.apps[0].renderer.resize).toHaveBeenCalledWith(400, 260));
-    await waitFor(() => expect(pixi.sprites.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(state.apps[0].renderer.resize).toHaveBeenCalledWith(400, 260));
+    await waitFor(() => expect(state.sprites.length).toBeGreaterThanOrEqual(2));
     expect(URL.revokeObjectURL).toHaveBeenCalled();
 
     unmount();
-    expect(pixi.apps[0].destroy).toHaveBeenCalled();
+    expect(state.apps[0].destroy).toHaveBeenCalled();
     expect(pixiSingleton.app).toBeNull();
   });
 
   it("covers placeholders, blank backs, active-card hiding, failed texture loads, and empty-guide fallbacks", async () => {
+    const state = pixiState();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     class ErrorImage {
       onload: (() => void) | null = null;
@@ -340,49 +372,50 @@ describe("PixiVirtualCanvas", () => {
       onRenderedCardsChange: vi.fn(),
     });
 
-    await waitFor(() => expect(pixi.apps[0]?.init).toHaveBeenCalled());
-    await waitFor(() => expect(pixi.sprites.length).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(state.apps[0]?.init).toHaveBeenCalled());
+    await waitFor(() => expect(state.sprites.length).toBeGreaterThanOrEqual(1));
     await waitFor(() => expect(warn).toHaveBeenCalledWith("[PixiVirtualCanvas] Failed to create texture:", expect.any(Error)));
-    expect(guideHooks.page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
+    expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "full" }));
 
     cleanup();
     resetPixiSingleton();
     renderCanvas({ cards: [], showGuideLinesOnBackCards: false });
-    await waitFor(() => expect(guideHooks.page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "none" })));
-    expect(guideHooks.perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "none" }));
-    expect(guideHooks.registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "none" }));
+    await waitFor(() => expect(guideHookState().page).toHaveBeenLastCalledWith(expect.objectContaining({ cutLineStyle: "none" })));
+    expect(guideHookState().perCard).toHaveBeenLastCalledWith(expect.objectContaining({ guideStyle: "none" }));
+    expect(guideHookState().registration).toHaveBeenLastCalledWith(expect.objectContaining({ registrationMarks: "none" }));
   });
 
   it("reuses in-flight and existing singleton apps and reports init failures", async () => {
-    const existing = new pixi.Application!();
-    const world = new pixi.Container!();
+    const state = pixiState();
+    const existing = new state.Application!();
+    const world = new state.Container!();
     pixiSingleton.app = existing as never;
     pixiSingleton.worldContainer = world as never;
-    pixiSingleton.pagesContainer = new pixi.Container!() as never;
-    pixiSingleton.cardsContainer = new pixi.Container!() as never;
-    pixiSingleton.guidesContainer = new pixi.Container!() as never;
+    pixiSingleton.pagesContainer = new state.Container!() as never;
+    pixiSingleton.cardsContainer = new state.Container!() as never;
+    pixiSingleton.guidesContainer = new state.Container!() as never;
 
     const { unmount } = renderCanvas({ zoom: 1.5 });
     await waitFor(() => expect(world.scale.set).toHaveBeenCalledWith(1.5));
-    expect(pixi.apps.filter((app) => app !== existing).length).toBe(0);
+    expect(state.apps.filter((app) => app !== existing).length).toBe(0);
     unmount();
 
     cleanup();
     resetPixiSingleton();
-    const pending = new pixi.Application!();
+    const pending = new state.Application!();
     pixiSingleton.isInitializing = true;
     pixiSingleton.initPromise = Promise.resolve();
     pixiSingleton.app = pending as never;
-    pixiSingleton.worldContainer = new pixi.Container!() as never;
-    pixiSingleton.pagesContainer = new pixi.Container!() as never;
-    pixiSingleton.cardsContainer = new pixi.Container!() as never;
-    pixiSingleton.guidesContainer = new pixi.Container!() as never;
+    pixiSingleton.worldContainer = new state.Container!() as never;
+    pixiSingleton.pagesContainer = new state.Container!() as never;
+    pixiSingleton.cardsContainer = new state.Container!() as never;
+    pixiSingleton.guidesContainer = new state.Container!() as never;
     renderCanvas({ zoom: 1.25 });
     await waitFor(() => expect(pixiSingleton.worldContainer?.scale.set).toHaveBeenCalledWith(1.25));
 
     cleanup();
     resetPixiSingleton();
-    pixi.initShouldFail = true;
+    state.initShouldFail = true;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     renderCanvas();
     await waitFor(() => expect(warn).toHaveBeenCalledWith("[PixiVirtualCanvas] Init failed:", expect.any(Error)));
