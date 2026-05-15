@@ -445,6 +445,16 @@ describe("sortAndFilterUtils", () => {
     expect(
       sortCards(
         [
+          card({ uuid: "wb", name: "WB", colors: ["W", "B"] }),
+          card({ uuid: "wx", name: "WX", colors: ["W", "X"] }),
+        ],
+        { by: "color", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["wb", "wx"]);
+
+    expect(
+      sortCards(
+        [
           card({ uuid: "weird", name: "Weird", rarity: "masterpiece" }),
           card({ uuid: "basic-name", name: "Island" }),
         ],
