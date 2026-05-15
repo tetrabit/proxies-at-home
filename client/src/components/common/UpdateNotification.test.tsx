@@ -141,6 +141,20 @@ describe('UpdateNotification', () => {
             expect(screen.queryByTestId('toast')).toBeNull();
         });
 
+        it('should hide the notification when a visible update returns to checking', () => {
+            render(<UpdateNotification />);
+            act(() => {
+                updateStatusCallback?.('available');
+            });
+            expect(screen.getByText('Update available! Downloading...')).toBeDefined();
+
+            act(() => {
+                updateStatusCallback?.('checking');
+            });
+
+            expect(screen.queryByTestId('toast')).toBeNull();
+        });
+
         it('should not show toast for not-available status', () => {
             render(<UpdateNotification />);
             act(() => {
