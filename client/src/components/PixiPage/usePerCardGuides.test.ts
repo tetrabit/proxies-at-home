@@ -155,9 +155,40 @@ describe('usePerCardGuides', () => {
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 1, cards: [cardA] });
     expect(mocks.contextInstances.at(-1)?.rect).toHaveBeenCalled();
 
+    rerender({ guideStyle: 'solid-squared-rect', guideWidth: 1, cards: [{ ...cardA, baseCardWidthMm: 64 }] });
+    expect(mocks.generatePerCardGuide).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      1,
+      'solid-squared-rect',
+      'inside',
+      expect.any(Number)
+    );
+
     rerender({ guideStyle: 'none', guideWidth: 1, cards: [cardA] });
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 0, cards: [cardA] });
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 1, cards: [] });
     expect(app.render).toHaveBeenCalled();
+  });
+
+  it('supports centered guide placement', () => {
+    const container = makeContainer();
+    const app = makeApp();
+    mocks.generatePerCardGuide.mockReturnValue([]);
+
+    renderHook(() => usePerCardGuides({
+      isReady: true,
+      container: container as never,
+      app: app as never,
+      cards: [cardA] as never,
+      guideStyle: 'solid-squared-rect',
+      guideColor: 0x000000,
+      guidePlacement: 'center',
+      guideWidth: 1,
+      cutGuideLengthMm: 3,
+    }));
+
+    expect(mocks.contextInstances[0].rect.mock.calls[0][0]).toBe(0);
   });
 });

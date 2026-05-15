@@ -153,4 +153,30 @@ describe('usePageGuides', () => {
     expect(graphics.stroke).toHaveBeenCalledWith({ color: 0x000000, width: 1 });
     expect(app.render).toHaveBeenCalled();
   });
+
+  it('handles edge guides at page boundaries without outside segments', () => {
+    const container = makeContainer();
+    const app = makeApp();
+
+    renderHook(() => usePageGuides({
+      isReady: true,
+      container: container as never,
+      app: app as never,
+      pages: [page] as never,
+      cards: [{
+        card: { uuid: 'full-page-card' },
+        globalX: 0,
+        globalY: 0,
+        bleedMm: 0,
+        baseCardWidthMm: page.pageWidthPx / (96 / 25.4),
+        baseCardHeightMm: page.pageHeightPx / (96 / 25.4),
+      }] as never,
+      cutLineStyle: 'edges',
+      guideWidth: 1,
+    }));
+
+    const graphics = mocks.graphicsInstances[0];
+    expect(graphics.moveTo).not.toHaveBeenCalled();
+    expect(graphics.stroke).toHaveBeenCalledWith({ color: 0x000000, width: 1 });
+  });
 });
