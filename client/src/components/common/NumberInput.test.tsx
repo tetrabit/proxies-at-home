@@ -63,6 +63,17 @@ describe('NumberInput', () => {
 
             expect(onChange).toHaveBeenCalled();
         });
+
+        it('should round step changes to the configured precision', () => {
+            const onChange = vi.fn();
+            render(<NumberInput value={1.2} step={0.1} onChange={onChange} />);
+
+            const upButton = screen.getByTestId('chevron-up').parentElement!;
+            fireEvent.mouseDown(upButton);
+
+            expect(onChange).toHaveBeenCalledTimes(1);
+            expect((onChange.mock.calls[0][0] as React.ChangeEvent<HTMLInputElement>).target.value).toBe('1.3');
+        });
     });
 
     describe('increment/decrement buttons', () => {
@@ -172,6 +183,26 @@ describe('NumberInput', () => {
             });
 
             expect(onChange.mock.calls.length).toBe(callCount);
+        });
+
+        it('should ignore a ghost mouse click after touch interaction', () => {
+            const onChange = vi.fn();
+            render(<NumberInput value={5} step={1} onChange={onChange} />);
+
+            const upButton = screen.getByTestId('chevron-up').parentElement!;
+            fireEvent.touchStart(upButton);
+            fireEvent.touchEnd(upButton);
+            const firstCallCount = onChange.mock.calls.length;
+
+            fireEvent.mouseDown(upButton);
+            expect(onChange.mock.calls.length).toBe(firstCallCount);
+
+            act(() => {
+                vi.advanceTimersByTime(500);
+            });
+
+            fireEvent.mouseDown(upButton);
+            expect(onChange.mock.calls.length).toBeGreaterThan(firstCallCount);
         });
     });
 });
