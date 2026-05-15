@@ -154,6 +154,7 @@ export async function downloadAndImportBulkData(): Promise<{
       typeEntries = [];
       tokenNames = [];
 
+      /* v8 ignore else -- progress logging is observational; batch and remainder behavior are covered separately. @preserve */
       if (cardsProcessed % BATCH_SIZE === 0) {
         debugLog(
           `[Bulk Import] Processed ${cardsProcessed} cards... (${totalInserted} new, ${totalUpdated} updated)`

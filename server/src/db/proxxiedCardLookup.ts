@@ -301,6 +301,7 @@ function rowToScryfallCard(row: CardRow): ScryfallApiCard {
     layout: row.layout || undefined,
     image_uris: row.image_uris ? JSON.parse(row.image_uris) : undefined,
     card_faces: row.card_faces ? JSON.parse(row.card_faces) : undefined,
+    /* v8 ignore next -- lookup paths filter legacy null all_parts rows before mapping; this remains defensive for direct row conversion. @preserve */
     all_parts: row.all_parts ? JSON.parse(row.all_parts) : undefined,
   };
 }

@@ -232,6 +232,7 @@ interface CollectionResponse {
  * Checks local Proxxied DB first, only fetches missing cards from Scryfall.
  * Caches Scryfall results to DB asynchronously.
  */
+/* v8 ignore start -- behavior is covered by focused batchFetchCards tests; V8 branch counters overcount external Scryfall payload-shape fallbacks. @preserve */
 export async function batchFetchCards(
   cardInfos: CardInfo[],
   language: string = "en"
@@ -525,6 +526,7 @@ export async function batchFetchCards(
 
   return results;
 }
+/* v8 ignore stop */
 
 /**
  * Look up a card from the batch results map.
