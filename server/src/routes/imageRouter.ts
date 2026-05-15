@@ -11,17 +11,21 @@ import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/toke
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function acceptsSurfaceableStatus(s: number): boolean {
+  return s >= 200 && s < 500;
+}
+
 const AX = axios.create({
   timeout: 6000, // 6s per outbound request (reduced from 12s)
   headers: { "User-Agent": "Proxxied/1.0 (+contact@example.com)" },
-  validateStatus: (s) => s >= 200 && s < 500, // surface 4xx/429 to logic
+  validateStatus: acceptsSurfaceableStatus, // surface 4xx/429 to logic
 });
 
 // Separate axios instance for Google Drive/MPC images with longer timeout
 const AX_GDRIVE = axios.create({
   timeout: 30000, // 30s for large Google Drive files
   headers: { "User-Agent": "Proxxied/1.0 (+contact@example.com)" },
-  validateStatus: (s) => s >= 200 && s < 500,
+  validateStatus: acceptsSurfaceableStatus,
 });
 
 // Improved retry with exponential backoff (reduced retries for faster failure)
@@ -690,6 +694,7 @@ imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
   const id = Array.isArray(rawId) ? rawId[0] : rawId;
 
   if (!id) {
+    /* v8 ignore next -- Express route parameters cannot be absent once /cardback/:id matches. */
     return res.status(400).send("Missing cardback ID");
   }
   const filename = CARDBACK_MAP[id];
@@ -710,5 +715,16 @@ imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
   res.setHeader("Content-Type", "image/png");
   return res.sendFile(filePath);
 });
+
+export const __imageRouterTestInternals = {
+  acceptsSurfaceableStatus,
+  pLimit,
+  checkAndCleanCache,
+  cachePathFromUrl,
+  writeInProgress,
+  resetCacheCleanupForTests: () => {
+    lastCacheCleanup = 0;
+  },
+};
 
 export { imageRouter };

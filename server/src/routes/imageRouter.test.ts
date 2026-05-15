@@ -26,7 +26,7 @@ vi.mock("../utils/tokenLookup.js", () => ({
 vi.mock("../utils/tokenUtils.js", () => ({
     extractTokenParts: routeMocks.extractTokenParts,
 }));
-import { imageRouter } from "./imageRouter";
+import { imageRouter, __imageRouterTestInternals } from "./imageRouter";
 
 vi.mock("axios", () => {
     const mockGet = vi.fn();
@@ -44,6 +44,7 @@ vi.mock("axios", () => {
 
 vi.mock("fs", () => {
     const mockedPromises = {
+        readdir: vi.fn(),
         stat: vi.fn(),
         utimes: vi.fn().mockResolvedValue(undefined),
         unlink: vi.fn().mockResolvedValue(undefined),
@@ -114,6 +115,13 @@ describe("getWithRetry logic", () => {
         (fs.readdir as unknown as Mock).mockImplementation((_path, cb) => cb(null, ["file1.png", "file2.png"]));
         (fs.unlink as unknown as Mock).mockImplementation((_path, cb) => cb(null));
         (fs.readdirSync as unknown as Mock).mockReturnValue([]);
+        (fs.promises.readdir as unknown as Mock).mockResolvedValue([]);
+        (fs.promises.stat as unknown as Mock).mockReset();
+        (fs.promises.unlink as unknown as Mock).mockReset();
+        (fs.promises.utimes as unknown as Mock).mockResolvedValue(undefined);
+        (fs.promises.writeFile as unknown as Mock).mockResolvedValue(undefined);
+        __imageRouterTestInternals.writeInProgress.clear();
+        __imageRouterTestInternals.resetCacheCleanupForTests();
 
 
         app = express();
