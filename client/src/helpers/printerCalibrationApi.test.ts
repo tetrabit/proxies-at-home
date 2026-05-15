@@ -41,7 +41,8 @@ describe("printerCalibrationApi – network error normalization", () => {
     it("returns profiles on success", async () => {
       const profiles = { myPrinter: { name: "myPrinter", front_x_mm: 1, front_y_mm: 2, back_x_mm: 3, back_y_mm: 4 } };
       mockFetch.mockResolvedValueOnce(makeOkJsonResponse(profiles));
-      await expect(getPrinterProfiles()).resolves.toEqual(profiles);
+      const result = await getPrinterProfiles();
+      expect(result).toEqual(profiles);
     });
 
     it("throws CalibrationApiUnavailableError on TypeError (network failure)", async () => {

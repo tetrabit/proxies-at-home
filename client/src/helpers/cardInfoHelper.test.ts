@@ -190,6 +190,26 @@ describe('CardInfoHelper', () => {
       });
     });
 
+    it('should strip bracket metadata that becomes visible after set parsing', () => {
+      const input = '1x Lightning Bolt [Tag] (sta) 57';
+      expect(extractCardInfo(input)).toEqual({
+        name: 'Lightning Bolt',
+        quantity: 1,
+        set: 'sta',
+        number: '57',
+      });
+    });
+
+    it('should strip caret metadata that becomes visible after set parsing', () => {
+      const input = '1x Counterspell ^promo^ (a25) 1';
+      expect(extractCardInfo(input)).toEqual({
+        name: 'Counterspell',
+        quantity: 1,
+        set: 'a25',
+        number: '1',
+      });
+    });
+
     it('should parse [Set] without a collector number and keep the name', () => {
       const input = '1x Brainstorm [M21]';
       expect(extractCardInfo(input)).toEqual({

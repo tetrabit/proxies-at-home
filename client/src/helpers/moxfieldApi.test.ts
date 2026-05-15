@@ -170,6 +170,19 @@ describe("moxfieldApi", () => {
       );
     });
 
+    it("should prefer a server-provided 404 message when available", async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: () => Promise.resolve({ error: "deck is private" }),
+      });
+
+      const error = await fetchMoxfieldDeck("private").catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("deck is private");
+    });
+
     it("should throw error for other HTTP errors", async () => {
       mockFetch.mockResolvedValue({
         ok: false,
