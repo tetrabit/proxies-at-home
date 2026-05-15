@@ -24,6 +24,7 @@ export function useShareSync(): UseShareSyncResult {
     const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
     const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
     const prevProjectId = useRef<string | null>(null);
+    const prevSharedAt = useRef<number | null>(null);
 
     // Watch for updates to lastSharedAt to trigger feedback
     useEffect(() => {
@@ -34,11 +35,13 @@ export function useShareSync(): UseShareSyncResult {
             setLastSyncedAt(project.lastSharedAt ?? null);
             setSyncStatus('idle');
             prevProjectId.current = project.id;
+            prevSharedAt.current = project.lastSharedAt ?? null;
             return;
         }
 
         // Same project, but timestamp changed -> it was a sync!
-        if (project.lastSharedAt && project.lastSharedAt !== lastSyncedAt) {
+        if (project.lastSharedAt && project.lastSharedAt !== prevSharedAt.current) {
+            prevSharedAt.current = project.lastSharedAt;
             setLastSyncedAt(project.lastSharedAt);
             setSyncStatus('synced');
 
@@ -47,7 +50,7 @@ export function useShareSync(): UseShareSyncResult {
             }, 3000);
             return () => clearTimeout(timer);
         }
-    }, [project, lastSyncedAt]);
+    }, [project]);
 
     return {
         syncStatus,

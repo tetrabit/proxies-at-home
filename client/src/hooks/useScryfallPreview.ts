@@ -65,29 +65,22 @@ export function useScryfallPreview(query: string) {
 
                 try {
                     setIsLoading(true);
-                    try {
-                        const card = await fetchCardBySetAndNumber(set, number, controller.signal);
+                    const card = await fetchCardBySetAndNumber(set, number, controller.signal);
 
-                        // Check if this is still the current query
-                        if (currentQueryRef.current !== query) return;
+                    // Check if this is still the current query
+                    if (currentQueryRef.current !== query) return;
 
-                        // Validate name if provided
-                        if (cleanedName && !card.name.toLowerCase().includes(cleanedName.toLowerCase())) {
-                            searchCache.current[cacheKey] = [];
-                            setSetVariations([]);
-                        } else {
-                            searchCache.current[cacheKey] = [card];
-                            setSetVariations([card]);
-                        }
-                    } catch {
+                    // Validate name if provided
+                    if (cleanedName && !card.name.toLowerCase().includes(cleanedName.toLowerCase())) {
                         searchCache.current[cacheKey] = [];
                         setSetVariations([]);
+                    } else {
+                        searchCache.current[cacheKey] = [card];
+                        setSetVariations([card]);
                     }
-                } catch (err) {
-                    if (err instanceof Error && err.name !== 'AbortError') {
-                        searchCache.current[cacheKey] = [];
-                        setSetVariations([]);
-                    }
+                } catch {
+                    searchCache.current[cacheKey] = [];
+                    setSetVariations([]);
                 } finally {
                     setIsLoading(false);
                 }
