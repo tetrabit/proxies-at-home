@@ -93,4 +93,32 @@ describe("useScryfallPreview", () => {
 
     expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(1);
   });
+
+  it("drops a specific card result when the fetched name does not match the cleaned query", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
+    mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Lightning Bolt" });
+
+    const { result } = renderHook(() => useScryfallPreview("Dark [abc] 12"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(result.current.validatedPreviewUrl).toBeNull();
+  });
+
+  it("clears results when the search API rejects", async () => {
+    mockSearchCards.mockRejectedValue(new Error("Network down"));
+
+    const { result } = renderHook(() => useScryfallPreview("Forest"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockSearchCards).toHaveBeenCalledWith("Forest", expect.any(AbortSignal));
+    expect(result.current.setVariations).toEqual([]);
+    expect(result.current.isLoading).toBe(false);
+  });
 });
