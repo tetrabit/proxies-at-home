@@ -111,4 +111,27 @@ describe('SettingsPanel', () => {
 
         expect(screen.getByText('5')).toBeDefined();
     });
+
+    it('should clear badge without toggling the panel', () => {
+        const onToggle = vi.fn();
+        const onClearBadge = vi.fn();
+        render(
+            <SettingsPanel
+                id="test"
+                title="Test Panel"
+                isOpen={false}
+                onToggle={onToggle}
+                icon={Settings}
+                badge={3}
+                onClearBadge={onClearBadge}
+            >
+                <div>Content</div>
+            </SettingsPanel>
+        );
+
+        fireEvent.click(screen.getByTitle('Clear all filters'));
+
+        expect(onClearBadge).toHaveBeenCalledOnce();
+        expect(onToggle).not.toHaveBeenCalled();
+    });
 });

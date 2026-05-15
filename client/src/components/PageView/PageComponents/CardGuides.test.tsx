@@ -111,4 +111,56 @@ describe("CardGuides", () => {
             });
         });
     });
+
+    it("renders dashed corner gradients", () => {
+        render(<CardGuides {...defaultProps} perCardGuideStyle="dashed-corners" />);
+
+        expect(screen.getByTestId("guide-top-left-h").style.background).toContain("repeating-linear-gradient");
+        expect(screen.getByTestId("guide-bottom-right-v").style.background).toContain("transparent");
+    });
+
+    it("renders rounded SVG corners from image bleed and dashed stroke settings", () => {
+        const { container } = render(
+            <CardGuides
+                {...defaultProps}
+                perCardGuideStyle="dashed-rounded-corners"
+                guidePlacement="outside"
+                imageBleedWidth={3}
+            />
+        );
+
+        const svgs = container.querySelectorAll("svg");
+        expect(svgs).toHaveLength(4);
+        expect(svgs[0].style.top).toBe("1px");
+        expect(svgs[0].querySelector("path")).toHaveAttribute("stroke-dasharray", "10");
+        expect(svgs[2].style.transform).toBe("rotate(180deg)");
+    });
+
+    it("renders square and rounded rectangle guides with parsed offsets", () => {
+        const { rerender, container } = render(
+            <CardGuides
+                {...defaultProps}
+                perCardGuideStyle="dashed-squared-rect"
+                guideOffset={96}
+            />
+        );
+
+        const square = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
+        expect(square.style.top).toBe("25.399999999999995mm");
+        expect(square.style.border).toBe("10px dashed rgb(0, 255, 0)");
+        expect(square.style.borderRadius).toBe("0");
+
+        rerender(
+            <CardGuides
+                {...defaultProps}
+                perCardGuideStyle="solid-rounded-rect"
+                guidePlacement="outside"
+                imageBleedWidth={2}
+            />
+        );
+        const rounded = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
+        expect(rounded.style.top).toBe("calc(-2.44094px)");
+        expect(rounded.style.borderRadius).toBe("calc(2.5mm + 10px)");
+        expect(rounded.style.border).toBe("10px solid rgb(0, 255, 0)");
+    });
 });
