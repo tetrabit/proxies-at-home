@@ -202,12 +202,61 @@ describe('exportImagesZip', () => {
             expect(mocks.file).toHaveBeenCalledWith('001 - Test Card.png', exportBlobDarkened);
         });
 
+        it('should prefer Scryfall PNG URLs before proxying', async () => {
+            const card = createMockCard({ imageId: 'img-1' });
+            const image = createMockImage({
+                id: 'img-1',
+                sourceUrl: 'https://cards.scryfall.io/normal/front/a/b/example.jpeg',
+            });
+
+            await ExportImagesZip({ cards: [card], images: [image] });
+
+            expect(global.fetch).toHaveBeenCalledWith(
+                expect.stringContaining(encodeURIComponent('https://cards.scryfall.io/normal/front/a/b/example.png')),
+                expect.any(Object)
+            );
+        });
+
+        it('should select contrast darken export blobs and fall back to normal export blobs', async () => {
+            const exportBlob = new Blob(['normal'], { type: 'image/png' });
+            const edgeBlob = new Blob(['edges'], { type: 'image/webp' });
+            const fullBlob = new Blob(['full'], { type: 'image/png' });
+            const fallbackBlob = new Blob(['fallback'], { type: 'image/png' });
+
+            await ExportImagesZip({
+                cards: [
+                    createMockCard({ name: 'Edges', imageId: 'edge', overrides: { darkenMode: 'contrast-edges' } }),
+                    createMockCard({ name: 'Full', imageId: 'full', overrides: { darkenMode: 'contrast-full' } }),
+                    createMockCard({ name: 'Unknown', imageId: 'fallback', overrides: { darkenMode: 'unexpected' } }),
+                ] as CardOption[],
+                images: [
+                    createMockImage({ id: 'edge', exportBlob, exportBlobContrastEdges: edgeBlob }),
+                    createMockImage({ id: 'full', exportBlob, exportBlobContrastFull: fullBlob }),
+                    createMockImage({ id: 'fallback', exportBlob: fallbackBlob }),
+                ],
+                concurrency: 1,
+            });
+
+            expect(mocks.file).toHaveBeenCalledWith('001 - Edges.webp', edgeBlob);
+            expect(mocks.file).toHaveBeenCalledWith('002 - Full.png', fullBlob);
+            expect(mocks.file).toHaveBeenCalledWith('003 - Unknown.png', fallbackBlob);
+        });
+
         it('should skip cards with no image data', async () => {
             const card = createMockCard({ imageId: undefined });
 
             await ExportImagesZip({ cards: [card], images: [] });
 
             expect(mocks.file).not.toHaveBeenCalled();
+        });
+
+        it('should sanitize blank and unsafe names and honor non-positive concurrency', async () => {
+            const card = createMockCard({ name: ' /?:*|"<>  ', imageId: 'img-1' });
+            const image = createMockImage({ id: 'img-1' });
+
+            await ExportImagesZip({ cards: [card], images: [image], concurrency: 0 });
+
+            expect(mocks.file).toHaveBeenCalledWith('001 - _________.png', expect.any(Blob));
         });
 
         it('should handle fetch errors gracefully', async () => {

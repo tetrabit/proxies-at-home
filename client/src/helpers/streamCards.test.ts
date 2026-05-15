@@ -709,6 +709,47 @@ describe("streamCards", () => {
     ]);
   });
 
+  it("should resolve URL custom backs and map placeholder fallback front uuids", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "placeholder-one" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (addRemoteImage as any)
+      .mockResolvedValueOnce("custom-url-back")
+      .mockResolvedValueOnce("front-url-image");
+    (fetchEventSource as any).mockImplementation(
+      async (_url: string, opts: any) => {
+        await opts.onmessage({
+          event: "card-found",
+          data: JSON.stringify({
+            name: "URL Back Front",
+            imageUrls: ["http://front-url"],
+          }),
+        });
+        opts.onmessage({ event: "done", data: "" });
+      }
+    );
+
+    await streamCards({
+      cardInfos: [
+        {
+          name: "URL Back Front",
+          quantity: 2,
+          linkedBackImageId: "https://example.test/back.png",
+          linkedBackName: "URL Back",
+        },
+      ],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+    });
+
+    expect(addRemoteImage).toHaveBeenCalledWith(["https://example.test/back.png"], 2);
+    expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+      { frontUuid: "placeholder-one", backImageId: "custom-url-back", backName: "URL Back" },
+      { frontUuid: "placeholder-one", backImageId: "custom-url-back", backName: "URL Back" },
+    ]);
+  });
+
   it("should warn and continue when MPC token enrichment fetch fails", async () => {
     const warnSpy = vi
       .spyOn(console, "warn")
