@@ -21,6 +21,7 @@ describe('LoadingOverlay', () => {
         );
 
         expect(screen.getByText('Loading cards...')).toBeDefined();
+        expect(screen.getByText('Elapsed: 0s')).toBeDefined();
     });
 
     it('should show progress percentage', () => {
