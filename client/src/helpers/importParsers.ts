@@ -168,22 +168,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
     while (parsing) {
         parsing = false;
 
-        // 1. Try to extract Set/Num from [Set] {Num} or [Set]
-        /* v8 ignore start -- pre-loop cleanup and the top-level set/number parser handle this grammar before the loop. @preserve */
-        if (!setCode) {
-            const m = s.match(setNumBrackets);
-            if (m) {
-                setCode = m[1].toLowerCase();
-                /* v8 ignore next -- setNumBrackets always captures the collector number when it matches. @preserve */
-                if (m[2]) number = m[2];
-                s = s.replace(setNumBrackets, "").trim();
-                parsing = true;
-                continue;
-            }
-        }
-        /* v8 ignore stop */
-
-        // 2. Strip {Num} pattern
+        // 1. Strip {Num} pattern
         if (!number) {
             const m = s.match(numBracketsOnly);
             if (m) {
@@ -193,7 +178,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
             }
         }
 
-        // 3. Try to extract (Set) Number
+        // 2. Try to extract (Set) Number
         if (!setCode && !number) {
             const m = s.match(setNumTail);
             if (m) {
@@ -205,7 +190,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
             }
         }
 
-        // 4. Try set: or s:
+        // 3. Try set: or s:
         if (!setCode) {
             const m = s.match(setColonTail);
             if (m) {
@@ -216,7 +201,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
             }
         }
 
-        // 5. Try num: or cn:
+        // 4. Try num: or cn:
         if (!number) {
             const m = s.match(numColonTail);
             if (m) {
@@ -227,7 +212,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
             }
         }
 
-        // 6. Generic cleanup
+        // 5. Generic cleanup
         if (s.match(bracketTail)) {
             s = s.replace(bracketTail, "").trim();
             parsing = true;

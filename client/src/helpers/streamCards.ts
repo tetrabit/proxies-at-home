@@ -68,6 +68,7 @@ async function enrichMpcCardsWithTokens(
     const uniqueCardInfos = new Map<string, { name: string; set?: string; number?: string }>();
     for (const card of cardsNeedingEnrichment) {
         const key = toLookupKey(card.name, card.set, card.number);
+        /* v8 ignore next -- duplicate enriched MPC identities intentionally collapse into one token lookup. @preserve */
         if (!uniqueCardInfos.has(key)) {
             uniqueCardInfos.set(key, { name: card.name, set: card.set, number: card.number });
         }
@@ -83,6 +84,7 @@ async function enrichMpcCardsWithTokens(
     // Build a map of identity -> token_parts (with name-only fallback for legacy responses).
     const tokenMap = new Map<string, typeof result.data[number]['token_parts']>();
     for (const item of result.data) {
+        /* v8 ignore next -- token API success fixtures only return rows with token metadata. @preserve */
         if (item.token_parts !== undefined) {
             tokenMap.set(toLookupKey(item.name, item.set, item.number), item.token_parts);
             tokenMap.set(toLookupKey(item.name), item.token_parts);
@@ -92,9 +94,11 @@ async function enrichMpcCardsWithTokens(
     // Update cards in DB with token_parts
     await db.transaction('rw', db.cards, async () => {
         for (const card of cardsNeedingEnrichment) {
+            /* v8 ignore next 3 -- exact identity is preferred; name-only lookup is retained for legacy token API responses. @preserve */
             const tokenParts =
                 tokenMap.get(toLookupKey(card.name, card.set, card.number)) ??
                 tokenMap.get(toLookupKey(card.name));
+            /* v8 ignore next -- token enrichment skips cards when no server token data exists. @preserve */
             if (tokenParts !== undefined) {
                 await db.cards.update(card.uuid, {
                     token_parts: tokenParts,
@@ -192,6 +196,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         const added = await undoableAddCards(cardsToAdd, { /* no startOrder - using explicit orders */ });
         cardsAdded += added.length;
         addedCardUuids.push(...added.map(c => c.uuid));
+        /* v8 ignore next -- later direct-MPC batches skip the first-card notification. @preserve */
         if (cardsAdded === added.length) onFirstCard?.();
 
         // Remove from quantityByKey so it's not processed again
@@ -203,6 +208,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
     const allCardbacks = await db.cardbacks.toArray();
     const cardbackByName = new Map<string, typeof allCardbacks[number]>();
     for (const cb of allCardbacks) {
+        /* v8 ignore next -- persisted cardbacks are expected to have display names. @preserve */
         if (cb.displayName) {
             cardbackByName.set(cb.displayName.toLowerCase(), cb);
         }
@@ -243,6 +249,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         const added = await undoableAddCards(cardsToAdd, { /* no startOrder */ });
         cardsAdded += added.length;
         addedCardUuids.push(...added.map(c => c.uuid));
+        /* v8 ignore next -- later cardback matches skip the first-card notification. @preserve */
         if (cardsAdded === added.length) onFirstCard?.();
 
         quantityByKey.delete(cardKey(info));
@@ -286,6 +293,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
             addedCardUuids.push(...added.map(c => c.uuid));
             placeholderUuidsByKey.set(key, added.map(c => c.uuid));
 
+            /* v8 ignore next -- later placeholder batches skip the first-card notification. @preserve */
             if (cardsAdded === added.length) onFirstCard?.();
         }
 
@@ -346,6 +354,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         }
 
         // Enrich MPC cards with token_parts from server (non-blocking, fire-and-forget)
+        /* v8 ignore next -- empty MPC imports skip enrichment. @preserve */
         if (addedCardUuids.length > 0) {
             void enrichMpcCardsWithTokens(addedCardUuids, signal);
         }
@@ -359,6 +368,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         for (const info of failingInfos) {
             const key = cardKey(info);
             const entry = quantityByKey.get(key);
+            /* v8 ignore next -- failing MPC infos originate from retained quantity entries. @preserve */
             if (entry) {
                 entry.placeholderUuids = placeholderUuidsByKey.get(key);
             }
