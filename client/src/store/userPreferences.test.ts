@@ -158,7 +158,7 @@ describe("useUserPreferencesStore", () => {
                 await useUserPreferencesStore.getState().load();
 
                 expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order?.[0]).toBe("application");
-                expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("application");
+                expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order?.[1]).toBe("layout");
             } finally {
                 Object.defineProperty(Array.prototype, "indexOf", originalDescriptor);
             }
