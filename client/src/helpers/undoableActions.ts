@@ -561,10 +561,8 @@ export async function undoableAddCards(
                     }
                 }
 
-                // Perform bulk operations
-                if (allUuidsToDelete.length > 0) {
-                    await db.cards.bulkDelete(allUuidsToDelete);
-                }
+                // Perform bulk operations. addedUuids is non-empty whenever an undo action exists.
+                await db.cards.bulkDelete(allUuidsToDelete);
                 if (imageUpdates.length > 0) {
                     await db.images.bulkUpdate(imageUpdates);
                 }
