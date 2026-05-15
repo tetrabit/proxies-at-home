@@ -148,6 +148,40 @@ describe("Stream Router", () => {
         expect(cardFoundData.imageUrls).toEqual(["valki_url", "tibalt_url"]);
     });
 
+    it("streams cards when Scryfall omits optional set, number, and name fields", async () => {
+        const mockBatchResults = new Map();
+        mockBatchResults.set("nameless", {
+            image_uris: { png: "nameless_url" },
+            colors: [],
+            cmc: 0,
+            type_line: "Token",
+            rarity: "common",
+        });
+        mockBatchResults.set("two faces", {
+            name: "Two Faces",
+            card_faces: [
+                { name: "Two", image_uris: { png: "two_url" } },
+                { name: "Faces", image_uris: { png: "faces_url" } },
+            ],
+        });
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(mockBatchResults);
+
+        const res = await request(app)
+            .post("/stream/cards")
+            .send({ cardQueries: [{ name: "Nameless" }, { name: "Two Faces" }] })
+            .expect(200);
+
+        const events = res.text.split("\n\n").filter(Boolean);
+        const foundEvents = events.filter((event: string) => event.startsWith("event: card-found"));
+        const nameless = JSON.parse(foundEvents[0].match(/data: (.*)/s)![1]);
+        const twoFaces = JSON.parse(foundEvents[1].match(/data: (.*)/s)![1]);
+
+        expect(nameless).toMatchObject({ name: "Nameless", imageUrls: ["nameless_url"] });
+        expect(nameless).not.toHaveProperty("set");
+        expect(nameless).not.toHaveProperty("number");
+        expect(twoFaces.prints[0]).toMatchObject({ set: "", number: "", imageUrl: "two_url" });
+    });
+
     it("defaults to the front face when the requested face does not match", async () => {
         const mockBatchResults = new Map();
         mockBatchResults.set("bala ged recovery // bala ged sanctuary", {
@@ -318,6 +352,28 @@ describe("Stream Router", () => {
         expect(events.at(-1)).toBe("event: done\ndata: {}");
     });
 
+    it("stringifies non-Error failures in prints and art streams", async () => {
+        const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => { });
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo)
+            .mockRejectedValueOnce("plain prints failure")
+            .mockRejectedValueOnce("plain art failure");
+
+        const prints = await request(app)
+            .post("/stream/cards")
+            .send({ cardArt: "prints", cardQueries: [{ name: "Bad Prints" }] })
+            .expect(200);
+        expect(prints.text).toContain('"error":"plain prints failure"');
+
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(new Map());
+        const art = await request(app)
+            .post("/stream/cards")
+            .send({ cardQueries: [{ name: "Bad Art" }] })
+            .expect(200);
+        expect(art.text).toContain('"error":"plain art failure"');
+
+        consoleErrorSpy.mockRestore();
+    });
+
     it("sends keep-alive comments while card streaming is still pending", async () => {
         vi.useFakeTimers();
         let resolveBatch!: (value: Map<string, unknown>) => void;
@@ -376,6 +432,18 @@ describe("Stream Router", () => {
         const failed = await request(app).post("/stream/metadata").send({ cardQueries: [{ name: "Boom" }] });
         expect(failed.status).toBe(500);
         expect(failed.body.error).toBe("An unexpected server error occurred.");
+    });
+
+    it("stringifies non-Error metadata fallback failures", async () => {
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValueOnce(new Map());
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo).mockRejectedValueOnce("metadata string failure");
+
+        const response = await request(app)
+            .post("/stream/metadata")
+            .send({ cardQueries: [{ name: "String Failure" }] })
+            .expect(200);
+
+        expect(response.body.results[0]).toMatchObject({ card: null, error: "metadata string failure" });
     });
 
 

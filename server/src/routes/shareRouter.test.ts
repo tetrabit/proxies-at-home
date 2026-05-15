@@ -134,6 +134,15 @@ describe('shareRouter', () => {
         consoleLogSpy.mockRestore();
     });
 
+    it('does not log when expired share cleanup removes no rows', () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+        expect(cleanupExpiredShares()).toBe(0);
+        expect(consoleLogSpy).not.toHaveBeenCalled();
+
+        consoleLogSpy.mockRestore();
+    });
+
     describe('POST /api/share', () => {
         it('should create a share and return an 8-char ID', async () => {
             const testData = { v: 1, c: [['s', 'test-uuid', 0]] };
