@@ -42,6 +42,7 @@ vi.mock("../utils/getCardImagesPaged.js", () => ({
 import { scryfallRouter } from "./scryfallRouter.js";
 import { getCardsWithImagesForCardInfo } from "../utils/getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
+import { getDatabase } from "../db/db.js";
 
 describe("scryfallRouter - /prints", () => {
   let app: express.Application;
@@ -260,6 +261,32 @@ describe("scryfallRouter - /prints", () => {
     expect(res.status).toBe(200);
     expect(res.body.prints[0].scryfall_id).toBe('micro-print');
     expect(axios.get).not.toHaveBeenCalledWith('/cards/search', { params: { q: expect.stringContaining('oracle-micro') } });
+  });
+
+  it("returns cached print responses without hitting Scryfall", async () => {
+    const cachedResponse = {
+      name: "Cached",
+      oracle_id: null,
+      lang: "en",
+      total: 1,
+      prints: [{ imageUrl: "cached.png", set: "abc", number: "1", faceName: "Cached" }],
+    };
+    vi.mocked(getDatabase).mockReturnValueOnce({
+      prepare: vi.fn(() => ({
+        get: vi.fn(() => ({
+          response: JSON.stringify(cachedResponse),
+          expires_at: Date.now() + 60_000,
+        })),
+        run: vi.fn(),
+      })),
+    } as never);
+
+    const res = await request(app).get("/api/scryfall/prints?name=Cached");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(cachedResponse);
+    expect(getCardsWithImagesForCardInfo).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
   });
 
   it("forwards print axios errors and handles plain failures", async () => {

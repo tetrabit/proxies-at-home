@@ -492,6 +492,56 @@ describe("getWithRetry logic", () => {
             warnSpy.mockRestore();
             errorSpy.mockRestore();
         });
+
+        it("uses the first cardback directory that contains a png", async () => {
+            vi.resetModules();
+            const fsMock = {
+                ...fs,
+                existsSync: vi.fn(() => true),
+                readdirSync: vi.fn(() => ["mtg.png"]),
+            };
+            vi.doMock("fs", () => ({ ...fsMock, default: fsMock }));
+
+            const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+            const { resolveCardbacksDir } = await import("./imageRouter.js");
+
+            const resolved = resolveCardbacksDir();
+
+            expect(resolved).toContain("cardbacks");
+            expect(fsMock.readdirSync).toHaveBeenCalledTimes(2);
+
+            logSpy.mockRestore();
+        });
+
+        it("continues cardback directory resolution after a readable directory throws", async () => {
+            vi.resetModules();
+            const fsMock = {
+                ...fs,
+                existsSync: vi.fn(() => true),
+                readdirSync: vi.fn()
+                    .mockImplementationOnce(() => {
+                        throw new Error("cannot read");
+                    })
+                    .mockReturnValue(["mtg.png"]),
+            };
+            vi.doMock("fs", () => ({ ...fsMock, default: fsMock }));
+
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+            const { resolveCardbacksDir } = await import("./imageRouter.js");
+
+            const resolved = resolveCardbacksDir();
+
+            expect(resolved).toContain("cardbacks");
+            expect(fsMock.readdirSync).toHaveBeenCalledTimes(3);
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining("[Cardbacks] Error reading directory"),
+                expect.any(Error)
+            );
+
+            warnSpy.mockRestore();
+            logSpy.mockRestore();
+        });
     });
 
 });

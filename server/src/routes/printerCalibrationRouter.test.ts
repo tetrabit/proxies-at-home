@@ -258,6 +258,19 @@ describe("printerCalibrationRouter", () => {
     expect(response.body.error).toContain("Invalid number");
   });
 
+  it("returns 400 when calculate numeric fields are missing", async () => {
+    const response = await request(app)
+      .post("/api/printer-calibration/calculate")
+      .send({
+        front_x_measured_mm: 111.14,
+        front_y_measured_mm: 136.84,
+        back_x_measured_mm: 110.5,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("Invalid number for back_y_measured_mm");
+  });
+
   it("returns 400 when apply is missing required fields", async () => {
     const response = await request(app)
       .post("/api/printer-calibration/apply")
@@ -479,6 +492,34 @@ exit 1
     const failed = await request(failingApp).get("/api/printer-calibration/sheet");
     expect(failed.status).toBe(501);
     expect(failed.body.error).toBe("sheet unavailable");
+  });
+
+  it("logs sheet download callback failures", async () => {
+    const downloadSpy = vi.spyOn(express.response, "download").mockImplementation(function (
+      this: express.Response,
+      _path: string,
+      _filename: string,
+      callback?: (err?: Error) => void
+    ) {
+      callback?.(new Error("sheet download failed"));
+      this.status(200).end();
+      return this;
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const response = await request(app).get("/api/printer-calibration/sheet");
+
+      expect(response.status).toBe(200);
+      expect(downloadSpy).toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[printer-calibration] download error:",
+        expect.any(Error)
+      );
+    } finally {
+      downloadSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("maps profile route errors to 400, 404, 500, and 501 statuses", async () => {

@@ -85,6 +85,19 @@ describe('mpcAutofillRouter', () => {
     expect(mocks.cacheMpcSearch).toHaveBeenCalledWith('sol ring:fuzzy', 'CARD', [cardPayload('id1', 'Sol Ring')]);
   });
 
+  it('defaults missing MPC card tag arrays during single search transforms', async () => {
+    const taglessCard = cardPayload('id-tagless', 'Tagless');
+    delete (taglessCard as Partial<typeof taglessCard>).tags;
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { tagless: { CARD: ['id-tagless'] } } } })
+      .mockResolvedValueOnce({ data: { results: { 'id-tagless': taglessCard } } });
+
+    const response = await request(app).post('/api/mpc/search').send({ query: 'Tagless' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.cards[0]).toMatchObject({ identifier: 'id-tagless', tags: [] });
+  });
+
   it('searches by original key, fallback key, and empty results', async () => {
     mocks.axiosPost
       .mockResolvedValueOnce({ data: { results: { 'Sol Ring': { CARD: ['id2'] } } } })
@@ -110,6 +123,18 @@ describe('mpcAutofillRouter', () => {
     const plainFailure = await request(app).post('/api/mpc/search').send({ query: 'Sol Ring' });
     expect(plainFailure.status).toBe(502);
     expect(plainFailure.body).toEqual({ error: 'Failed to search MPC Autofill', details: 'plain failure' });
+
+    mocks.isAxiosError.mockReturnValueOnce(true);
+    mocks.axiosPost.mockRejectedValueOnce({ message: 'missing response', config: { url: '/u' } });
+    const unknownStatusFailure = await request(app).post('/api/mpc/search').send({ query: 'Sol Ring' });
+    expect(unknownStatusFailure.status).toBe(502);
+    expect(unknownStatusFailure.body).toEqual({ error: 'Failed to search MPC Autofill', details: 'unknown: missing response' });
+
+    mocks.isAxiosError.mockReturnValueOnce(false);
+    mocks.axiosPost.mockRejectedValueOnce('plain string failure');
+    const stringFailure = await request(app).post('/api/mpc/search').send({ query: 'Sol Ring' });
+    expect(stringFailure.status).toBe(502);
+    expect(stringFailure.body).toEqual({ error: 'Failed to search MPC Autofill', details: 'plain string failure' });
   });
 
   it('rejects invalid batch queries', async () => {
@@ -153,6 +178,35 @@ describe('mpcAutofillRouter', () => {
     const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Cached', 'Missing'] });
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ results: { Cached: [cardPayload('cached-id')] } });
+  });
+
+  it('handles missing batch search result maps and uncached IDs without card payloads', async () => {
+    mocks.axiosPost.mockResolvedValueOnce({ data: {} });
+    const emptyResults = await request(app).post('/api/mpc/batch-search').send({ queries: ['Missing'] });
+    expect(emptyResults.status).toBe(200);
+    expect(emptyResults.body).toEqual({ results: {} });
+
+    const taglessCard = cardPayload('batch-tagless');
+    delete (taglessCard as Partial<typeof taglessCard>).tags;
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { hit: { CARD: ['batch-tagless', 'missing-card'] } } } })
+      .mockResolvedValueOnce({ data: { results: { 'batch-tagless': taglessCard } } });
+
+    const partialResults = await request(app).post('/api/mpc/batch-search').send({ queries: ['Hit'] });
+    expect(partialResults.status).toBe(200);
+    expect(partialResults.body.results.Hit).toEqual([
+      { ...cardPayload('batch-tagless'), tags: [] },
+    ]);
+    expect(mocks.cacheMpcSearch).toHaveBeenCalledWith('hit:fuzzy', 'CARD', [
+      { ...cardPayload('batch-tagless'), tags: [] },
+    ]);
+
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { empty: { CARD: ['missing-card'] } } } })
+      .mockResolvedValueOnce({ data: { results: {} } });
+    const noCards = await request(app).post('/api/mpc/batch-search').send({ queries: ['Empty'] });
+    expect(noCards.status).toBe(200);
+    expect(noCards.body.results.Empty).toEqual([]);
   });
 
   it('surfaces axios and non-axios batch failures', async () => {
@@ -199,6 +253,18 @@ describe('mpcAutofillRouter', () => {
     expect(response.status).toBe(502);
     expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: '[object Object]' });
     expect(mocks.axiosPost).toHaveBeenCalledTimes(5);
+  });
+
+  it('wraps non-Error card fetch retry failures before surfacing them', async () => {
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { miss: { CARD: ['id1'] } } } })
+      .mockRejectedValueOnce('plain retry failure');
+    mocks.isAxiosError.mockReturnValueOnce(false);
+
+    const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Miss'] });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: 'plain retry failure' });
   });
 
 });

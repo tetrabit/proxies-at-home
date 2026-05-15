@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import express from 'express';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MpcPreferenceFixture } from '../../../shared/types.js';
 import { createPreferencesRouter, resolvePreferencesFilePath, validatePreferenceFixture } from './preferencesRouter.js';
 
@@ -178,6 +178,26 @@ describe('preferencesRouter', () => {
         const saveResponse = await request(app).put('/api/preferences').send(validFixture);
         expect(saveResponse.status).toBe(500);
         expect(saveResponse.body.error).toBe('Failed to save preferences');
+    });
+
+    it('removes the temporary preference file when atomic rename fails', async () => {
+        const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('rename failed'));
+        const unlinkSpy = vi.spyOn(fs, 'unlink');
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        try {
+            const response = await request(app)
+                .put('/api/preferences')
+                .send(validFixture);
+
+            expect(response.status).toBe(500);
+            expect(response.body.error).toBe('Failed to save preferences');
+            expect(unlinkSpy).toHaveBeenCalledWith(expect.stringContaining('mpc-preferences.user.json.'));
+        } finally {
+            renameSpy.mockRestore();
+            unlinkSpy.mockRestore();
+            consoleErrorSpy.mockRestore();
+        }
     });
 
 });
