@@ -305,7 +305,6 @@ describe("getWithRetry logic", () => {
     });
 
     it("serves a proxy request after an in-progress write finishes", async () => {
-        vi.useFakeTimers();
         const url = "http://example.com/in-progress.jpg";
         const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
         __imageRouterTestInternals.writeInProgress.add(localPath);
@@ -322,13 +321,12 @@ describe("getWithRetry logic", () => {
         });
 
         const responsePromise = request(app).get("/images/proxy").query({ url });
-        await vi.advanceTimersByTimeAsync(100);
+        await new Promise(resolve => setTimeout(resolve, 150));
         const res = await responsePromise;
 
         expect(res.status).toBe(200);
         expect(sendFileSpy).toHaveBeenCalledWith(localPath);
         sendFileSpy.mockRestore();
-        vi.useRealTimers();
     });
 
 
