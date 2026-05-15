@@ -193,4 +193,139 @@ describe("useCardEnrichment", () => {
     expect(mockTransaction).toHaveBeenCalled();
     expect(result.current.enrichmentProgress).toBeNull();
   });
+
+  it("skips cards that are already processed or linked to a front face", async () => {
+    mockCardsToArray.mockResolvedValue([
+      {
+        uuid: "card-processed",
+        name: "Processed Card",
+        set: "SET",
+        number: "1",
+        order: 1,
+        needsEnrichment: 1,
+        linkedFrontId: "front-1",
+        linkedBackId: null,
+        imageId: null,
+        isUserUpload: false,
+        enrichmentRetryCount: 0,
+      },
+      {
+        uuid: "card-cardback",
+        name: "Cardback",
+        set: "SET",
+        number: "2",
+        order: 2,
+        needsEnrichment: 1,
+        linkedFrontId: null,
+        linkedBackId: null,
+        imageId: "cardback_blank",
+        isUserUpload: false,
+        enrichmentRetryCount: 0,
+      },
+    ]);
+    mockCardsCount.mockResolvedValue(2);
+    mockIsCardbackId.mockReturnValue(true);
+
+    const { result } = renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockShowMetadataToast).not.toHaveBeenCalled();
+    expect(result.current.enrichmentProgress).toBeNull();
+  });
+
+  it("reuses cached metadata without fetching", async () => {
+    const card = {
+      uuid: "card-cached",
+      name: "Cached Card",
+      set: "SET",
+      number: "3",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+
+    mockCardsToArray.mockResolvedValue([card]);
+    mockCardsCount.mockResolvedValue(1);
+    mockMetadataWhere.mockReturnValue({
+      equals: () => ({
+        and: () => ({
+          first: vi.fn().mockResolvedValue({
+            id: "cache-1",
+            cacheVersion: 1,
+            data: {
+              name: "Cached Card",
+              set: "SET",
+              number: "3",
+              colors: ["G"],
+              cmc: 1,
+              rarity: "common",
+              lang: "en",
+              type_line: "Creature — Test",
+            },
+          }),
+        }),
+      }),
+    });
+
+    const { result } = renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMetadataUpdate).toHaveBeenCalledWith("cache-1", { cachedAt: expect.any(Number) });
+    expect(mockCardsBulkUpdate).toHaveBeenCalled();
+    expect(mockHideMetadataToast).toHaveBeenCalled();
+    expect(mockShowMetadataToast).toHaveBeenCalled();
+    expect(result.current.enrichmentProgress).toBeNull();
+  });
+
+  it("marks a failed batch for retry when the server rejects the request", async () => {
+    const card = {
+      uuid: "card-failed",
+      name: "Broken Card",
+      set: "SET",
+      number: "4",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+
+    mockCardsToArray.mockResolvedValue([card]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: vi.fn(),
+    } as Response);
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(mockCardsBulkUpdate).toHaveBeenCalledWith([
+      expect.objectContaining({
+        key: "card-failed",
+        changes: expect.objectContaining({
+          needsEnrichment: false,
+          enrichmentRetryCount: 1,
+        }),
+      }),
+    ]);
+  });
 });
