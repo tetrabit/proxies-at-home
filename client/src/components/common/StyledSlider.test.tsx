@@ -42,6 +42,12 @@ describe('StyledSlider', () => {
             const input = screen.getByRole('textbox') as HTMLInputElement;
             expect(input.value).toBe('50 px');
         });
+
+        it('should initialize decimal values when step is less than 1', () => {
+            render(<StyledSlider {...defaultProps} value={0.5} step={0.1} defaultValue={0.5} />);
+            const input = screen.getByRole('textbox') as HTMLInputElement;
+            expect(input.value).toBe('0.50');
+        });
     });
 
     describe('interaction', () => {
@@ -112,6 +118,29 @@ describe('StyledSlider', () => {
             // Should reset to original value
             expect(input.value).toBe('50');
             expect(defaultProps.onChange).not.toHaveBeenCalled();
+        });
+
+        it('should ignore unrelated keys while editing', () => {
+            render(<StyledSlider {...defaultProps} value={50} />);
+            const input = screen.getByRole('textbox') as HTMLInputElement;
+
+            fireEvent.focus(input);
+            fireEvent.change(input, { target: { value: '60' } });
+            fireEvent.keyDown(input, { key: 'Tab' });
+
+            expect(input.value).toBe('60');
+            expect(defaultProps.onChange).not.toHaveBeenCalled();
+        });
+
+        it('should not resync the text input while editing when the value changes externally', () => {
+            const { rerender } = render(<StyledSlider {...defaultProps} value={50} />);
+            const input = screen.getByRole('textbox') as HTMLInputElement;
+
+            fireEvent.focus(input);
+            fireEvent.change(input, { target: { value: '60' } });
+            rerender(<StyledSlider {...defaultProps} value={75} />);
+
+            expect(input.value).toBe('60');
         });
 
         it('should handle display modifiers (px, %)', () => {
