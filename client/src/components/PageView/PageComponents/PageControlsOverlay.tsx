@@ -10,6 +10,8 @@ import { CheckSquare, Trash2 } from "lucide-react";
 import { undoableDeleteCardsBatch } from "@/helpers/undoableActions";
 import { useSelectionStore } from "@/store/selection";
 
+const PAGE_CONTROL_GAP_PX = 8;
+
 export interface PageControlLayout {
     pageIndex: number;
     screenX: number;
@@ -56,9 +58,8 @@ const PageControl = memo(function PageControl({
             data-testid={`page-controls-${pageIndex}`}
             className="absolute z-30 flex overflow-hidden rounded-lg border border-gray-300 bg-white/95 text-gray-700 shadow-lg backdrop-blur-sm dark:border-gray-600 dark:bg-gray-800/95 dark:text-gray-200"
             style={{
-                left: screenX + width - 8,
+                left: screenX + width + PAGE_CONTROL_GAP_PX,
                 top: screenY + 8,
-                transform: "translateX(-100%)",
                 pointerEvents: "auto",
             }}
         >
@@ -126,13 +127,14 @@ export const PageControlsOverlay = memo(function PageControlsOverlay({
 
     return (
         <div
-            className="absolute left-0 top-0 overflow-hidden pointer-events-none"
+            data-testid="page-controls-overlay"
+            className="absolute left-0 top-0 overflow-visible pointer-events-none"
             style={{
                 width: containerWidth,
                 height: containerHeight,
             }}
         >
-            <div ref={innerRef}>
+            <div ref={innerRef} data-testid="page-controls-scroll-layer">
                 {pageLayouts.map((layout) => (
                     <PageControl key={layout.pageIndex} {...layout} mobile={mobile} />
                 ))}

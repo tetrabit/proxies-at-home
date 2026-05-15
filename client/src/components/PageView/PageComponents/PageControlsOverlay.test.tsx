@@ -66,20 +66,20 @@ describe("PageControlsOverlay", () => {
         actionMocks.undoableDeleteCardsBatch.mockResolvedValue(undefined);
     });
 
-    it("renders page controls anchored to every page and syncs scroll", () => {
-        const { container, scrollContainer } = renderOverlay();
+    it("renders page controls to the right of every page and syncs scroll", () => {
+        const { scrollContainer } = renderOverlay();
 
         expect(screen.getByTestId("page-controls-0")).toHaveStyle({
-            left: "292px",
+            left: "308px",
             top: "28px",
-            transform: "translateX(-100%)",
         });
+        expect(screen.getByTestId("page-controls-overlay")).toHaveClass("overflow-visible");
         expect(screen.getByText("Page 1")).toBeInTheDocument();
         expect(screen.getByText("Page 2")).toBeInTheDocument();
 
         scrollContainer.scrollTop = 75;
         fireEvent.scroll(scrollContainer);
-        const inner = container.querySelector(".overflow-hidden > div") as HTMLElement;
+        const inner = screen.getByTestId("page-controls-scroll-layer");
         expect(inner.style.transform).toBe("translateY(-75px)");
     });
 
@@ -120,10 +120,10 @@ describe("PageControlsOverlay", () => {
     });
 
     it("renders without a scroll container ref", () => {
-        const { container } = renderOverlay({ scrollContainerRef: { current: null } });
+        renderOverlay({ scrollContainerRef: { current: null } });
 
         expect(screen.getByTestId("page-controls-0")).toBeInTheDocument();
-        const inner = container.querySelector(".overflow-hidden > div") as HTMLElement;
+        const inner = screen.getByTestId("page-controls-scroll-layer");
         expect(inner.style.transform).toBe("");
     });
 });
