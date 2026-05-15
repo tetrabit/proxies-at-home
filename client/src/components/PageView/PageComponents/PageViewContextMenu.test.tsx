@@ -229,6 +229,16 @@ describe('PageViewContextMenu', () => {
     expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false });
   });
 
+
+  it('closes single-card editor action without opening when the selected card lacks an image id', async () => {
+    const setContextMenu = renderMenu({ cards: [{ uuid: 'front-1', name: 'No image id' }] as never[] });
+
+    fireEvent.click(screen.getByText('Adjust Art'));
+
+    await waitFor(() => expect(setContextMenu).toHaveBeenCalledWith({ ...visibleContextMenu, visible: false }));
+    expect(mocks.openCardEditor).not.toHaveBeenCalled();
+  });
+
   it('opens the editor with null image data when database images are unavailable', async () => {
     mocks.dbImagesGet.mockResolvedValue(null);
     const cardWithMissingImage = { uuid: 'front-1', name: 'No image', imageId: 'missing-image' };
