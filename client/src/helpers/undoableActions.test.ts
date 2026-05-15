@@ -49,6 +49,9 @@ vi.mock("@/db", () => ({
       add: vi.fn(),
       update: vi.fn(),
       bulkGet: vi.fn().mockResolvedValue([]),
+      bulkDelete: vi.fn(),
+      bulkUpdate: vi.fn(),
+      bulkAdd: vi.fn(),
       filter: vi.fn(() => ({
         keys: vi.fn().mockResolvedValue([]),
       })),
