@@ -423,6 +423,19 @@ exit 1
         __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
       ).rejects.toThrow("code=7");
 
+      const stdoutFailingBin = path.join(scriptsDirectory, "printer-calibration-bin-stdout");
+      await fs.writeFile(stdoutFailingBin, "#!/bin/sh\necho bad-bin-stdout\nexit 6\n", { mode: 0o755 });
+      await fs.chmod(stdoutFailingBin, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: stdoutFailingBin,
+        PRINTER_CALIBRATION_REPO: "",
+        PRINTER_CALIBRATION_PYTHON: "",
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).rejects.toThrow("bad-bin-stdout");
+
       const repoDir = path.join(tempDirectory, "printer-calibration");
       await fs.mkdir(path.join(repoDir, "src", "printer_calibration"), { recursive: true });
       const pythonShim = path.join(scriptsDirectory, "python-shim");
@@ -797,7 +810,7 @@ exit 1
   it("rejects malformed profile output", () => {
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: nope\nfront_y_mm: 1\nback_x_mm: 2\nback_y_mm: 3")).toThrow("Invalid numeric value");
     expect(() => parsePrinterCalibrationProfileOutput("bad", "front_x_mm: 1")).toThrow("Failed to parse");
-    expect(() => parsePrinterCalibrationProfileOutput("bad", "paper_size: letter\nignored: value\nfront_x_mm: 1\nfront_y_mm: 2\nback_x_mm: 3\nback_y_mm: 4")).not.toThrow();
+    expect(() => parsePrinterCalibrationProfileOutput("bad", "paper_size: letter\nignored line\nignored: value\nfront_x_mm: 1\nfront_y_mm: 2\nback_x_mm: 3\nback_y_mm: 4")).not.toThrow();
   });
 
 

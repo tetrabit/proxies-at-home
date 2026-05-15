@@ -461,9 +461,8 @@ router.get("/prints", async (req: Request, res: Response) => {
     } else if (setCode && collectorNumber) {
         params.set = setCode;
         params.number = collectorNumber;
-    /* v8 ignore next -- the initial guard guarantees name when oracle_id and set+number are absent. @preserve */
-    } else if (name) {
-        params.name = name;
+    } else {
+        params.name = name as string;
     }
     const queryHash = getCacheKey("prints", params);
     const cached = getFromCache("prints", queryHash);

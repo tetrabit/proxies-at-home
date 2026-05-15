@@ -639,7 +639,9 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
     }
   /* v8 ignore start -- imageFetchLimit only rejects for defensive limiter failures; candidate fetch failures are handled inside the limiter callback. @preserve */
   } catch (err: unknown) {
+    /* v8 ignore next -- defensive limiter rejection path is not reachable through candidate fetch handling. @preserve */
     const msg = err instanceof Error ? err.message : String(err);
+    /* v8 ignore next -- defensive limiter rejection path is not reachable through candidate fetch handling. @preserve */
     console.error("Google Drive fetch error:", { message: msg, id, lastError });
   }
   /* v8 ignore stop */
