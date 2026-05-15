@@ -15,7 +15,7 @@ const MOCK_CARDS: CardOption[] = [
 
 describe('DecklistHelper', () => {
   describe('groupCardsForDecklist', () => {
-    it('should group adjacent cards by name, set, and number, and count them', () => {
+    it('should group adjacent cards by name, set, number, and MPC identifier, and count them', () => {
       const grouped = groupCardsForDecklist(MOCK_CARDS);
       // Cards 1-2 are adjacent Sol Rings = 1 group (count 2)
       // Card 3 = Brainstorm (count 1)
@@ -45,6 +45,19 @@ describe('DecklistHelper', () => {
       expect(secondSolRing.name).toBe('Sol Ring');
       expect(secondSolRing.count).toBe(1);
       expect(secondSolRing.set).toBe('cmm'); // Original case preserved
+    });
+
+    it('keeps adjacent MPC-image cards separate from non-MPC entries', () => {
+      const grouped = groupCardsForDecklist([
+        { uuid: '1', name: 'MPC Card', order: 1, isUserUpload: false, imageId: '/api/cards/images/mpc?id=drive1234567890123' },
+        { uuid: '2', name: 'MPC Card', order: 2, isUserUpload: false, imageId: '/api/cards/images/mpc?id=drive1234567890123' },
+        { uuid: '3', name: 'MPC Card', order: 3, isUserUpload: false },
+      ]);
+
+      expect(grouped).toEqual([
+        expect.objectContaining({ name: 'MPC Card', count: 2, mpcIdentifier: 'drive1234567890123' }),
+        expect.objectContaining({ name: 'MPC Card', count: 1, mpcIdentifier: undefined }),
+      ]);
     });
 
     it('should ignore cards named "Card Back"', () => {
@@ -97,6 +110,7 @@ describe('DecklistHelper', () => {
 
     it('should format in "scryfallish" style', () => {
       expect(formatDecklistLine(MOCK_ENTRY, 'scryfallish')).toBe('2x "Test Card" set:TST number=123');
+      expect(formatDecklistLine({ ...MOCK_ENTRY, set: undefined, number: undefined }, 'scryfallish')).toBe('2x "Test Card"');
     });
 
     it('should format in "withMpc" style with MPC identifier', () => {
