@@ -1,5 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fetchCardWithPrints, searchCards, getImages, autocomplete, getCardByName } from './scryfallApi';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+    fetchCardWithPrints,
+    searchCards,
+    getImages,
+    autocomplete,
+    getCardByName,
+    fetchCardsMetadataBatch,
+    mapResponseToCards,
+} from './scryfallApi';
 import axios from 'axios';
 import { API_BASE } from '@/constants';
 
@@ -10,6 +18,14 @@ const { mockGet, mockPost } = vi.hoisted(() => {
         mockPost: vi.fn(),
     };
 });
+
+const microserviceState = vi.hoisted(() => ({
+    client: null as null | {
+        searchCards: ReturnType<typeof vi.fn>;
+        autocomplete: ReturnType<typeof vi.fn>;
+        getCardByName: ReturnType<typeof vi.fn>;
+    },
+}));
 
 vi.mock('axios', () => {
     return {
@@ -25,12 +41,23 @@ vi.mock('axios', () => {
     };
 });
 
+vi.mock('@/services/scryfallMicroservice', () => ({
+    getScryfallClient: vi.fn(async () => microserviceState.client),
+}));
+
 describe('scryfallApi', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        microserviceState.client = null;
+        (window as typeof window & { electronAPI?: unknown }).electronAPI = undefined;
+        global.fetch = vi.fn();
         // Reset the mock implementations
         mockGet.mockResolvedValue({ data: { data: [] } });
         (axios.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    });
+
+    afterEach(() => {
+        delete (window as typeof window & { electronAPI?: unknown }).electronAPI;
     });
 
     describe('getImages', () => {
@@ -60,7 +87,89 @@ describe('scryfallApi', () => {
         });
     });
 
+    describe('mapResponseToCards', () => {
+        it('should return an empty array when the response has no data', () => {
+            expect(mapResponseToCards({})).toEqual([]);
+        });
+    });
+
     describe('searchCards', () => {
+        it('should use the microservice when available', async () => {
+            const searchCardsMock = vi.fn().mockResolvedValue({
+                success: true,
+                data: {
+                    data: [
+                        {
+                            id: 'micro-1',
+                            name: 'Micro Ring',
+                            set_code: 'mcr',
+                            collector_number: '7',
+                            raw_json: {
+                                id: 'micro-1',
+                                name: 'Micro Ring',
+                                set: 'mcr',
+                                collector_number: '7',
+                                lang: 'en',
+                                image_uris: { normal: 'http://example.com/micro-ring.jpg' },
+                            },
+                        },
+                    ],
+                },
+            });
+            microserviceState.client = {
+                searchCards: searchCardsMock,
+                autocomplete: vi.fn(),
+                getCardByName: vi.fn(),
+            };
+            (window as typeof window & { electronAPI?: { getMicroserviceUrl: () => string } }).electronAPI = {
+                getMicroserviceUrl: () => 'http://microservice.test',
+            };
+
+            const result = await searchCards('Micro Ring');
+
+            expect(searchCardsMock).toHaveBeenCalledWith({ q: 'Micro Ring', page_size: 100 }, { signal: undefined });
+            expect(result).toHaveLength(1);
+            expect(result[0]).toMatchObject({
+                name: 'Micro Ring',
+                set: 'mcr',
+                number: '7',
+                imageUrls: ['http://example.com/micro-ring.jpg'],
+            });
+        });
+
+        it('should fall back to server search when the microservice fails', async () => {
+            const searchCardsMock = vi.fn().mockRejectedValue(new Error('microservice down'));
+            microserviceState.client = {
+                searchCards: searchCardsMock,
+                autocomplete: vi.fn(),
+                getCardByName: vi.fn(),
+            };
+            (window as typeof window & { electronAPI?: { getMicroserviceUrl: () => string } }).electronAPI = {
+                getMicroserviceUrl: () => 'http://microservice.test',
+            };
+            mockGet.mockResolvedValue({
+                data: {
+                    data: [
+                        {
+                            name: 'Fallback Ring',
+                            set: 'fbk',
+                            collector_number: '1',
+                            image_uris: { normal: 'http://example.com/fallback-ring.jpg' },
+                            lang: 'en',
+                        },
+                    ],
+                },
+            });
+
+            const result = await searchCards('Fallback Ring');
+
+            expect(searchCardsMock).toHaveBeenCalled();
+            expect(mockGet).toHaveBeenCalledWith('/search', expect.objectContaining({
+                params: { q: 'Fallback Ring' },
+            }));
+            expect(result[0]).toMatchObject({ name: 'Fallback Ring' });
+        });
+
         it('should return mapped cards on success', async () => {
             const mockScryfallResponse = {
                 data: {
@@ -125,6 +234,21 @@ describe('scryfallApi', () => {
     });
 
     describe('autocomplete', () => {
+        it('should use the microservice when available', async () => {
+            const autocompleteMock = vi.fn().mockResolvedValue({ data: ['Micro Ring', 'Micro Bolt'] });
+            microserviceState.client = {
+                searchCards: vi.fn(),
+                autocomplete: autocompleteMock,
+                getCardByName: vi.fn(),
+            };
+            (window as typeof window & { electronAPI?: { getMicroserviceUrl: () => string } }).electronAPI = {
+                getMicroserviceUrl: () => 'http://microservice.test',
+            };
+
+            await expect(autocomplete('mic')).resolves.toEqual(['Micro Ring', 'Micro Bolt']);
+            expect(autocompleteMock).toHaveBeenCalledWith({ q: 'mic' }, { signal: undefined });
+        });
+
         it('should return autocomplete suggestions', async () => {
             mockGet.mockResolvedValue({ data: { data: ['Sol Ring', 'Solo Ring'] } });
             const result = await autocomplete('sol');
@@ -133,6 +257,45 @@ describe('scryfallApi', () => {
     });
 
     describe('getCardByName', () => {
+        it('should use the microservice when available', async () => {
+            const getCardByNameMock = vi.fn().mockResolvedValue({
+                success: true,
+                data: {
+                    id: 'micro-card',
+                    name: 'Micro Bolt',
+                    set_code: 'mbt',
+                    collector_number: '12',
+                    image_uris: { png: 'http://example.com/micro-bolt.png' },
+                    raw_json: {
+                        id: 'micro-card',
+                        name: 'Micro Bolt',
+                        set: 'mbt',
+                        collector_number: '12',
+                        lang: 'en',
+                        image_uris: { png: 'http://example.com/micro-bolt.png' },
+                    },
+                },
+            });
+            microserviceState.client = {
+                searchCards: vi.fn(),
+                autocomplete: vi.fn(),
+                getCardByName: getCardByNameMock,
+            };
+            (window as typeof window & { electronAPI?: { getMicroserviceUrl: () => string } }).electronAPI = {
+                getMicroserviceUrl: () => 'http://microservice.test',
+            };
+
+            const result = await getCardByName('Micro Bolt');
+
+            expect(getCardByNameMock).toHaveBeenCalledWith({ exact: 'Micro Bolt' }, { signal: undefined });
+            expect(result).toMatchObject({
+                name: 'Micro Bolt',
+                set: 'mbt',
+                number: '12',
+                imageUrls: ['http://example.com/micro-bolt.png'],
+            });
+        });
+
         it('should return exact card by name', async () => {
             mockGet.mockResolvedValue({
                 data: {
@@ -181,6 +344,69 @@ describe('scryfallApi', () => {
             expect(result).not.toBeNull();
             expect(result?.name).toBe('Sol Ring');
             expect(global.fetch).not.toHaveBeenCalled();
+        });
+
+        it('should preserve original images when the print stream has no body', async () => {
+            mockGet.mockResolvedValue({
+                data: {
+                    data: [
+                        {
+                            name: 'Sol Ring',
+                            set: 'cmd',
+                            collector_number: '1',
+                            image_uris: { normal: 'http://example.com/sol-ring.jpg' },
+                        },
+                    ],
+                },
+            });
+            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+                ok: true,
+                body: null,
+            });
+
+            const result = await fetchCardWithPrints('Sol Ring');
+
+            expect(result?.imageUrls).toEqual(['http://example.com/sol-ring.jpg']);
+        });
+
+        it('should collect fallback print data from imageUrls and ignore malformed lines', async () => {
+            mockGet.mockResolvedValue({
+                data: {
+                    data: [
+                        {
+                            name: 'Sol Ring',
+                            set: 'cmd',
+                            collector_number: '1',
+                            image_uris: { normal: 'http://example.com/sol-ring.jpg' },
+                        },
+                    ],
+                },
+            });
+            const streamData = [
+                'data: not-json\n',
+                'data: {"imageUrls":["http://example.com/fallback-print.jpg"],"set":"cmd","number":"1"}\n\n',
+            ].join('');
+            const mockRead = vi.fn()
+                .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode(streamData) })
+                .mockResolvedValueOnce({ done: true });
+            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+                ok: true,
+                body: {
+                    getReader: () => ({
+                        read: mockRead,
+                        releaseLock: vi.fn(),
+                    }),
+                },
+            });
+
+            const result = await fetchCardWithPrints('Sol Ring');
+
+            expect(result?.imageUrls).toContain('http://example.com/fallback-print.jpg');
+            expect(result?.prints?.[0]).toMatchObject({
+                imageUrl: 'http://example.com/fallback-print.jpg',
+                set: 'cmd',
+                number: '1',
+            });
         });
 
         it('should use exact search when exact is true', async () => {
@@ -309,5 +535,49 @@ describe('scryfallApi', () => {
             expect(result?.imageUrls).toEqual(['http://example.com/sol-ring.jpg']);
         });
     });
-});
 
+    describe('fetchCardsMetadataBatch', () => {
+        it('should return an empty map for an empty query list', async () => {
+            await expect(fetchCardsMetadataBatch([])).resolves.toEqual(new Map());
+        });
+
+        it('should collect results by query, set/number, and card name', async () => {
+            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+                ok: true,
+                json: vi.fn().mockResolvedValue({
+                    results: [
+                        {
+                            query: { name: 'Sol Ring', set: 'cmd', number: '1' },
+                            card: {
+                                name: 'Sol Ring',
+                                set: 'cmd',
+                                collector_number: '1',
+                                lang: 'en',
+                                image_uris: { normal: 'http://example.com/sol-ring.jpg' },
+                            },
+                        },
+                    ],
+                }),
+            });
+
+            const result = await fetchCardsMetadataBatch([{ name: 'Sol Ring', set: 'cmd', number: '1' }]);
+
+            expect(result.get('sol ring')).toMatchObject({ name: 'Sol Ring' });
+            expect(result.get('cmd|1')).toMatchObject({ name: 'Sol Ring' });
+        });
+
+        it('should return an empty map when the metadata response is not ok', async () => {
+            const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+                ok: false,
+                status: 500,
+            });
+
+            const result = await fetchCardsMetadataBatch([{ name: 'Sol Ring' }]);
+
+            expect(result.size).toBe(0);
+            expect(consoleSpy).toHaveBeenCalled();
+            consoleSpy.mockRestore();
+        });
+    });
+});
