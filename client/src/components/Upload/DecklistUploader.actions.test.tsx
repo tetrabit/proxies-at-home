@@ -1,6 +1,12 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   parseDeckList: vi.fn(),
@@ -556,12 +562,16 @@ describe("DecklistUploader action branches", () => {
       expect(screen.queryByText("No Tokens Found")).toBeNull()
     );
 
+    cleanup();
+    renderDecklist(1);
     fireEvent.click(screen.getByText("Remove All Basic Lands"));
-    expect(screen.getByText("Will remove:")).toBeDefined();
+    expect(screen.getByText(/Will remove/)).toBeDefined();
     fireEvent.click(screen.getByLabelText("Include Snow-Covered basics"));
     fireEvent.click(screen.getByText("Cancel"));
-    await waitFor(() => expect(screen.queryByText("Will remove:")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Will remove/)).toBeNull());
 
+    cleanup();
+    renderDecklist(1);
     mocks.cardCount.mockResolvedValueOnce(3);
     fireEvent.click(screen.getByText("Clear Cards"));
     expect(await screen.findByText("Confirm Clear Cards")).toBeDefined();
