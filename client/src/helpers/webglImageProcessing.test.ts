@@ -460,6 +460,26 @@ describe("webglImageProcessing test internals", () => {
     expect(canvas.height).toBe(8);
   });
 
+  it("renders a direct bleed canvas when result 2d context is unavailable", async () => {
+    class NoResult2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (kind === "2d") return null;
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoResult2dCanvas);
+
+    const canvas = await renderBleedCanvasDirect(
+      { width: 2, height: 2 } as ImageBitmap,
+      6,
+      8,
+      {}
+    );
+
+    expect(canvas.width).toBe(6);
+    expect(canvas.height).toBe(8);
+  });
+
   it("renders a direct bleed canvas through the mocked WebGL path", async () => {
     const canvas = await renderBleedCanvasDirect(
       { width: 2, height: 2 } as ImageBitmap,
