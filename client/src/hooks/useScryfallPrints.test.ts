@@ -48,6 +48,47 @@ describe("useScryfallPrints", () => {
     expect(result.current.prints[0]?.oracle_id).toBe("oracle-123");
   });
 
+  it("starts from empty initialPrints without marking searched", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: "Initial Empty",
+        initialPrints: [],
+      })
+    );
+
+    expect(result.current.hasSearched).toBe(false);
+    expect(result.current.prints).toEqual([]);
+  });
+
+  it("falls back to an empty trimmed name when the name option is missing", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        total: 1,
+        prints: [{ imageUrl: "https://example.com/undefined-name.png" }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useScryfallPrints({
+        name: undefined as unknown as string,
+        oracleId: "oracle-undefined-name",
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(result.current.hasSearched).toBe(true);
+    });
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("oracle_id=oracle-undefined-name");
+    expect(url).not.toContain("name=");
+  });
+
   it("performs secondary oracle lookup after set+number fetch", async () => {
     const fetchMock = vi
       .fn()
