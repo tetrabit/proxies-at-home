@@ -8,6 +8,7 @@ describe('useLoadingStore', () => {
             loadingMessage: null,
             progress: 0,
             onCancel: null,
+            imageVersion: 0,
         });
     });
 
