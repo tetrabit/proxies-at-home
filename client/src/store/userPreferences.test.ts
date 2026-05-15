@@ -83,6 +83,31 @@ describe("useUserPreferencesStore", () => {
             expect(loaded?.settingsPanelState?.order.at(-1)).toBe("application");
         });
 
+        it("should preserve valid ids while repairing mixed legacy order", async () => {
+            const mixedPrefs = {
+                id: "default",
+                settings: {},
+                favoriteCardbacks: [],
+                favoriteMpcSources: [],
+                favoriteMpcTags: [],
+                favoriteMpcDpi: null,
+                favoriteMpcSort: null,
+                settingsPanelState: {
+                    order: ["layout", "Application", "Export"],
+                    collapsed: {},
+                },
+            };
+            (db.userPreferences.get as Mock).mockResolvedValue(mixedPrefs);
+
+            await useUserPreferencesStore.getState().load();
+
+            const loaded = useUserPreferencesStore.getState().preferences;
+            expect(loaded?.settingsPanelState?.order?.[0]).toBe("projects");
+            expect(loaded?.settingsPanelState?.order).toContain("layout");
+            expect(loaded?.settingsPanelState?.order).toContain("export");
+            expect(loaded?.settingsPanelState?.order?.at(-1)).toBe("application");
+        });
+
         it("should preserve fully populated valid preferences without repairing them", async () => {
             const validPrefs = {
                 id: "default",
@@ -223,6 +248,14 @@ describe("useUserPreferencesStore", () => {
 
             const prefs = useUserPreferencesStore.getState().preferences;
             expect(prefs?.settingsPanelWidth).toBe(500);
+            expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
+        });
+
+        it("should persist favorite MPC dpi", async () => {
+            await useUserPreferencesStore.getState().setFavoriteMpcDpi(300);
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.favoriteMpcDpi).toBe(300);
             expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
         });
 
