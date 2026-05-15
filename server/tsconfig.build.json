@@ -17,7 +17,9 @@
     ],
     "exclude": [
         "src/**/*.test.ts",
+        "src/repro_*.ts",
         "../shared/**/*.test.ts",
-        "src/repro_*.ts"
+        "../shared/vitest.config.ts",
+        "../shared/scryfall-client/**/*"
     ]
 }

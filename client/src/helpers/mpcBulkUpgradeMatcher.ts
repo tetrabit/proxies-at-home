@@ -4,14 +4,6 @@
  * Pure decision logic for candidate bucketing and selection. The optional
  * SSIM tie-breaker receives an injectable comparison function so callers
  * can swap in the real image-loading path or a test stub.
- *
- * Bucket priority (first non-empty wins):
- *   1. Set + Collector Number
- *   2. Set-only
- *   3. All exact-name matches
- *
- * Within the winning bucket: single candidate → return it; multiple →
- * SSIM tie-break if available & decisive, else highest-DPI fallback.
  */
 
 import type { MpcAutofillCard } from "./mpcAutofillApi";
@@ -19,6 +11,7 @@ import { loadImage } from "./imageProcessing";
 import { toArtCrop, toProxied } from "./imageHelper";
 import { parseMpcCardName, parseMpcSetCollector } from "./mpcUtils";
 import type { MpcCalibrationPreferenceProfile } from "./mpcCalibrationStorage";
+import { normalizeDfcName } from "../../../shared/cardNameUtils";
 
 export type MatchReason =
   | "set_collector_only"
@@ -36,6 +29,14 @@ export interface MatchResult {
   reason: MatchReason;
 }
 
+export interface EnsembleScoreBreakdown {
+  total: number;
+  metadata: number;
+  visual: number;
+  preference: number;
+  dpi: number;
+}
+
 export interface ScoredCandidate {
   card: MpcAutofillCard;
   score: number;
@@ -46,6 +47,7 @@ export interface RankedCandidate {
   reason: MatchReason;
   score?: number;
   bucket: "set_collector" | "set" | "name";
+  breakdown?: EnsembleScoreBreakdown;
 }
 
 export interface RankedRecommendations {
@@ -96,10 +98,10 @@ type CropSpec = {
 type ImageCache = Map<string, Promise<NormalizedImage | null>>;
 type EdgeCache = Map<string, Promise<Float32Array | null>>;
 
-function prioritizePreferredCandidate(
+export function prioritizePreferredCandidate(
   layer: RankedCandidate[],
   candidates: MpcAutofillCard[],
-  preferredIdentifier: string | undefined
+  preferredIdentifier?: string
 ): RankedCandidate[] {
   if (!preferredIdentifier) {
     return layer;
@@ -134,7 +136,7 @@ function prioritizePreferredCandidate(
   ];
 }
 
-function scoreCalibrationPreference(
+export function scoreCalibrationPreference(
   card: MpcAutofillCard,
   profile: MpcCalibrationPreferenceProfile
 ): number {
@@ -168,108 +170,7 @@ function scoreCalibrationPreference(
     score += 40;
   }
 
-  score += Math.min(card.dpi / 400, 5);
-
   return score;
-}
-
-function prioritizePreferenceProfile(
-  layer: RankedCandidate[],
-  candidates: MpcAutofillCard[],
-  preferenceProfile: MpcCalibrationPreferenceProfile | undefined
-): RankedCandidate[] {
-  if (!preferenceProfile) {
-    return layer;
-  }
-
-  const rankedByPreference = candidates
-    .map((candidate) => ({
-      candidate,
-      preferenceScore: scoreCalibrationPreference(candidate, preferenceProfile),
-    }))
-    .sort(
-      (left, right) =>
-        right.preferenceScore - left.preferenceScore ||
-        right.candidate.dpi - left.candidate.dpi ||
-        left.candidate.identifier.localeCompare(right.candidate.identifier)
-    );
-
-  const preferred = rankedByPreference[0];
-  if (!preferred || preferred.preferenceScore <= 0) {
-    return layer;
-  }
-
-  const existing = layer.find(
-    (candidate) => candidate.card.identifier === preferred.candidate.identifier
-  );
-  if (existing) {
-    return [
-      { ...existing, reason: "name_only", score: undefined },
-      ...layer.filter(
-        (candidate) =>
-          candidate.card.identifier !== preferred.candidate.identifier
-      ),
-    ];
-  }
-
-  return [
-    {
-      card: preferred.candidate,
-      reason: "name_only",
-      bucket: "name",
-    },
-    ...layer,
-  ];
-}
-
-function prioritizeUnseenPreferenceScores(
-  layer: RankedCandidate[],
-  candidates: MpcAutofillCard[],
-  unseenPreferenceScores: Record<string, number> | undefined
-): RankedCandidate[] {
-  if (!unseenPreferenceScores) {
-    return layer;
-  }
-
-  const ranked = candidates
-    .map((candidate) => ({
-      candidate,
-      score: unseenPreferenceScores[candidate.identifier],
-    }))
-    .filter((entry) => typeof entry.score === "number")
-    .sort(
-      (left, right) =>
-        (right.score ?? 0) - (left.score ?? 0) ||
-        right.candidate.dpi - left.candidate.dpi ||
-        left.candidate.identifier.localeCompare(right.candidate.identifier)
-    );
-
-  const preferred = ranked[0];
-  if (!preferred) {
-    return layer;
-  }
-
-  const existing = layer.find(
-    (candidate) => candidate.card.identifier === preferred.candidate.identifier
-  );
-  if (existing) {
-    return [
-      { ...existing, reason: "name_only", score: undefined },
-      ...layer.filter(
-        (candidate) =>
-          candidate.card.identifier !== preferred.candidate.identifier
-      ),
-    ];
-  }
-
-  return [
-    {
-      card: preferred.candidate,
-      reason: "name_only",
-      bucket: "name",
-    },
-    ...layer,
-  ];
 }
 
 const DEFAULT_NORMALIZED_SIZE = 192;
@@ -285,19 +186,11 @@ const ART_MATCH_CANDIDATE_CROP: CropSpec = {
   left: 0.08,
 };
 
-/** Minimum absolute score to accept an SSIM result. */
-const SSIM_MIN_SCORE = 0.92;
+/** Minimum absolute score to accept an SSIM result as an 'automatic' match. */
+const SSIM_MIN_SCORE = 0.8;
 
 /** Minimum lead over runner-up to declare a decisive SSIM winner. */
 const SSIM_MIN_MARGIN = 0.01;
-
-/**
- * Cap the number of candidates that get expensive SSIM scoring. Cards like
- * Sol Ring can have hundreds of MPC variants — scoring them all stalls the
- * upgrader. Top-N by DPI keeps the highest-quality scans, which is also the
- * pool any DPI fallback would prefer.
- */
-const MAX_SSIM_CANDIDATES = 30;
 
 function createCanvas(size: number): HTMLCanvasElement | OffscreenCanvas {
   if (typeof OffscreenCanvas !== "undefined") {
@@ -337,240 +230,29 @@ function decodeCropSpecFromUrl(url: string): {
     return { imageUrl };
   }
 
-  const values = fragment.split(",").map((part) => Number(part));
-  if (values.length !== 4 || values.some((value) => Number.isNaN(value))) {
+  const parts = fragment.split(",").map(Number);
+  if (parts.length !== 4 || parts.some(isNaN)) {
     return { imageUrl };
   }
 
-  const [top, right, bottom, left] = values;
   return {
     imageUrl,
-    cropSpec: { top, right, bottom, left },
+    cropSpec: {
+      top: parts[0],
+      right: parts[1],
+      bottom: parts[2],
+      left: parts[3],
+    },
   };
 }
 
-function normalizeBitmap(
-  bitmap: ImageBitmap,
-  cropSpec?: CropSpec,
-  normalizedSize = DEFAULT_NORMALIZED_SIZE
-): NormalizedImage | null {
-  const cropX = cropSpec
-    ? Math.max(0, Math.floor(bitmap.width * cropSpec.left))
-    : computeInset(bitmap.width);
-  const cropY = cropSpec
-    ? Math.max(0, Math.floor(bitmap.height * cropSpec.top))
-    : computeInset(bitmap.height);
-  const cropWidth = cropSpec
-    ? Math.max(
-        1,
-        bitmap.width - cropX - Math.floor(bitmap.width * cropSpec.right)
-      )
-    : Math.max(1, bitmap.width - cropX * 2);
-  const cropHeight = cropSpec
-    ? Math.max(
-        1,
-        bitmap.height - cropY - Math.floor(bitmap.height * cropSpec.bottom)
-      )
-    : Math.max(1, bitmap.height - cropY * 2);
-
-  const canvas = createCanvas(normalizedSize);
-  const context = get2dContext(canvas);
-  if (!context) return null;
-
-  context.drawImage(
-    bitmap,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    0,
-    0,
-    normalizedSize,
-    normalizedSize
-  );
-
-  const { data, width, height } = context.getImageData(
-    0,
-    0,
-    normalizedSize,
-    normalizedSize
-  );
-  const pixels = new Float32Array(width * height);
-
-  for (let i = 0; i < pixels.length; i += 1) {
-    const offset = i * 4;
-    const r = data[offset] / 255;
-    const g = data[offset + 1] / 255;
-    const b = data[offset + 2] / 255;
-    pixels[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  }
-
-  return { pixels, width, height };
-}
-
-function computeBlockScore(
-  a: Float32Array,
-  b: Float32Array,
-  width: number,
-  height: number
-): number {
-  const c1 = 0.01 * 0.01;
-  const c2 = 0.03 * 0.03;
-  let totalScore = 0;
-  let blockCount = 0;
-
-  for (let startY = 0; startY < height; startY += BLOCK_SIZE) {
-    for (let startX = 0; startX < width; startX += BLOCK_SIZE) {
-      let meanA = 0;
-      let meanB = 0;
-      let count = 0;
-
-      const endY = Math.min(startY + BLOCK_SIZE, height);
-      const endX = Math.min(startX + BLOCK_SIZE, width);
-
-      for (let y = startY; y < endY; y += 1) {
-        for (let x = startX; x < endX; x += 1) {
-          const index = y * width + x;
-          meanA += a[index];
-          meanB += b[index];
-          count += 1;
-        }
-      }
-
-      if (count === 0) continue;
-
-      meanA /= count;
-      meanB /= count;
-
-      let varianceA = 0;
-      let varianceB = 0;
-      let covariance = 0;
-
-      for (let y = startY; y < endY; y += 1) {
-        for (let x = startX; x < endX; x += 1) {
-          const index = y * width + x;
-          const deltaA = a[index] - meanA;
-          const deltaB = b[index] - meanB;
-          varianceA += deltaA * deltaA;
-          varianceB += deltaB * deltaB;
-          covariance += deltaA * deltaB;
-        }
-      }
-
-      varianceA /= count;
-      varianceB /= count;
-      covariance /= count;
-
-      const numerator = (2 * meanA * meanB + c1) * (2 * covariance + c2);
-      const denominator =
-        (meanA * meanA + meanB * meanB + c1) * (varianceA + varianceB + c2);
-
-      if (denominator === 0) continue;
-
-      totalScore += Math.max(0, Math.min(1, numerator / denominator));
-      blockCount += 1;
-    }
-  }
-
-  if (blockCount === 0) return 0;
-  return totalScore / blockCount;
-}
-
-export function computeSobelMagnitude(
-  pixels: Float32Array,
-  width: number,
-  height: number
-): Float32Array {
-  if (pixels.length !== width * height || width < 3 || height < 3) {
-    return new Float32Array(pixels.length);
-  }
-
-  const edges = new Float32Array(pixels.length);
-  let maxMagnitude = 0;
-
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const topLeft = pixels[(y - 1) * width + (x - 1)];
-      const top = pixels[(y - 1) * width + x];
-      const topRight = pixels[(y - 1) * width + (x + 1)];
-      const left = pixels[y * width + (x - 1)];
-      const right = pixels[y * width + (x + 1)];
-      const bottomLeft = pixels[(y + 1) * width + (x - 1)];
-      const bottom = pixels[(y + 1) * width + x];
-      const bottomRight = pixels[(y + 1) * width + (x + 1)];
-
-      const gradientX =
-        -topLeft + topRight - 2 * left + 2 * right - bottomLeft + bottomRight;
-      const gradientY =
-        -topLeft - 2 * top - topRight + bottomLeft + 2 * bottom + bottomRight;
-      const magnitude = Math.hypot(gradientX, gradientY);
-      const index = y * width + x;
-      edges[index] = magnitude;
-      if (magnitude > maxMagnitude) {
-        maxMagnitude = magnitude;
-      }
-    }
-  }
-
-  if (maxMagnitude <= 0) {
-    return edges;
-  }
-
-  for (let i = 0; i < edges.length; i += 1) {
-    edges[i] /= maxMagnitude;
-  }
-
-  return edges;
-}
-
-export function computeEdgeScore(
-  sourceEdges: Float32Array,
-  candidateEdges: Float32Array
-): number {
-  if (
-    sourceEdges.length !== candidateEdges.length ||
-    sourceEdges.length === 0
-  ) {
-    return 0;
-  }
-
-  let dotProduct = 0;
-  let sourceNorm = 0;
-  let candidateNorm = 0;
-
-  for (let i = 0; i < sourceEdges.length; i += 1) {
-    const source = sourceEdges[i];
-    const candidate = candidateEdges[i];
-    dotProduct += source * candidate;
-    sourceNorm += source * source;
-    candidateNorm += candidate * candidate;
-  }
-
-  if (sourceNorm === 0 && candidateNorm === 0) {
-    return 1;
-  }
-
-  if (sourceNorm === 0 || candidateNorm === 0) {
-    return 0;
-  }
-
-  return Math.max(
-    0,
-    Math.min(1, dotProduct / Math.sqrt(sourceNorm * candidateNorm))
-  );
-}
-
-function blendVisualScores(luminanceScore: number, edgeScore: number): number {
-  return luminanceScore * LUMINANCE_WEIGHT + edgeScore * EDGE_WEIGHT;
-}
-
 async function loadNormalizedImage(
-  imageUrl: string,
+  url: string,
   signal: AbortSignal | undefined,
   cache: ImageCache,
   normalizedSize: number
 ): Promise<NormalizedImage | null> {
-  const cacheKey = `${normalizedSize}:${imageUrl}`;
+  const cacheKey = `${normalizedSize}:${url}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     return cached;
@@ -578,7 +260,7 @@ async function loadNormalizedImage(
 
   const loadPromise = (async () => {
     try {
-      const decoded = decodeCropSpecFromUrl(imageUrl);
+      const decoded = decodeCropSpecFromUrl(url);
       const bitmap = await loadImage(
         toProxied(decoded.imageUrl),
         signal ? { signal } : undefined,
@@ -690,91 +372,201 @@ export function createSsimCompare(
   };
 }
 
-export function normalizeName(value: string): string {
-  return value.trim().toLowerCase();
+export function normalizeBitmap(
+  bitmap: ImageBitmap,
+  cropSpec: CropSpec | undefined,
+  size: number
+): NormalizedImage {
+  const canvas = createCanvas(size);
+  const ctx = get2dContext(canvas);
+  if (!ctx) {
+    throw new Error("Failed to get 2D context");
+  }
+
+  if (cropSpec) {
+    const sx = cropSpec.left * bitmap.width;
+    const sy = cropSpec.top * bitmap.height;
+    const sw = (1 - cropSpec.left - cropSpec.right) * bitmap.width;
+    const sh = (1 - cropSpec.top - cropSpec.bottom) * bitmap.height;
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, size, size);
+  } else {
+    ctx.drawImage(bitmap, 0, 0, size, size);
+  }
+
+  const { data } = ctx.getImageData(0, 0, size, size);
+  const pixels = new Float32Array(size * size);
+
+  for (let i = 0; i < pixels.length; i += 1) {
+    const offset = i * 4;
+    const r = data[offset] / 255;
+    const g = data[offset + 1] / 255;
+    const b = data[offset + 2] / 255;
+    pixels[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+
+  return { pixels, width: size, height: size };
+}
+export function computeSobelMagnitude(
+  pixels: Float32Array,
+  width: number,
+  height: number
+): Float32Array {
+  const magnitude = new Float32Array(width * height);
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const idx = y * width + x;
+      const gx =
+        pixels[idx - width + 1] +
+        2 * pixels[idx + 1] +
+        pixels[idx + width + 1] -
+        (pixels[idx - width - 1] + 2 * pixels[idx - 1] + pixels[idx + width - 1]);
+      const gy =
+        pixels[idx + width - 1] +
+        2 * pixels[idx + width] +
+        pixels[idx + width + 1] -
+        (pixels[idx - width - 1] + 2 * pixels[idx - width] + pixels[idx - width + 1]);
+      magnitude[idx] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return magnitude;
 }
 
-function normalizeCanonicalCardName(value: string): string {
-  return normalizeName(value)
-    .replace(/\s*\[[^\]]+\]\s*\{[^}]+\}\s*/g, " ")
-    .replace(/\s*\[[^\]]+\]\s*/g, " ")
-    .replace(/\s*\{[^}]+\}\s*/g, " ")
-    .replace(/\s*\([^)]*\)\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+export function computeBlockScore(
+  a: Float32Array,
+  b: Float32Array,
+  width: number,
+  height: number
+): number {
+  const inset = computeInset(width);
+  let scoreSum = 0;
+  let blockCount = 0;
+
+  for (let y = inset; y < height - inset - BLOCK_SIZE; y += BLOCK_SIZE) {
+    for (let x = inset; x < width - inset - BLOCK_SIZE; x += BLOCK_SIZE) {
+      scoreSum += computeSsimBlock(a, b, x, y, width);
+      blockCount += 1;
+    }
+  }
+
+  return blockCount > 0 ? scoreSum / blockCount : 0;
 }
 
-export function filterByExactName(
-  cards: MpcAutofillCard[],
-  cardName: string
-): MpcAutofillCard[] {
-  const normalized = normalizeCanonicalCardName(cardName);
-  return cards.filter(
-    (card) =>
-      normalizeCanonicalCardName(parseMpcCardName(card.name, card.name)) ===
-      normalized
+export function computeSsimBlock(
+  a: Float32Array,
+  b: Float32Array,
+  startX: number,
+  startY: number,
+  width: number
+): number {
+  let meanA = 0;
+  let meanB = 0;
+  const pixels = [];
+
+  for (let dy = 0; dy < BLOCK_SIZE; dy += 1) {
+    for (let dx = 0; dx < BLOCK_SIZE; dx += 1) {
+      const idx = (startY + dy) * width + (startX + dx);
+      meanA += a[idx];
+      meanB += b[idx];
+      pixels.push([a[idx], b[idx]]);
+    }
+  }
+  meanA /= pixels.length;
+  meanB /= pixels.length;
+
+  let varA = 0;
+  let varB = 0;
+  let covAB = 0;
+  for (const [pa, pb] of pixels) {
+    varA += (pa - meanA) ** 2;
+    varB += (pb - meanB) ** 2;
+    covAB += (pa - meanA) * (pb - meanB);
+  }
+  varA /= pixels.length - 1;
+  varB /= pixels.length - 1;
+  covAB /= pixels.length - 1;
+
+  const c1 = (0.01 * 1) ** 2;
+  const c2 = (0.03 * 1) ** 2;
+
+  return (
+    ((2 * meanA * meanB + c1) * (2 * covAB + c2)) /
+    ((meanA ** 2 + meanB ** 2 + c1) * (varA + varB + c2))
   );
 }
 
-/**
- * DPI descending, then identifier ascending for deterministic
- * tie-breaking when DPI values are equal.
- */
-function sortByDpiThenId(cards: MpcAutofillCard[]): MpcAutofillCard[] {
-  return [...cards].sort((a, b) => {
-    const dpiDiff = (b.dpi || 0) - (a.dpi || 0);
-    if (dpiDiff !== 0) return dpiDiff;
-    return a.identifier.localeCompare(b.identifier);
+export function computeEdgeScore(a: Float32Array, b: Float32Array): number {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i += 1) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  if (normA === 0 && normB === 0) return 1;
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function blendVisualScores(luminance: number, edge: number): number {
+  return luminance * LUMINANCE_WEIGHT + edge * EDGE_WEIGHT;
+}
+
+export function sortByDpiThenId(candidates: MpcAutofillCard[]): MpcAutofillCard[] {
+  return [...candidates].sort(
+    (left, right) =>
+      right.dpi - left.dpi || left.identifier.localeCompare(right.identifier)
+  );
+}
+
+function normalizeCollectorNumberForMatch(cn: string): string {
+  return cn.replace(/^0+/, "");
+}
+
+export function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+export function filterByExactName(
+  candidates: MpcAutofillCard[],
+  targetName: string
+): MpcAutofillCard[] {
+  const normalizedTarget = normalizeName(normalizeDfcName(targetName));
+  return candidates.filter((card) => {
+    // Test mocks often pass variants in 'name', so we parse it.
+    const parsed = parseMpcCardName(card.name);
+    return normalizeName(parsed) === normalizedTarget;
   });
 }
 
-function normalizeCollectorNumberForMatch(collectorNumber: string): string {
-  if (!/^\d+$/.test(collectorNumber)) {
-    return collectorNumber;
-  }
-
-  const normalized = collectorNumber.replace(/^0+/, "");
-  return normalized === "" ? "0" : normalized;
-}
-
-function bucketBySetCollector(
+export function bucketBySetCollector(
   candidates: MpcAutofillCard[],
   set?: string,
   collectorNumber?: string
 ): MpcAutofillCard[] {
-  if (!set && !collectorNumber) return [];
-
-  const normalizedSet = set?.toUpperCase() ?? "";
-  const normalizedCN = collectorNumber
-    ? normalizeCollectorNumberForMatch(collectorNumber)
-    : "";
+  if (!set || !collectorNumber) return [];
+  const normalizedSet = set.toUpperCase();
+  const normalizedCN = normalizeCollectorNumberForMatch(collectorNumber);
 
   return candidates.filter((card) => {
     const parsed = parseMpcSetCollector(card.rawName || card.name);
     if (!parsed) return false;
-
-    const parsedCollectorNumber = normalizeCollectorNumberForMatch(
-      parsed.collectorNumber
+    return (
+      parsed.set === normalizedSet &&
+      normalizeCollectorNumberForMatch(parsed.collectorNumber) === normalizedCN
     );
-
-    if (normalizedSet && normalizedCN) {
-      return (
-        parsed.set === normalizedSet && parsedCollectorNumber === normalizedCN
-      );
-    }
-    if (normalizedSet && parsed.set) {
-      return parsed.set === normalizedSet;
-    }
-    // CN-only is too ambiguous to match reliably
-    return false;
   });
 }
 
-function bucketBySetOnly(
+export function bucketBySetOnly(
   candidates: MpcAutofillCard[],
-  set: string
+  set?: string
 ): MpcAutofillCard[] {
+  if (!set) return [];
   const normalizedSet = set.toUpperCase();
+
   return candidates.filter((card) => {
     const parsed = parseMpcSetCollector(card.rawName || card.name);
     return parsed?.set === normalizedSet;
@@ -782,57 +574,44 @@ function bucketBySetOnly(
 }
 
 export async function scoreCandidatesBySsim(
-  bucket: MpcAutofillCard[],
+  candidates: MpcAutofillCard[],
   sourceImageUrl: string,
   ssimCompare: SsimCompareFn,
   getMpcImageUrl: (identifier: string) => string,
   signal?: AbortSignal
 ): Promise<ScoredCandidate[]> {
-  const limited = sortByDpiThenId(bucket).slice(0, MAX_SSIM_CANDIDATES);
-  const scores: (number | null)[] = await Promise.all(
+  const limited = sortByDpiThenId(candidates).slice(0, MAX_SSIM_CANDIDATES);
+  const scores = await Promise.all(
     limited.map((card) =>
-      ssimCompare(
-        sourceImageUrl,
-        getMpcImageUrl(card.identifier),
-        signal
-      ).catch(() => null)
+      ssimCompare(sourceImageUrl, getMpcImageUrl(card.identifier), signal).catch(
+        () => null
+      )
     )
   );
 
   const scored: ScoredCandidate[] = [];
   for (let i = 0; i < scores.length; i++) {
-    const s = scores[i];
-    if (s !== null) {
-      scored.push({ card: limited[i], score: s });
+    const score = scores[i];
+    if (score !== null) {
+      scored.push({ card: limited[i], score });
     }
   }
 
   return scored.sort((a, b) => b.score - a.score);
 }
 
-async function scoreCandidatesByArtCrop(
-  bucket: MpcAutofillCard[],
+export async function scoreCandidatesByArtCrop(
+  candidates: MpcAutofillCard[],
   sourceImageUrl: string,
   ssimCompare: SsimCompareFn,
   getMpcImageUrl: (identifier: string) => string,
   signal?: AbortSignal
 ): Promise<ScoredCandidate[]> {
-  const sourceArtCropUrl = toArtCrop(sourceImageUrl);
-  if (!sourceArtCropUrl) {
-    return await scoreCandidatesBySsim(
-      bucket,
-      sourceImageUrl,
-      ssimCompare,
-      getMpcImageUrl,
-      signal
-    );
-  }
-
-  const limited = sortByDpiThenId(bucket).slice(0, MAX_SSIM_CANDIDATES);
-  const scores: (number | null)[] = await Promise.all(
+  const limited = sortByDpiThenId(candidates).slice(0, MAX_SSIM_CANDIDATES);
+  const scores = await Promise.all(
     limited.map((card) =>
       ssimCompare(
-        sourceArtCropUrl,
+        toArtCrop(sourceImageUrl) || sourceImageUrl,
         encodeCropSpecInUrl(
           getMpcImageUrl(card.identifier),
           ART_MATCH_CANDIDATE_CROP
@@ -852,267 +631,60 @@ async function scoreCandidatesByArtCrop(
 
   return scored.sort((a, b) => b.score - a.score);
 }
-
 const MAX_RECOMMENDATIONS = 6;
+const MAX_SSIM_CANDIDATES = 30;
 
-function resolveFullProcessCandidates(
-  candidates: MpcAutofillCard[],
-  artScoredCandidates: ScoredCandidate[]
-): MpcAutofillCard[] {
-  if (candidates.length <= 1) {
-    return candidates;
-  }
+export function scoreCandidateEnsemble(
+  card: MpcAutofillCard,
+  input: MatcherInput,
+  ssimScore?: number
+): EnsembleScoreBreakdown {
+  // 1. Metadata Score (Bucket Match)
+  let metadataScore = 400; // Base for name-only match
+  const parsed = parseMpcSetCollector(card.rawName || card.name);
+  if (parsed) {
+    const normalizedSet = input.set?.toUpperCase();
+    const normalizedCN = input.collectorNumber
+      ? normalizeCollectorNumberForMatch(input.collectorNumber)
+      : "";
+    const parsedCN = normalizeCollectorNumberForMatch(parsed.collectorNumber);
 
-  const topCandidate = artScoredCandidates[0];
-  if (!topCandidate || topCandidate.score < SSIM_MIN_SCORE) {
-    return candidates;
-  }
-
-  if (artScoredCandidates.length < 2) {
-    return candidates;
-  }
-
-  const runnerUp = artScoredCandidates[1];
-  if (topCandidate.score - runnerUp.score < SSIM_MIN_MARGIN) {
-    return candidates;
-  }
-
-  const shortlisted = artScoredCandidates
-    .filter(
-      (candidate) => topCandidate.score - candidate.score < SSIM_MIN_MARGIN
-    )
-    .map((candidate) => candidate.card);
-
-  return shortlisted.length > 0 ? shortlisted : candidates;
-}
-
-export async function rankCandidates(
-  input: MatcherInput
-): Promise<RankedRecommendations> {
-  const { candidates } = input;
-  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
-  let artScoredCandidates: ScoredCandidate[] = [];
-
-  let artMatch: RankedCandidate[] = [];
-  if (input.sourceImageUrl && artMatchCompare && input.getMpcImageUrl) {
-    try {
-      artScoredCandidates = await scoreCandidatesByArtCrop(
-        candidates,
-        input.sourceImageUrl,
-        artMatchCompare,
-        input.getMpcImageUrl,
-        input.signal
-      );
-      artMatch = artScoredCandidates.slice(0, MAX_RECOMMENDATIONS).map(
-        (sc): RankedCandidate => ({
-          card: sc.card,
-          reason: "name_ssim",
-          score: sc.score,
-          bucket: "name",
-        })
-      );
-    } catch {
-      // SSIM infrastructure failure — artMatch stays empty
+    if (normalizedSet && normalizedCN && parsed.set === normalizedSet && parsedCN === normalizedCN) {
+      metadataScore = 600; // Perfect match
+    } else if (normalizedSet && parsed.set === normalizedSet) {
+      metadataScore = 500;  // Set match
     }
   }
 
-  const fullProcessCandidates = resolveFullProcessCandidates(
-    candidates,
-    artScoredCandidates
-  );
+  // 2. Visual Score (SSIM)
+  const visualScore = ssimScore ? (ssimScore * 5000) : 0;
 
-  const fullCard = await buildFullCardLayer(input);
-  const exactPrinting = await buildExactPrintingLayer(input);
+  // 3. Preference Score (Source Reliability + Model + Calibration Replay)
+  let prefScore = 0;
+  const rawUnseen = input.unseenPreferenceScores?.[card.identifier] ?? 0;
+  if (rawUnseen > 0) {
+    // Large bonus to ensure user-preferred art overrides metadata buckets
+    prefScore += 1000 + (rawUnseen * 2.5);
+  }
 
-  const fullProcess = prioritizePreferredCandidate(
-    prioritizeUnseenPreferenceScores(
-      prioritizePreferenceProfile(
-        await buildFullProcessLayer({
-          ...input,
-          candidates: fullProcessCandidates,
-        }),
-        candidates,
-        input.preferenceProfile
-      ),
-      candidates,
-      input.unseenPreferenceScores
-    ),
-    candidates,
-    input.preferredIdentifier
-  );
-  const allMatches = buildAllMatchesLayer(
-    candidates,
-    artMatch,
-    exactPrinting,
-    fullCard
-  );
+  if (input.preferenceProfile) {
+    const replayScore = scoreCalibrationPreference(card, input.preferenceProfile);
+    if (replayScore > 0) {
+      // Large bonus for art matching a stored calibration replay
+      prefScore += 1000 + (replayScore * 2.5);
+    }
+  }
+
+  // 4. DPI Score (Tie-breaker)
+  const dpiScore = (card.dpi || 0) / 100;
 
   return {
-    fullProcess,
-    exactPrinting,
-    artMatch,
-    fullCard,
-    allMatches,
+    total: metadataScore + visualScore + prefScore + dpiScore,
+    metadata: metadataScore,
+    visual: visualScore,
+    preference: prefScore,
+    dpi: dpiScore,
   };
-}
-
-function buildAllMatchesLayer(
-  candidates: MpcAutofillCard[],
-  artMatch: RankedCandidate[],
-  exactPrinting: RankedCandidate[],
-  fullCard: RankedCandidate[]
-): RankedCandidate[] {
-  const ordered: RankedCandidate[] = [];
-  const seen = new Set<string>();
-
-  const pushUnique = (items: RankedCandidate[]) => {
-    for (const item of items) {
-      if (seen.has(item.card.identifier)) continue;
-      seen.add(item.card.identifier);
-      ordered.push(item);
-      if (ordered.length >= MAX_RECOMMENDATIONS) return;
-    }
-  };
-
-  pushUnique(artMatch);
-  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(exactPrinting);
-  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(fullCard);
-
-  if (ordered.length < MAX_RECOMMENDATIONS) {
-    const remainder = sortByDpiThenId(candidates)
-      .filter((card) => !seen.has(card.identifier))
-      .map(
-        (card): RankedCandidate => ({
-          card,
-          reason: "name_dpi_fallback",
-          bucket: "name",
-        })
-      );
-    pushUnique(remainder);
-  }
-
-  return ordered.slice(0, MAX_RECOMMENDATIONS);
-}
-
-async function buildExactPrintingLayer(
-  input: MatcherInput
-): Promise<RankedCandidate[]> {
-  const {
-    candidates,
-    set,
-    collectorNumber,
-    sourceImageUrl,
-    signal,
-    ssimCompare,
-    getMpcImageUrl,
-  } = input;
-
-  const setCollectorBucket = bucketBySetCollector(
-    candidates,
-    set,
-    collectorNumber
-  );
-  const setOnlyBucket = set ? bucketBySetOnly(candidates, set) : [];
-  const remainingSetOnly = setOnlyBucket.filter(
-    (candidate) =>
-      !setCollectorBucket.some(
-        (exactCandidate) => exactCandidate.identifier === candidate.identifier
-      )
-  );
-
-  const rankedSetCollector = await rankWithinBucket(
-    setCollectorBucket,
-    "set_collector",
-    sourceImageUrl,
-    signal,
-    ssimCompare,
-    getMpcImageUrl
-  );
-  const rankedSetOnly = await rankWithinBucket(
-    remainingSetOnly,
-    "set",
-    sourceImageUrl,
-    signal,
-    ssimCompare,
-    getMpcImageUrl
-  );
-
-  return [...rankedSetCollector, ...rankedSetOnly].slice(
-    0,
-    MAX_RECOMMENDATIONS
-  );
-}
-
-async function buildFullCardLayer(
-  input: MatcherInput
-): Promise<RankedCandidate[]> {
-  // Preserve the existing full-card comparison path for ranked recommendations.
-  // Until a distinct art-crop scorer exists, this reuses the current full-card
-  // SSIM comparator and only falls back to DPI ordering when comparison is
-  // unavailable or inconclusive.
-  return await rankWithinBucket(
-    input.candidates,
-    "name",
-    input.sourceImageUrl,
-    input.signal,
-    input.ssimCompare,
-    input.getMpcImageUrl
-  );
-}
-
-async function buildFullProcessLayer(
-  input: MatcherInput
-): Promise<RankedCandidate[]> {
-  const {
-    candidates,
-    set,
-    collectorNumber,
-    sourceImageUrl,
-    signal,
-    ssimCompare,
-    getMpcImageUrl,
-  } = input;
-
-  if (candidates.length === 0) return [];
-
-  const setCollectorBucket = bucketBySetCollector(
-    candidates,
-    set,
-    collectorNumber
-  );
-  if (setCollectorBucket.length > 0) {
-    return await rankWithinBucket(
-      setCollectorBucket,
-      "set_collector",
-      sourceImageUrl,
-      signal,
-      ssimCompare,
-      getMpcImageUrl
-    );
-  }
-
-  if (set) {
-    const setOnlyBucket = bucketBySetOnly(candidates, set);
-    if (setOnlyBucket.length > 0) {
-      return await rankWithinBucket(
-        setOnlyBucket,
-        "set",
-        sourceImageUrl,
-        signal,
-        ssimCompare,
-        getMpcImageUrl
-      );
-    }
-  }
-
-  return await rankWithinBucket(
-    candidates,
-    "name",
-    sourceImageUrl,
-    signal,
-    ssimCompare,
-    getMpcImageUrl
-  );
 }
 
 async function rankWithinBucket(
@@ -1161,51 +733,267 @@ async function rankWithinBucket(
     );
 }
 
-function scoreCandidateEnsemble(
-  card: MpcAutofillCard,
-  input: MatcherInput,
-  ssimScore?: number
-): number {
-  // 1. Metadata Score (Bucket Match)
-  let metadataScore = 400; // Base for name-only match
-  const parsed = parseMpcSetCollector(card.rawName || card.name);
-  if (parsed) {
-    const normalizedSet = input.set?.toUpperCase();
-    const normalizedCN = input.collectorNumber
-      ? normalizeCollectorNumberForMatch(input.collectorNumber)
-      : "";
-    const parsedCN = normalizeCollectorNumberForMatch(parsed.collectorNumber);
+export async function rankCandidates(
+  input: MatcherInput
+): Promise<RankedRecommendations> {
+  const { candidates, sourceImageUrl, signal, ssimCompare, getMpcImageUrl } =
+    input;
+  if (candidates.length === 0) {
+    return {
+      fullProcess: [],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [],
+    };
+  }
 
-    if (normalizedSet && normalizedCN && parsed.set === normalizedSet && parsedCN === normalizedCN) {
-      metadataScore = 600; // Perfect match
-    } else if (normalizedSet && parsed.set === normalizedSet) {
-      metadataScore = 500;  // Set match
+  // 1. Exact Printing (Metadata only)
+  const setCollectorBucket = bucketBySetCollector(
+    candidates,
+    input.set,
+    input.collectorNumber
+  );
+  const setOnlyBucket = input.set ? bucketBySetOnly(candidates, input.set) : [];
+  const remainingSetOnly = setOnlyBucket.filter(
+    (candidate) =>
+      !setCollectorBucket.some(
+        (exactCandidate) => exactCandidate.identifier === candidate.identifier
+      )
+  );
+
+  const exactPrinting = [
+    ...sortByDpiThenId(setCollectorBucket).map(
+      (card): RankedCandidate => ({
+        card,
+        reason:
+          setCollectorBucket.length === 1
+            ? "set_collector_only"
+            : "set_collector_dpi_fallback",
+        bucket: "set_collector",
+      })
+    ),
+    ...sortByDpiThenId(remainingSetOnly).map(
+      (card): RankedCandidate => ({
+        card,
+        reason:
+          setOnlyBucket.length === 1 ? "set_only" : "set_dpi_fallback",
+        bucket: "set",
+      })
+    ),
+  ].slice(0, MAX_RECOMMENDATIONS);
+
+  // 2. Full Card SSIM
+  const fullCardBucket =
+    setCollectorBucket.length > 0
+      ? setCollectorBucket
+      : setOnlyBucket.length > 0
+        ? setOnlyBucket
+        : candidates;
+
+  const fullCard = await rankWithinBucket(
+    fullCardBucket,
+    setCollectorBucket.length > 0
+      ? "set_collector"
+      : setOnlyBucket.length > 0
+        ? "set"
+        : "name",
+    sourceImageUrl,
+    signal,
+    ssimCompare,
+    getMpcImageUrl
+  );
+
+  // 3. Art Match SSIM (Art-crop only)
+  let artMatch: RankedCandidate[] = [];
+  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
+  if (sourceImageUrl && artMatchCompare && getMpcImageUrl) {
+    try {
+      const artScoredCandidates = await scoreCandidatesByArtCrop(
+        candidates,
+        sourceImageUrl,
+        artMatchCompare,
+        getMpcImageUrl,
+        signal
+      );
+      artMatch = artScoredCandidates.slice(0, MAX_RECOMMENDATIONS).map(
+        (sc): RankedCandidate => ({
+          card: sc.card,
+          reason: "name_ssim",
+          score: sc.score,
+          bucket: "name",
+        })
+      );
+    } catch {
+      // SSIM failure
     }
   }
 
-  // 2. Visual Score (SSIM)
-  const visualScore = ssimScore ? (ssimScore * 1000) : 0;
-
-  // 3. Preference Score (Source Reliability + Model + Calibration Replay)
-  let prefScore = 0;
-  const rawUnseen = input.unseenPreferenceScores?.[card.identifier] ?? 0;
-  if (rawUnseen > 0) {
-    // Large bonus to ensure user-preferred art overrides metadata buckets
-    prefScore += 1000 + (rawUnseen * 2.5);
-  }
-
-  if (input.preferenceProfile) {
-    const replayScore = scoreCalibrationPreference(card, input.preferenceProfile);
-    if (replayScore > 0) {
-      // Large bonus for art matching a stored calibration replay
-      prefScore += 1000 + (replayScore * 2.5);
+  // 4. Full Process (Committee Ensemble)
+  let artScored: ScoredCandidate[] = [];
+  if (sourceImageUrl && artMatchCompare && getMpcImageUrl) {
+    try {
+      artScored = await scoreCandidatesByArtCrop(
+        candidates,
+        sourceImageUrl,
+        artMatchCompare,
+        getMpcImageUrl,
+        signal
+      );
+    } catch {
+      // SSIM failed
     }
   }
 
-  // 4. DPI Score (Tie-breaker)
-  const dpiScore = (card.dpi || 0) / 100;
+  const artMatchCards = artScored.slice(0, 3).map((s) => s.card);
+  const decisiveArtMatches = artScored.filter(s => s.score >= 0.95).map(s => s.card);
 
-  return metadataScore + visualScore + prefScore + dpiScore;
+  const bestMetadataBucket = setCollectorBucket.length > 0 
+    ? setCollectorBucket 
+    : (input.set ? bucketBySetOnly(candidates, input.set) : candidates);
+
+  const pool = decisiveArtMatches.length > 0 ? decisiveArtMatches : [...bestMetadataBucket, ...artMatchCards];
+
+  const preferredCandidates = candidates.filter(c => 
+    (input.preferenceProfile && scoreCalibrationPreference(c, input.preferenceProfile) > 0) ||
+    (input.unseenPreferenceScores && (input.unseenPreferenceScores[c.identifier] ?? 0) > 0)
+  );
+
+  const activeBucketSet = new Set([
+    ...pool,
+    ...preferredCandidates,
+  ]);
+  const activeBucket = Array.from(activeBucketSet);
+
+  let scoredSsim: ScoredCandidate[] = [];
+  if (sourceImageUrl && ssimCompare && getMpcImageUrl) {
+    try {
+      scoredSsim = await scoreCandidatesBySsim(
+        activeBucket,
+        sourceImageUrl,
+        ssimCompare,
+        getMpcImageUrl,
+        signal
+      );
+    } catch {
+      // SSIM failed
+    }
+  }
+
+  const ssimMap = new Map<string, number>();
+  for (const sc of scoredSsim) {
+    ssimMap.set(sc.card.identifier, sc.score);
+  }
+  for (const sc of artScored) {
+    const existing = ssimMap.get(sc.card.identifier) ?? 0;
+    ssimMap.set(sc.card.identifier, Math.max(existing, sc.score));
+  }
+
+  const ensembleResults = activeBucket.map(card => {
+    const ssimScore = ssimMap.get(card.identifier);
+    const breakdown = scoreCandidateEnsemble(card, input, ssimScore);
+    
+    let prefix: "set_collector" | "set" | "name" = "name";
+    if (setCollectorBucket.some(c => c.identifier === card.identifier)) {
+      prefix = "set_collector";
+    } else if (setOnlyBucket.some(c => c.identifier === card.identifier)) {
+      prefix = "set";
+    }
+
+    return {
+      card,
+      breakdown,
+      ssimScore,
+      prefix
+    };
+  }).sort((a, b) => 
+    b.breakdown.total - a.breakdown.total ||
+    (b.card.dpi || 0) - (a.card.dpi || 0) ||
+    a.card.identifier.localeCompare(b.card.identifier)
+  );
+
+  const fullProcess: RankedCandidate[] = ensembleResults.slice(0, MAX_RECOMMENDATIONS).map((res, idx) => {
+    const second = ensembleResults[idx + 1];
+    const decisive = !second || (res.breakdown.total - second.breakdown.total) > 
+      ((res.ssimScore !== undefined && res.ssimScore >= SSIM_MIN_SCORE && second?.ssimScore !== undefined && second.ssimScore >= SSIM_MIN_SCORE ? (SSIM_MIN_MARGIN * 5000) : 0.1) + 1e-9);
+
+    const reason: MatchReason = (res.ssimScore !== undefined && res.ssimScore >= SSIM_MIN_SCORE && decisive)
+      ? `${res.prefix}_ssim` as MatchReason
+      : (activeBucket.length === 1 ? `${res.prefix}_only` as MatchReason : `${res.prefix}_dpi_fallback` as MatchReason);
+
+    return {
+      card: res.card,
+      reason,
+      score: (reason.endsWith("_ssim") && res.ssimScore !== undefined) ? res.ssimScore : res.breakdown.total,
+      bucket: res.prefix,
+      breakdown: res.breakdown
+    };
+  });
+
+  // User-pinned favorite always wins first slot in fullProcess immediately
+  let finalFullProcess = fullProcess;
+  if (input.preferredIdentifier) {
+    const preferredCard = candidates.find(c => c.identifier === input.preferredIdentifier);
+    if (preferredCard) {
+      finalFullProcess = [
+        { card: preferredCard, reason: "name_only", bucket: "name" },
+        ...fullProcess.filter(r => r.card.identifier !== input.preferredIdentifier)
+      ].slice(0, MAX_RECOMMENDATIONS);
+    }
+  }
+
+  const allMatches = buildAllMatchesLayer(
+    candidates,
+    artMatch,
+    exactPrinting,
+    fullCard
+  );
+
+  return {
+    fullProcess: finalFullProcess,
+    exactPrinting,
+    artMatch,
+    fullCard,
+    allMatches,
+  };
+}
+
+function buildAllMatchesLayer(
+  candidates: MpcAutofillCard[],
+  artMatch: RankedCandidate[],
+  exactPrinting: RankedCandidate[],
+  fullCard: RankedCandidate[]
+): RankedCandidate[] {
+  const ordered: RankedCandidate[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (items: RankedCandidate[]) => {
+    for (const item of items) {
+      if (seen.has(item.card.identifier)) continue;
+      seen.add(item.card.identifier);
+      ordered.push(item);
+      if (ordered.length >= MAX_RECOMMENDATIONS) return;
+    }
+  };
+
+  pushUnique(artMatch);
+  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(exactPrinting);
+  if (ordered.length < MAX_RECOMMENDATIONS) pushUnique(fullCard);
+
+  if (ordered.length < MAX_RECOMMENDATIONS) {
+    const remainder = sortByDpiThenId(candidates)
+      .filter((card) => !seen.has(card.identifier))
+      .map(
+        (card): RankedCandidate => ({
+          card,
+          reason: "name_dpi_fallback",
+          bucket: "name",
+        })
+      );
+    pushUnique(remainder);
+  }
+
+  return ordered.slice(0, MAX_RECOMMENDATIONS);
 }
 
 export async function selectBestCandidate(
@@ -1228,19 +1016,40 @@ export async function selectBestCandidate(
   const setCollectorBucket = bucketBySetCollector(candidates, input.set, input.collectorNumber);
   const setOnlyBucket = input.set ? bucketBySetOnly(candidates, input.set) : [];
   
-  // The committee considers the union of the best metadata bucket AND any 
-  // candidates that match the user's stored preference profile. This allows
-  // preferred art to override an exact set match.
   const bestMetadataBucket = setCollectorBucket.length > 0 
     ? setCollectorBucket 
-    : (setOnlyBucket.length > 0 ? setOnlyBucket : candidates);
+    : (input.set ? bucketBySetOnly(candidates, input.set) : candidates);
 
   const preferredCandidates = candidates.filter(c => 
     (input.preferenceProfile && scoreCalibrationPreference(c, input.preferenceProfile) > 0) ||
     (input.unseenPreferenceScores && (input.unseenPreferenceScores[c.identifier] ?? 0) > 0)
   );
 
-  const activeBucketSet = new Set([...bestMetadataBucket, ...preferredCandidates]);
+  let artScored: ScoredCandidate[] = [];
+  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
+  if (input.sourceImageUrl && artMatchCompare && input.getMpcImageUrl) {
+    try {
+      artScored = await scoreCandidatesByArtCrop(
+        candidates,
+        input.sourceImageUrl,
+        artMatchCompare,
+        input.getMpcImageUrl,
+        input.signal
+      );
+    } catch {
+      // SSIM failed
+    }
+  }
+
+  const artMatchCards = artScored.slice(0, 3).map((s) => s.card);
+  const decisiveArtMatches = artScored.filter(s => s.score >= 0.95).map(s => s.card);
+
+  const pool = decisiveArtMatches.length > 0 ? decisiveArtMatches : [...bestMetadataBucket, ...artMatchCards];
+
+  const activeBucketSet = new Set([
+    ...pool,
+    ...preferredCandidates,
+  ]);
   const activeBucket = Array.from(activeBucketSet);
 
   // 1. Run SSIM for top candidates in the bucket
@@ -1261,15 +1070,17 @@ export async function selectBestCandidate(
 
   const ssimMap = new Map<string, number>();
   for (const sc of scoredSsim) {
-    if (sc.score >= SSIM_MIN_SCORE) {
-      ssimMap.set(sc.card.identifier, sc.score);
-    }
+    ssimMap.set(sc.card.identifier, sc.score);
+  }
+  for (const sc of artScored) {
+    const existing = ssimMap.get(sc.card.identifier) ?? 0;
+    ssimMap.set(sc.card.identifier, Math.max(existing, sc.score));
   }
 
-  // 2. Compute full Ensemble Score
+  // 2. Compute full Ensemble Score (The "Committee" Decision)
   const ensembleResults = activeBucket.map(card => ({
     card,
-    ensembleScore: scoreCandidateEnsemble(card, input, ssimMap.get(card.identifier))
+    ensembleScore: scoreCandidateEnsemble(card, input, ssimMap.get(card.identifier)).total
   })).sort((a, b) => 
     b.ensembleScore - a.ensembleScore ||
     (b.card.dpi || 0) - (a.card.dpi || 0) ||
@@ -1279,8 +1090,6 @@ export async function selectBestCandidate(
   const top = ensembleResults[0];
   if (!top) return null;
 
-  // Determine the reason for the match based on the best bucket the winning 
-  // card belongs to.
   let prefix: "set_collector" | "set" | "name" = "name";
   if (setCollectorBucket.some(c => c.identifier === top.card.identifier)) {
     prefix = "set_collector";
@@ -1288,27 +1097,20 @@ export async function selectBestCandidate(
     prefix = "set";
   }
 
-  // Check for decisive winner
   const second = ensembleResults[1];
-
-  // If both top candidates were scored by SSIM, we require a minimum margin
-  // to be considered decisive (preserving the old "inconclusive" behavior).
-  // For other factors (metadata, preference), we accept smaller margins.
   const topHasSsim = ssimMap.has(top.card.identifier);
   const secondHasSsim = second && ssimMap.has(second.card.identifier);
-  
-  // Restore the original SSIM margin (scaled to the ensemble range: 0.01 * 1000 = 10)
-  const marginNeeded = (topHasSsim && secondHasSsim) ? (SSIM_MIN_MARGIN * 1000) : 0.1;
+  const marginNeeded = (topHasSsim && secondHasSsim) ? (SSIM_MIN_MARGIN * 5000) : 0.1;
 
-  const decisive = !second || (top.ensembleScore - second.ensembleScore) >= marginNeeded;
+  const decisive = !second || (top.ensembleScore - second.ensembleScore) > (marginNeeded + 1e-9);
 
   if (!decisive) {
-    // Fall back to strict DPI ordering of the whole bucket for stability when ensemble is too close
     const byDpi = sortByDpiThenId(activeBucket);
     return { card: byDpi[0], reason: `${prefix}_dpi_fallback` as MatchReason };
   }
 
-  const reason: MatchReason = ssimMap.has(top.card.identifier)
+  const ssimWin = ssimMap.has(top.card.identifier) && (ssimMap.get(top.card.identifier) ?? 0) >= SSIM_MIN_SCORE;
+  const reason: MatchReason = ssimWin
     ? `${prefix}_ssim` as MatchReason
     : (activeBucket.length === 1 ? `${prefix}_only` as MatchReason : `${prefix}_dpi_fallback` as MatchReason);
 
