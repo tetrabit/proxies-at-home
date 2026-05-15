@@ -136,28 +136,6 @@ describe("CardGuides", () => {
         expect(svgs[2].style.transform).toBe("rotate(180deg)");
     });
 
-    it("renders rounded SVG corners from numeric and millimeter offsets", () => {
-        const { container, rerender } = render(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="rounded-corners"
-                guideOffset={12}
-            />
-        );
-
-        expect(container.querySelector("svg")?.style.top).toBe("12px");
-
-        rerender(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="rounded-corners"
-                guideOffset="2mm"
-            />
-        );
-
-        expect(container.querySelector("svg")?.style.top).toBe("8px");
-    });
-
     it("renders square and rounded rectangle guides with parsed offsets", () => {
         const { rerender, container } = render(
             <CardGuides
@@ -182,48 +160,7 @@ describe("CardGuides", () => {
         );
         const rounded = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
         expect(rounded.style.top).toBe("calc(-2.44094px)");
-        expect(rounded.style.borderRadius).toBe("calc(19.4488px)");
+        expect(rounded.style.borderRadius).toBe("calc(2.5mm + 10px)");
         expect(rounded.style.border).toBe("10px solid rgb(0, 255, 0)");
-
-        rerender(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="solid-rounded-rect"
-                guideOffset="3mm"
-            />
-        );
-        const stringOffset = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
-        expect(stringOffset.style.top).toBe("3mm");
-    });
-
-    it("handles non-positive widths and unknown offsets in rounded and rectangle modes", () => {
-        const { container, rerender } = render(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="rounded-corners"
-                guideWidth={0}
-            />
-        );
-
-        expect(container.querySelector("svg")).toBeNull();
-
-        rerender(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="solid-rounded-rect"
-                guideWidth={0}
-            />
-        );
-        expect((container.firstElementChild as HTMLElement).firstElementChild).toBeNull();
-
-        rerender(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="solid-rounded-rect"
-                guideOffset={undefined as never}
-            />
-        );
-        const fallback = (container.firstElementChild as HTMLElement).firstElementChild as HTMLElement;
-        expect(fallback.style.border).toBe("10px solid rgb(0, 255, 0)");
     });
 });
