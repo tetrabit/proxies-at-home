@@ -105,6 +105,27 @@ describe("useScryfallPreview", () => {
     expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(1);
   });
 
+  it("reuses cached specific-card results when only outer whitespace changes", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
+    mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Darksteel Citadel" });
+
+    const { rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Dark [abc] 12" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: " Dark [abc] 12 " });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(1);
+  });
+
   it("drops a specific card result when the fetched name does not match the cleaned query", async () => {
     mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
     mockFetchCardBySetAndNumber.mockResolvedValue({ name: "Lightning Bolt" });
