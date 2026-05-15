@@ -122,6 +122,7 @@ async function processCardForExport(
       console.warn(`[Export skipped] Error fetching ${url}`, err);
       return null;
     }
+  /* v8 ignore next -- an empty URL without a blob is returned above before blob selection. @preserve */
   } else {
     return null;
   }

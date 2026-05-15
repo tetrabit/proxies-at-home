@@ -106,6 +106,51 @@ describe("ImportSession", () => {
             expect(stats.persistentCacheHits).toBe(1);
         });
 
+        it("should buffer early failed cards until uuids are registered", () => {
+            const session = new ImportSession({
+                importType: "scryfall",
+            });
+
+            session.markFailed("card-1");
+            session.registerUuids(["card-1"]);
+
+            expect(session.getStats().imagesFailed).toBe(1);
+        });
+
+        it("should ignore processed and failed marks after finishing", () => {
+            const logSpy = vi.spyOn(console, "log").mockImplementation(() => { });
+            const session = new ImportSession({
+                importType: "mpc",
+                cardUuids: ["card-1"],
+            });
+
+            session.finish();
+            session.markProcessed("card-1", false);
+            session.markFailed("card-1");
+
+            expect(session.getStats().imagesProcessed).toBe(0);
+            expect(session.getStats().imagesFailed).toBe(0);
+            logSpy.mockRestore();
+        });
+
+        it("should wait for enrichment before auto-finishing when configured", () => {
+            const logSpy = vi.spyOn(console, "log").mockImplementation(() => { });
+            const session = new ImportSession({
+                importType: "archidekt",
+                cardUuids: ["card-1"],
+                awaitEnrichment: true,
+            });
+
+            session.markProcessed("card-1", false);
+            expect(session.isComplete).toBe(true);
+            expect(session.isReadyToLog).toBe(false);
+
+            session.markEnrichmentComplete();
+            expect(session.isReadyToLog).toBe(true);
+            expect(session.finish()).not.toBeNull();
+            logSpy.mockRestore();
+        });
+
         it("should mark timing events", () => {
             const session = new ImportSession({
                 importType: "mpc",
@@ -251,6 +296,18 @@ describe("ImportSession", () => {
             const stats = session.getStats();
             expect(stats.imagesProcessed).toBe(1);
             expect(stats.persistentCacheHits).toBe(1);
+        });
+
+        it("markCardFailed should buffer when no session", () => {
+            clearCurrentSession();
+            markCardFailed("card-2");
+
+            const session = createImportSession({
+                importType: "scryfall",
+                cardUuids: ["card-2"],
+            });
+
+            expect(session.getStats().imagesFailed).toBe(1);
         });
     });
 });

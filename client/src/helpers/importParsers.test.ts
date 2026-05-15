@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseMpcXml, parseLineToIntent, createIntentFromPreloaded, parseDeckBuilderUrl, parseDeckList } from './importParsers';
+import { parseMpcXml, parseLineToIntent, createIntentFromPreloaded, parseDeckBuilderUrl, parseDeckList, hasIncompleteTagSyntax } from './importParsers';
 import * as moxfieldApi from './moxfieldApi';
+import * as archidektApi from './archidektApi';
 
 describe('importParsers', () => {
     describe('parseLineToIntent', () => {
@@ -36,6 +37,46 @@ describe('importParsers', () => {
                 name: 'Sol Ring',
                 mpcId: '12345',
                 sourcePreference: 'mpc'
+            }));
+        });
+
+        it('detects incomplete tag syntax only at the end of a query', () => {
+            expect(hasIncompleteTagSyntax('set:')).toBe(true);
+            expect(hasIncompleteTagSyntax('lightning set:')).toBe(true);
+            expect(hasIncompleteTagSyntax('set:lea bolt')).toBe(false);
+        });
+
+        it('parses quoted and underscored token syntax', () => {
+            expect(parseLineToIntent('t:"Human Soldier"')).toEqual(expect.objectContaining({
+                name: 'Human Soldier',
+                isToken: true,
+            }));
+            expect(parseLineToIntent("t:'Goblin'")).toEqual(expect.objectContaining({
+                name: 'Goblin',
+                isToken: true,
+            }));
+            expect(parseLineToIntent('t:human_soldier')).toEqual(expect.objectContaining({
+                name: 'human soldier',
+                isToken: true,
+            }));
+        });
+
+        it('strips decorative tails and parses set/number suffix variants', () => {
+            expect(parseLineToIntent('Sol Ring ^foil^ [Commander] ★')).toEqual(expect.objectContaining({
+                name: 'Sol Ring',
+            }));
+            expect(parseLineToIntent('Lightning Bolt (lea) 161')).toEqual(expect.objectContaining({
+                name: 'Lightning Bolt',
+                set: 'lea',
+                number: '161',
+            }));
+            expect(parseLineToIntent('Counterspell set:mh2 cn:42')).toEqual(expect.objectContaining({
+                name: 'Counterspell',
+                set: 'mh2',
+                number: '42',
+            }));
+            expect(parseLineToIntent('Island {301}')).toEqual(expect.objectContaining({
+                name: 'Island',
             }));
         });
     });
@@ -89,6 +130,54 @@ describe('importParsers', () => {
             // Global cardbacks should NOT create DFC links
             expect(intents[0].linkedBackImageId).toBeUndefined();
         });
+
+        it('rejects invalid or missing MPC XML orders', () => {
+            expect(() => parseMpcXml('<order>')).toThrow('Failed to parse MPC XML');
+            expect(() => parseMpcXml('<root />')).toThrow('Missing <order>');
+        });
+
+        it('uses filename names, query fallback, and warns when front slots use different backs', () => {
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+            const xml = `
+              <order>
+                <fronts>
+                  <card>
+                    <id>https://drive.google.com/file/d/front-id/view</id>
+                    <name>Fancy_Card.png</name>
+                    <query>Ignored Query</query>
+                    <slots>0,1</slots>
+                  </card>
+                  <card>
+                    <id></id>
+                    <name></name>
+                    <query>Query Fallback</query>
+                    <slots></slots>
+                  </card>
+                </fronts>
+                <backs>
+                  <card><id>back-a</id><name>Back_A.png</name><slots>0</slots></card>
+                  <card><id>back-b</id><name></name><slots>1</slots></card>
+                </backs>
+              </order>`;
+
+            const intents = parseMpcXml(xml);
+
+            expect(intents[0]).toEqual(expect.objectContaining({
+                name: 'Fancy Card',
+                filename: 'Fancy_Card.png',
+                mpcId: 'front-id',
+                linkedBackImageId: 'back-a',
+                linkedBackName: 'Back A',
+                quantity: 2,
+            }));
+            expect(intents[1]).toEqual(expect.objectContaining({
+                name: 'Query Fallback',
+                quantity: 1,
+                mpcId: undefined,
+            }));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('different backs per slot'));
+            warnSpy.mockRestore();
+        });
     });
 
     describe('createIntentFromPreloaded', () => {
@@ -118,6 +207,25 @@ describe('importParsers', () => {
             expect(result).toHaveLength(1);
             expect(result[0].name).toBe('Card A');
             expect(result[0].quantity).toBe(2);
+        });
+
+        it('calls Archidekt API for archidekt URLs', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fetchMock = vi.spyOn(archidektApi, 'fetchArchidektDeck').mockResolvedValue({ id: 123 } as any);
+            vi.spyOn(archidektApi, 'extractCardsFromDeck').mockReturnValue([
+                { name: 'Arch Card', quantity: 1, category: 'Sideboard' }
+            ]);
+
+            const result = await parseDeckBuilderUrl('https://archidekt.com/decks/123/test');
+
+            expect(fetchMock).toHaveBeenCalled();
+            expect(result).toEqual([
+                expect.objectContaining({ name: 'Arch Card', category: 'Sideboard' }),
+            ]);
+        });
+
+        it('throws for unsupported deck builder URLs', async () => {
+            await expect(parseDeckBuilderUrl('https://example.com/deck')).rejects.toThrow('Unsupported URL format');
         });
     });
 
@@ -165,6 +273,16 @@ describe('importParsers', () => {
         it('returns empty array for empty input', () => {
             expect(parseDeckList('')).toEqual([]);
             expect(parseDeckList('   \n   \n   ')).toEqual([]);
+        });
+
+        it('detects and normalizes category headers', () => {
+            const result = parseDeckList(`// Sideboard\n1 Negate\nmaybe:\n1 Unsummon\nDECK\n1 Island`);
+
+            expect(result).toEqual([
+                expect.objectContaining({ name: 'Negate', category: 'Sideboard' }),
+                expect.objectContaining({ name: 'Unsummon', category: 'Maybeboard' }),
+                expect.objectContaining({ name: 'Island', category: 'Mainboard' }),
+            ]);
         });
     });
 });

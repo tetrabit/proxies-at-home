@@ -65,5 +65,9 @@ describe("export page limits", () => {
       frontMaxPages: 3,
       backMaxPages: 3,
     });
+    expect(splitCollatedDuplexPageLimit(2, 0, 3)).toEqual({
+      frontMaxPages: 0,
+      backMaxPages: 2,
+    });
   });
 });
