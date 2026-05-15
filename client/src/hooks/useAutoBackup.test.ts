@@ -6,6 +6,7 @@ const mockExportProject = vi.hoisted(() => vi.fn());
 const mockFetch = vi.hoisted(() => vi.fn());
 const mockUseLiveQuery = vi.hoisted(() => vi.fn());
 const mockUseProjectStore = vi.hoisted(() => vi.fn());
+let currentProjectId = "project-1";
 
 vi.mock("@/helpers/projectBackup", () => ({
   exportProject: mockExportProject,
@@ -43,7 +44,8 @@ describe("useAutoBackup", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    mockUseProjectStore.mockImplementation((selector) => selector({ currentProjectId: "project-1" }));
+    currentProjectId = "project-1";
+    mockUseProjectStore.mockImplementation((selector) => selector({ currentProjectId }));
     mockUseLiveQuery.mockImplementation(() => ({ count: 1, settingsHash: 1 }));
     vi.stubGlobal("fetch", mockFetch);
   });
@@ -63,6 +65,7 @@ describe("useAutoBackup", () => {
   });
 
   it("schedules a backup when the change signal changes", async () => {
+    currentProjectId = "project-2";
     mockExportProject.mockResolvedValue({
       project: { name: "Project 1" },
       cards: [{ linkedFrontId: null }],
