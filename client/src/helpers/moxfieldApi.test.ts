@@ -116,24 +116,25 @@ describe("moxfieldApi", () => {
   describe("fetchMoxfieldDeck", () => {
     it("uses the Electron bridge when available", async () => {
       const mockDeck = createMockDeck({ name: "Electron Deck" });
-      const electronFetch = vi.fn().mockResolvedValue(mockDeck);
-      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof electronFetch } }).electronAPI =
+      const fetchMoxfieldDeck = vi.fn().mockResolvedValue(mockDeck);
+      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof fetchMoxfieldDeck } }).electronAPI =
         {
-          fetchMoxfieldDeck: electronFetch,
+          fetchMoxfieldDeck,
         };
 
       const result = await fetchMoxfieldDeck("abc123");
 
       expect(result.name).toBe("Electron Deck");
-      expect(electronFetch).toHaveBeenCalledWith("abc123");
+      expect(fetchMoxfieldDeck).toHaveBeenCalledWith("abc123");
     });
 
     it("logs and rethrows non-Error Electron failures", async () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const electronFetch = vi.fn().mockRejectedValue("boom");
-      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof electronFetch } }).electronAPI = {
-        fetchMoxfieldDeck: electronFetch,
-      };
+      (window as Window & { electronAPI?: { fetchMoxfieldDeck: typeof electronFetch } }).electronAPI =
+        {
+          fetchMoxfieldDeck: electronFetch,
+        };
 
       await expect(fetchMoxfieldDeck("abc123")).rejects.toBe("boom");
       expect(consoleErrorSpy).toHaveBeenCalledWith(
