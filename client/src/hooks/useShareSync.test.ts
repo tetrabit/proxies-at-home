@@ -34,6 +34,7 @@ describe("useShareSync", () => {
     expect(result.current.lastSyncedAt).toBe(222);
     expect(result.current.syncStatus).toBe("synced");
 
+    currentProject = { id: "p1", lastSharedAt: 222 };
     rerender();
 
     expect(result.current.lastSyncedAt).toBe(222);
