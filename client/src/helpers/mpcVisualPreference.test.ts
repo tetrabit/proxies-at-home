@@ -84,6 +84,56 @@ describe("mpcVisualPreference", () => {
     expect(mockToProxied).toHaveBeenCalledWith("https://example.com/b.png");
   });
 
+  it("builds score map entries for candidates with readable thumbnails", async () => {
+    mockLoadImage.mockResolvedValue({
+      close: vi.fn(),
+    });
+    vi.spyOn(document, "createElement").mockReturnValue({
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({
+        drawImage: vi.fn(),
+        getImageData: vi.fn(() => ({
+          data: new Uint8ClampedArray(32 * 32 * 4).fill(128),
+        })),
+      })),
+    } as unknown as HTMLCanvasElement);
+
+    const scores = await buildMpcVisualPreferenceScoreMap(
+      [
+        { identifier: "small", smallThumbnailUrl: "https://example.com/small.png", mediumThumbnailUrl: "https://example.com/medium.png" },
+        { identifier: "medium", smallThumbnailUrl: "", mediumThumbnailUrl: "https://example.com/medium-only.png" },
+      ],
+      {
+        source: {
+          sourceName: "source",
+          descriptor: { meanLuma: 128 / 255, variance: 0, edgeDensity: 0 },
+          sampleCount: 1,
+        },
+      },
+      { sourceWeights: { source: 1 } }
+    );
+
+    expect(scores.small).toBeCloseTo(10);
+    expect(scores.medium).toBeCloseTo(10);
+    expect(mockToProxied).toHaveBeenCalledWith("https://example.com/small.png");
+    expect(mockToProxied).toHaveBeenCalledWith("https://example.com/medium-only.png");
+    expect(mockToProxied).not.toHaveBeenCalledWith("https://example.com/medium.png");
+  });
+
+  it("returns null when a canvas context cannot be created", async () => {
+    const bitmap = { close: vi.fn() };
+    mockLoadImage.mockResolvedValue(bitmap);
+    vi.spyOn(document, "createElement").mockReturnValue({
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => null),
+    } as unknown as HTMLCanvasElement);
+
+    await expect(extractMpcImageDescriptor("https://example.com/no-context.png")).resolves.toBeNull();
+    expect(bitmap.close).toHaveBeenCalled();
+  });
+
   it("returns null when the image cannot be loaded", async () => {
     mockLoadImage.mockRejectedValue(new Error("bad image"));
     await expect(extractMpcImageDescriptor("https://example.com/c.png")).resolves.toBeNull();
