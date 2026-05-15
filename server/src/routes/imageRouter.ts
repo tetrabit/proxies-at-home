@@ -76,6 +76,7 @@ function pLimit(concurrency: number) {
       active--;
       if (q.length) {
         const next = q.shift();
+        /* v8 ignore next -- q.length guarantees shift returns a task tuple; the guard remains defensive for queue mutation. @preserve */
         if (next) {
           const [nextFn, nextRes, nextRej] = next;
           run(nextFn, nextRes, nextRej);
@@ -469,6 +470,7 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
   const localPath = cachePathFromUrl(originalUrl);
 
   // Check cache size periodically
+  /* v8 ignore next -- checkAndCleanCache catches its own filesystem failures; this is a defensive promise guard. @preserve */
   checkAndCleanCache().catch((err: unknown) => console.error("[CACHE] Cleanup failed:", err));
 
   try {
@@ -634,6 +636,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   }
 
   // Log the final failure reason if we have one
+  /* v8 ignore else -- candidate loops always set lastError before a null result; this remains defensive for future candidate changes. @preserve */
   if (lastError) {
     console.error("MPC image proxy failed:", { id, size, lastError });
   }
@@ -724,6 +727,7 @@ export const __imageRouterTestInternals = {
   pLimit,
   checkAndCleanCache,
   cachePathFromUrl,
+  getWithRetry,
   writeInProgress,
   setEnrichLookupTimeoutForTests: (timeoutMs: number) => {
     enrichLookupTimeoutMs = timeoutMs;

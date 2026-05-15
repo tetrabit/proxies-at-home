@@ -104,10 +104,12 @@ describe('mpcAutofillRouter', () => {
       .mockResolvedValueOnce({ data: { results: { id2: cardPayload('id2') } } })
       .mockResolvedValueOnce({ data: { results: { other: { CARD: ['id3'] } } } })
       .mockResolvedValueOnce({ data: { results: { id3: cardPayload('id3') } } })
-      .mockResolvedValueOnce({ data: { results: {} } });
+      .mockResolvedValueOnce({ data: { results: { tokenOnly: { TOKEN: ['token-id'] } } } })
+      .mockResolvedValueOnce({ data: {} });
 
     expect((await request(app).post('/api/mpc/search').send({ query: 'Sol Ring' })).body.cards[0].identifier).toBe('id2');
     expect((await request(app).post('/api/mpc/search').send({ query: 'No Match' })).body.cards[0].identifier).toBe('id3');
+    expect((await request(app).post('/api/mpc/search').send({ query: 'Wrong Type' })).body).toEqual({ cards: [] });
     expect((await request(app).post('/api/mpc/search').send({ query: 'Nothing' })).body).toEqual({ cards: [] });
   });
 
@@ -207,6 +209,13 @@ describe('mpcAutofillRouter', () => {
     const noCards = await request(app).post('/api/mpc/batch-search').send({ queries: ['Empty'] });
     expect(noCards.status).toBe(200);
     expect(noCards.body.results.Empty).toEqual([]);
+
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { sparse: { CARD: ['missing-card'] } } } })
+      .mockResolvedValueOnce({ data: { results: { 'missing-card': null } } });
+    const sparse = await request(app).post('/api/mpc/batch-search').send({ queries: ['Sparse'] });
+    expect(sparse.status).toBe(200);
+    expect(sparse.body.results.Sparse).toEqual([]);
   });
 
   it('surfaces axios and non-axios batch failures', async () => {
@@ -233,6 +242,18 @@ describe('mpcAutofillRouter', () => {
     expect(response.status).toBe(502);
     expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: 'unknown: [object Object]' });
     expect(mocks.axiosPost).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves Error instances raised during card fetches', async () => {
+    mocks.axiosPost
+      .mockResolvedValueOnce({ data: { results: { miss: { CARD: ['id1'] } } } })
+      .mockRejectedValueOnce(new Error('typed card fetch failure'));
+    mocks.isAxiosError.mockReturnValueOnce(false);
+
+    const response = await request(app).post('/api/mpc/batch-search').send({ queries: ['Miss'] });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toEqual({ error: 'Failed to batch search MPC Autofill', details: 'typed card fetch failure' });
   });
 
   it('retries 5xx card fetch failures until exhausted', async () => {

@@ -224,9 +224,25 @@ describe("getWithRetry logic", () => {
         expect(fs.promises.readdir).toHaveBeenCalledTimes(2);
 
         __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce(new Error("readdir failed"));
+        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["old.png", "new.png"]);
+        (fs.promises.stat as unknown as Mock)
+            .mockResolvedValueOnce({ isFile: () => true, atimeMs: 1, size: 4 * gib })
+            .mockResolvedValueOnce({ isFile: () => true, atimeMs: 2, size: 9 * gib });
+        (fs.promises.unlink as unknown as Mock).mockResolvedValueOnce(undefined);
         await __imageRouterTestInternals.checkAndCleanCache();
-        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "readdir failed");
+        expect(fs.promises.unlink).toHaveBeenCalledTimes(3);
+
+        __imageRouterTestInternals.resetCacheCleanupForTests();
+        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["plain-error.png"]);
+        (fs.promises.stat as unknown as Mock).mockResolvedValueOnce({ isFile: () => true, atimeMs: 1, size: 13 * gib });
+        (fs.promises.unlink as unknown as Mock).mockRejectedValueOnce("plain unlink failure");
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("[CACHE] Failed to delete"), "plain unlink failure");
+
+        __imageRouterTestInternals.resetCacheCleanupForTests();
+        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce("plain readdir failure");
+        await __imageRouterTestInternals.checkAndCleanCache();
+        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "plain readdir failure");
 
         consoleLogSpy.mockRestore();
         consoleWarnSpy.mockRestore();
@@ -251,6 +267,22 @@ describe("getWithRetry logic", () => {
         expect(mockedAxios.get).toHaveBeenCalledTimes(2);
         sendFileSpy.mockRestore();
     }, 10000);
+
+    it("uses the default retry-after delay when 429 omits the header", async () => {
+        vi.useFakeTimers();
+        mockedAxios.get
+            .mockResolvedValueOnce({ status: 429, headers: {} })
+            .mockResolvedValueOnce({
+                status: 200,
+                data: Buffer.from("image data"),
+                headers: { "content-type": "image/png" },
+            });
+
+        const responsePromise = __imageRouterTestInternals.getWithRetry("http://example.com/rate-limited.png");
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(responsePromise).resolves.toMatchObject({ status: 200 });
+        expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    });
 
     it("should retry on generic error and then succeed", async () => {
         mockedAxios.get
@@ -409,6 +441,19 @@ describe("getWithRetry logic", () => {
             sendFileSpy.mockRestore();
         });
 
+        it("serves cached MPC images without fetching", async () => {
+            (fs.existsSync as unknown as Mock).mockReturnValue(true);
+            const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+                this.type("image/png").send("cached mpc image");
+            });
+
+            const res = await request(app).get("/images/mpc?id=cached-id&size=small");
+            expect(res.status).toBe(200);
+            expect(mockedAxios.get).not.toHaveBeenCalled();
+            expect(fs.promises.utimes).toHaveBeenCalled();
+            sendFileSpy.mockRestore();
+        });
+
         it("should return 502 if GDrive fails", async () => {
             mockedAxios.get.mockRejectedValue(new Error("Failed"));
             const res = await request(app).get("/images/mpc?id=123");
@@ -422,6 +467,15 @@ describe("getWithRetry logic", () => {
                 .mockResolvedValueOnce({ headers: { "content-type": "text/html" } }); // Third candidate
 
             const res = await request(app).get("/images/mpc?id=123");
+            expect(res.status).toBe(502);
+        });
+
+        it("handles missing GDrive content types and non-Error candidate failures", async () => {
+            mockedAxios.get
+                .mockResolvedValueOnce({ headers: {}, data: Buffer.from("html") })
+                .mockRejectedValueOnce("plain gdrive failure");
+
+            const res = await request(app).get("/images/mpc?id=plain-gdrive");
             expect(res.status).toBe(502);
         });
     });
@@ -454,6 +508,54 @@ describe("getWithRetry logic", () => {
             expect(res.body.error).toBe("Upstream not image");
         });
 
+        it("normalizes relative and malformed proxy URLs and surfaces default content-type errors", async () => {
+            process.env.PORT = "4321";
+            mockedAxios.get.mockResolvedValueOnce({
+                status: 200,
+                data: Buffer.from("text data"),
+                headers: {},
+            });
+
+            const relative = await request(app).get("/images/proxy").query({ url: "/cardbacks/mtg.png" });
+            expect(relative.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenCalledWith(
+                "http://127.0.0.1:4321/cardbacks/mtg.png",
+                expect.any(Object)
+            );
+            expect(relative.body).toEqual({ error: "Upstream not image", ct: "" });
+
+            mockedAxios.get.mockResolvedValueOnce({
+                status: 200,
+                data: Buffer.from("text data"),
+                headers: { "content-type": "text/plain" },
+            });
+            const malformed = await request(app).get("/images/proxy").query({ url: "%E0%A4%A" });
+            expect(malformed.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenLastCalledWith("%E0%A4%A", expect.any(Object));
+        });
+
+        it("continues to fetch when an in-progress write does not produce a cached file", async () => {
+            const url = "http://example.com/race-still-missing.png";
+            const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
+            __imageRouterTestInternals.writeInProgress.add(localPath);
+            mockedAxios.get.mockResolvedValue({
+                status: 200,
+                data: Buffer.from("image data"),
+                headers: { "content-type": "image/png" },
+            });
+            const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+                this.type("image/png").send("fresh image");
+            });
+
+            const responsePromise = request(app).get("/images/proxy").query({ url });
+            await new Promise(resolve => setTimeout(resolve, 150));
+            const res = await responsePromise;
+
+            expect(res.status).toBe(200);
+            expect(mockedAxios.get).toHaveBeenCalledWith(url, expect.any(Object));
+            sendFileSpy.mockRestore();
+        });
+
         it("should return 400 if url query param is missing", async () => {
             const res = await request(app).get("/images/proxy");
             expect(res.status).toBe(400);
@@ -481,12 +583,21 @@ describe("getWithRetry logic", () => {
             // which is caught and returns "Failed to download image"
             expect(res.body.error).toBe("Failed to download image");
         });
+
+        it("stringifies non-Error proxy failures", async () => {
+            mockedAxios.get.mockRejectedValue("plain proxy failure");
+            const res = await request(app).get("/images/proxy").query({ url: "http://example.com/plain-error.png" });
+            expect(res.status).toBe(502);
+            expect(res.body.error).toBe("Failed to download image");
+        });
     });
 
     describe("enrichment, token, and cardback routes", () => {
         it("returns [] for empty enrich and tokens requests and rejects overlarge batches", async () => {
             expect((await request(app).post("/images/enrich").send({ cards: [] })).body).toEqual([]);
             expect((await request(app).post("/images/tokens").send({ cards: [] })).body).toEqual([]);
+            expect((await request(app).post("/images/enrich").send({ cards: "not-array" })).body).toEqual([]);
+            expect((await request(app).post("/images/tokens").send({ cards: "not-array" })).body).toEqual([]);
             expect((await request(app).post("/images/enrich").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
             expect((await request(app).post("/images/tokens").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
         });
@@ -511,6 +622,32 @@ describe("getWithRetry logic", () => {
             expect(response.body[2]).toMatchObject({ name: "Fallback", token_parts: [{ name: "Token" }] });
         });
 
+        it("enriches fallback metadata shapes and timeout test seams", async () => {
+            const batch = new Map();
+            batch.set("fallback fields", {
+                card_faces: [{ image_uris: { png: "nameless-face.png" } }],
+            });
+            routeMocks.batchFetchCards.mockResolvedValueOnce(batch);
+            routeMocks.extractTokenParts.mockReturnValueOnce([]);
+
+            const response = await request(app).post("/images/enrich").send({
+                cards: [{ name: "Fallback Fields", set: "SET", number: "42" }],
+            });
+            expect(response.status).toBe(200);
+            expect(response.body[0]).toMatchObject({
+                name: "Fallback Fields",
+                set: "SET",
+                number: "42",
+                card_faces: [{ name: "" }],
+            });
+
+            __imageRouterTestInternals.setEnrichLookupTimeoutForTests(1);
+            routeMocks.batchFetchCards.mockResolvedValueOnce(new Map());
+            routeMocks.getCardDataForCardInfo.mockImplementationOnce(() => new Promise(() => undefined));
+            const timedOut = await request(app).post("/images/enrich").send({ cards: [{ name: "Slow" }] });
+            expect(timedOut.body).toEqual([null]);
+        });
+
         it("returns null enrich entries for mismatches, fallback misses, timeouts, and reports batch failures", async () => {
             const batch = new Map();
             batch.set("wrong", { name: "Different", set: "abc", collector_number: "9" });
@@ -524,7 +661,7 @@ describe("getWithRetry logic", () => {
             const fallbackFailure = await request(app).post("/images/enrich").send({ cards: [{ name: "Timeout" }] });
             expect(fallbackFailure.body).toEqual([null]);
 
-            routeMocks.batchFetchCards.mockRejectedValueOnce(new Error("batch down"));
+            routeMocks.batchFetchCards.mockRejectedValueOnce("plain batch down");
             const failed = await request(app).post("/images/enrich").send({ cards: [{ name: "Boom" }] });
             expect(failed.status).toBe(500);
             expect(failed.body.error).toBe("Failed to enrich cards.");
@@ -551,7 +688,7 @@ describe("getWithRetry logic", () => {
                 { name: "Missing" },
             ]);
 
-            routeMocks.fetchCardsForTokenLookup.mockRejectedValueOnce(new Error("lookup down"));
+            routeMocks.fetchCardsForTokenLookup.mockRejectedValueOnce("plain lookup down");
             const failed = await request(app).post("/images/tokens").send({ cards: [{ name: "Boom" }] });
             expect(failed.status).toBe(500);
             expect(failed.body.error).toBe("Failed to fetch token data.");
