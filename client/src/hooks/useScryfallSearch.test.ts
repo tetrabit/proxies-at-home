@@ -162,6 +162,37 @@ describe('useScryfallSearch', () => {
 
             expect(mockFetchCardBySetAndNumber).toHaveBeenCalledWith('cmd', '129', expect.anything());
         });
+
+        it('should clear results when the fetched specific card does not match the cleaned name', async () => {
+            mockFetchCardBySetAndNumber.mockResolvedValue({
+                name: 'Lightning Bolt',
+                set: 'cmd',
+                number: '129',
+                imageUrls: ['https://example.com/bolt.jpg'],
+                lang: 'en',
+            });
+
+            const { result } = renderHook(() => useScryfallSearch('Sol [CMD-129]'));
+
+            await vi.waitFor(() => {
+                expect(mockFetchCardBySetAndNumber).toHaveBeenCalled();
+            }, { timeout: 3000 });
+
+            expect(result.current.cards).toEqual([]);
+            expect(result.current.hasSearched).toBe(true);
+        });
+
+        it('should search exact names within a set when only set is specified', async () => {
+            mockSearchCards.mockResolvedValue([]);
+
+            renderHook(() => useScryfallSearch('Forest [CMD]'));
+
+            await vi.waitFor(() => {
+                expect(mockSearchCards).toHaveBeenCalled();
+            }, { timeout: 3000 });
+
+            expect(mockSearchCards).toHaveBeenCalledWith('!"Forest" set:cmd unique:prints', expect.anything());
+        });
     });
 
     describe('incomplete syntax', () => {
