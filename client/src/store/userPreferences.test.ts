@@ -226,12 +226,50 @@ describe("useUserPreferencesStore", () => {
             expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
         });
 
+        it("should persist settings panel collapse and favorite sort", async () => {
+            await useUserPreferencesStore.getState().setIsSettingsPanelCollapsed(true);
+            await useUserPreferencesStore.getState().setFavoriteMpcSort("source");
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.isSettingsPanelCollapsed).toBe(true);
+            expect(prefs?.favoriteMpcSort).toBe("source");
+            expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
+        });
+
+        it("should persist upload panel collapse and width", async () => {
+            await useUserPreferencesStore.getState().setIsUploadPanelCollapsed(true);
+            await useUserPreferencesStore.getState().setUploadPanelWidth(640);
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.isUploadPanelCollapsed).toBe(true);
+            expect(prefs?.uploadPanelWidth).toBe(640);
+            expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
+        });
+
         it("should persist card editor section collapse state", async () => {
             const newCollapsed = { 'basic': true };
             await useUserPreferencesStore.getState().setCardEditorSectionCollapsed(newCollapsed);
 
             const prefs = useUserPreferencesStore.getState().preferences;
             expect(prefs?.cardEditorSectionCollapsed).toEqual(newCollapsed);
+            expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
+        });
+
+        it("should persist card editor section order", async () => {
+            const newOrder = ["basic", "enhance"];
+            await useUserPreferencesStore.getState().setCardEditorSectionOrder(newOrder);
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.cardEditorSectionOrder).toEqual(newOrder);
+            expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
+        });
+
+        it("should persist filter section collapse state", async () => {
+            const newCollapsed = { Source: true };
+            await useUserPreferencesStore.getState().setFilterSectionCollapsed(newCollapsed);
+
+            const prefs = useUserPreferencesStore.getState().preferences;
+            expect(prefs?.filterSectionCollapsed).toEqual(newCollapsed);
             expect(db.userPreferences.put).toHaveBeenCalledWith(prefs);
         });
 
