@@ -408,6 +408,12 @@ describe('scryfallRouter', () => {
             expect(axios.get).toHaveBeenLastCalledWith('/cards/search', {
                 params: { q: 't:artifact treasure include:extras' },
             });
+
+            const validType = await request(app).get('/api/scryfall/search?q=t:artifact');
+            expect(validType.status).toBe(200);
+            expect(axios.get).toHaveBeenLastCalledWith('/cards/search', {
+                params: { q: 't:artifact' },
+            });
         });
 
         it('converts underscore and explicit token search syntax', async () => {
@@ -511,6 +517,15 @@ describe('scryfallRouter', () => {
             const micro = await request(app).get('/api/scryfall/cards/mic/42');
             expect(micro.status).toBe(200);
             expect(micro.body).toEqual({ name: 'Micro Set Card' });
+
+            vi.mocked(isMicroserviceAvailable).mockResolvedValueOnce(true);
+            vi.mocked(getScryfallClient).mockReturnValueOnce({
+                searchCards: vi.fn().mockResolvedValue({ success: true, data: { data: [] } }),
+            } as never);
+            vi.mocked(axios.get).mockResolvedValueOnce({ data: { name: 'Direct Set Card' } });
+            const microMiss = await request(app).get('/api/scryfall/cards/mis/43');
+            expect(microMiss.status).toBe(200);
+            expect(microMiss.body).toEqual({ name: 'Direct Set Card' });
 
             vi.mocked(axios.get).mockRejectedValueOnce({ isAxiosError: true, response: { status: 404, data: { error: 'missing' } } });
             vi.mocked(axios.isAxiosError).mockReturnValueOnce(true);
