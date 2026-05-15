@@ -276,6 +276,26 @@ describe("useScryfallPrints", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("cleans up before a debounced fetch starts without aborting a request", async () => {
+    vi.useFakeTimers();
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = renderHook(() =>
+      useScryfallPrints({
+        name: "Early Unmount",
+      })
+    );
+
+    unmount();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(abortSpy).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("aborts an in-flight request when the query changes", async () => {
     vi.useFakeTimers();
     const abortSpy = vi.spyOn(AbortController.prototype, "abort");
