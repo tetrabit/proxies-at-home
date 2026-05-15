@@ -134,6 +134,71 @@ describe("mpcVisualPreference", () => {
     expect(bitmap.close).toHaveBeenCalled();
   });
 
+  it("passes abort signals through descriptor image loading", async () => {
+    const bitmap = { close: vi.fn() };
+    mockLoadImage.mockResolvedValue(bitmap);
+    vi.spyOn(document, "createElement").mockReturnValue({
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({
+        drawImage: vi.fn(),
+        getImageData: vi.fn(() => ({
+          data: new Uint8ClampedArray(32 * 32 * 4).fill(64),
+        })),
+      })),
+    } as unknown as HTMLCanvasElement);
+
+    const signal = new AbortController().signal;
+    await expect(
+      extractMpcImageDescriptor("https://example.com/signal.png", signal)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        meanLuma: expect.any(Number),
+        variance: expect.any(Number),
+        edgeDensity: expect.any(Number),
+      })
+    );
+
+    expect(mockLoadImage).toHaveBeenCalledWith(
+      "proxied:https://example.com/signal.png",
+      { signal },
+      1
+    );
+    expect(bitmap.close).toHaveBeenCalled();
+  });
+
+  it("skips empty profile images and failed profile descriptors", async () => {
+    mockLoadImage.mockRejectedValue(new Error("no descriptor"));
+
+    const profiles = await buildMpcSourceVisualProfiles([
+      {
+        sourceName: "empty",
+        candidates: [
+          { imageUrl: "" },
+          { imageUrl: "https://example.com/fail.png" },
+        ],
+      },
+    ]);
+
+    expect(profiles).toEqual({});
+    expect(mockToProxied).toHaveBeenCalledWith("https://example.com/fail.png");
+  });
+
+  it("returns zero when profile weights are missing or non-positive", () => {
+    const descriptor = { meanLuma: 0.1, variance: 0.1, edgeDensity: 0.1 };
+
+    expect(
+      scoreMpcVisualSourcePreference(
+        descriptor,
+        {
+          zero: { sourceName: "zero", descriptor, sampleCount: 1 },
+          missing: { sourceName: "missing", descriptor, sampleCount: 1 },
+        },
+        { zero: 0 }
+      )
+    ).toBe(0);
+  });
+
   it("returns null when the image cannot be loaded", async () => {
     mockLoadImage.mockRejectedValue(new Error("bad image"));
     await expect(extractMpcImageDescriptor("https://example.com/c.png")).resolves.toBeNull();
