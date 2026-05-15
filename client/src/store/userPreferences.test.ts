@@ -125,6 +125,36 @@ describe("useUserPreferencesStore", () => {
             expect(loaded?.settingsPanelState?.order?.at(-1)).toBe("application");
         });
 
+        it("should tolerate missing forced order positions during repair", async () => {
+            const legacyPrefs = {
+                id: "default",
+                settings: {},
+                favoriteCardbacks: [],
+                favoriteMpcSources: [],
+                favoriteMpcTags: [],
+                favoriteMpcDpi: null,
+                favoriteMpcSort: null,
+                settingsPanelState: {
+                    order: ["Application", "Layout"],
+                    collapsed: {},
+                },
+            };
+            const originalIndexOf = Array.prototype.indexOf;
+            const indexOfSpy = vi.spyOn(Array.prototype, "indexOf").mockImplementation(function (this: unknown[], searchElement: unknown, fromIndex?: number) {
+                if (searchElement === "projects" || searchElement === "application") {
+                    return -1;
+                }
+                return originalIndexOf.call(this, searchElement as never, fromIndex as never);
+            });
+            (db.userPreferences.get as Mock).mockResolvedValue(legacyPrefs);
+
+            await useUserPreferencesStore.getState().load();
+
+            expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("projects");
+            expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("application");
+            indexOfSpy.mockRestore();
+        });
+
         it("should preserve fully populated valid preferences without repairing them", async () => {
             const validPrefs = {
                 id: "default",
