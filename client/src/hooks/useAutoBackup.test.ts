@@ -6,6 +6,8 @@ const mockExportProject = vi.hoisted(() => vi.fn());
 const mockFetch = vi.hoisted(() => vi.fn());
 const mockUseLiveQuery = vi.hoisted(() => vi.fn());
 const mockUseProjectStore = vi.hoisted(() => vi.fn());
+const mockProjectsToArray = vi.hoisted(() => vi.fn());
+const mockProjectCardCounts = vi.hoisted(() => new Map<string, number>());
 let currentProjectId = "project-1";
 
 vi.mock("@/helpers/projectBackup", () => ({
@@ -31,11 +33,15 @@ vi.mock("@/helpers/debug", () => ({
 vi.mock("@/db", () => ({
   db: {
     cards: {
-      where: vi.fn(() => ({ equals: vi.fn(() => ({ count: vi.fn().mockResolvedValue(0) })) })),
+      where: vi.fn(() => ({
+        equals: vi.fn((projectId: string) => ({
+          count: vi.fn().mockImplementation(async () => mockProjectCardCounts.get(projectId) ?? 0),
+        })),
+      })),
     },
     projects: {
       get: vi.fn().mockResolvedValue({ settings: {} }),
-      toArray: vi.fn().mockResolvedValue([]),
+      toArray: mockProjectsToArray,
     },
   },
 }));
@@ -44,9 +50,11 @@ describe("useAutoBackup", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    mockProjectCardCounts.clear();
     currentProjectId = "project-1";
     mockUseProjectStore.mockImplementation((selector) => selector({ currentProjectId }));
     mockUseLiveQuery.mockImplementation(() => ({ count: 1, settingsHash: 1 }));
+    mockProjectsToArray.mockResolvedValue([]);
     vi.stubGlobal("fetch", mockFetch);
   });
 
@@ -99,5 +107,44 @@ describe("useAutoBackup", () => {
     });
 
     expect(mockExportProject).toHaveBeenCalled();
+  });
+
+  it("backs up projects during the periodic sweep", async () => {
+    currentProjectId = "project-sweep";
+    mockProjectsToArray.mockResolvedValue([
+      { id: "project-sweep", name: "Sweep Project" },
+      { id: "project-empty", name: "Empty Project" },
+    ]);
+    mockProjectCardCounts.set("project-sweep", 2);
+    mockProjectCardCounts.set("project-empty", 0);
+    mockExportProject.mockResolvedValue({
+      project: { name: "Sweep Project" },
+      cards: [{ linkedFrontId: null }],
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+
+    renderHook(() => useAutoBackup());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    });
+
+    expect(mockExportProject).toHaveBeenCalledWith("project-sweep");
+  });
+
+  it("sends a beacon on page unload when a project is active", () => {
+    const sendBeacon = vi.fn();
+    vi.stubGlobal("navigator", {
+      sendBeacon,
+    });
+
+    renderHook(() => useAutoBackup());
+
+    window.dispatchEvent(new Event("beforeunload"));
+
+    expect(sendBeacon).toHaveBeenCalledWith(
+      "http://example.test/api/backup/project-1",
+      expect.any(Blob)
+    );
   });
 });
