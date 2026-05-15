@@ -83,6 +83,7 @@ function darkenModeToInt(mode: DarkenMode): number {
         case 'darken-all': return 1;
         case 'contrast-edges': return 2;
         case 'contrast-full': return 3;
+        /* v8 ignore next -- DarkenMode is a closed union; default guards malformed runtime input. @preserve */
         default: return 0;
     }
 }

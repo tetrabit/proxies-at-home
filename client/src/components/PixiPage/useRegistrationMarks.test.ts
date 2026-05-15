@@ -97,4 +97,22 @@ describe('useRegistrationMarks', () => {
 
     unmount();
   });
+
+  it('destroys active graphics on unmount', () => {
+    const container = makeContainer();
+    const app = makeApp();
+
+    const { unmount } = renderHook(() => useRegistrationMarks({
+      isReady: true,
+      container: container as never,
+      app: app as never,
+      pages: pages as never,
+      registrationMarks: '3',
+      registrationMarksPortrait: false,
+    }));
+
+    const graphics = mocks.graphicsInstances[0];
+    unmount();
+    expect(graphics.destroy).toHaveBeenCalled();
+  });
 });
