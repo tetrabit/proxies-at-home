@@ -178,4 +178,63 @@ describe('Cardback Library', () => {
             expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
         });
     });
+
+
+    describe('builtin validation residual branches', () => {
+        beforeEach(() => {
+            vi.stubGlobal('URL', {
+                createObjectURL: vi.fn(() => 'blob:test'),
+                revokeObjectURL: vi.fn(),
+            });
+        });
+
+        it('skips builtin cardbacks that already have valid original blobs', async () => {
+            const validBlob = new Blob([new Uint8Array(50_001)], { type: '' });
+            await db.cardbacks.add({
+                id: BUILTIN_CARDBACKS[0].id,
+                sourceUrl: BUILTIN_CARDBACKS[0].imageUrl,
+                originalBlob: validBlob,
+            });
+            vi.stubGlobal('fetch', vi.fn(async () => ({
+                ok: true,
+                blob: async () => new Blob([new Uint8Array(50_001)], { type: 'image/png' }),
+            })));
+
+            await ensureBuiltinCardbacksInDb();
+
+            expect(fetch).toHaveBeenCalledTimes(BUILTIN_CARDBACKS.filter((cardback) => cardback.id !== BUILTIN_CARDBACKS[0].id && cardback.id !== 'cardback_builtin_blank').length);
+        });
+
+        it('logs failed builtin fetch responses without aborting the ensure pass', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            vi.stubGlobal('fetch', vi.fn(async () => ({
+                ok: false,
+                status: 503,
+                statusText: 'Unavailable',
+                text: async () => 'server down',
+            })));
+
+            await ensureBuiltinCardbacksInDb();
+
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Failed to store builtin cardback'),
+                expect.any(Error)
+            );
+        });
+
+        it('logs invalid builtin image blobs without storing them', async () => {
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            vi.stubGlobal('fetch', vi.fn(async () => ({
+                ok: true,
+                blob: async () => new Blob(['tiny html'], { type: 'text/html' }),
+            })));
+
+            await ensureBuiltinCardbacksInDb();
+
+            expect(errorSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Failed to store builtin cardback'),
+                expect.any(Error)
+            );
+        });
+    });
 });

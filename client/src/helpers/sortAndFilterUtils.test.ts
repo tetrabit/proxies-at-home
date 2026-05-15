@@ -368,4 +368,27 @@ describe("sortAndFilterUtils", () => {
       })
     ).toBe(true);
   });
+
+
+  it("covers fallback color and rarity branch defaults", () => {
+    expect(
+      sortCards(
+        [
+          card({ uuid: "unknown", name: "Unknown", colors: ["X"], type_line: "Creature" }),
+          card({ uuid: "none", name: "None", type_line: "Creature" }),
+        ],
+        { by: "color", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["none", "unknown"]);
+
+    expect(
+      sortCards(
+        [
+          card({ uuid: "weird", name: "Weird", rarity: "masterpiece" }),
+          card({ uuid: "basic-name", name: "Island" }),
+        ],
+        { by: "rarity", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["weird", "basic-name"]);
+  });
 });

@@ -205,3 +205,42 @@ describe("normalizeSharedCardbackTargetBleed residual target variants", () => {
         expect(result[2]).toBe(cards[2]);
     });
 });
+
+
+// Task-44 global helper residual coverage for remaining normalization keys.
+describe("normalizeSharedCardbackTargetBleed global residual variants", () => {
+    it("normalizes legacy generate-only targets and generate-global targets", () => {
+        const legacyCards = [
+            backCard({ uuid: "back-1", generateBleedMm: 5 }),
+            backCard({ uuid: "back-2", generateBleedMm: 5 }),
+            backCard({ uuid: "back-3", bleedMode: "none" }),
+        ];
+
+        const legacyResult = normalizeSharedCardbackTargetBleed(legacyCards);
+        expect(legacyResult[2]).toMatchObject({
+            bleedMode: "generate",
+            generateBleedMm: 5,
+        });
+
+        const globalCards = [
+            backCard({ uuid: "global-1", bleedMode: "generate", generateBleedMm: undefined }),
+            backCard({ uuid: "global-2", bleedMode: "generate", generateBleedMm: undefined }),
+            backCard({ uuid: "global-3", bleedMode: "existing", existingBleedMm: 3.175 }),
+        ];
+
+        const globalResult = normalizeSharedCardbackTargetBleed(globalCards);
+        expect(globalResult[2]).toMatchObject({
+            bleedMode: "generate",
+            generateBleedMm: undefined,
+        });
+    });
+
+    it("leaves shared cardbacks unchanged when all target keys match", () => {
+        const cards = [
+            backCard({ uuid: "back-1", bleedMode: "none" }),
+            backCard({ uuid: "back-2", bleedMode: "none" }),
+        ];
+
+        expect(normalizeSharedCardbackTargetBleed(cards)).toBe(cards);
+    });
+});

@@ -323,4 +323,24 @@ describe("cacheUtils", () => {
       await expect(emergencyCleanup()).resolves.toBe(false);
     });
   });
+
+
+  it("uses blob size fallback and handles cache stat/cleanup errors", async () => {
+    await db.imageCache.add({
+      url: "blob-sized",
+      blob: new Blob([new Uint8Array(10)]),
+      cachedAt: Date.now(),
+    } as never);
+
+    await expect(getImageCacheStats()).resolves.toMatchObject({
+      count: 1,
+      sizeBytes: 10,
+    });
+
+    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(new Error("count failed"));
+    await expect(getImageCacheStats()).resolves.toEqual({ count: 0, sizeBytes: 0, oldestMs: null });
+
+    vi.spyOn(db.imageCache, "count").mockRejectedValueOnce(new Error("cleanup failed"));
+    await expect(emergencyCleanup()).resolves.toBe(false);
+  });
 });
