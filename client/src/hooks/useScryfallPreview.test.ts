@@ -199,6 +199,39 @@ describe("useScryfallPreview", () => {
     expect(result.current.validatedPreviewUrl).toBeNull();
   });
 
+  it("ignores a stale specific-card response when the query changes to a too-short value", async () => {
+    mockExtractCardInfo.mockImplementation((input: string) =>
+      input === "A" ? { name: "A", set: null, number: null } : { name: "Dark", set: "abc", number: "12" }
+    );
+    const deferred = <T,>() => {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      const promise = new Promise<T>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    };
+    const pending = deferred<{ name: string }>();
+    mockFetchCardBySetAndNumber.mockReturnValueOnce(pending.promise);
+
+    const { result, rerender } = renderHook(({ query }) => useScryfallPreview(query), {
+      initialProps: { query: "Dark [abc] 12" },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    rerender({ query: "A" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      pending.resolve({ name: "Darksteel Citadel" });
+      await Promise.resolve();
+    });
+
+    expect(result.current.setVariations).toEqual([]);
+    expect(mockFetchCardBySetAndNumber).toHaveBeenCalledTimes(1);
+  });
+
   it("clears specific-card results when the direct lookup rejects", async () => {
     mockExtractCardInfo.mockReturnValue({ name: "Dark", set: "abc", number: "12" });
     mockFetchCardBySetAndNumber.mockRejectedValue(new Error("lookup failed"));
@@ -281,6 +314,25 @@ describe("useScryfallPreview", () => {
 
     expect(result.current.setVariations.map((card) => card.name)).toEqual([
       "Alpha Art",
+      "The Artful Dodger",
+      "Quartermaster",
+    ]);
+  });
+
+  it("prefers a word-boundary match over a contains-only match", async () => {
+    mockExtractCardInfo.mockReturnValue({ name: "art", set: null, number: null });
+    mockSearchCards.mockResolvedValue([
+      { name: "Quartermaster" },
+      { name: "The Artful Dodger" },
+    ]);
+
+    const { result } = renderHook(() => useScryfallPreview("art"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(result.current.setVariations.map((card) => card.name)).toEqual([
       "The Artful Dodger",
       "Quartermaster",
     ]);

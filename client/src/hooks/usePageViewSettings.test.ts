@@ -36,6 +36,25 @@ const mockSettingsState = vi.hoisted(() => ({
     guideColor: "#000000",
     guidePlacement: "inside" as const,
 }));
+const mockUserPreferencesState = vi.hoisted(() => ({
+    preferences: {
+        settingsPanelWidth: 320,
+        isSettingsPanelCollapsed: false,
+        uploadPanelWidth: 320,
+        isUploadPanelCollapsed: false,
+    } as
+        | {
+              settingsPanelWidth?: number;
+              isSettingsPanelCollapsed?: boolean;
+              uploadPanelWidth?: number;
+              isUploadPanelCollapsed?: boolean;
+          }
+        | undefined,
+    setIsSettingsPanelCollapsed: vi.fn(),
+    setSettingsPanelWidth: vi.fn(),
+    setIsUploadPanelCollapsed: vi.fn(),
+    setUploadPanelWidth: vi.fn(),
+}));
 
 vi.mock("../store/settings", () => ({
     useSettingsStore: (selector: (state: typeof mockSettingsState) => unknown) => {
@@ -64,22 +83,10 @@ vi.mock("../store/projectStore", () => ({
 
 vi.mock("../store/userPreferences", () => ({
     useUserPreferencesStore: vi.fn((selector) => {
-        const state = {
-            preferences: {
-                settingsPanelWidth: 320,
-                isSettingsPanelCollapsed: false,
-                uploadPanelWidth: 320,
-                isUploadPanelCollapsed: false,
-            },
-            setIsSettingsPanelCollapsed: vi.fn(),
-            setSettingsPanelWidth: vi.fn(),
-            setIsUploadPanelCollapsed: vi.fn(),
-            setUploadPanelWidth: vi.fn(),
-        };
         if (typeof selector === "function") {
-            return selector(state);
+            return selector(mockUserPreferencesState);
         }
-        return state;
+        return mockUserPreferencesState;
     }),
 }));
 
@@ -97,6 +104,12 @@ describe("usePageViewSettings", () => {
         mockSettingsState.filterColors = [];
         mockSettingsState.filterTypes = [];
         mockSettingsState.filterCategories = [];
+        mockUserPreferencesState.preferences = {
+            settingsPanelWidth: 320,
+            isSettingsPanelCollapsed: false,
+            uploadPanelWidth: 320,
+            isUploadPanelCollapsed: false,
+        };
     });
 
     it("should return all settings", () => {
@@ -193,5 +206,26 @@ describe("usePageViewSettings", () => {
                 noBleedTargetAmount: 3,
             });
         });
+    });
+
+    it("should fall back to default panel widths when preferences are missing", () => {
+        mockUserPreferencesState.preferences = undefined;
+
+        const { result } = renderHook(() => usePageViewSettings());
+
+        expect(result.current.settingsPanelWidth).toBe(320);
+        expect(result.current.isSettingsPanelCollapsed).toBe(false);
+        expect(result.current.uploadPanelWidth).toBe(320);
+        expect(result.current.isUploadPanelCollapsed).toBe(false);
+    });
+
+    it("should toggle panel collapsed state through the exposed setters", () => {
+        const { result } = renderHook(() => usePageViewSettings());
+
+        result.current.toggleSettingsPanel();
+        result.current.toggleUploadPanel();
+
+        expect(mockUserPreferencesState.setIsSettingsPanelCollapsed).toHaveBeenCalledWith(true);
+        expect(mockUserPreferencesState.setIsUploadPanelCollapsed).toHaveBeenCalledWith(true);
     });
 });

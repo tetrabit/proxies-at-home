@@ -6,6 +6,13 @@ import type { ImageProcessor } from "@/helpers/imageProcessor";
 // Mock dependencies
 const mockShowProcessingToast = vi.fn();
 const mockHideProcessingToast = vi.fn();
+const mockHasActiveSession = vi.hoisted(() => vi.fn().mockReturnValue(false));
+const mockMarkProcessingStart = vi.hoisted(() => vi.fn());
+const mockMarkProcessingComplete = vi.hoisted(() => vi.fn());
+const mockGetCurrentSession = vi.hoisted(() => vi.fn().mockReturnValue({
+    markProcessingStart: mockMarkProcessingStart,
+    markProcessingComplete: mockMarkProcessingComplete,
+}));
 
 vi.mock("@/store/toast", () => ({
     useToastStore: {
@@ -24,8 +31,8 @@ vi.mock("@/helpers/effectCache", () => ({
 }));
 
 vi.mock("@/helpers/importSession", () => ({
-    hasActiveSession: vi.fn().mockReturnValue(false),
-    getCurrentSession: vi.fn().mockReturnValue(null),
+    hasActiveSession: mockHasActiveSession,
+    getCurrentSession: mockGetCurrentSession,
 }));
 
 describe("useProcessingMonitor", () => {
@@ -35,6 +42,11 @@ describe("useProcessingMonitor", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         imageActivityCallback = null;
+        mockHasActiveSession.mockReturnValue(false);
+        mockGetCurrentSession.mockReturnValue({
+            markProcessingStart: mockMarkProcessingStart,
+            markProcessingComplete: mockMarkProcessingComplete,
+        });
 
         mockImageProcessor = {
             onActivityChange: vi.fn((callback) => {
@@ -77,6 +89,29 @@ describe("useProcessingMonitor", () => {
             imageActivityCallback(false);
         }
 
+        expect(mockHideProcessingToast).toHaveBeenCalled();
+    });
+
+    it("should mark processing start and complete around an active session", () => {
+        mockHasActiveSession.mockReturnValue(true);
+
+        renderHook(() => useProcessingMonitor(mockImageProcessor));
+
+        imageActivityCallback?.(true);
+        imageActivityCallback?.(false);
+
+        expect(mockMarkProcessingStart).toHaveBeenCalledTimes(1);
+        expect(mockMarkProcessingComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("should update the toast when the effect processor becomes active", () => {
+        renderHook(() => useProcessingMonitor(mockImageProcessor));
+
+        const effectCallback = mockOnActivityChange.mock.calls[0]?.[0] as ((isActive: boolean) => void) | undefined;
+        effectCallback?.(true);
+        effectCallback?.(false);
+
+        expect(mockShowProcessingToast).toHaveBeenCalled();
         expect(mockHideProcessingToast).toHaveBeenCalled();
     });
 
