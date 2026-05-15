@@ -338,6 +338,45 @@ describe("useShareUrl", () => {
     });
   });
 
+  it("uses fallback back names when linked backs do not provide names", async () => {
+    const sharedData = {
+      v: 1 as const,
+      c: [{ name: "Front A" }, { name: "Front B" }, { name: "Front C" }],
+      dfc: [[0, 1], [2, 3], [4, 5]],
+      st: {},
+    };
+
+    mockLoadShare.mockResolvedValue(sharedData);
+    mockDeserializeForImport.mockReturnValue({
+      cards: [
+        { name: "Front A", order: 0 },
+        { builtInCardbackId: "cardback_default", order: 1 },
+        { name: "Front B", order: 2 },
+        { mpcIdentifier: "mpc-back-b", order: 3 },
+        { name: "Front C", order: 4 },
+        { set: "xyz", number: "8", order: 5 },
+      ],
+      dfcLinks: [[0, 1], [2, 3], [4, 5]],
+      settings: undefined,
+    });
+    mockProjectsWhere.mockReturnValueOnce({
+      equals: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    });
+    mockCreateProject.mockResolvedValue("project-fallbacks");
+    let capturedIntents: any[] = [];
+    mockProcess.mockImplementation(async (intents) => {
+      capturedIntents = intents as any[];
+    });
+
+    renderHook(() => useShareUrl());
+
+    await waitFor(() => expect(mockProcess).toHaveBeenCalled());
+
+    expect(capturedIntents[0].linkedBackName).toBe("Cardback");
+    expect(capturedIntents[1].linkedBackName).toBe("Back");
+    expect(capturedIntents[2].linkedBackName).toBe("Back");
+  });
+
   it("forks a dirty existing project and creates a new shared copy", async () => {
     const sharedData = {
       v: 1 as const,
