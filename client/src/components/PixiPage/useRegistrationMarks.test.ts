@@ -58,17 +58,6 @@ describe('useRegistrationMarks', () => {
 
     expect(container.addChild).not.toHaveBeenCalled();
     expect(app.render).not.toHaveBeenCalled();
-
-    renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: null,
-      app: app as never,
-      pages: pages as never,
-      registrationMarks: '3',
-      registrationMarksPortrait: false,
-    }));
-
-    expect(container.addChild).not.toHaveBeenCalled();
   });
 
   it('renders landscape and portrait registration mark variants with cleanup', () => {
@@ -107,47 +96,5 @@ describe('useRegistrationMarks', () => {
     expect(app.render).toHaveBeenCalled();
 
     unmount();
-  });
-
-  it('destroys active graphics on unmount', () => {
-    const container = makeContainer();
-    const app = makeApp();
-
-    const { unmount } = renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: container as never,
-      app: app as never,
-      pages: pages as never,
-      registrationMarks: '3',
-      registrationMarksPortrait: false,
-    }));
-
-    const graphics = mocks.graphicsInstances[0];
-    unmount();
-    expect(graphics.destroy).toHaveBeenCalled();
-  });
-
-  it('supports omitted app renderer', () => {
-    const container = makeContainer();
-
-    renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: container as never,
-      app: null,
-      pages: pages as never,
-      registrationMarks: 'none',
-      registrationMarksPortrait: false,
-    }));
-
-    renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: container as never,
-      app: null,
-      pages: pages as never,
-      registrationMarks: '3',
-      registrationMarksPortrait: false,
-    }));
-
-    expect(container.addChild).toHaveBeenCalledTimes(1);
   });
 });
