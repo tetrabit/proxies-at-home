@@ -361,6 +361,29 @@ describe("useSelectionStore", () => {
             expect(isFlipped("card-1")).toBe(false);
         });
     });
+
+    describe("setFlipped", () => {
+        it("should flip a batch of cards on", () => {
+            const { setFlipped } = useSelectionStore.getState();
+
+            setFlipped(["card-1", "card-2"], true);
+
+            const state = useSelectionStore.getState();
+            expect(state.flippedCards.has("card-1")).toBe(true);
+            expect(state.flippedCards.has("card-2")).toBe(true);
+        });
+
+        it("should flip a batch of cards off", () => {
+            useSelectionStore.setState({ flippedCards: new Set(["card-1", "card-2"]) });
+            const { setFlipped } = useSelectionStore.getState();
+
+            setFlipped(["card-1", "card-2"], false);
+
+            const state = useSelectionStore.getState();
+            expect(state.flippedCards.has("card-1")).toBe(false);
+            expect(state.flippedCards.has("card-2")).toBe(false);
+        });
+    });
 });
 
 describe("initializeFlipState", () => {
@@ -378,6 +401,24 @@ describe("initializeFlipState", () => {
 
         const state = useSelectionStore.getState();
         expect(state.flippedCards.has("card-1")).toBe(true);
+        expect(state.flippedCards.has("card-3")).toBe(true);
+    });
+
+    it("should ignore unflipped cards when initializing from database", async () => {
+        const mockDb = await import("../db");
+        vi.mocked(mockDb.db.cards.filter).mockReturnValue({
+            toArray: vi.fn().mockResolvedValue([
+                { uuid: "card-1", isFlipped: true },
+                { uuid: "card-2", isFlipped: false },
+                { uuid: "card-3", isFlipped: true },
+            ]),
+        } as never);
+
+        await initializeFlipState();
+
+        const state = useSelectionStore.getState();
+        expect(state.flippedCards.has("card-1")).toBe(true);
+        expect(state.flippedCards.has("card-2")).toBe(false);
         expect(state.flippedCards.has("card-3")).toBe(true);
     });
 });
