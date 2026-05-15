@@ -391,6 +391,13 @@ describe("sortAndFilterUtils", () => {
         matchType: "partial",
       })
     ).toBe(true);
+    expect(
+      matchesFilters(creature, {
+        ...baseCriteria,
+        types: ["Land"],
+        matchType: "partial",
+      })
+    ).toBe(false);
   });
 
 
@@ -424,6 +431,16 @@ describe("sortAndFilterUtils", () => {
         { by: "color", order: "asc" }
       ).map((c) => c.uuid)
     ).toEqual(["wu", "wx"]);
+
+    expect(
+      sortCards(
+        [
+          card({ uuid: "xw", name: "XW", colors: ["X", "W"] }),
+          card({ uuid: "xu", name: "XU", colors: ["X", "U"] }),
+        ],
+        { by: "color", order: "asc" }
+      ).map((c) => c.uuid)
+    ).toEqual(["xu", "xw"]);
 
     expect(
       sortCards(
