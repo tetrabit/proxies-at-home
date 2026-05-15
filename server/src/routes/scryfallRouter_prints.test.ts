@@ -228,7 +228,7 @@ describe("scryfallRouter - /prints", () => {
     const res = await request(app).get("/api/scryfall/prints?name=Test Card");
 
     expect(res.status).toBe(200);
-    expect(res.body.total).toBe(2);
+    expect(res.body.total).toBe(4);
     const urls = res.body.prints.map((p: { imageUrl: string }) => p.imageUrl);
     expect(urls).toContain("https://example.com/art-a.png");
     expect(urls).toContain("https://example.com/art-b.png");

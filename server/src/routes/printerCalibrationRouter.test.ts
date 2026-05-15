@@ -366,80 +366,82 @@ exit 1
   it("exposes runner internals for configured binary, python, process, and cleanup branches", async () => {
     const originalEnv = { ...process.env };
     const originalCwd = process.cwd();
-    const scriptsDirectory = path.join(tempDirectory, "scripts");
-    await fs.mkdir(scriptsDirectory, { recursive: true });
+    try {
+      const scriptsDirectory = path.join(tempDirectory, "scripts");
+      await fs.mkdir(scriptsDirectory, { recursive: true });
 
-    const terminatingScript = path.join(scriptsDirectory, "terminates.sh");
-    await fs.writeFile(terminatingScript, "#!/bin/sh\nkill -TERM $$\n", { mode: 0o755 });
-    await fs.chmod(terminatingScript, 0o755);
-    await expect(
-      __printerCalibrationTestInternals.runProcess(terminatingScript, [], { timeoutMs: 1_000 })
-    ).resolves.toMatchObject({ code: -1 });
+      const terminatingScript = path.join(scriptsDirectory, "terminates.sh");
+      await fs.writeFile(terminatingScript, "#!/bin/sh\nkill -TERM $$\n", { mode: 0o755 });
+      await fs.chmod(terminatingScript, 0o755);
+      await expect(
+        __printerCalibrationTestInternals.runProcess(terminatingScript, [], { timeoutMs: 1_000 })
+      ).resolves.toMatchObject({ code: -1 });
 
-    const sleepingScript = path.join(scriptsDirectory, "sleeps.sh");
-    await fs.writeFile(sleepingScript, "#!/bin/sh\nsleep 1\n", { mode: 0o755 });
-    await fs.chmod(sleepingScript, 0o755);
-    await expect(
-      __printerCalibrationTestInternals.runProcess(sleepingScript, [], { timeoutMs: 5 })
-    ).rejects.toThrow("timed out");
+      const sleepingScript = path.join(scriptsDirectory, "sleeps.sh");
+      await fs.writeFile(sleepingScript, "#!/bin/sh\nsleep 1\n", { mode: 0o755 });
+      await fs.chmod(sleepingScript, 0o755);
+      await expect(
+        __printerCalibrationTestInternals.runProcess(sleepingScript, [], { timeoutMs: 5 })
+      ).rejects.toThrow("timed out");
 
-    const failingBin = path.join(scriptsDirectory, "printer-calibration-bin");
-    await fs.writeFile(failingBin, "#!/bin/sh\necho bad-bin >&2\nexit 7\n", { mode: 0o755 });
-    await fs.chmod(failingBin, 0o755);
-    process.env = {
-      ...originalEnv,
-      PRINTER_CALIBRATION_BIN: failingBin,
-      PRINTER_CALIBRATION_REPO: "",
-      PRINTER_CALIBRATION_PYTHON: "",
-    };
-    await expect(
-      __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
-    ).rejects.toThrow("code=7");
+      const failingBin = path.join(scriptsDirectory, "printer-calibration-bin");
+      await fs.writeFile(failingBin, "#!/bin/sh\necho bad-bin >&2\nexit 7\n", { mode: 0o755 });
+      await fs.chmod(failingBin, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: failingBin,
+        PRINTER_CALIBRATION_REPO: "",
+        PRINTER_CALIBRATION_PYTHON: "",
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).rejects.toThrow("code=7");
 
-    const repoDir = path.join(tempDirectory, "printer-calibration");
-    await fs.mkdir(path.join(repoDir, "src", "printer_calibration"), { recursive: true });
-    const pythonShim = path.join(scriptsDirectory, "python-shim");
-    await fs.writeFile(
-      pythonShim,
-      "#!/bin/sh\necho \"$PYTHONPATH\"\necho py-bad >&2\nexit 9\n",
-      { mode: 0o755 }
-    );
-    await fs.chmod(pythonShim, 0o755);
-    process.env = {
-      ...originalEnv,
-      PRINTER_CALIBRATION_BIN: "",
-      PRINTER_CALIBRATION_REPO: repoDir,
-      PRINTER_CALIBRATION_PYTHON: pythonShim,
-      PYTHONPATH: "existing-pythonpath",
-    };
-    await expect(
-      __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
-    ).rejects.toThrow("code=9");
+      const repoDir = path.join(tempDirectory, "printer-calibration");
+      await fs.mkdir(path.join(repoDir, "src", "printer_calibration"), { recursive: true });
+      const pythonShim = path.join(scriptsDirectory, "python-shim");
+      await fs.writeFile(
+        pythonShim,
+        "#!/bin/sh\necho \"$PYTHONPATH\"\necho py-bad >&2\nexit 9\n",
+        { mode: 0o755 }
+      );
+      await fs.chmod(pythonShim, 0o755);
+      process.env = {
+        ...originalEnv,
+        PRINTER_CALIBRATION_BIN: "",
+        PRINTER_CALIBRATION_REPO: repoDir,
+        PRINTER_CALIBRATION_PYTHON: pythonShim,
+        PYTHONPATH: "existing-pythonpath",
+      };
+      await expect(
+        __printerCalibrationTestInternals.runPrinterCalibrationCli(["profile", "list"])
+      ).rejects.toThrow("code=9");
 
-    process.env = {
-      ...originalEnv,
-      HOME: "",
-      USERPROFILE: path.join(tempDirectory, "profile-home"),
-      PRINTER_CALIBRATION_BIN: "",
-      PRINTER_CALIBRATION_REPO: repoDir,
-      PRINTER_CALIBRATION_PYTHON: pythonShim,
-    };
-    process.chdir(tempDirectory);
-    const runners = __printerCalibrationTestInternals.resolveRunners();
-    expect(runners.some((runner) => runner.kind === "python")).toBe(true);
+      process.env = {
+        ...originalEnv,
+        HOME: "",
+        USERPROFILE: path.join(tempDirectory, "profile-home"),
+        PRINTER_CALIBRATION_BIN: "",
+        PRINTER_CALIBRATION_REPO: repoDir,
+        PRINTER_CALIBRATION_PYTHON: pythonShim,
+      };
+      process.chdir(tempDirectory);
+      const runners = __printerCalibrationTestInternals.resolveRunners();
+      expect(runners.some((runner) => runner.kind === "python")).toBe(true);
 
-    const tempPath = __printerCalibrationTestInternals.buildTempFilePath("unit", "");
-    expect(tempPath).toMatch(/\\.bin$/);
-    const doomed = path.join(tempDirectory, "doomed.txt");
-    await fs.writeFile(doomed, "remove me");
-    __printerCalibrationTestInternals.unlinkQuiet(null);
-    __printerCalibrationTestInternals.unlinkQuiet(doomed);
-    await expect(fs.stat(doomed)).rejects.toThrow();
+      const tempPath = __printerCalibrationTestInternals.buildTempFilePath("unit", "");
+      expect(tempPath).toMatch(/\.bin$/);
+      const doomed = path.join(tempDirectory, "doomed.txt");
+      await fs.writeFile(doomed, "remove me");
+      __printerCalibrationTestInternals.unlinkQuiet(null);
+      __printerCalibrationTestInternals.unlinkQuiet(doomed);
+      await expect(fs.stat(doomed)).rejects.toThrow();
 
-    expect(__printerCalibrationTestInternals.unavailableStatus("not configured")).toBe(501);
-
-    process.chdir(originalCwd);
-    process.env = originalEnv;
+      expect(__printerCalibrationTestInternals.unavailableStatus("not configured")).toBe(501);
+    } finally {
+      process.chdir(originalCwd);
+      process.env = originalEnv;
+    }
   });
 
   it("logs download callback failures when calibrated pdf delivery fails", async () => {
