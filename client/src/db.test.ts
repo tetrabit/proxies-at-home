@@ -226,4 +226,13 @@ describe("db schema", () => {
       needs_token: true,
     });
   });
+
+  it("tolerates upgrade transaction shims without optional filter support", async () => {
+    const tx = { table: vi.fn(() => ({})) };
+
+    await cleanSelfReferentialTokensUpgrade(tx);
+    await clearTokenCardDependenciesUpgrade(tx);
+
+    expect(tx.table).toHaveBeenCalledWith("cards");
+  });
 });
