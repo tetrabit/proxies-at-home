@@ -42,6 +42,15 @@ describe('CardImageSvg', () => {
     expect((image as SVGImageElement).style.opacity).toBe('1');
   });
 
+  it('ignores non-intersecting observer entries', () => {
+    const { container } = render(<CardImageSvg id="card-1" url="front.png" />);
+    const svg = screen.getByRole('img', { name: 'Card image for card-1' });
+
+    act(() => MockIntersectionObserver.instances[0].callback([{ isIntersecting: false, target: svg } as IntersectionObserverEntry], MockIntersectionObserver.instances[0] as unknown as IntersectionObserver));
+
+    expect(container.querySelector('image')).toBeNull();
+  });
+
   it('uses bleed dimensions, skips rounding, and switches to fallback once', () => {
     const { container } = render(
       <CardImageSvg
