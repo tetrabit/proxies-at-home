@@ -123,6 +123,7 @@ describe('scryfallSyntax', () => {
     describe('isPureScryfallQuery', () => {
         it('should return true for pure syntax queries', () => {
             expect(isPureScryfallQuery('is:mdfc')).toBe(true);
+            expect(isPureScryfallQuery('-is:reserved')).toBe(true);
             expect(isPureScryfallQuery('is:legend set:ecc')).toBe(true);
             expect(isPureScryfallQuery('c:r t:creature f:modern')).toBe(true);
         });

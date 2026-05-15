@@ -50,6 +50,11 @@ describe('getCardTargetBleed', () => {
             const card = mockCard({ bleedMode: 'existing', existingBleedMm: 2.5 });
             expect(getCardTargetBleed(card, defaultSourceSettings, globalBleedWidth)).toBe(2.5);
         });
+
+        it('falls back to source settings when legacy existing mode has no amount', () => {
+            const card = mockCard({ bleedMode: 'existing', existingBleedMm: undefined, hasBuiltInBleed: false });
+            expect(getCardTargetBleed(card, defaultSourceSettings, globalBleedWidth)).toBe(globalBleedWidth);
+        });
     });
 
     describe('Global Settings - Built-in Bleed (e.g. MPC)', () => {
@@ -259,6 +264,16 @@ describe('computeGridDimensions', () => {
 
         expect(result.colWidthsMm).toEqual([baseCardWidthMm, baseCardWidthMm, baseCardWidthMm]);
         expect(result.rowHeightsMm).toEqual([baseCardHeightMm, baseCardHeightMm]);
+    });
+
+    it('ignores layouts beyond the configured row count', () => {
+        const result = computeGridDimensions([
+            { cardWidthMm: 70, cardHeightMm: 90, bleedMm: 1 },
+            { cardWidthMm: 80, cardHeightMm: 120, bleedMm: 2 },
+        ], 1, 1);
+
+        expect(result.colWidthsMm).toEqual([80]);
+        expect(result.rowHeightsMm).toEqual([90]);
     });
 });
 

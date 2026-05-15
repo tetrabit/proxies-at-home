@@ -145,6 +145,33 @@ describe("convertScryfallToCardOptions", () => {
     expect(hoisted.addRemoteImage).toHaveBeenCalledTimes(1);
     expect(result.backCardTasks).toEqual([]);
   });
+
+  it("falls back to empty image URL input and generic back-face label", async () => {
+    hoisted.addRemoteImage
+      .mockResolvedValueOnce("image-back")
+      .mockResolvedValueOnce("image-main");
+
+    const result = await convertScryfallToCardOptions(
+      baseCard({
+        imageUrls: undefined,
+        card_faces: [
+          { name: "Front" },
+          { imageUrl: "https://img/back-face.jpg" },
+        ],
+      }),
+      1
+    );
+
+    expect(hoisted.addRemoteImage).toHaveBeenNthCalledWith(
+      2,
+      [],
+      1,
+      ["print-a"]
+    );
+    expect(result.backCardTasks).toEqual([
+      { frontIndex: 0, backImageId: "image-back", backName: "Back" },
+    ]);
+  });
 });
 
 describe("persistResolvedCards", () => {

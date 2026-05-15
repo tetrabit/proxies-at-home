@@ -256,6 +256,65 @@ describe("archidektApi", () => {
             // Sol Ring is in Commander category, not Tokens
             expect(solRing?.isToken).toBe(false);
         });
+
+        it("filters card-type categories and falls back to Mainboard", () => {
+            const deckWithOnlyTypeCategory: ArchidektDeck = {
+                id: 123456,
+                name: "Type Category Deck",
+                description: "",
+                featured: "",
+                categories: [],
+                cards: [
+                    {
+                        quantity: 1,
+                        categories: ["Creature"],
+                        card: {
+                            id: 1,
+                            uid: "creature-uuid",
+                            artist: "",
+                            collectorNumber: "7★",
+                            edition: { editioncode: "ABC", editionname: "Set" },
+                            oracleCard: { id: 1, name: "Custom Creature ★", cmc: 2, colorIdentity: [], colors: [], layout: "normal", types: ["Creature"] },
+                        },
+                    },
+                ],
+            };
+
+            expect(extractCardsFromDeck(deckWithOnlyTypeCategory)).toEqual([
+                expect.objectContaining({
+                    name: "Custom Creature",
+                    number: "7",
+                    category: "Mainboard",
+                }),
+            ]);
+        });
+
+        it("keeps custom non-type categories as the primary category", () => {
+            const deckWithCustomCategory: ArchidektDeck = {
+                id: 123456,
+                name: "Custom Category Deck",
+                description: "",
+                featured: "",
+                categories: [],
+                cards: [
+                    {
+                        quantity: 1,
+                        categories: ["Pet Cards"],
+                        card: {
+                            id: 1,
+                            uid: "pet-uuid",
+                            artist: "",
+                            collectorNumber: "8",
+                            edition: { editioncode: "ABC", editionname: "Set" },
+                            oracleCard: { id: 1, name: "Favorite", cmc: 2, colorIdentity: [], colors: [], layout: "normal", types: ["Creature"] },
+                        },
+                    },
+                ],
+            };
+
+            expect(extractCardsFromDeck(deckWithCustomCategory)[0].category).toBe("Pet Cards");
+        });
+
     });
 
     describe("getDeckSummary", () => {
