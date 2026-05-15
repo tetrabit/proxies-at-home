@@ -94,6 +94,18 @@ describe('FileUploader', () => {
     expect(onUploadComplete).toHaveBeenCalled();
   });
 
+  it('falls back to Custom Art when a filename has no base name', async () => {
+    render(<FileUploader />);
+    const file = new File(['img'], '.png', { type: 'image/png' });
+
+    uploadFiles([file]);
+
+    await waitFor(() => expect(mocks.processCards).toHaveBeenCalled());
+    expect(mocks.processCards.mock.calls.at(-1)?.[0][0]).toMatchObject({
+      name: 'Custom Art',
+    });
+  });
+
   it('uploads standard and with-bleed modes with the correct suffixes', async () => {
     render(<FileUploader />);
     fireEvent.click(screen.getByText('modes'));
