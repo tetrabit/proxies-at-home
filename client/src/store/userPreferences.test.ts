@@ -139,20 +139,29 @@ describe("useUserPreferencesStore", () => {
                     collapsed: {},
                 },
             };
-            const originalIndexOf = Array.prototype.indexOf;
-            const indexOfSpy = vi.spyOn(Array.prototype, "indexOf").mockImplementation(function (this: unknown[], searchElement: unknown, fromIndex?: number) {
-                if (searchElement === "projects" || searchElement === "application") {
-                    return -1;
-                }
-                return originalIndexOf.call(this, searchElement as never, fromIndex as never);
+            const originalDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "indexOf");
+            if (!originalDescriptor?.value) throw new Error("missing Array#indexOf descriptor");
+            Object.defineProperty(Array.prototype, "indexOf", {
+                configurable: true,
+                writable: true,
+                value: function (this: unknown[], searchElement: unknown, fromIndex?: number) {
+                    if (searchElement === "projects" || searchElement === "application") {
+                        return -1;
+                    }
+                    return originalDescriptor.value!.call(this, searchElement as never, fromIndex as never);
+                },
             });
-            (db.userPreferences.get as Mock).mockResolvedValue(legacyPrefs);
 
-            await useUserPreferencesStore.getState().load();
+            try {
+                (db.userPreferences.get as Mock).mockResolvedValue(legacyPrefs);
 
-            expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("projects");
-            expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("application");
-            indexOfSpy.mockRestore();
+                await useUserPreferencesStore.getState().load();
+
+                expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("projects");
+                expect(useUserPreferencesStore.getState().preferences?.settingsPanelState?.order).toContain("application");
+            } finally {
+                Object.defineProperty(Array.prototype, "indexOf", originalDescriptor);
+            }
         });
 
         it("should preserve fully populated valid preferences without repairing them", async () => {
