@@ -648,6 +648,22 @@ describe('PullToRefresh', () => {
             expect(onScroll).toHaveBeenCalled();
         });
 
+        it('should leave state unchanged when scrolled at the top', () => {
+            const onScroll = vi.fn();
+            const { container } = render(
+                <PullToRefresh onScroll={onScroll}>
+                    <div>Content</div>
+                </PullToRefresh>
+            );
+
+            const scrollContainer = container.firstChild as HTMLElement;
+            Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, configurable: true, writable: true });
+            fireEvent.scroll(scrollContainer);
+
+            expect(onScroll).toHaveBeenCalled();
+            expect(mockSpringApi.start).not.toHaveBeenCalledWith({ y: 0 });
+        });
+
         it('should reset ready state when scrolled down', () => {
             render(
                 <PullToRefresh>
