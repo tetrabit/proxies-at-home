@@ -263,6 +263,39 @@ describe("scryfallRouter - /prints", () => {
     expect(axios.get).not.toHaveBeenCalledWith('/cards/search', { params: { q: expect.stringContaining('oracle-micro') } });
   });
 
+  it("uses microservice set+number and name print queries and handles missing metadata", async () => {
+    const searchCards = vi.fn()
+      .mockResolvedValueOnce({
+        success: true,
+        data: { data: [{ id: 'micro-set', name: 'Set Print', image_uris: { png: 'set.png' } }] },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        data: { data: [{ id: 'micro-name', name: 'Named Print', card_faces: [{ name: 'Front', image_uris: { png: 'front.png' } }] }] },
+      });
+    vi.mocked(isMicroserviceAvailable).mockResolvedValue(true);
+    vi.mocked(getScryfallClient).mockReturnValue({ searchCards } as never);
+
+    const bySet = await request(app).get("/api/scryfall/prints?set=ABC&number=7");
+    expect(bySet.status).toBe(200);
+    expect(bySet.body.prints[0]).toMatchObject({ imageUrl: 'set.png', set: '', number: '' });
+    expect(searchCards).toHaveBeenNthCalledWith(1, { q: 'set:abc number:7 include:extras' });
+
+    const byName = await request(app).get("/api/scryfall/prints?name=Named%20Print");
+    expect(byName.status).toBe(200);
+    expect(byName.body.prints[0]).toMatchObject({ imageUrl: 'front.png', set: '', number: '' });
+    expect(searchCards).toHaveBeenNthCalledWith(2, { q: '!"Named Print" include:extras' });
+  });
+
+  it("uses non-English set+number print searches", async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [{ name: "French Set Print", set: "abc", collector_number: "7", image_uris: { png: "fr.png" } }] } } as unknown as any);
+
+    const res = await request(app).get("/api/scryfall/prints?set=ABC&number=7&lang=fr");
+
+    expect(res.status).toBe(200);
+    expect(axios.get).toHaveBeenLastCalledWith('/cards/search', { params: { q: 'set:abc number:7 include:extras lang:fr' } });
+  });
+
   it("returns cached print responses without hitting Scryfall", async () => {
     const cachedResponse = {
       name: "Cached",
