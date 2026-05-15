@@ -13,6 +13,10 @@ vi.mock("../db", () => ({
       update: vi.fn(),
       put: vi.fn(),
     },
+    cardbacks: {
+      get: vi.fn(),
+      put: vi.fn(),
+    },
   },
 }));
 
@@ -231,6 +235,62 @@ describe("useImageProcessing", () => {
       expect.any(Number)
     );
     expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test");
+  });
+
+  it("processes manual cardback override bleed as an inset border at layout size", async () => {
+    const blob = new Blob(["cardback"], { type: "image/png" });
+    const cardbackRecord = {
+      id: "cardback_custom",
+      originalBlob: blob,
+      hasBuiltInBleed: false,
+    };
+    (db.cardbacks.get as Mock).mockResolvedValue(cardbackRecord);
+    global.URL.createObjectURL = vi.fn(() => "blob:cardback");
+    global.URL.revokeObjectURL = vi.fn();
+
+    mockProcess.mockResolvedValue({
+      displayBlob: new Blob(["processed"]),
+      displayDpi: 300,
+      displayBleedWidth: 1.5,
+      exportBlob: new Blob(["processed_export"]),
+      exportDpi: 300,
+      exportBleedWidth: 1.5,
+      displayBlobDarkened: new Blob(["processed_darkened"]),
+      exportBlobDarkened: new Blob(["processed_export_darkened"]),
+    });
+
+    const { result } = renderHook(() =>
+      useImageProcessing({
+        unit: "mm",
+        bleedEdgeWidth: 1.5,
+        imageProcessor: mockImageProcessor,
+      })
+    );
+
+    await act(async () => {
+      await result.current.ensureProcessed({
+        ...card,
+        imageId: "cardback_custom",
+        bleedMode: "generate",
+        generateBleedMm: 4,
+      });
+    });
+
+    expect(mockProcess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bleedEdgeWidth: 1.5,
+        insetBorderBleedMm: 4,
+        layoutBleedWidthMm: 1.5,
+      }),
+      expect.any(Number)
+    );
+    expect(db.cardbacks.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "cardback_custom",
+        exportBleedWidth: 1.5,
+        generatedInsetBorderBleedMm: 4,
+      })
+    );
   });
 
   it("should handle process returning error object", async () => {

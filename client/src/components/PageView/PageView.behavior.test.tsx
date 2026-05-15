@@ -151,7 +151,10 @@ vi.mock("../PullToRefresh", () => ({
 }));
 vi.mock("../ArtworkModal", () => ({ ArtworkModal: () => <div data-testid="artwork-modal" /> }));
 vi.mock("../CardEditorModal/CardEditorModalWrapper", () => ({ CardEditorModalWrapper: () => <div data-testid="editor-modal" /> }));
-vi.mock("../MpcUpgradeModal", () => ({ default: () => <div data-testid="mpc-modal" /> }));
+vi.mock("../MpcUpgradeModal", () => ({
+  default: () => <div data-testid="mpc-modal" />,
+  MpcUpgradeModal: () => <div data-testid="mpc-modal" />,
+}));
 vi.mock("../CalibrationModal", () => ({ default: () => <div data-testid="calibration-modal" /> }));
 
 import { PageView } from "./PageView";
@@ -169,6 +172,7 @@ const makeCard = (overrides: Partial<CardOption> = {}): CardOption => ({
 const images: Image[] = [
   { id: "img-1", displayBlob: new Blob(["front"]), darknessFactor: 0.25 } as Image,
   { id: "img-back", displayBlob: new Blob(["back"]), darknessFactor: 0.75 } as Image,
+  { id: "cardback_custom", displayBlob: new Blob(["custom-back"]), darknessFactor: 0.65 } as Image,
 ];
 
 function renderPage(cards: CardOption[], allCards: CardOption[] = cards, mobile = false) {
@@ -293,5 +297,31 @@ describe("PageView behavior", () => {
       />,
     );
     await waitFor(() => expect(state.pixiProps.at(-1)).toEqual(expect.objectContaining({ zoom: 0.4 })));
+  });
+
+  it("keeps flipped manual cardback override bleed at the global page size", async () => {
+    const front = makeCard({ linkedBackId: "back-card" });
+    const back = makeCard({
+      uuid: "back-card",
+      linkedFrontId: "card-1",
+      imageId: "cardback_custom",
+      bleedMode: "generate",
+      generateBleedMm: 5,
+    });
+    state.settings.bleedEdge = true;
+    state.settings.bleedEdgeWidth = 1.5;
+    state.settings.bleedEdgeUnit = "mm";
+    state.selection.flippedCards = new Set(["card-1"]);
+
+    renderPage([front, back], [front, back]);
+
+    await waitFor(() => expect(state.pixiProps.length).toBeGreaterThan(0));
+    const pixiProps = state.pixiProps.at(-1) as { cards: Array<{ width: number; height: number; bleedMm: number }> };
+    const expectedWidth = (63 + 1.5 * 2) * (96 / 25.4);
+    const expectedHeight = (88 + 1.5 * 2) * (96 / 25.4);
+
+    expect(pixiProps.cards[0].bleedMm).toBe(1.5);
+    expect(pixiProps.cards[0].width).toBeCloseTo(expectedWidth);
+    expect(pixiProps.cards[0].height).toBeCloseTo(expectedHeight);
   });
 });

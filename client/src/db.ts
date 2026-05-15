@@ -24,6 +24,7 @@ export interface Image {
   generatedHasBuiltInBleed?: boolean;
   generatedBleedMode?: string;
   generatedExistingBleedMm?: number;
+  generatedInsetBorderBleedMm?: number;
 
   // Darkened versions for each mode (instant toggle)
   // Mode 1: Darken All (legacy threshold)
@@ -80,6 +81,7 @@ export interface Cardback {
   generatedHasBuiltInBleed?: boolean;
   generatedBleedMode?: string;
   generatedExistingBleedMm?: number;
+  generatedInsetBorderBleedMm?: number;
 
   // Source and display
   sourceUrl?: string;

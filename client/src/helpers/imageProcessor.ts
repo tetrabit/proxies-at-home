@@ -18,6 +18,8 @@ interface WorkerMessage {
   hasBuiltInBleed?: boolean;
   bleedMode?: 'generate' | 'existing' | 'none';  // Per-card bleed override
   existingBleedMm?: number;  // Amount when bleedMode is 'existing'
+  insetBorderBleedMm?: number; // Manual cardback inset amount; output keeps layout bleed
+  layoutBleedWidthMm?: number; // Physical output bleed used when insetBorderBleedMm is set
   dpi: number;
   darkenMode?: number;  // 0=none, 1=darken-all, 2=contrast-edges, 3=contrast-full
 }

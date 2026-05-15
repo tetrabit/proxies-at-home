@@ -4,10 +4,10 @@ import {
     toProxied,
     trimBleedByMm,
 } from "./imageProcessing";
-import { generateBleedCanvasWebGL, processCardImageWebGL, processExistingBleedWebGL, renderBleedCanvasDirect } from "./webglImageProcessing";
+import { composeInsetBorderCanvas, generateBleedCanvasWebGL, processCardImageWebGL, processExistingBleedWebGL, renderBleedCanvasDirect } from "./webglImageProcessing";
 import { detectBleed } from "./cardDimensions";
 import { darkenModeToInt } from "../components/CardCanvas/types";
-import { getCardTargetBleed, computeGuideLayouts, computeGridDimensions } from "./layout";
+import { getCardTargetBleed, computeGuideLayouts, computeGridDimensions, usesCardbackInsetBorderBleed } from "./layout";
 import { getEffectiveBleedMode, getEffectiveExistingBleedMm, getHasBuiltInBleed } from "./imageSpecs";
 import { hasAdvancedOverrides, overridesToRenderParams, renderCardWithOverridesWorker } from "./cardCanvasWorker";
 import { generatePerCardGuide, executePathCommands, type GuideStyle } from "./cutGuideUtils";
@@ -568,42 +568,6 @@ self.onmessage = async (event: MessageEvent) => {
             return normalized;
         };
 
-        const composeInsetBorderCanvas = (
-            source: OffscreenCanvas | ImageBitmap,
-            slotWidth: number,
-            slotHeight: number,
-            cutlineInsetPx: number,
-            sourceInsetInsideCutlinePx: number,
-        ): OffscreenCanvas => {
-            const composed = new OffscreenCanvas(slotWidth, slotHeight);
-            const composedCtx = composed.getContext('2d');
-            if (!composedCtx) {
-                throw new Error('Failed to get 2d context for inset border canvas');
-            }
-
-            composedCtx.fillStyle = '#000000';
-            composedCtx.fillRect(0, 0, slotWidth, slotHeight);
-
-            const insetPx = cutlineInsetPx + sourceInsetInsideCutlinePx;
-            const safeInsetPx = Math.max(0, Math.min(insetPx, Math.floor(Math.min(slotWidth, slotHeight) / 2) - 1));
-            const maxDrawWidth = Math.max(1, slotWidth - safeInsetPx * 2);
-            const maxDrawHeight = Math.max(1, slotHeight - safeInsetPx * 2);
-            const scale = Math.min(maxDrawWidth / source.width, maxDrawHeight / source.height);
-            const drawWidth = Math.max(1, source.width * scale);
-            const drawHeight = Math.max(1, source.height * scale);
-            const drawX = safeInsetPx + (maxDrawWidth - drawWidth) / 2;
-            const drawY = safeInsetPx + (maxDrawHeight - drawHeight) / 2;
-            composedCtx.imageSmoothingEnabled = true;
-            composedCtx.imageSmoothingQuality = 'high';
-            composedCtx.drawImage(source, drawX, drawY, drawWidth, drawHeight);
-
-            if (source instanceof ImageBitmap) {
-                source.close();
-            }
-
-            return composed;
-        };
-
         const pageHasGuideEligibleCards = pageCards.some((card: CardOption) => !card.linkedFrontId);
         const effectivePerCardGuideStyle =
             showGuideLinesOnBackCards || pageHasGuideEligibleCards
@@ -689,11 +653,7 @@ self.onmessage = async (event: MessageEvent) => {
             const y = slotY + centerOffsetInSlotY;
 
             const isBackCard = card.imageId?.startsWith('cardback_');
-            const usesInsetBorderBleed = !!(
-                isBackCard &&
-                card.bleedMode === 'generate' &&
-                card.generateBleedMm !== undefined
-            );
+            const usesInsetBorderBleed = usesCardbackInsetBorderBleed(card);
             let finalCardCanvas: OffscreenCanvas | ImageBitmap;
             const imageInfo = card.imageId ? imagesById.get(card.imageId) : undefined;
 

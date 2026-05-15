@@ -17,6 +17,22 @@ export type SourceTypeSettings = {
     noBleedTargetAmount: number;
 };
 
+/**
+ * Manual generate overrides on cardbacks are rendered as an inset black border:
+ * the page/card slot keeps the global layout bleed and the original art is
+ * shrunk inward by the override amount. Regular cards still grow/shrink to
+ * their target bleed.
+ */
+export function usesCardbackInsetBorderBleed(
+    card: Pick<CardOption, 'imageId' | 'bleedMode' | 'generateBleedMm'>,
+): boolean {
+    return !!(
+        card.imageId?.startsWith('cardback_') &&
+        card.bleedMode === 'generate' &&
+        card.generateBleedMm !== undefined
+    );
+}
+
 /** Compute per-card bleed width based on overrides, settings, and global defaults. */
 export function getCardTargetBleed(
     card: CardOption,
@@ -55,13 +71,49 @@ export function getCardTargetBleed(
     }
 }
 
+/**
+ * Physical layout bleed for page/grid placement.
+ *
+ * Cardback inset-border overrides use the global bleed as their outer card
+ * dimensions so the override does not make the card larger on the page.
+ */
+export function getCardLayoutBleed(
+    card: CardOption,
+    sourceSettings: SourceTypeSettings,
+    globalBleedWidth: number,
+    image?: BleedMetadataImage,
+): number {
+    if (usesCardbackInsetBorderBleed(card)) {
+        return globalBleedWidth;
+    }
+
+    return getCardTargetBleed(card, sourceSettings, globalBleedWidth, image);
+}
+
+/**
+ * Inner black-border inset amount for manual cardback target overrides.
+ * Undefined means the card should use the regular generated/existing bleed path.
+ */
+export function getCardInsetBorderBleed(
+    card: CardOption,
+    sourceSettings: SourceTypeSettings,
+    globalBleedWidth: number,
+    image?: BleedMetadataImage,
+): number | undefined {
+    if (!usesCardbackInsetBorderBleed(card)) {
+        return undefined;
+    }
+
+    return getCardTargetBleed(card, sourceSettings, globalBleedWidth, image);
+}
+
 export function computeCardLayouts(
     pageCards: CardOption[],
     sourceSettings: SourceTypeSettings,
     globalBleedWidth: number,
 ): CardLayoutInfo[] {
     return pageCards.map((card) => {
-        const bleedMm = getCardTargetBleed(card, sourceSettings, globalBleedWidth);
+        const bleedMm = getCardLayoutBleed(card, sourceSettings, globalBleedWidth);
         return {
             cardWidthMm: baseCardWidthMm + bleedMm * 2,
             cardHeightMm: baseCardHeightMm + bleedMm * 2,

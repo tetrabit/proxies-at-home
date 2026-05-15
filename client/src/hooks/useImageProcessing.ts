@@ -14,6 +14,7 @@ import {
   getHasBuiltInBleed,
   type GlobalSettings,
 } from "../helpers/imageSpecs";
+import { getCardInsetBorderBleed, getCardLayoutBleed } from "../helpers/layout";
 import { isCardbackId } from "../helpers/cardbackLibrary";
 import { toProxied } from "../helpers/imageHelper";
 import { darkenModeToInt } from "../components/CardCanvas/types";
@@ -260,12 +261,20 @@ export function useImageProcessing({
           settings,
           cachedImage
         );
-        const cachedExpectedBleedWidth = getExpectedBleedWidth(
+        const cachedInsetBorderBleedMm = getCardInsetBorderBleed(
           card,
-          settings.bleedEdgeWidth,
           settings,
+          settings.bleedEdgeWidth,
           cachedImage
         );
+        const cachedExpectedBleedWidth = cachedInsetBorderBleedMm !== undefined
+          ? getCardLayoutBleed(card, settings, settings.bleedEdgeWidth, cachedImage)
+          : getExpectedBleedWidth(
+            card,
+            settings.bleedEdgeWidth,
+            settings,
+            cachedImage
+          );
         const generatedHasBuiltInBleedMatches =
           cachedImage?.generatedHasBuiltInBleed !== undefined &&
           (cachedHasBuiltInBleed === undefined ||
@@ -275,12 +284,17 @@ export function useImageProcessing({
           Math.abs(
             cachedImage.generatedExistingBleedMm - (cachedExistingBleedMm ?? 0)
           ) < 0.001;
+        const generatedInsetBorderBleedMatches = cachedInsetBorderBleedMm === undefined
+          ? cachedImage?.generatedInsetBorderBleedMm === undefined
+          : cachedImage?.generatedInsetBorderBleedMm !== undefined &&
+          Math.abs(cachedImage.generatedInsetBorderBleedMm - cachedInsetBorderBleedMm) < 0.001;
         const sessionCacheStillValid =
           cachedImage?.exportBleedWidth === cachedExpectedBleedWidth &&
           cachedImage?.exportDpi === dpi &&
           cachedImage?.generatedBleedMode === cachedBleedMode &&
           generatedHasBuiltInBleedMatches &&
-          generatedExistingBleedMatches;
+          generatedExistingBleedMatches &&
+          generatedInsetBorderBleedMatches;
 
         if (sessionCacheStillValid) {
           markCardProcessed(card.uuid, true);
@@ -322,12 +336,20 @@ export function useImageProcessing({
             settings,
             currentImage
           );
-          const expectedBleedWidth = getExpectedBleedWidth(
+          const insetBorderBleedMm = getCardInsetBorderBleed(
             card,
-            settings.bleedEdgeWidth,
             settings,
+            settings.bleedEdgeWidth,
             currentImage
           );
+          const expectedBleedWidth = insetBorderBleedMm !== undefined
+            ? getCardLayoutBleed(card, settings, settings.bleedEdgeWidth, currentImage)
+            : getExpectedBleedWidth(
+              card,
+              settings.bleedEdgeWidth,
+              settings,
+              currentImage
+            );
           const effectiveBleedWidth = expectedBleedWidth;
           const generatedHasBuiltInBleedMatches =
             currentImage?.generatedHasBuiltInBleed !== undefined &&
@@ -339,6 +361,10 @@ export function useImageProcessing({
               currentImage.generatedExistingBleedMm -
               (effectiveExistingBleedMm ?? 0)
             ) < 0.001;
+          const generatedInsetBorderBleedMatches = insetBorderBleedMm === undefined
+            ? currentImage?.generatedInsetBorderBleedMm === undefined
+            : currentImage?.generatedInsetBorderBleedMm !== undefined &&
+            Math.abs(currentImage.generatedInsetBorderBleedMm - insetBorderBleedMm) < 0.001;
 
           // Smart Cache Check (DB-level)
           if (
@@ -348,6 +374,7 @@ export function useImageProcessing({
             currentImage.exportDpi === dpi && // Check if export DPI matches current setting
             generatedHasBuiltInBleedMatches &&
             generatedExistingBleedMatches &&
+            generatedInsetBorderBleedMatches &&
             currentImage.generatedBleedMode === effectiveBleedMode
           ) {
             debugLog(
@@ -380,6 +407,8 @@ export function useImageProcessing({
                 hasBuiltInBleed: getHasBuiltInBleed(card, currentImage),
                 bleedMode: effectiveBleedMode,
                 existingBleedMm: effectiveExistingBleedMm,
+                insetBorderBleedMm,
+                layoutBleedWidthMm: insetBorderBleedMm !== undefined ? expectedBleedWidth : undefined,
                 dpi,
                 darkenMode: darkenModeToInt(darkenMode),
               },
@@ -432,6 +461,7 @@ export function useImageProcessing({
                   false,
                 generatedBleedMode: effectiveBleedMode,
                 generatedExistingBleedMm: effectiveExistingBleedMm ?? 0,
+                generatedInsetBorderBleedMm: insetBorderBleedMm,
               });
 
               await persistDetectedBleed(card, result.detectedHasBuiltInBleed, currentImage);
@@ -482,6 +512,7 @@ export function useImageProcessing({
                       generatedHasBuiltInBleed: hasBuiltInBleed,
                       generatedBleedMode: effectiveBleedMode,
                       generatedExistingBleedMm: effectiveExistingBleedMm ?? 0,
+                      generatedInsetBorderBleedMm: insetBorderBleedMm,
                     });
                     await persistDetectedBleed(
                       card,

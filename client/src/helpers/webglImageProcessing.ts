@@ -57,6 +57,43 @@ export function getCardPixelDimensionsForBleed(
     };
 }
 
+export function composeInsetBorderCanvas(
+    source: OffscreenCanvas | ImageBitmap,
+    slotWidth: number,
+    slotHeight: number,
+    cutlineInsetPx: number,
+    sourceInsetInsideCutlinePx: number,
+): OffscreenCanvas {
+    const composed = new OffscreenCanvas(slotWidth, slotHeight);
+    const composedCtx = composed.getContext('2d');
+    if (!composedCtx) {
+        throw new Error('Failed to get 2d context for inset border canvas');
+    }
+
+    composedCtx.fillStyle = '#000000';
+    composedCtx.fillRect(0, 0, slotWidth, slotHeight);
+
+    const insetPx = cutlineInsetPx + sourceInsetInsideCutlinePx;
+    const maxInsetPx = Math.max(0, Math.floor(Math.min(slotWidth, slotHeight) / 2) - 1);
+    const safeInsetPx = Math.max(0, Math.min(insetPx, maxInsetPx));
+    const maxDrawWidth = Math.max(1, slotWidth - safeInsetPx * 2);
+    const maxDrawHeight = Math.max(1, slotHeight - safeInsetPx * 2);
+    const scale = Math.min(maxDrawWidth / source.width, maxDrawHeight / source.height);
+    const drawWidth = Math.max(1, source.width * scale);
+    const drawHeight = Math.max(1, source.height * scale);
+    const drawX = safeInsetPx + (maxDrawWidth - drawWidth) / 2;
+    const drawY = safeInsetPx + (maxDrawHeight - drawHeight) / 2;
+    composedCtx.imageSmoothingEnabled = true;
+    composedCtx.imageSmoothingQuality = 'high';
+    composedCtx.drawImage(source, drawX, drawY, drawWidth, drawHeight);
+
+    if (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) {
+        source.close();
+    }
+
+    return composed;
+}
+
 export function deriveSourceBleedPixelsFromGeometry(
     widthPx: number,
     heightPx: number,
@@ -886,6 +923,97 @@ export async function processExistingBleedWebGL(
         baseDisplayBlob: displayBlob,
         baseExportBlob: exportBlob,
         darknessFactor,
+    };
+}
+
+/**
+ * Cardback manual target overrides are not generated outward. They keep the
+ * outer slot at the layout/global bleed, fill that slot black, and shrink the
+ * original art inward by the override amount.
+ */
+export async function processCardbackInsetBorderWebGL(
+    img: ImageBitmap,
+    insetBorderBleedMm: number,
+    layoutBleedWidthMm: number,
+    opts?: { unit?: "mm" | "in"; exportDpi?: number; displayDpi?: number; darkenMode?: number; darkenThreshold?: number; darkenContrast?: number; darkenEdgeWidth?: number; darkenAmount?: number; darkenBrightness?: number; darkenAutoDetect?: boolean }
+): Promise<{
+    exportBlob: Blob;
+    exportDpi: number;
+    exportBleedWidth: number;
+    displayBlob: Blob;
+    displayDpi: number;
+    displayBleedWidth: number;
+    exportBlobDarkenAll?: Blob;
+    displayBlobDarkenAll?: Blob;
+    exportBlobContrastEdges?: Blob;
+    displayBlobContrastEdges?: Blob;
+    exportBlobContrastFull?: Blob;
+    displayBlobContrastFull?: Blob;
+    exportBlobDarkened?: Blob;
+    displayBlobDarkened?: Blob;
+    baseDisplayBlob: Blob;
+    baseExportBlob: Blob;
+    darknessFactor: number;
+    detectedHasBuiltInBleed?: boolean;
+}> {
+    const exportDpi = opts?.exportDpi ?? 300;
+    const displayDpi = opts?.displayDpi ?? 300;
+    const unit = opts?.unit ?? "mm";
+    const layoutBleedMm = unit === "in" ? layoutBleedWidthMm * 25.4 : layoutBleedWidthMm;
+    const insetBleedMm = unit === "in" ? insetBorderBleedMm * 25.4 : insetBorderBleedMm;
+    const exportGeometry = getCardPixelDimensionsForBleed(layoutBleedMm, exportDpi);
+    const displayGeometry = getCardPixelDimensionsForBleed(layoutBleedMm, displayDpi);
+    const currentDarkenMode = opts?.darkenMode ?? 0;
+    const modesToGenerate = currentDarkenMode === 0 ? [0] : [0, currentDarkenMode];
+    const exportBlobs = new Map<number, Blob>();
+    const displayBlobs = new Map<number, Blob>();
+
+    for (const mode of modesToGenerate) {
+        const sourceCanvas = await renderBleedCanvasDirect(img, img.width, img.height, {
+            ...opts,
+            darkenMode: mode,
+            mimeType: "image/png",
+        });
+        const composedExport = composeInsetBorderCanvas(
+            sourceCanvas,
+            exportGeometry.width,
+            exportGeometry.height,
+            exportGeometry.bleedPx,
+            Math.round(getBleedInPixels(insetBleedMm, "mm", exportDpi)),
+        );
+        exportBlobs.set(mode, await composedExport.convertToBlob({ type: "image/png" }));
+
+        const displayCanvas = new OffscreenCanvas(displayGeometry.width, displayGeometry.height);
+        const displayCtx = displayCanvas.getContext("2d");
+        if (!displayCtx) {
+            throw new Error("Failed to get 2d context for display inset border canvas");
+        }
+        displayCtx.imageSmoothingQuality = "high";
+        displayCtx.drawImage(composedExport, 0, 0, displayGeometry.width, displayGeometry.height);
+        displayBlobs.set(mode, await displayCanvas.convertToBlob({ type: "image/webp", quality: 0.90 }));
+    }
+
+    const exportBlob = exportBlobs.get(0)!;
+    const displayBlob = displayBlobs.get(0)!;
+
+    return {
+        exportBlob,
+        exportDpi,
+        exportBleedWidth: layoutBleedMm,
+        displayBlob,
+        displayDpi,
+        displayBleedWidth: layoutBleedMm,
+        exportBlobDarkenAll: exportBlobs.get(1),
+        displayBlobDarkenAll: displayBlobs.get(1),
+        exportBlobContrastEdges: exportBlobs.get(2),
+        displayBlobContrastEdges: displayBlobs.get(2),
+        exportBlobContrastFull: exportBlobs.get(3),
+        displayBlobContrastFull: displayBlobs.get(3),
+        exportBlobDarkened: exportBlobs.get(2),
+        displayBlobDarkened: displayBlobs.get(2),
+        baseDisplayBlob: displayBlob,
+        baseExportBlob: exportBlob,
+        darknessFactor: computeDarknessFactor(img),
     };
 }
 

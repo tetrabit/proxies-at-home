@@ -73,9 +73,12 @@ describe("PageControlsOverlay", () => {
             left: "308px",
             top: "28px",
         });
+        expect(screen.getByTestId("page-controls-0")).toHaveClass("flex-col");
         expect(screen.getByTestId("page-controls-overlay")).toHaveClass("overflow-visible");
         expect(screen.getByText("Page 1")).toBeInTheDocument();
         expect(screen.getByText("Page 2")).toBeInTheDocument();
+        expect(screen.getByText("Page 1")).toHaveClass("border-b");
+        expect(screen.getByTestId("page-select-all-0")).toHaveClass("border-b");
 
         scrollContainer.scrollTop = 75;
         fireEvent.scroll(scrollContainer);

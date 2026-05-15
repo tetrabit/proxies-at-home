@@ -17,10 +17,12 @@ vi.mock("./webgl/webglUtils", () => ({
 
 import {
   __webglImageProcessingTestInternals,
+  composeInsetBorderCanvas,
   deriveSourceBleedPixelsFromGeometry,
   generateBleedCanvasWebGL,
   getCardPixelDimensionsForBleed,
   processCardImageWebGL,
+  processCardbackInsetBorderWebGL,
   processExistingBleedWebGL,
   renderBleedCanvasDirect,
 } from "./webglImageProcessing";
@@ -149,6 +151,9 @@ describe("webglImageProcessing test internals", () => {
       if (kind === "webgl2") return this.gl;
       if (kind === "2d") {
         return {
+          fillStyle: "",
+          fillRect: vi.fn(),
+          imageSmoothingEnabled: false,
           imageSmoothingQuality: "low",
           drawImage: vi.fn(),
           getImageData: vi.fn(() => ({
@@ -255,6 +260,53 @@ describe("webglImageProcessing test internals", () => {
         height: 1,
       } as ImageBitmap)
     ).toBe(0.5);
+  });
+
+  it("composes an inset black-border cardback canvas at the fixed slot size", () => {
+    const canvas = composeInsetBorderCanvas(
+      { width: 20, height: 30 } as OffscreenCanvas,
+      80,
+      100,
+      5,
+      10
+    );
+
+    expect(canvas.width).toBe(80);
+    expect(canvas.height).toBe(100);
+  });
+
+  it("closes ImageBitmap sources after composing an inset border", () => {
+    class MockImageBitmap {
+      width = 20;
+      height = 30;
+      close = vi.fn();
+    }
+    vi.stubGlobal("ImageBitmap", MockImageBitmap);
+    const source = new MockImageBitmap() as unknown as ImageBitmap;
+
+    composeInsetBorderCanvas(source, 80, 100, 5, 10);
+
+    expect(source.close).toHaveBeenCalled();
+  });
+
+  it("throws when an inset border canvas cannot create a 2d context", () => {
+    class NoInset2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (kind === "2d") return null;
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoInset2dCanvas);
+
+    expect(() =>
+      composeInsetBorderCanvas(
+        { width: 20, height: 30 } as OffscreenCanvas,
+        80,
+        100,
+        5,
+        10
+      )
+    ).toThrow("Failed to get 2d context for inset border canvas");
   });
 
   it("initializes programs, runs JFA steps, and calculates both placement branches", () => {
@@ -446,6 +498,69 @@ describe("webglImageProcessing test internals", () => {
       { exportDpi: 20, displayDpi: 10, darkenMode: 3 }
     );
     expect(full.exportBlobContrastFull).toBeInstanceOf(Blob);
+  });
+
+  it("processes cardback inset-border images at layout bleed dimensions", async () => {
+    const result = await processCardbackInsetBorderWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      3,
+      1,
+      { exportDpi: 20, displayDpi: 10, darkenMode: 2 }
+    );
+
+    expect(result.exportBlob).toBeInstanceOf(Blob);
+    expect(result.displayBlob).toBeInstanceOf(Blob);
+    expect(result.exportBlobContrastEdges).toBeInstanceOf(Blob);
+    expect(result.displayBlobContrastEdges).toBeInstanceOf(Blob);
+    expect(result.exportBleedWidth).toBe(1);
+    expect(result.displayBleedWidth).toBe(1);
+    expect(result.baseExportBlob).toBe(result.exportBlob);
+    expect(result.exportBlobDarkened).toBe(result.exportBlobContrastEdges);
+  });
+
+  it("processes cardback inset-border images with default options and inch units", async () => {
+    const defaults = await processCardbackInsetBorderWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      1,
+      0.5
+    );
+    expect(defaults.exportDpi).toBe(300);
+    expect(defaults.displayDpi).toBe(300);
+
+    const inches = await processCardbackInsetBorderWebGL(
+      { width: 20, height: 30 } as ImageBitmap,
+      0.125,
+      0.05,
+      { unit: "in", exportDpi: 20, displayDpi: 10 }
+    );
+    expect(inches.exportBleedWidth).toBeCloseTo(1.27);
+    expect(inches.displayBleedWidth).toBeCloseTo(1.27);
+  });
+
+  it("throws when cardback inset-border display canvas lacks a 2d context", async () => {
+    const displayGeometry = getCardPixelDimensionsForBleed(1, 10);
+    class NoDisplayInset2dCanvas extends MockOffscreenCanvas {
+      override getContext(kind: string) {
+        if (
+          kind === "2d" &&
+          this.width === displayGeometry.width &&
+          this.height === displayGeometry.height
+        ) {
+          return null;
+        }
+        return super.getContext(kind);
+      }
+    }
+    vi.stubGlobal("OffscreenCanvas", NoDisplayInset2dCanvas);
+
+    await expect(
+      processCardbackInsetBorderWebGL(
+        { width: 20, height: 30 } as ImageBitmap,
+        3,
+        1,
+        { exportDpi: 40, displayDpi: 10 }
+      )
+    ).rejects.toThrow("Failed to get 2d context for display inset border canvas");
   });
 
   it("renders a direct bleed canvas without optional darken mode", async () => {

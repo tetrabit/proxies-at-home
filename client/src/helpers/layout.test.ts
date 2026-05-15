@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
     getCardTargetBleed,
+    getCardLayoutBleed,
+    getCardInsetBorderBleed,
+    usesCardbackInsetBorderBleed,
     computeCardLayouts,
     computeGuideLayouts,
     computeGridDimensions,
@@ -143,6 +146,48 @@ describe('getCardTargetBleed', () => {
         };
 
         expect(getCardTargetBleed(card, settings, globalBleedWidth, { hasBuiltInBleed: true })).toBe(1.5);
+    });
+});
+
+describe('cardback inset-border layout helpers', () => {
+    const globalBleedWidth = 1.5;
+    const sourceSettings: SourceTypeSettings = {
+        withBleedTargetMode: 'global',
+        withBleedTargetAmount: 2,
+        noBleedTargetMode: 'global',
+        noBleedTargetAmount: 1,
+    };
+
+    const cardback: CardOption = {
+        uuid: 'back',
+        name: 'Back',
+        order: 0,
+        imageId: 'cardback_custom',
+        isUserUpload: false,
+        bleedMode: 'generate',
+        generateBleedMm: 3,
+    };
+
+    it('detects manual cardback target overrides as inset-border bleed', () => {
+        expect(usesCardbackInsetBorderBleed(cardback)).toBe(true);
+        expect(usesCardbackInsetBorderBleed({ ...cardback, generateBleedMm: undefined })).toBe(false);
+        expect(usesCardbackInsetBorderBleed({ ...cardback, imageId: 'front-image' })).toBe(false);
+    });
+
+    it('keeps cardback layout at the global bleed while exposing the manual inset amount', () => {
+        expect(getCardTargetBleed(cardback, sourceSettings, globalBleedWidth)).toBe(3);
+        expect(getCardLayoutBleed(cardback, sourceSettings, globalBleedWidth)).toBe(globalBleedWidth);
+        expect(getCardInsetBorderBleed(cardback, sourceSettings, globalBleedWidth)).toBe(3);
+    });
+
+    it('uses inset-border layout when computing card layouts for manual cardbacks', () => {
+        const layouts = computeCardLayouts([cardback], sourceSettings, globalBleedWidth);
+
+        expect(layouts[0]).toEqual({
+            cardWidthMm: baseCardWidthMm + globalBleedWidth * 2,
+            cardHeightMm: baseCardHeightMm + globalBleedWidth * 2,
+            bleedMm: globalBleedWidth,
+        });
     });
 });
 

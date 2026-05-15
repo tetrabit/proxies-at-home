@@ -41,7 +41,7 @@ import fullLogo from "../../assets/fullLogo.png";
 import {
   baseCardWidthMm,
   baseCardHeightMm,
-  getCardTargetBleed,
+  getCardLayoutBleed,
   chunkCards,
 } from "@/helpers/layout";
 import type { BleedMetadataImage } from "@/helpers/imageSpecs";
@@ -814,7 +814,7 @@ export function PageView({
         const layoutImageData = layoutCard.imageId
           ? imageDataById.get(layoutCard.imageId)
           : undefined;
-        const bleedMm = getCardTargetBleed(
+        const bleedMm = getCardLayoutBleed(
           layoutCard,
           sourceSettings,
           effectiveBleedWidth,
@@ -1102,7 +1102,7 @@ export function PageView({
                                 const isTop = card.uuid === leaderId;
 
                                 // Calculate bleed/dimensions
-                                const bleedMm = getCardTargetBleed(
+                                const bleedMm = getCardLayoutBleed(
                                   card,
                                   sourceSettings,
                                   effectiveBleedWidth,
@@ -1171,7 +1171,7 @@ export function PageView({
                         );
                         if (!card) return null;
 
-                        const bleedMm = getCardTargetBleed(
+                        const bleedMm = getCardLayoutBleed(
                           card,
                           sourceSettings,
                           effectiveBleedWidth,

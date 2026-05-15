@@ -772,6 +772,84 @@ describe("ProxyBuilderPage", () => {
     vi.useRealTimers();
   });
 
+  it("skips cardback inset-border startup processing when inset metadata matches", async () => {
+    vi.useFakeTimers();
+    const card = {
+      uuid: "cardback-inset",
+      imageId: "cardback_custom",
+      bleedMode: "generate",
+      generateBleedMm: 4,
+    };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardbacksEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "cardback_custom",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+          generatedInsetBorderBleedMm: 4,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("queues cardback inset-border startup processing when inset metadata mismatches", async () => {
+    vi.useFakeTimers();
+    const card = {
+      uuid: "cardback-inset-mismatch",
+      imageId: "cardback_custom_mismatch",
+      bleedMode: "generate",
+      generateBleedMm: 4,
+    };
+    mocks.useLiveQuery
+      .mockReturnValueOnce([card])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([]);
+    mocks.dbCardbacksEach.mockImplementation(
+      async (cb: (image: unknown) => void) => {
+        cb({
+          id: "cardback_custom_mismatch",
+          displayBlob: new Blob(["display"]),
+          displayBlobDarkened: new Blob(["dark"]),
+          exportBlob: new Blob(["export"]),
+          exportDpi: 800,
+          exportBleedWidth: 3.175,
+          generatedHasBuiltInBleed: false,
+          generatedBleedMode: "add",
+          generatedExistingBleedMm: 0,
+          generatedInsetBorderBleedMm: 2,
+        });
+      }
+    );
+
+    render(<ProxyBuilderPage />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    expect(mocks.ensureProcessed).toHaveBeenCalledWith(card, "low");
+    vi.useRealTimers();
+  });
+
   it("reprocesses cards after DPI changes and queues adjusted effect renders", async () => {
     vi.useFakeTimers();
     const card = {

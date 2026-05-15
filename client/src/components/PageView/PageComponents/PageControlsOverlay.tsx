@@ -56,14 +56,14 @@ const PageControl = memo(function PageControl({
     return (
         <div
             data-testid={`page-controls-${pageIndex}`}
-            className="absolute z-30 flex overflow-hidden rounded-lg border border-gray-300 bg-white/95 text-gray-700 shadow-lg backdrop-blur-sm dark:border-gray-600 dark:bg-gray-800/95 dark:text-gray-200"
+            className="absolute z-30 flex flex-col overflow-hidden rounded-lg border border-gray-300 bg-white/95 text-gray-700 shadow-lg backdrop-blur-sm dark:border-gray-600 dark:bg-gray-800/95 dark:text-gray-200"
             style={{
                 left: screenX + width + PAGE_CONTROL_GAP_PX,
                 top: screenY + 8,
                 pointerEvents: "auto",
             }}
         >
-            <span className="flex items-center border-r border-gray-300 px-2 text-xs font-semibold dark:border-gray-600">
+            <span className="flex items-center justify-center border-b border-gray-300 px-2 py-1.5 text-xs font-semibold dark:border-gray-600">
                 Page {pageNumber}
             </span>
             <button
@@ -73,7 +73,7 @@ const PageControl = memo(function PageControl({
                 title={isPageSelected ? `Page ${pageNumber} selected` : `Select all cards on page ${pageNumber}`}
                 disabled={!hasCards || isPageSelected}
                 onClick={handleSelectPage}
-                className="flex items-center gap-1 border-r border-gray-300 px-2 py-2 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                className="flex items-center justify-start gap-1 border-b border-gray-300 px-2 py-2 text-xs font-medium transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700"
             >
                 <CheckSquare className="size-4" />
                 <span className={mobile ? "sr-only" : undefined}>
@@ -87,7 +87,7 @@ const PageControl = memo(function PageControl({
                 title={`Delete page ${pageNumber}`}
                 disabled={!hasCards}
                 onClick={handleDeletePage}
-                className="flex items-center gap-1 px-2 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                className="flex items-center justify-start gap-1 px-2 py-2 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/40"
             >
                 <Trash2 className="size-4" />
                 <span className={mobile ? "sr-only" : undefined}>Delete Page</span>

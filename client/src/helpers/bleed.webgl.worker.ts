@@ -6,7 +6,7 @@ import {
 } from "./imageProcessing";
 import { STANDARD_ASPECT_RATIO, detectBleed } from "./cardDimensions";
 import { IMAGE_PROCESSING } from "../constants/imageProcessing";
-import { processCardImageWebGL, processExistingBleedWebGL } from "./webglImageProcessing";
+import { processCardImageWebGL, processCardbackInsetBorderWebGL, processExistingBleedWebGL } from "./webglImageProcessing";
 import { db } from "../db";
 import { debugLog } from "./debug";
 
@@ -67,6 +67,8 @@ self.onmessage = async (e: MessageEvent) => {
         hasBuiltInBleed,
         bleedMode,
         existingBleedMm,
+        insetBorderBleedMm,
+        layoutBleedWidthMm,
         dpi,
         displayDpi: msgDisplayDpi, // Optional display DPI from message
         darkenMode, // 0=none, 1=darken-all, 2=contrast-edges, 3=contrast-full
@@ -184,7 +186,20 @@ self.onmessage = async (e: MessageEvent) => {
         let result;
 
         // 3. Handle Bleed Modes
-        if (bleedMode === 'existing') {
+        if (insetBorderBleedMm !== undefined) {
+            result = await processCardbackInsetBorderWebGL(
+                imageBitmap,
+                insetBorderBleedMm,
+                layoutBleedWidthMm ?? bleedEdgeWidth,
+                {
+                    unit: 'mm',
+                    exportDpi: dpi,
+                    displayDpi: effectiveDisplayDpi,
+                    darkenMode,
+                }
+            );
+
+        } else if (bleedMode === 'existing') {
             // Use existing bleed as-is
             const existingBleed = existingBleedMm ?? IMAGE_PROCESSING.DEFAULT_MPC_BLEED_MM;
             result = await processExistingBleedWebGL(imageBitmap, existingBleed, {

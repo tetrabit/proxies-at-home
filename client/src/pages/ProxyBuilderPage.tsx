@@ -39,6 +39,7 @@ import {
   getEffectiveExistingBleedMm,
   type GlobalSettings,
 } from "../helpers/imageSpecs";
+import { getCardInsetBorderBleed, getCardLayoutBleed } from "../helpers/layout";
 
 // Stable empty arrays to prevent useEffect dependency changes
 const EMPTY_CARDS: CardOption[] = [];
@@ -448,12 +449,20 @@ export default function ProxyBuilderPage() {
           continue;
         }
 
-        const expectedBleedWidth = getExpectedBleedWidth(
+        const insetBorderBleedMm = getCardInsetBorderBleed(
           card,
-          settings.bleedEdgeWidth,
           settings,
+          settings.bleedEdgeWidth,
           img
         );
+        const expectedBleedWidth = insetBorderBleedMm !== undefined
+          ? getCardLayoutBleed(card, settings, settings.bleedEdgeWidth, img)
+          : getExpectedBleedWidth(
+            card,
+            settings.bleedEdgeWidth,
+            settings,
+            img
+          );
         const hasBuiltInBleed = getHasBuiltInBleed(card, img);
         const effectiveBleedMode = getEffectiveBleedMode(card, settings, img);
 
@@ -472,13 +481,18 @@ export default function ProxyBuilderPage() {
         const isExistingBleedMatch =
           effectiveExistingBleedMm !== undefined &&
           Math.abs(img.generatedExistingBleedMm! - effectiveExistingBleedMm) < 0.001;
+        const isInsetBorderBleedMatch = insetBorderBleedMm === undefined
+          ? img.generatedInsetBorderBleedMm === undefined
+          : img.generatedInsetBorderBleedMm !== undefined &&
+          Math.abs(img.generatedInsetBorderBleedMm - insetBorderBleedMm) < 0.001;
 
         const isProcessed =
           isDpiMatch &&
           isBleedMatch &&
           isBuiltInBleedMatch &&
           isBleedModeMatch &&
-          isExistingBleedMatch;
+          isExistingBleedMatch &&
+          isInsetBorderBleedMatch;
 
         if (!isProcessed) {
           imageIdToRepresentativeCard.set(card.imageId, card);
