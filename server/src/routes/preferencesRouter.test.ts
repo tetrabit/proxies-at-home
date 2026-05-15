@@ -136,6 +136,31 @@ describe('preferencesRouter', () => {
         }
     });
 
+    it('preserves optional source fields, art-match hints, and omitted case metadata', () => {
+        const fixture = {
+            version: 1,
+            exportedAt: validFixture.exportedAt,
+            cases: [
+                {
+                    source: {
+                        name: 'Island',
+                        sourceImageUrl: 'https://example.com/source.jpg',
+                        sourceArtImageUrl: 'https://example.com/art.jpg',
+                    },
+                    candidates: [validFixture.cases[0].candidates[0]],
+                    comparisonHints: {
+                        artMatch: {
+                            composition: 0.9,
+                            frame: null,
+                        },
+                    },
+                },
+            ],
+        };
+
+        expect(validatePreferenceFixture(fixture)).toEqual(fixture);
+    });
+
     it('serializes concurrent writes without corrupting the preference file', async () => {
         const fixtureA: MpcPreferenceFixture = {
             ...validFixture,
@@ -183,6 +208,26 @@ describe('preferencesRouter', () => {
     it('removes the temporary preference file when atomic rename fails', async () => {
         const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('rename failed'));
         const unlinkSpy = vi.spyOn(fs, 'unlink');
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        try {
+            const response = await request(app)
+                .put('/api/preferences')
+                .send(validFixture);
+
+            expect(response.status).toBe(500);
+            expect(response.body.error).toBe('Failed to save preferences');
+            expect(unlinkSpy).toHaveBeenCalledWith(expect.stringContaining('mpc-preferences.user.json.'));
+        } finally {
+            renameSpy.mockRestore();
+            unlinkSpy.mockRestore();
+            consoleErrorSpy.mockRestore();
+        }
+    });
+
+    it('still reports the original write failure when temporary cleanup fails', async () => {
+        const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('rename failed'));
+        const unlinkSpy = vi.spyOn(fs, 'unlink').mockRejectedValueOnce(new Error('cleanup failed'));
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
         try {
