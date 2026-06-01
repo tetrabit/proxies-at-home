@@ -27,7 +27,8 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
         const triggerChange = useCallback(() => {
-            const input = innerRef.current!;
+            const input = innerRef.current;
+            if (!input) return;
             // Dispatch native events for any non-React listeners
             const nativeChange = new Event("change", { bubbles: true });
             const nativeInput = new Event("input", { bubbles: true });
@@ -59,7 +60,8 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
 
         const updateValue = useCallback(
             (delta: number) => {
-                const input = innerRef.current!;
+                const input = innerRef.current;
+                if (!input) return;
 
                 const currentValue = parseFloat(input.value) || 0;
                 const newValue = currentValue + delta;

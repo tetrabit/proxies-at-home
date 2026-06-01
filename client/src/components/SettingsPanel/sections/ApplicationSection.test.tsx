@@ -14,6 +14,7 @@ const mockSetters = vi.hoisted(() => ({
     resetSettings: vi.fn(),
     setAllSettings: vi.fn(),
     setShowProcessingToasts: vi.fn(),
+    setAutoImportTokens: vi.fn(),
     setDecklistSortAlpha: vi.fn(),
     setPreferredArtSource: vi.fn(),
     setGlobalLanguage: vi.fn(),
@@ -137,6 +138,7 @@ describe('ApplicationSection', () => {
 
     afterEach(() => {
         Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+        Reflect.deleteProperty(window, 'caches');
         // Restore other globals if we modify them on the prototype/global object
         // Note: navigator.serviceWorker is read-only usually, so check implementation below
     });
@@ -264,6 +266,13 @@ describe('ApplicationSection', () => {
             fireEvent.click(checkbox);
             expect(mockSetters.setShowProcessingToasts).toHaveBeenCalled();
         });
+
+        it('should call setAutoImportTokens when the auto-import checkbox changes', () => {
+            render(<ApplicationSection />);
+            const checkbox = screen.getByTestId('auto-import-tokens');
+            fireEvent.click(checkbox);
+            expect(mockSetters.setAutoImportTokens).toHaveBeenCalledWith(true);
+        });
     });
 
     describe('reset settings', () => {
@@ -271,6 +280,38 @@ describe('ApplicationSection', () => {
             render(<ApplicationSection />);
             fireEvent.click(screen.getByText('Restore Factory Settings'));
             expect(mockSetters.resetSettings).toHaveBeenCalled();
+        });
+
+        it('should reset to factory defaults when no stored preferences exist', () => {
+            userPrefsState.preferences = null;
+
+            render(<ApplicationSection />);
+            fireEvent.click(screen.getByText('Reset to My Defaults'));
+
+            expect(mockSetters.resetSettings).toHaveBeenCalled();
+            expect(mockSetters.setAllSettings).not.toHaveBeenCalled();
+            expect(toastState.addToast).toHaveBeenCalledWith({
+                type: 'success',
+                message: 'Settings reset to factory defaults',
+                dismissible: true,
+            });
+        });
+
+        it('should reset to factory defaults without touching caches when caches are unavailable', async () => {
+            Object.defineProperty(window, 'caches', {
+                value: undefined,
+                configurable: true,
+            });
+            const mockReload = vi.fn();
+            window.location.reload = mockReload;
+
+            render(<ApplicationSection />);
+            fireEvent.click(screen.getByText('Reset App Data'));
+            fireEvent.click(screen.getByText("Yes, I'm sure"));
+
+            await waitFor(() => {
+                expect(mockReload).toHaveBeenCalled();
+            });
         });
 
         it('should save current settings as defaults and show a success toast', async () => {
@@ -298,6 +339,14 @@ describe('ApplicationSection', () => {
                 message: 'Settings reset to your defaults',
                 dismissible: true,
             });
+        });
+    });
+
+    describe('language selection', () => {
+        it('should call setGlobalLanguage when the language select changes', () => {
+            render(<ApplicationSection />);
+            fireEvent.change(screen.getByRole('combobox'), { target: { value: 'ja' } });
+            expect(mockSetters.setGlobalLanguage).toHaveBeenCalledWith('ja');
         });
     });
 

@@ -38,7 +38,8 @@ export function PageViewFloatingControls({
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (!mobileZoomControlsRef.current!.contains(e.target as Node)) {
+      const controls = mobileZoomControlsRef.current;
+      if (controls && !controls.contains(e.target as Node)) {
         e.preventDefault();
         e.stopPropagation();
         setShowMobileZoomControls(false);
