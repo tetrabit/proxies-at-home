@@ -328,7 +328,9 @@ export async function hydrateMpcPreferences(
     if (userFixture === undefined) {
       const { target, fixture: activeFixture } = await loadActivePreferenceOverrides();
       if (target && !activeFixture) {
-        await target.write(await serializeCurrentPreferenceFixture());
+        if (target.describe() !== 'Local file') {
+          await target.write(await serializeCurrentPreferenceFixture());
+        }
       }
     }
 

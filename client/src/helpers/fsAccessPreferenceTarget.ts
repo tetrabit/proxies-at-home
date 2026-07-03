@@ -215,7 +215,19 @@ export const fsAccessPreferenceTarget: PreferenceSyncTarget = {
     }
 
     if (!handle) {
-      handle = await requestNewHandle();
+      try {
+        handle = await requestNewHandle();
+      } catch (error) {
+        if (
+          isPermissionError(error) ||
+          (error instanceof DOMException && error.name === 'AbortError')
+        ) {
+          await fallbackDownload(fixture);
+          return;
+        }
+        throw error;
+      }
+      
       if (!handle) {
         await fallbackDownload(fixture);
         return;
