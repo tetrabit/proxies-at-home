@@ -258,48 +258,48 @@ export function ExportActions({ cards }: Props) {
   const handleExport = async () => {
     if (!frontCards.length) return;
 
-    const { exportProxyPagesToPdf } = await import(
-      "@/helpers/exportProxyPageToPdf"
-    );
-
-    const allImages = await db.images.toArray();
-    const allCardbacks = await db.cardbacks.toArray();
-    // Merge images and cardbacks - cardbacks can be used as imageId for back cards
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const imagesById = new Map<string, any>([
-      ...allImages.map((img) => [img.id, img] as const),
-      ...allCardbacks.map((cb) => [cb.id, cb] as const),
-    ]);
-
-    const pageWidthPx =
-      pageSizeUnit === "in" ? pageWidth * dpi : (pageWidth / 25.4) * dpi;
-    const pageHeightPx =
-      pageSizeUnit === "in" ? pageHeight * dpi : (pageHeight / 25.4) * dpi;
-
-    const MAX_PIXELS_PER_PDF_BATCH = 2_000_000_000; // 2 billion pixels
-    const pixelsPerPage = pageWidthPx * pageHeightPx;
-    const autoPagesPerPdf = Math.floor(MAX_PIXELS_PER_PDF_BATCH / pixelsPerPage);
-    const effectivePagesPerPdf = Math.max(1, autoPagesPerPdf);
-
-    setLoadingTask("Generating PDF");
-    setProgress(0);
-
     let rejectPromise: (reason?: Error) => void;
     const cancellationPromise = new Promise<void>((_, reject) => {
       rejectPromise = reject;
     });
 
     const onCancel = () => {
-      rejectPromise(new Error("Cancelled by user"));
+      if (rejectPromise) rejectPromise(new Error("Cancelled by user"));
     };
     setOnCancel(onCancel);
 
-	    try {
-	      // Get normalized settings at export time (consistent with display path)
-	      const pdfSettings = serializePdfSettingsForWorker();
-	      const startTime = performance.now();
-	      const pdfPageLimit = parsePdfPageLimit(pdfPageLimitInput);
-	      const cardsPerPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
+    try {
+      setLoadingTask("Generating PDF");
+      setProgress(0);
+
+      const { exportProxyPagesToPdf } = await import(
+        "@/helpers/exportProxyPageToPdf"
+      );
+
+      const allImages = await db.images.toArray();
+      const allCardbacks = await db.cardbacks.toArray();
+      // Merge images and cardbacks - cardbacks can be used as imageId for back cards
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const imagesById = new Map<string, any>([
+        ...allImages.map((img) => [img.id, img] as const),
+        ...allCardbacks.map((cb) => [cb.id, cb] as const),
+      ]);
+
+      const pageWidthPx =
+        pageSizeUnit === "in" ? pageWidth * dpi : (pageWidth / 25.4) * dpi;
+      const pageHeightPx =
+        pageSizeUnit === "in" ? pageHeight * dpi : (pageHeight / 25.4) * dpi;
+
+      const MAX_PIXELS_PER_PDF_BATCH = 2_000_000_000; // 2 billion pixels
+      const pixelsPerPage = pageWidthPx * pageHeightPx;
+      const autoPagesPerPdf = Math.floor(MAX_PIXELS_PER_PDF_BATCH / pixelsPerPage);
+      const effectivePagesPerPdf = Math.max(1, autoPagesPerPdf);
+
+      // Get normalized settings at export time (consistent with display path)
+      const pdfSettings = serializePdfSettingsForWorker();
+      const startTime = performance.now();
+      const pdfPageLimit = parsePdfPageLimit(pdfPageLimitInput);
+      const cardsPerPage = Math.max(1, pdfSettings.columns * (pdfSettings.rows ?? 1));
 
 	      const useCustomBackOffset = useSettingsStore.getState().useCustomBackOffset;
 	      const cardBackPositionX = useSettingsStore.getState().cardBackPositionX;
