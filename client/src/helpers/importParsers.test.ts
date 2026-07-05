@@ -89,12 +89,25 @@ describe('importParsers', () => {
                 number: '60',
             }));
             expect(parseLineToIntent('Island {301}')).toEqual(expect.objectContaining({
-                name: 'Island',
+                name: 'Island', number: '301'
             }));
             expect(parseLineToIntent('Forest (abc)')).toEqual(expect.objectContaining({
-                name: 'Forest',
-                set: 'abc',
-                number: undefined,
+                name: 'Forest', set: 'abc'
+            }));
+        });
+
+        it('handles Scryfall URLs', () => {
+            expect(parseLineToIntent('https://scryfall.com/card/tmh3/15/fanatic-of-rhonas')).toEqual(expect.objectContaining({
+                name: 'fanatic of rhonas', set: 'tmh3', number: '15', sourcePreference: 'scryfall'
+            }));
+            expect(parseLineToIntent('2x scryfall.com/card/a/b/c')).toEqual(expect.objectContaining({
+                name: 'c', quantity: 2, set: 'a', number: 'b', sourcePreference: 'scryfall'
+            }));
+            expect(parseLineToIntent('3x https://scryfall.com/card/tmh3/15★/fanatic-of-rhonas-test')).toEqual(expect.objectContaining({
+                name: 'fanatic of rhonas test', quantity: 3, set: 'tmh3', number: '15★', sourcePreference: 'scryfall'
+            }));
+            expect(parseLineToIntent('https://scryfall.com/card/tmh3/15/fanatic-of-rhonas?utm_source=test')).toEqual(expect.objectContaining({
+                name: 'fanatic of rhonas', set: 'tmh3', number: '15', sourcePreference: 'scryfall'
             }));
         });
     });

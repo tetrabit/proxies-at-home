@@ -148,6 +148,17 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
 
     let setCode: string | undefined;
     let number: string | undefined;
+    let explicitScryfall = false;
+
+    // Check for Scryfall URL
+    const scryfallUrlMatch = s.match(/(?:https?:\/\/)?(?:www\.)?scryfall\.com\/card\/([a-z0-9]+)\/([a-z0-9★]+)\/([^?\s]+)/i);
+    if (scryfallUrlMatch) {
+        setCode = scryfallUrlMatch[1].toLowerCase();
+        number = scryfallUrlMatch[2];
+        s = s.replace(scryfallUrlMatch[0], scryfallUrlMatch[3].replace(/-/g, ' ')).trim();
+        s = s.replace(/\?.*$/, '').trim(); // Remove any query parameters
+        explicitScryfall = true;
+    }
 
     // Check for [Set] {Number} format (e.g. [FIC] {7})
     const setNumBrackets = /\s*\[([a-z0-9]+)\]\s*\{([a-z0-9]+)\}\s*$/i;
@@ -172,6 +183,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
         if (!number) {
             const m = s.match(numBracketsOnly);
             if (m) {
+                number = m[1];
                 s = s.replace(numBracketsOnly, "").trim();
                 parsing = true;
                 continue;
@@ -226,6 +238,10 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
         }
     }
 
+    let sourcePref: 'scryfall' | 'mpc' | undefined = undefined;
+    if (mpcIdentifier) sourcePref = 'mpc';
+    else if (explicitScryfall) sourcePref = 'scryfall';
+
     return {
         name: s,
         quantity,
@@ -233,7 +249,7 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
         number,
         mpcId: mpcIdentifier,
         isToken,
-        sourcePreference: mpcIdentifier ? 'mpc' : undefined
+        sourcePreference: sourcePref
     };
 }
 
