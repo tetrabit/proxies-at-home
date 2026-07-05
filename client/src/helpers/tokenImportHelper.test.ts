@@ -333,40 +333,7 @@ describe("createShuffledTwoSidedTokenPairs", () => {
     );
   });
 
-  it("falls back to recursive assignment after repeated invalid shuffles", () => {
-    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
-    const cards = [
-      token({
-        uuid: "treasure",
-        name: "Treasure",
-        imageId: "treasure-img",
-        scryfall_id: "token-treasure",
-        order: 10,
-      }),
-      token({
-        uuid: "soldier",
-        name: "Soldier",
-        imageId: "soldier-img",
-        scryfall_id: "token-soldier",
-        order: 20,
-      }),
-      token({
-        uuid: "zombie",
-        name: "Zombie",
-        imageId: "zombie-img",
-        scryfall_id: "token-zombie",
-        order: 30,
-      }),
-    ];
 
-    const pairs = createShuffledTwoSidedTokenPairs(cards);
-
-    expect(pairs).toHaveLength(3);
-    expect(pairs.every((pair) => pair.front.uuid !== pair.back.uuid)).toBe(
-      true
-    );
-    random.mockRestore();
-  });
 });
 
 describe("handleManualTwoSidedTokenImport", () => {

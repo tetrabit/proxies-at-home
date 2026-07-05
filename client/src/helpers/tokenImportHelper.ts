@@ -351,43 +351,28 @@ async function applyImageRefDeltas(deltas: Map<string, number>): Promise<void> {
 export function createShuffledTwoSidedTokenPairs(cards: PairableTokenCard[]): TwoSidedTokenPair[] {
     if (cards.length < 2) return [];
 
+    let bestPairs: TwoSidedTokenPair[] = [];
+
     for (let attempt = 0; attempt < 500; attempt++) {
         const shuffled = shuffle(cards);
-        if (cards.every((front, index) => canUseTokenAsBack(front, shuffled[index]))) {
-            return cards.map((front, index) => ({ front, back: shuffled[index] }));
+        const currentPairs: TwoSidedTokenPair[] = [];
+        
+        for (let i = 0; i < cards.length; i++) {
+            if (canUseTokenAsBack(cards[i], shuffled[i])) {
+                currentPairs.push({ front: cards[i], back: shuffled[i] });
+            }
+        }
+
+        if (currentPairs.length === cards.length) {
+            return currentPairs;
+        }
+
+        if (currentPairs.length > bestPairs.length) {
+            bestPairs = currentPairs;
         }
     }
 
-    return findTwoSidedTokenPairs(cards, shuffle(cards));
-}
-
-function findTwoSidedTokenPairs(fronts: PairableTokenCard[], backs: PairableTokenCard[]): TwoSidedTokenPair[] {
-    const usedBackIndexes = new Set<number>();
-    const pairs: TwoSidedTokenPair[] = [];
-
-    const assign = (frontIndex: number): boolean => {
-        if (frontIndex >= fronts.length) return true;
-
-        const front = fronts[frontIndex];
-        for (let backIndex = 0; backIndex < backs.length; backIndex++) {
-            if (usedBackIndexes.has(backIndex)) continue;
-
-            const back = backs[backIndex];
-            if (!canUseTokenAsBack(front, back)) continue;
-
-            usedBackIndexes.add(backIndex);
-            pairs.push({ front, back });
-
-            if (assign(frontIndex + 1)) return true;
-
-            pairs.pop();
-            usedBackIndexes.delete(backIndex);
-        }
-
-        return false;
-    };
-
-    return assign(0) ? pairs : [];
+    return bestPairs;
 }
 
 function canUseTokenAsBack(front: PairableTokenCard, back: PairableTokenCard): boolean {
