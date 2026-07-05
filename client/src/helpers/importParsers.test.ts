@@ -110,6 +110,15 @@ describe('importParsers', () => {
                 name: 'fanatic of rhonas', set: 'tmh3', number: '15', sourcePreference: 'scryfall'
             }));
         });
+
+        it('handles Moxfield Card URLs', () => {
+            expect(parseLineToIntent('https://moxfield.com/cards/O9gBz-fanatic-of-rhonas')).toEqual(expect.objectContaining({
+                name: 'fanatic of rhonas'
+            }));
+            expect(parseLineToIntent('2x moxfield.com/cards/12345-sol-ring?test=1')).toEqual(expect.objectContaining({
+                name: 'sol ring', quantity: 2
+            }));
+        });
     });
 
     describe('parseMpcXml', () => {

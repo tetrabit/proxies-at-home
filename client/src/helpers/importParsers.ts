@@ -160,6 +160,13 @@ export function parseLineToIntent(input: string, defaultQuantity: number = 1): I
         explicitScryfall = true;
     }
 
+    // Check for Moxfield Card URL
+    const moxfieldCardMatch = s.match(/(?:https?:\/\/)?(?:www\.)?moxfield\.com\/cards\/[a-zA-Z0-9_]+-([^?\s]+)/i);
+    if (moxfieldCardMatch) {
+        s = s.replace(moxfieldCardMatch[0], moxfieldCardMatch[1].replace(/-/g, ' ')).trim();
+        s = s.replace(/\?.*$/, '').trim();
+    }
+
     // Check for [Set] {Number} format (e.g. [FIC] {7})
     const setNumBrackets = /\s*\[([a-z0-9]+)\]\s*\{([a-z0-9]+)\}\s*$/i;
     const mBrackets = s.match(setNumBrackets);
