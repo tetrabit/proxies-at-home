@@ -129,7 +129,7 @@ export async function handleManualTwoSidedTokenImport(options: Omit<AutoTokenOpt
         const importedTokens = getImportedTokenCards(afterCards, tokenIntents, beforeUuids);
         const tokensToPair = importedTokens.length > 0
             ? importedTokens
-            : getExistingAssociatedTokenCards(afterCards);
+            : getExistingTokenCards(afterCards);
 
         if (tokensToPair.length === 0) {
             if (importFoundNoTokens || tokenIntents.length === 0) {
@@ -189,25 +189,13 @@ function getImportedTokenCards(
         .sort((a, b) => a.order - b.order);
 }
 
-function getExistingAssociatedTokenCards(cards: CardOption[]): PairableTokenCard[] {
-    const associatedTokenKeys = new Set<string>();
-
-    for (const card of cards) {
-        if (card.linkedFrontId) continue;
-        if (isTokenCard(card)) continue;
-        for (const token of card.token_parts ?? []) {
-            if (!token.name) continue;
-            associatedTokenKeys.add(getTokenPartIdentityKey(token));
-        }
-    }
-
+function getExistingTokenCards(cards: CardOption[]): PairableTokenCard[] {
     return cards
         .filter((card): card is PairableTokenCard => {
             if (card.linkedFrontId) return false;
             if (!card.imageId) return false;
             if (!isTokenCard(card)) return false;
-            if (card.tokenAddedFrom && card.tokenAddedFrom.length > 0) return true;
-            return associatedTokenKeys.has(getCardIdentityKey(card));
+            return true;
         })
         .sort((a, b) => a.order - b.order);
 }
