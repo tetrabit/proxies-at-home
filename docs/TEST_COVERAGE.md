@@ -68,7 +68,7 @@ After all coverage tasks land, reviewers must run:
 npm run coverage:all
 ```
 
-The gate first runs `coverage:policy`, then delegates to package-level commands. This makes invalid thresholds or undocumented file-level exclusions fail before package coverage starts. Each package command must also pass independently:
+The gate delegates to package-level commands and each package command must also pass independently:
 
 ```bash
 npm run coverage:client
