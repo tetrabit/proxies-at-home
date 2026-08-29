@@ -8,6 +8,7 @@ const loadApp = async ({
   userPrefs,
   autoRestoreResult,
   dbGetResult,
+  switchProjectResult,
 }: {
   currentProjectId?: string;
   projects: Array<{ id: string }>;
@@ -18,6 +19,7 @@ const loadApp = async ({
     | null
     | Promise<{ restoredCount: number; projectNames: string[] } | null>;
   dbGetResult?: Promise<{ lastProjectId?: string } | undefined>;
+  switchProjectResult?: Promise<void>;
 }) => {
   vi.resetModules();
   let loadCount = 0;
@@ -29,7 +31,7 @@ const loadApp = async ({
       if (loadCount > 1 && restoredProjects) state.projects = restoredProjects;
     }),
     createProject: vi.fn().mockResolvedValue("created-project"),
-    switchProject: vi.fn().mockResolvedValue(undefined),
+    switchProject: vi.fn(() => switchProjectResult ?? Promise.resolve()),
   };
   const preferencesState = { load: vi.fn().mockResolvedValue(undefined) };
   const dbGet = vi.fn().mockImplementation(() => dbGetResult ?? Promise.resolve(userPrefs));
@@ -96,6 +98,29 @@ describe("App project initialization lifecycle", () => {
     await waitFor(() => expect(useShareUrl).toHaveBeenCalled());
     await waitFor(() => expect(prewarm).toHaveBeenCalled());
     expect(state.loadProjects).not.toHaveBeenCalled();
+  });
+
+  it("keeps the project UI hidden until initial hydration completes", async () => {
+    let resolveSwitch: () => void = () => {};
+    const switchProjectResult = new Promise<void>((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const { App, state } = await loadApp({
+      projects: [{ id: "first-project" }],
+      userPrefs: { lastProjectId: "first-project" },
+      switchProjectResult,
+    });
+
+    const view = render(<App />);
+    await waitFor(() =>
+      expect(state.switchProject).toHaveBeenCalledWith("first-project")
+    );
+    expect(view.queryByTestId("proxy-builder-page")).toBeNull();
+
+    resolveSwitch();
+    await waitFor(() =>
+      expect(view.queryByTestId("proxy-builder-page")).not.toBeNull()
+    );
   });
 
   it("auto-restores empty project storage and switches to the restored project", async () => {

@@ -21,6 +21,9 @@ const AboutModal = lazy(() =>
 
 function App() {
   const [showAbout, setShowAbout] = useState(false);
+  const [projectReady, setProjectReady] = useState(
+    () => Boolean(useProjectStore.getState().currentProjectId)
+  );
 
   // Detect and load shared deck from ?share=xxx URL parameter
   useShareUrl();
@@ -62,6 +65,7 @@ function App() {
 
             // Switch to the most recently updated project
             await useProjectStore.getState().switchProject(restored[0].id);
+            if (!isCancelled) setProjectReady(true);
             return; // Done — skip default project creation
           }
         }
@@ -106,6 +110,7 @@ function App() {
       // 4. Switch to target project
       if (!isCancelled) {
         await useProjectStore.getState().switchProject(targetProjectId);
+        if (!isCancelled) setProjectReady(true);
       }
     };
 
@@ -146,7 +151,13 @@ function App() {
         <AboutModal isOpen={showAbout} onClose={() => setShowAbout(false)} />
       </Suspense>
 
-      <ProxyBuilderPage />
+      {projectReady ? (
+        <ProxyBuilderPage />
+      ) : (
+        <div role="status" data-testid="project-initializing">
+          Loading project…
+        </div>
+      )}
     </>
   );
 }
