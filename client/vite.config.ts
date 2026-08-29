@@ -126,7 +126,6 @@ export default defineConfig(({ mode }) => {
         '**/vitest.setup.ts',
         '**/vite-env.d.ts',
         '**/main.tsx',
-        '**/ArtworkModal/ArtworkModal.tsx', // Aggregate V8 merge loses branch hits; test:coverage-artwork enforces this file separately.
         '**/*.worker.ts', // Workers are hard to test
       ],
       reportsDirectory: './coverage',
