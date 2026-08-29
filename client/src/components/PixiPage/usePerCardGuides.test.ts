@@ -160,4 +160,30 @@ describe('usePerCardGuides', () => {
     rerender({ guideStyle: 'solid-squared-rect', guideWidth: 1, cards: [] });
     expect(app.render).toHaveBeenCalled();
   });
+
+  it('supports centered non-rect fallbacks without an app instance', () => {
+    const container = makeContainer();
+    mocks.generatePerCardGuide.mockReturnValue([]);
+
+    const { rerender } = renderHook(
+      ({ cards, guideStyle }) => usePerCardGuides({
+        isReady: true,
+        container: container as never,
+        app: null,
+        cards: cards as never,
+        guideStyle: guideStyle as 'corners' | 'none',
+        guideColor: 0x000000,
+        guidePlacement: 'center',
+        guideWidth: 1,
+        cutGuideLengthMm: 3,
+      }),
+      { initialProps: { cards: [cardA], guideStyle: 'corners' } }
+    );
+
+    expect(container.addChild).toHaveBeenCalledTimes(1);
+    expect(mocks.contextInstances[0].rect).not.toHaveBeenCalled();
+    expect(mocks.contextInstances[0].roundRect).not.toHaveBeenCalled();
+
+    rerender({ cards: [], guideStyle: 'none' });
+  });
 });
