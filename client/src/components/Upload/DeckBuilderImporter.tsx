@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useState } from "react";
 import { TextInput } from "flowbite-react";
 import type { ImportIntent } from "@/helpers/importParsers";
@@ -85,7 +84,7 @@ export function DeckBuilderImporter({ mobile, onUploadComplete }: Props) {
                     isToken: c.isToken ?? false,
                     sourcePreference: preferredArtSource,
                 }));
-            } else if (source === "moxfield") {
+            } else {
                 const deckId = extractMoxfieldDeckId(deckUrl);
                 if (!deckId) {
                     setError("Invalid Moxfield URL. Please paste a valid deck link.");
@@ -104,9 +103,6 @@ export function DeckBuilderImporter({ mobile, onUploadComplete }: Props) {
                     isToken: c.isToken ?? false,
                     sourcePreference: preferredArtSource,
                 }));
-            } else {
-                setError("Invalid URL. Please paste an Archidekt or Moxfield deck link.");
-                return;
             }
 
             if (intents.length === 0) {

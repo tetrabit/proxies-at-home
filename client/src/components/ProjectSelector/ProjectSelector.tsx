@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Plus, Check, Trash2, Edit2, Share2, RefreshCw, AlertCircle, Download, Upload, RotateCcw } from "lucide-react";
@@ -87,6 +86,7 @@ export function ProjectSelector() {
     };
 
     const confirmDelete = async () => {
+        /* v8 ignore else -- the confirmation portal only renders after projectToDelete is populated. @preserve */
         if (projectToDelete) {
             await deleteProject(projectToDelete.id);
             setProjectToDelete(null);
@@ -169,10 +169,13 @@ export function ProjectSelector() {
         // Wait briefly for any pending DB writes to flush (race condition protection)
         await new Promise(resolve => setTimeout(resolve, 50));
 
+        if (!currentProjectId) {
+            useToastStore.getState().showErrorToast('No cards to share');
+            return;
+        }
+
         // Fetch latest cards directly from DB, sorted by order + Atomic Slot logic
-        const latestCards = currentProjectId
-            ? await db.cards.where('projectId').equals(currentProjectId).sortBy('order')
-            : [];
+        const latestCards = await db.cards.where('projectId').equals(currentProjectId).sortBy('order');
 
         // Apply Composite Sort (Order ASC, Front First)
         latestCards.sort((a, b) => {
@@ -191,15 +194,13 @@ export function ProjectSelector() {
         debugLog(`[ProjectSelector] handleShare - Fetched ${latestCards.length} cards for Project ${currentProjectId}:`);
         debugLog(latestCards.map(c => `${c.name} (${c.order})`));
         try {
-            const result = await createShare(latestCards, settings, currentProjectId ?? undefined);
+            const result = await createShare(latestCards, settings, currentProjectId);
 
             // Save shareId and lastSharedAt for auto-sync
-            if (currentProjectId) {
-                await db.projects.update(currentProjectId, {
-                    shareId: result.id,
-                    lastSharedAt: Date.now(),
-                });
-            }
+            await db.projects.update(currentProjectId, {
+                shareId: result.id,
+                lastSharedAt: Date.now(),
+            });
 
             await navigator.clipboard.writeText(result.url);
             let message = 'Share link copied to clipboard!';
@@ -215,6 +216,7 @@ export function ProjectSelector() {
 
     // --- Export ---
     const handleExportProject = useCallback(async () => {
+        /* v8 ignore next -- the export action is disabled without an active project; this protects direct programmatic calls. @preserve */
         if (!currentProjectId) return;
         try {
             const backup = await exportProject(currentProjectId);

@@ -208,6 +208,52 @@ describe('SelectDropdown', () => {
         expect(onToggle).toHaveBeenLastCalledWith('fav1');
     });
 
+    it('should keep the dropdown open for clicks inside the control and portal', () => {
+        const onClose = vi.fn();
+        render(
+            <SelectDropdown {...defaultProps} isOpen={true} onClose={onClose}>
+                <button>Option 1</button>
+            </SelectDropdown>
+        );
+
+        fireEvent.mouseDown(screen.getByRole('button', { name: /Any/i }));
+        fireEvent.mouseDown(screen.getByText('Option 1'));
+
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('should deselect every selected favorite in multi-select mode', () => {
+        const onToggle = vi.fn();
+        const favorites = {
+            values: ['fav1', 'fav2'],
+            isSelected: () => true,
+            onToggle,
+        };
+
+        render(
+            <SelectDropdown {...defaultProps} favorites={favorites}>
+                <button>Option 1</button>
+            </SelectDropdown>
+        );
+
+        fireEvent.click(screen.getByTitle('Deselect favorites'));
+        expect(onToggle).toHaveBeenCalledTimes(2);
+        expect(onToggle).toHaveBeenNthCalledWith(1, 'fav1');
+        expect(onToggle).toHaveBeenNthCalledWith(2, 'fav2');
+    });
+
+    it('falls back to button text and expands full-width single selects', () => {
+        const { container } = render(
+            <SelectDropdown {...defaultProps} singleSelectMode className="w-full">
+                <button>Option 1</button>
+            </SelectDropdown>
+        );
+
+        expect(screen.getByText('Any')).toBeDefined();
+        expect(container.querySelector('.flex-1')).not.toBeNull();
+        expect(screen.getByRole('button', { name: /Any/i }).className).toContain('w-full');
+    });
+
     it('should not render favorites star when disableFavorites is true', () => {
         const favorites = {
             values: ['fav1', 'fav2'],

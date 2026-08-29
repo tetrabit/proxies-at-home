@@ -22,12 +22,16 @@ const mocks = vi.hoisted(() => ({
     removeToast: vi.fn(),
     currentProjectId: 'project-1' as string | null,
     preferredArtSource: 'scryfall' as 'scryfall' | 'mpc',
-    liveQueryValue: 2,
+    liveQueryValue: 2 as number | undefined,
+    liveQueryCallback: null as null | (() => Promise<number>),
     cardCount: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock('dexie-react-hooks', () => ({
-    useLiveQuery: () => mocks.liveQueryValue,
+    useLiveQuery: (query: () => Promise<number>) => {
+        mocks.liveQueryCallback = query;
+        return mocks.liveQueryValue;
+    },
 }));
 
 vi.mock('@/helpers/importParsers', () => ({
@@ -100,6 +104,7 @@ vi.mock('../ArtworkModal', () => ({
     AdvancedSearch: ({ onSelectCard, onClose }: { onSelectCard: (name: string, img?: string, print?: { set: string; number: string }) => void; onClose: () => void }) => (
         <div data-testid="advanced-search">
             <button onClick={() => onSelectCard('Forest (Ukiyo)', 'https://example.test/forest.jpg')}>Select MPC Card</button>
+            <button onClick={() => onSelectCard('', 'https://example.test/blank.jpg')}>Select Nameless MPC Card</button>
             <button onClick={() => onSelectCard('Counterspell', undefined, { set: 'mh2', number: '267' })}>Select Scryfall Card</button>
             <button onClick={onClose}>Close Search</button>
         </div>
@@ -127,6 +132,7 @@ describe('DecklistUploader action branches', () => {
         mocks.addRemoteImage.mockResolvedValue('remote-id');
         mocks.moveMultiFaceCardsToEnd.mockResolvedValue({ multiFaceSlots: 2, updatedSlots: 1 });
         mocks.checkMultiFaceCardsHaveCorrectBack.mockResolvedValue({ multiFace: 2, checked: 2, fixed: 0, skipped: 0, errors: 0, broken: 0 });
+        mocks.countBasicLandsToRemove.mockResolvedValue(2);
         mocks.removeBasicLandsFromProject.mockResolvedValue({ removedBasics: 2 });
         mocks.handleManualTokenImport.mockResolvedValue(undefined);
         mocks.handleManualTwoSidedTokenImport.mockResolvedValue({ importedTokenCount: 2, pairedTokenCount: 2, unpairedTokenCount: 0 });
@@ -136,6 +142,8 @@ describe('DecklistUploader action branches', () => {
         mocks.currentProjectId = 'project-1';
         mocks.preferredArtSource = 'scryfall';
         mocks.liveQueryValue = 2;
+        mocks.liveQueryCallback = null;
+        mocks.addToast.mockReturnValue('toast-id');
     });
 
     it('submits deck text with preferred art fallback, clears text on completion, and supports Ctrl+Enter', async () => {
@@ -153,6 +161,13 @@ describe('DecklistUploader action branches', () => {
         typeDeck('1 Swamp');
         fireEvent.keyDown(screen.getByPlaceholderText(/1x Sol Ring/), { key: 'Enter', ctrlKey: true });
         await waitFor(() => expect(mocks.processCards).toHaveBeenCalledWith([{ name: 'Swamp', quantity: 1, sourcePreference: 'mpc' }]));
+
+        typeDeck('1 Swamp');
+        const callCount = mocks.processCards.mock.calls.length;
+        fireEvent.keyDown(screen.getByPlaceholderText(/1x Sol Ring/), { key: 'Enter' });
+        expect(mocks.processCards).toHaveBeenCalledTimes(callCount);
+        fireEvent.keyDown(screen.getByPlaceholderText(/1x Sol Ring/), { key: 'Enter', metaKey: true });
+        await waitFor(() => expect(mocks.processCards).toHaveBeenCalledTimes(callCount + 1));
     });
 
     it('ignores blank and unparsable deck submissions', () => {
@@ -166,6 +181,48 @@ describe('DecklistUploader action branches', () => {
         expect(mocks.processCards).not.toHaveBeenCalled();
     });
 
+    it('runs remove-basic queries only for an active modal/project and renders responsive count variants', async () => {
+        const closed = renderDecklist(1);
+        expect(await mocks.liveQueryCallback!()).toBe(0);
+        closed.unmount();
+
+        mocks.currentProjectId = null;
+        const noProject = renderDecklist(1);
+        expect(await mocks.liveQueryCallback!()).toBe(0);
+        noProject.unmount();
+
+        mocks.currentProjectId = 'project-1';
+        mocks.preferredArtSource = 'mpc';
+        mocks.liveQueryValue = undefined;
+        const zero = renderDecklist(1, { mobile: true });
+        expect(screen.getByText('MPC Autofill')).toBeDefined();
+        fireEvent.click(screen.getByText('Remove All Basic Lands'));
+        expect(await mocks.liveQueryCallback!()).toBe(2);
+        expect(screen.getByText('0')).toBeDefined();
+        expect(screen.getByText('0').parentElement?.textContent).toContain('cards');
+        zero.unmount();
+
+        mocks.liveQueryValue = 1;
+        renderDecklist(1);
+        fireEvent.click(screen.getByText('Remove All Basic Lands'));
+        expect(screen.getByText('1').parentElement?.textContent).toContain('card');
+        expect(screen.getByText('1').parentElement?.textContent).not.toContain('cards');
+    });
+
+    it('guards project-specific actions when no project is active', async () => {
+        mocks.currentProjectId = null;
+        renderDecklist(1);
+
+        fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
+        fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
+        fireEvent.click(screen.getByText('Remove All Basic Lands'));
+        fireEvent.click(screen.getByText('Remove'));
+
+        expect(mocks.moveMultiFaceCardsToEnd).not.toHaveBeenCalled();
+        expect(mocks.checkMultiFaceCardsHaveCorrectBack).not.toHaveBeenCalled();
+        expect(mocks.removeBasicLandsFromProject).not.toHaveBeenCalled();
+    });
+
     it('adds advanced-search MPC and Scryfall selections with the right import intents', async () => {
         renderDecklist(1);
         fireEvent.click(screen.getByText('Advanced Search'));
@@ -174,6 +231,9 @@ describe('DecklistUploader action branches', () => {
         await waitFor(() => expect(mocks.addRemoteImage).toHaveBeenCalledWith(['https://example.test/forest.jpg'], 1));
         expect(mocks.processCards).toHaveBeenCalledWith([{ name: 'Forest', quantity: 1, localImageId: 'remote-id', isToken: false, sourcePreference: 'manual' }]);
         expect(mocks.setSortBy).toHaveBeenCalledWith('manual');
+
+        fireEvent.click(screen.getByText('Select Nameless MPC Card'));
+        await waitFor(() => expect(mocks.processCards).toHaveBeenCalledWith([{ name: '', quantity: 1, localImageId: 'remote-id', isToken: false, sourcePreference: 'manual' }]));
 
         fireEvent.click(screen.getByText('Select Scryfall Card'));
         await waitFor(() => expect(mocks.processCards).toHaveBeenCalledWith([{ name: 'Counterspell', quantity: 1, set: 'mh2', number: '267', isToken: false, sourcePreference: 'scryfall' }]));
@@ -184,6 +244,10 @@ describe('DecklistUploader action branches', () => {
         fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Moved 2 multi-face cards to the end.'));
         expect(mocks.setSortBy).toHaveBeenCalledWith('manual');
+
+        mocks.moveMultiFaceCardsToEnd.mockResolvedValueOnce({ multiFaceSlots: 1, updatedSlots: 1 });
+        fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Moved 1 multi-face card to the end.'));
 
         mocks.moveMultiFaceCardsToEnd.mockResolvedValueOnce({ multiFaceSlots: 0, updatedSlots: 0 });
         fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
@@ -197,6 +261,10 @@ describe('DecklistUploader action branches', () => {
         fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('reorder failed'));
 
+        mocks.moveMultiFaceCardsToEnd.mockRejectedValueOnce(new Error(''));
+        fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to reorder cards.'));
+
         mocks.moveMultiFaceCardsToEnd.mockRejectedValueOnce('bad');
         fireEvent.click(screen.getByText('Move Multi-Face Cards To End'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to reorder cards.'));
@@ -207,9 +275,17 @@ describe('DecklistUploader action branches', () => {
         fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Checked 2 multi-face cards: all backs look OK. (Checked=2, Fixed=0, Skipped=0, Errors=0)'));
 
+        mocks.checkMultiFaceCardsHaveCorrectBack.mockResolvedValueOnce({ multiFace: 1, checked: 1, fixed: 0, skipped: 0, errors: 0, broken: 0 });
+        fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Checked 1 multi-face card: all backs look OK. (Checked=1, Fixed=0, Skipped=0, Errors=0)'));
+
         mocks.checkMultiFaceCardsHaveCorrectBack.mockResolvedValueOnce({ multiFace: 1, checked: 1, fixed: 1, skipped: 0, errors: 0, broken: 1 });
         fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Multi-face back check complete: fixed 1/1 broken card. (Checked=1, Fixed=1, Skipped=0, Errors=0)'));
+
+        mocks.checkMultiFaceCardsHaveCorrectBack.mockResolvedValueOnce({ multiFace: 2, checked: 2, fixed: 1, skipped: 0, errors: 0, broken: 2 });
+        fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Multi-face back check complete: fixed 1/2 broken cards. (Checked=2, Fixed=1, Skipped=0, Errors=0)'));
 
         mocks.checkMultiFaceCardsHaveCorrectBack.mockResolvedValueOnce({ multiFace: 0, checked: 0, fixed: 0, skipped: 0, errors: 0, broken: 0 });
         fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
@@ -218,6 +294,14 @@ describe('DecklistUploader action branches', () => {
         mocks.checkMultiFaceCardsHaveCorrectBack.mockRejectedValueOnce(new Error('check failed'));
         fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('check failed'));
+
+        mocks.checkMultiFaceCardsHaveCorrectBack.mockRejectedValueOnce(new Error(''));
+        fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to check multi-face backs.'));
+
+        mocks.checkMultiFaceCardsHaveCorrectBack.mockRejectedValueOnce('bad');
+        fireEvent.click(screen.getByText('Check Multi-Face Cards Have Correct Back'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to check multi-face backs.'));
     });
 
     it('removes basics with selected options and handles no-op and failure results', async () => {
@@ -229,12 +313,25 @@ describe('DecklistUploader action branches', () => {
         await waitFor(() => expect(mocks.removeBasicLandsFromProject).toHaveBeenCalledWith('project-1', { includeWastes: false, includeSnowCovered: true }));
         expect(mocks.showInfoToast).toHaveBeenCalledWith('Removed 2 basic lands.');
 
+        mocks.removeBasicLandsFromProject.mockResolvedValueOnce({ removedBasics: 1 });
+        fireEvent.click(screen.getByText('Remove All Basic Lands'));
+        fireEvent.click(screen.getByText('Remove'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Removed 1 basic land.'));
+
         mocks.removeBasicLandsFromProject.mockResolvedValueOnce({ removedBasics: 0 });
         fireEvent.click(screen.getByText('Remove All Basic Lands'));
         fireEvent.click(screen.getByText('Remove'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('No basic lands found to remove.'));
 
         mocks.removeBasicLandsFromProject.mockRejectedValueOnce('bad');
+        fireEvent.click(screen.getByText('Remove'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to remove basic lands.'));
+
+        mocks.removeBasicLandsFromProject.mockRejectedValueOnce(new Error('remove failed'));
+        fireEvent.click(screen.getByText('Remove'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('remove failed'));
+
+        mocks.removeBasicLandsFromProject.mockRejectedValueOnce(new Error(''));
         fireEvent.click(screen.getByText('Remove'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to remove basic lands.'));
     });
@@ -258,6 +355,16 @@ describe('DecklistUploader action branches', () => {
         mocks.cardCount.mockResolvedValueOnce(0);
         fireEvent.click(screen.getByText('Clear Cards'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('clear failed'));
+
+        mocks.clearAllCardsAndImages.mockRejectedValueOnce(new Error(''));
+        mocks.cardCount.mockResolvedValueOnce(0);
+        fireEvent.click(screen.getByText('Clear Cards'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Failed to clear images.'));
+
+        mocks.clearAllCardsAndImages.mockRejectedValueOnce('bad');
+        mocks.cardCount.mockResolvedValueOnce(0);
+        fireEvent.click(screen.getByText('Clear Cards'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('An unknown error occurred while clearing images.'));
     });
 
     it('runs token imports, no-token modal, paired summaries, and error fallbacks', async () => {
@@ -275,9 +382,17 @@ describe('DecklistUploader action branches', () => {
         fireEvent.click(screen.getByText('Add two sided associated tokens'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Added 2 two sided associated tokens.'));
 
+        mocks.handleManualTwoSidedTokenImport.mockResolvedValueOnce({ importedTokenCount: 1, pairedTokenCount: 1, unpairedTokenCount: 0 });
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Added 1 two sided associated token.'));
+
         mocks.handleManualTwoSidedTokenImport.mockResolvedValueOnce({ importedTokenCount: 3, pairedTokenCount: 1, unpairedTokenCount: 2 });
         fireEvent.click(screen.getByText('Add two sided associated tokens'));
         await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Added 1 two sided associated token; 2 could not be paired without matching itself.'));
+
+        mocks.handleManualTwoSidedTokenImport.mockResolvedValueOnce({ importedTokenCount: 3, pairedTokenCount: 2, unpairedTokenCount: 1 });
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.showInfoToast).toHaveBeenCalledWith('Added 2 two sided associated tokens; 1 could not be paired without matching itself.'));
 
         mocks.handleManualTwoSidedTokenImport.mockResolvedValueOnce({ importedTokenCount: 2, pairedTokenCount: 0, unpairedTokenCount: 2 });
         fireEvent.click(screen.getByText('Add two sided associated tokens'));
@@ -286,6 +401,103 @@ describe('DecklistUploader action branches', () => {
         mocks.handleManualTwoSidedTokenImport.mockRejectedValueOnce(new Error('two-side failed'));
         fireEvent.click(screen.getByText('Add two sided associated tokens'));
         await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('two-side failed'));
+    });
+
+    it('cancels overlapping token runs and covers completion, abort, and empty-message paths', async () => {
+        const onUploadComplete = vi.fn();
+        let resolveFirst: (() => void) | undefined;
+        let firstSignal: AbortSignal | undefined;
+        mocks.handleManualTokenImport.mockImplementationOnce((options) => {
+            firstSignal = options.signal;
+            return new Promise<void>((resolve) => { resolveFirst = resolve; });
+        });
+        renderDecklist(1, { onUploadComplete });
+
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(mocks.handleManualTokenImport).toHaveBeenCalledTimes(1));
+        mocks.handleManualTokenImport.mockImplementationOnce(async (options) => options.onComplete());
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+        expect(mocks.removeToast).toHaveBeenCalledWith('toast-id');
+        expect(onUploadComplete).toHaveBeenCalled();
+        resolveFirst?.();
+
+        mocks.addToast.mockReturnValueOnce(null as never);
+        mocks.handleManualTokenImport.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        mocks.showErrorToast.mockClear();
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(mocks.handleManualTokenImport).toHaveBeenCalledTimes(3));
+        expect(mocks.showErrorToast).not.toHaveBeenCalled();
+
+        mocks.handleManualTokenImport.mockRejectedValueOnce(new Error(''));
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Something went wrong while fetching tokens.'));
+
+        mocks.showErrorToast.mockClear();
+        mocks.handleManualTokenImport.mockRejectedValueOnce('bad');
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(mocks.handleManualTokenImport).toHaveBeenCalledTimes(5));
+        expect(mocks.showErrorToast).not.toHaveBeenCalled();
+
+        mocks.addToast.mockReturnValueOnce(null as never);
+        mocks.handleManualTwoSidedTokenImport.mockImplementationOnce(async (options) => {
+            options.onComplete();
+            return { importedTokenCount: 0, pairedTokenCount: 0, unpairedTokenCount: 0 };
+        });
+        mocks.showInfoToast.mockClear();
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.handleManualTwoSidedTokenImport).toHaveBeenCalledTimes(1));
+        expect(mocks.showInfoToast).not.toHaveBeenCalled();
+
+        mocks.handleManualTwoSidedTokenImport.mockRejectedValueOnce(new Error(''));
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.showErrorToast).toHaveBeenCalledWith('Something went wrong while fetching two sided tokens.'));
+
+        mocks.showErrorToast.mockClear();
+        mocks.handleManualTwoSidedTokenImport.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.handleManualTwoSidedTokenImport).toHaveBeenCalledTimes(3));
+        expect(mocks.showErrorToast).not.toHaveBeenCalled();
+
+        mocks.handleManualTwoSidedTokenImport.mockRejectedValueOnce('bad');
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.handleManualTwoSidedTokenImport).toHaveBeenCalledTimes(4));
+        expect(mocks.showErrorToast).not.toHaveBeenCalled();
+    });
+
+    it('cancels overlapping two-sided token runs and removes their previous toast', async () => {
+        let resolveFirst: ((value: { importedTokenCount: number; pairedTokenCount: number; unpairedTokenCount: number }) => void) | undefined;
+        let firstSignal: AbortSignal | undefined;
+        mocks.handleManualTwoSidedTokenImport.mockImplementationOnce((options) => {
+            firstSignal = options.signal;
+            return new Promise((resolve) => { resolveFirst = resolve; });
+        });
+        renderDecklist(1);
+
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(mocks.handleManualTwoSidedTokenImport).toHaveBeenCalledTimes(1));
+        mocks.handleManualTwoSidedTokenImport.mockResolvedValueOnce({ importedTokenCount: 0, pairedTokenCount: 0, unpairedTokenCount: 0 });
+        fireEvent.click(screen.getByText('Add two sided associated tokens'));
+        await waitFor(() => expect(firstSignal?.aborted).toBe(true));
+        expect(mocks.removeToast).toHaveBeenCalledWith('toast-id');
+        resolveFirst?.({ importedTokenCount: 0, pairedTokenCount: 0, unpairedTokenCount: 0 });
+    });
+
+    it('aborts an active token request while clearing cards', async () => {
+        let signal: AbortSignal | undefined;
+        let resolveToken: (() => void) | undefined;
+        mocks.handleManualTokenImport.mockImplementationOnce((options) => {
+            signal = options.signal;
+            return new Promise<void>((resolve) => { resolveToken = resolve; });
+        });
+        renderDecklist(1);
+
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(signal).toBeDefined());
+        fireEvent.click(screen.getByText('Clear Cards'));
+        await waitFor(() => expect(signal?.aborted).toBe(true));
+        expect(mocks.clearAllCardsAndImages).toHaveBeenCalled();
+        resolveToken?.();
     });
 
     it('closes advanced search and no-token modals through their cancel actions', async () => {
@@ -299,6 +511,12 @@ describe('DecklistUploader action branches', () => {
         mocks.handleManualTokenImport.mockImplementationOnce(async (options) => options.onNoTokens());
         fireEvent.click(screen.getByText('Add Associated Tokens'));
         await waitFor(() => expect(screen.getByText('No Tokens Found')).toBeDefined());
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByText('No Tokens Found')).toBeNull());
+
+        mocks.handleManualTokenImport.mockImplementationOnce(async (options) => options.onNoTokens());
+        fireEvent.click(screen.getByText('Add Associated Tokens'));
+        await waitFor(() => expect(screen.getByText('No Tokens Found')).toBeDefined());
         fireEvent.click(screen.getByText('OK'));
         await waitFor(() => expect(screen.queryByText('No Tokens Found')).toBeNull());
     });
@@ -308,6 +526,10 @@ describe('DecklistUploader action branches', () => {
 
         fireEvent.click(screen.getByText('Remove All Basic Lands'));
         expect(screen.getByText('Remove Basic Lands')).toBeDefined();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByText('Remove Basic Lands')).toBeNull());
+
+        fireEvent.click(screen.getByText('Remove All Basic Lands'));
         fireEvent.click(screen.getByLabelText('Include Snow-Covered basics'));
         fireEvent.click(screen.getByText('Cancel'));
         await waitFor(() => expect(screen.queryByText('Remove Basic Lands')).toBeNull());

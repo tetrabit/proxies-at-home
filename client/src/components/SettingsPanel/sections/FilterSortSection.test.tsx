@@ -14,6 +14,21 @@ const mockState = vi.hoisted(() => ({
     filterSectionCollapsed: {} as Record<string, boolean>,
 }));
 
+const queryMocks = vi.hoisted(() => ({
+    currentProjectId: null as string | null,
+    preferences: { filterSectionCollapsed: {} as Record<string, boolean> } as
+        | { filterSectionCollapsed: Record<string, boolean> }
+        | undefined,
+    callbacks: [] as Array<() => Promise<unknown[]>>,
+    result: [
+        { uuid: '1', type_line: 'Creature — Human', category: 'Mainboard' },
+        { uuid: '2', type_line: 'Instant', category: 'Commander' },
+        { uuid: '3', type_line: 'Artifact', category: null },
+        { uuid: '4', type_line: 'Land', linkedFrontId: 'some-id' },
+    ] as unknown[] | undefined,
+    toArray: vi.fn(async () => [{ uuid: 'db-card', type_line: 'Sorcery' }]),
+}));
+
 const mockSetters = vi.hoisted(() => ({
     setSortBy: vi.fn(),
     setSortOrder: vi.fn(),
@@ -38,9 +53,7 @@ vi.mock('@/store/settings', () => ({
 vi.mock('@/store/userPreferences', () => ({
     useUserPreferencesStore: vi.fn((selector) => {
         const state = {
-            preferences: {
-                filterSectionCollapsed: mockState.filterSectionCollapsed,
-            },
+            preferences: queryMocks.preferences,
             setFilterSectionCollapsed: mockSetters.setFilterSectionCollapsed,
         };
         return typeof selector === 'function' ? selector(state) : state;
@@ -70,18 +83,24 @@ vi.mock('@/components/common', () => ({
     ),
 }));
 
+vi.mock('@/store/projectStore', () => ({
+    useProjectStore: vi.fn((selector) => selector({ currentProjectId: queryMocks.currentProjectId })),
+}));
+
 vi.mock('dexie-react-hooks', () => ({
-    useLiveQuery: vi.fn(() => [
-        { uuid: '1', type_line: 'Creature — Human', category: 'Mainboard' },
-        { uuid: '2', type_line: 'Instant', category: 'Commander' },
-        { uuid: '3', type_line: 'Artifact', category: null },
-        { uuid: '4', type_line: 'Land', linkedFrontId: 'some-id' }, // DFC
-    ]),
+    useLiveQuery: vi.fn((callback: () => Promise<unknown[]>) => {
+        queryMocks.callbacks.push(callback);
+        return queryMocks.result;
+    }),
 }));
 
 vi.mock('@/db', () => ({
     db: {
-        cards: { toArray: vi.fn() },
+        cards: {
+            where: vi.fn(() => ({
+                equals: vi.fn(() => ({ toArray: queryMocks.toArray })),
+            })),
+        },
     },
 }));
 
@@ -109,9 +128,43 @@ describe('FilterSortSection', () => {
         mockState.filterCategories = [];
         mockState.filterMatchType = 'partial';
         mockState.filterSectionCollapsed = {};
+        queryMocks.preferences = { filterSectionCollapsed: mockState.filterSectionCollapsed };
+        queryMocks.currentProjectId = null;
+        queryMocks.callbacks = [];
+        queryMocks.result = [
+            { uuid: '1', type_line: 'Creature — Human', category: 'Mainboard' },
+            { uuid: '2', type_line: 'Instant', category: 'Commander' },
+            { uuid: '3', type_line: 'Artifact', category: null },
+            { uuid: '4', type_line: 'Land', linkedFrontId: 'some-id' },
+        ];
+        queryMocks.toArray.mockClear();
     });
 
     describe('rendering', () => {
+        it('queries cards only when no card prop is supplied for an active project', async () => {
+            const suppliedCards = [{ uuid: 'provided', type_line: 'Creature' }] as never;
+            const first = render(<FilterSortSection cards={suppliedCards} />);
+            expect(await queryMocks.callbacks.at(-1)!()).toEqual([]);
+
+            first.unmount();
+            queryMocks.currentProjectId = 'project-1';
+            const second = render(<FilterSortSection />);
+            expect(await queryMocks.callbacks.at(-1)!()).toEqual([
+                { uuid: 'db-card', type_line: 'Sorcery' },
+            ]);
+            expect(queryMocks.toArray).toHaveBeenCalled();
+
+            second.unmount();
+            queryMocks.currentProjectId = null;
+            const third = render(<FilterSortSection />);
+            expect(await queryMocks.callbacks.at(-1)!()).toEqual([]);
+
+            third.unmount();
+            queryMocks.result = undefined;
+            render(<FilterSortSection />);
+            expect(screen.queryByText('Card Types')).toBeNull();
+        });
+
         it('should render Sort By section', () => {
             render(<FilterSortSection />);
             expect(screen.getByText('Sort By')).toBeDefined();
@@ -174,10 +227,12 @@ describe('FilterSortSection', () => {
             expect(screen.getByTestId('arrow-down')).toBeDefined();
         });
 
-        it('should show arrow up for descending order', () => {
+        it('should show arrow up for descending order and toggle back to ascending', () => {
             mockState.sortOrder = 'desc';
             render(<FilterSortSection />);
             expect(screen.getByTestId('arrow-up')).toBeDefined();
+            fireEvent.click(screen.getByTitle('Descending'));
+            expect(mockSetters.setSortOrder).toHaveBeenCalledWith('asc');
         });
     });
 
@@ -203,6 +258,21 @@ describe('FilterSortSection', () => {
     });
 
     describe('color filter', () => {
+        it('should remove selected color, type, and category filters', () => {
+            mockState.filterColors = ['W'];
+            mockState.filterTypes = ['Creature'];
+            mockState.filterCategories = ['Commander'];
+            render(<FilterSortSection />);
+
+            fireEvent.click(screen.getByTitle('White'));
+            fireEvent.click(screen.getByText('Creature'));
+            fireEvent.click(screen.getByText('Commander'));
+
+            expect(mockSetters.setFilterColors).toHaveBeenCalledWith([]);
+            expect(mockSetters.setFilterTypes).toHaveBeenCalledWith([]);
+            expect(mockSetters.setFilterCategories).toHaveBeenCalledWith([]);
+        });
+
         it('should render color mana icons', () => {
             render(<FilterSortSection />);
             expect(screen.getByTestId('mana-icon-W')).toBeDefined();
@@ -393,6 +463,25 @@ describe('FilterSortSection', () => {
     });
 
     describe('collapsible sections', () => {
+        it('renders persisted collapsed sections without their controls', () => {
+            queryMocks.preferences = { filterSectionCollapsed: { manaValue: true } };
+            render(<FilterSortSection />);
+
+            expect(screen.queryByText('0')).toBeNull();
+        });
+
+        it('uses open defaults when persisted collapse preferences are unavailable', () => {
+            queryMocks.preferences = undefined;
+            render(<FilterSortSection />);
+
+            expect(screen.getByTestId('mana-icon-W')).toBeDefined();
+            const manaValueElements = screen.getAllByText('Mana Value');
+            fireEvent.click(manaValueElements[manaValueElements.length - 1]);
+            expect(mockSetters.setFilterSectionCollapsed).toHaveBeenCalledWith(
+                expect.objectContaining({ manaValue: true })
+            );
+        });
+
         it('should toggle section collapsed state', () => {
             render(<FilterSortSection />);
             // Use getAllByText and click the first match (the section header)

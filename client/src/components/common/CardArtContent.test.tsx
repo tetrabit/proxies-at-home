@@ -1,6 +1,7 @@
+import type { Dispatch, SetStateAction } from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CardArtContent } from "./CardArtContent";
+import { CardArtContent, pinSelectedPrint, prioritizeMatchingFaceName } from "./CardArtContent";
 
 type SearchState = {
   cards: Array<Record<string, unknown>>;
@@ -37,6 +38,7 @@ type MpcState = {
   cards: MpcCard[];
   groupedBySource: Map<string, MpcCard[]> | null;
   filters: {
+    fuzzySearch: boolean;
     minDpi: number;
     sourceFilters: Set<string>;
     tagFilters: Set<string>;
@@ -115,6 +117,7 @@ const mocked = vi.hoisted(() => ({
     cards: [],
     groupedBySource: new Map(),
     filters: {
+      fuzzySearch: false,
       minDpi: 0,
       sourceFilters: new Set<string>(),
       tagFilters: new Set<string>(),
@@ -132,7 +135,9 @@ const mocked = vi.hoisted(() => ({
     setTagFilters: vi.fn(),
   } as MpcState,
   prefs: {
-    preferences: { favoriteMpcSources: [] as string[] },
+    preferences: { favoriteMpcSources: [] as string[] } as
+      | { favoriteMpcSources: string[] }
+      | undefined,
     toggleFavoriteMpcSource: vi.fn(),
   },
   searchCalls: [] as Array<{ query: string; options: Record<string, unknown> }>,
@@ -192,17 +197,23 @@ vi.mock("./CardArtFilterBar", () => ({
     setMinDpi,
     setSortBy,
     setSortDir,
+    setCollapsedSources,
+    setAllSourcesCollapsed,
   }: {
     clearFilters: () => void;
     setMinDpi: (dpi: number) => void;
     setSortBy: (sort: "name" | "dpi" | "source") => void;
     setSortDir: (dir: "asc" | "desc") => void;
+    setCollapsedSources: Dispatch<SetStateAction<Set<string>>>;
+    setAllSourcesCollapsed: Dispatch<SetStateAction<boolean>>;
   }) => (
     <div data-testid="mpc-filter-bar">
       <button onClick={clearFilters}>filter clear</button>
       <button onClick={() => setMinDpi(1000)}>filter dpi</button>
       <button onClick={() => setSortBy("dpi")}>filter sort</button>
       <button onClick={() => setSortDir("desc")}>filter dir</button>
+      <button onClick={() => { setAllSourcesCollapsed(true); setCollapsedSources(new Set()); }}>mock collapse all</button>
+      <button onClick={() => { setAllSourcesCollapsed(false); setCollapsedSources(new Set()); }}>mock expand all</button>
     </div>
   ),
 }));
@@ -244,6 +255,7 @@ function resetMockedState() {
     cards: [],
     groupedBySource: new Map(),
     filters: {
+      fuzzySearch: false,
       minDpi: 0,
       sourceFilters: new Set<string>(),
       tagFilters: new Set<string>(),
@@ -268,6 +280,21 @@ function resetMockedState() {
 
 describe("CardArtContent", () => {
   beforeEach(resetMockedState);
+
+  it("prioritizes matching faces and selected print URLs in either input order", () => {
+    expect(prioritizeMatchingFaceName(["Other", "Target", "Another"], "Target")).toEqual([
+      "Target",
+      "Other",
+      "Another",
+    ]);
+    expect(prioritizeMatchingFaceName(["Target", "Other", "Another"], "Target")[0]).toBe("Target");
+
+    const selected = { imageUrl: "https://example.com/selected.png?cache=1", set: "s", number: "1" };
+    const other = { imageUrl: "https://example.com/other.png", set: "s", number: "2" };
+    const another = { imageUrl: "https://example.com/another.png", set: "s", number: "3" };
+    expect(pinSelectedPrint([other, selected, another], "https://example.com/selected.png")[0]).toBe(selected);
+    expect(pinSelectedPrint([selected, other, another], "https://example.com/selected.png")[0]).toBe(selected);
+  });
 
   it("shows back-face print when selectedFace is back in prints mode", () => {
     const onSelectCard = vi.fn();
@@ -299,6 +326,54 @@ describe("CardArtContent", () => {
     );
   });
 
+  it("refreshes stable print sorting and reprioritizes matching face names on navigation", () => {
+    mocked.scryfallPrints = {
+      prints: [
+        { imageUrl: "https://example.com/art-1.png", set: "set1", number: "1", faceName: "Art" },
+        { imageUrl: "https://example.com/art-2.png", set: "set2", number: "2", faceName: "Art" },
+      ],
+      isLoading: false,
+      hasSearched: true,
+      hasResults: true,
+    };
+    const props = {
+      artSource: "scryfall" as const,
+      mode: "prints" as const,
+      query: "Art",
+      selectedArtId: "https://example.com/art-2.png?cache=1",
+      onSelectCard: vi.fn(),
+      isActive: true,
+    };
+    const { rerender } = render(<CardArtContent {...props} />);
+
+    mocked.scryfallPrints = {
+      ...mocked.scryfallPrints,
+      prints: [...mocked.scryfallPrints.prints].reverse(),
+    };
+    rerender(<CardArtContent {...props} />);
+    expect(screen.getAllByTestId("card-image")[0].getAttribute("src")).toBe(
+      "https://example.com/art-2.png"
+    );
+
+    mocked.scryfallPrints = {
+      ...mocked.scryfallPrints,
+      prints: [
+        { imageUrl: "https://example.com/back.png", set: "set1", number: "1", faceName: "Back Face" },
+        { imageUrl: "https://example.com/front.png", set: "set1", number: "1", faceName: "Front Face" },
+      ],
+    };
+    rerender(
+      <CardArtContent
+        {...props}
+        query="Back Face"
+        selectedArtId="https://example.com/back.png"
+      />
+    );
+    expect(screen.getAllByTestId("card-image")[0].getAttribute("src")).toBe(
+      "https://example.com/back.png"
+    );
+  });
+
   it("renders Scryfall search cards, selected processed art, and DFC flips", () => {
     mocked.scryfallSearch = {
       isLoading: false,
@@ -321,11 +396,23 @@ describe("CardArtContent", () => {
           set: "dfc",
           number: "42",
         },
+        {
+          name: "Missing Fields",
+        },
+        {
+          name: "DFC Front Fallback",
+          imageUrls: ["https://img.example/dfc-fallback.png"],
+          card_faces: [{}, {}],
+        },
+        {
+          name: "DFC Empty",
+          card_faces: [{}, {}],
+        },
       ],
     };
     const onSelectCard = vi.fn();
 
-    render(
+    const { rerender } = render(
       <CardArtContent
         artSource="scryfall"
         mode="search"
@@ -345,10 +432,14 @@ describe("CardArtContent", () => {
       query: "",
       options: { autoSearch: true },
     });
-    expect(screen.getAllByTestId("artwork-card")).toHaveLength(2);
+    expect(screen.getAllByTestId("artwork-card")).toHaveLength(5);
     expect(screen.getByAltText("scry-1-front").getAttribute("src")).toBe(
       "https://processed.example/current.png"
     );
+    expect(screen.getByAltText("scry-3-front").getAttribute("src")).toBe(
+      "https://img.example/dfc-fallback.png"
+    );
+    expect(screen.getByAltText("scry-4-front").getAttribute("src")).toBeNull();
 
     fireEvent.click(
       screen
@@ -395,20 +486,55 @@ describe("CardArtContent", () => {
         number: "1",
       }
     );
+
+    fireEvent.click(
+      screen.getByAltText("scry-2-front").closest("[data-testid='artwork-card']")!
+    );
+    expect(onSelectCard).toHaveBeenLastCalledWith(
+      "Missing Fields",
+      "",
+      { set: "", number: "" }
+    );
+
+    rerender(
+      <CardArtContent
+        artSource="scryfall"
+        mode="search"
+        query="Double Face"
+        onSelectCard={onSelectCard}
+        isActive
+      />
+    );
+    expect(screen.getByAltText("scry-1-back").getAttribute("src")).toBe(
+      "https://img.example/back.png"
+    );
+    fireEvent.click(screen.getByTitle("Show front"));
+    expect(screen.getByAltText("scry-1-front").getAttribute("src")).toBe(
+      "https://img.example/front.png"
+    );
   });
 
   it("renders grouped MPC cards, forwards filters, favorites, and badge clicks", () => {
+    const cardNoTags = {
+      ...cardTwo,
+      identifier: "mpc-gamma-card-id",
+      name: "Gamma Art",
+      rawName: "Gamma Art",
+      sourceName: "Source A",
+      tags: [],
+    };
     mocked.mpc = {
       ...mocked.mpc,
-      cards: [cardOne, cardTwo],
-      filteredCards: [cardOne, cardTwo],
+      cards: [cardOne, cardTwo, cardNoTags],
+      filteredCards: [cardOne, cardTwo, cardNoTags],
       activeFilterCount: 2,
       hasSearched: true,
       groupedBySource: new Map([
-        ["Source A", [cardOne]],
+        ["Source A", [cardOne, cardNoTags]],
         ["Source B", [cardTwo]],
       ]),
       filters: {
+        fuzzySearch: false,
         minDpi: 800,
         sourceFilters: new Set(["Source A"]),
         tagFilters: new Set(["foil"]),
@@ -416,7 +542,7 @@ describe("CardArtContent", () => {
         sortDir: "asc",
       },
     };
-    mocked.prefs.preferences.favoriteMpcSources = ["Source A"];
+    mocked.prefs.preferences!.favoriteMpcSources = ["Source A"];
     const onSelectCard = vi.fn();
     const onSelectMpcCard = vi.fn();
     const onFilterCountChange = vi.fn();
@@ -450,6 +576,11 @@ describe("CardArtContent", () => {
     expect(mocked.mpc.setSortBy).toHaveBeenCalledWith("dpi");
     expect(mocked.mpc.setSortDir).toHaveBeenCalledWith("desc");
 
+    fireEvent.click(screen.getByText("mock collapse all"));
+    expect(screen.queryByAltText("mpc-alpha-card-id")).toBeNull();
+    fireEvent.click(screen.getByText("mock expand all"));
+    expect(screen.getByAltText("mpc-alpha-card-id")).toBeDefined();
+
     fireEvent.click(screen.getByText("800 DPI"));
     expect(mocked.mpc.toggleDpi).toHaveBeenCalledWith(800);
     fireEvent.click(screen.getAllByText("Source A")[1]);
@@ -476,6 +607,12 @@ describe("CardArtContent", () => {
       .map((node) => node.closest('[role="button"]'))
       .find(Boolean)!;
     expect(screen.getByAltText("mpc-beta-card-id")).toBeDefined();
+    fireEvent.keyDown(sourceBHeader, { key: "Escape" });
+    expect(screen.getByAltText("mpc-beta-card-id")).toBeDefined();
+    fireEvent.click(sourceBHeader);
+    expect(screen.queryByAltText("mpc-beta-card-id")).toBeNull();
+    fireEvent.click(sourceBHeader);
+    expect(screen.getByAltText("mpc-beta-card-id")).toBeDefined();
     fireEvent.keyDown(sourceBHeader, { key: " " });
     expect(screen.queryByAltText("mpc-beta-card-id")).toBeNull();
     fireEvent.keyDown(sourceBHeader, { key: "Enter" });
@@ -490,6 +627,7 @@ describe("CardArtContent", () => {
       hasSearched: true,
       groupedBySource: null,
       filters: {
+        fuzzySearch: false,
         minDpi: 0,
         sourceFilters: new Set<string>(),
         tagFilters: new Set<string>(),
@@ -497,6 +635,7 @@ describe("CardArtContent", () => {
         sortDir: "asc",
       },
     };
+    mocked.prefs.preferences = undefined;
     const onSelectCard = vi.fn();
 
     const { rerender } = render(
@@ -506,8 +645,10 @@ describe("CardArtContent", () => {
         selectedArtId="/api/cards/images/mpc?id=mpc-beta-card-id"
         onSelectCard={onSelectCard}
         isActive={false}
+        containerClassStyle="custom-container"
       />
     );
+    expect(document.querySelector('.custom-container')).not.toBeNull();
     rerender(
       <CardArtContent
         artSource="mpc"
@@ -520,7 +661,24 @@ describe("CardArtContent", () => {
 
     const cards = screen.getAllByTestId("artwork-card");
     expect(within(cards[0]).getByAltText("mpc-beta-card-id")).toBeDefined();
-    fireEvent.click(cards[0]);
+
+    mocked.mpc = {
+      ...mocked.mpc,
+      cards: [cardTwo, cardOne],
+      filteredCards: [cardTwo, cardOne],
+    };
+    rerender(
+      <CardArtContent
+        artSource="mpc"
+        query="Alpha"
+        selectedArtId="/api/cards/images/mpc?id=mpc-beta-card-id"
+        onSelectCard={onSelectCard}
+        isActive
+      />
+    );
+    expect(within(screen.getAllByTestId("artwork-card")[0]).getByAltText("mpc-beta-card-id")).toBeDefined();
+
+    fireEvent.click(screen.getAllByTestId("artwork-card")[0]);
     expect(onSelectCard).toHaveBeenCalledWith(
       "Beta Art",
       expect.stringContaining("mpc-beta-card-id")
@@ -535,6 +693,7 @@ describe("CardArtContent", () => {
       hasSearched: true,
       groupedBySource: new Map([["Source A", [cardOne]]]),
       filters: {
+        fuzzySearch: false,
         minDpi: 1400,
         sourceFilters: new Set(["Source A"]),
         tagFilters: new Set<string>(),
@@ -558,6 +717,14 @@ describe("CardArtContent", () => {
         '"Missing" had 2 results, but current filters return none.'
       )
     ).toBeDefined();
+
+    mocked.mpc = { ...mocked.mpc, cards: [cardOne], filteredCards: [] };
+    rerender(
+      <CardArtContent artSource="mpc" query="Missing" onSelectCard={vi.fn()} filtersCollapsed />
+    );
+    expect(
+      screen.getByText('"Missing" had 1 result, but current filters return none.')
+    ).toBeDefined();
     fireEvent.click(screen.getByText("Clear All Filters"));
     expect(mocked.mpc.clearFilters).toHaveBeenCalled();
 
@@ -567,6 +734,7 @@ describe("CardArtContent", () => {
       filteredCards: [],
       hasSearched: true,
       filters: {
+        fuzzySearch: false,
         minDpi: 0,
         sourceFilters: new Set<string>(),
         tagFilters: new Set<string>(),
@@ -587,6 +755,58 @@ describe("CardArtContent", () => {
     expect(screen.getByText('No MPC art found for "Missing"')).toBeDefined();
     fireEvent.click(screen.getByText("Switch to Scryfall"));
     expect(onSwitchSource).toHaveBeenCalled();
+  });
+
+  it("handles unextractable MPC selections and unavailable print arrays", () => {
+    const first = render(
+      <CardArtContent
+        artSource="mpc"
+        query="Missing"
+        selectedArtId="/api/cards/images/mpc"
+        onSelectCard={vi.fn()}
+        isActive
+      />
+    );
+    expect(screen.getByText(/Search for a card to find custom art/)).toBeDefined();
+
+    first.unmount();
+    mocked.scryfallPrints = {
+      ...mocked.scryfallPrints,
+      prints: undefined as never,
+      hasSearched: false,
+      hasResults: false,
+    };
+    const second = render(
+      <CardArtContent
+        artSource="scryfall"
+        query=""
+        mode="prints"
+        onSelectCard={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Scryfall syntax")).toBeDefined();
+    second.unmount();
+
+    mocked.scryfallPrints = {
+      prints: [{ imageUrl: "https://example.com/no-face.png", set: "set", number: "1" }],
+      isLoading: false,
+      hasSearched: true,
+      hasResults: true,
+    };
+    render(
+      <CardArtContent
+        artSource="scryfall"
+        mode="prints"
+        query="No Face"
+        selectedFace="front"
+        selectedArtId="https://example.com/no-face.png?cache=1"
+        processedDisplayUrl="https://processed.example/no-face.png"
+        onSelectCard={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId("card-image").getAttribute("src")).toBe(
+      "https://processed.example/no-face.png"
+    );
   });
 
   it("renders Scryfall empty search guidance without auto-searching prints", () => {

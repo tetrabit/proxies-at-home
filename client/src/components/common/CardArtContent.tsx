@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import logoSvg from "@/assets/logo.svg";
 import { Button } from "flowbite-react";
 import { ChevronDown, ChevronRight, Star, RefreshCw } from "lucide-react";
@@ -68,6 +67,27 @@ function useStableSortKey<T>(
 }
 
 type ArtSource = 'scryfall' | 'mpc';
+
+export function prioritizeMatchingFaceName(faceNames: string[], query: string): string[] {
+    return [...faceNames].sort((a, b) => {
+        const aMatches = a.toLowerCase() === query.toLowerCase();
+        const bMatches = b.toLowerCase() === query.toLowerCase();
+        if (aMatches && !bMatches) return -1;
+        if (!aMatches && bMatches) return 1;
+        return 0;
+    });
+}
+
+export function pinSelectedPrint(prints: PrintInfo[], selectedImageUrl: string): PrintInfo[] {
+    const strip = (url?: string) => url?.split('?')[0];
+    return [...prints].sort((a, b) => {
+        const aSelected = strip(a.imageUrl) === strip(selectedImageUrl);
+        const bSelected = strip(b.imageUrl) === strip(selectedImageUrl);
+        if (aSelected && !bSelected) return -1;
+        if (!aSelected && bSelected) return 1;
+        return 0;
+    });
+}
 
 export interface CardArtContentProps {
     /** Art source to search */
@@ -192,15 +212,7 @@ export function CardArtContent({
         // front/back semantics remain stable.
         if (mode === 'prints' && selectedFace) return uniqueFaces;
 
-        const sorted = [...uniqueFaces].sort((a, b) => {
-            const aMatches = a.toLowerCase() === query.toLowerCase();
-            const bMatches = b.toLowerCase() === query.toLowerCase();
-            if (aMatches && !bMatches) return -1;
-            if (!aMatches && bMatches) return 1;
-            return 0;
-        });
-
-        return sorted;
+        return prioritizeMatchingFaceName(uniqueFaces, query);
     }, [uniqueFaces, query, mode, selectedFace]);
 
     // Use shared stable sort logic for both sources
@@ -212,7 +224,7 @@ export function CardArtContent({
             selectedFace || 'front',
             faceNames[0],
             faceNames[1]
-        ),
+        ) ?? [],
         [scryfallPrintsData.prints, selectedFace, faceNames]
     );
 
@@ -240,14 +252,8 @@ export function CardArtContent({
     const filteredPrints = useMemo(
         () => {
             // Sort: pin selectedArtId to top (if it's a Scryfall URL)
-            if (scryfallSortKey && basePrints) {
-                return [...basePrints].sort((a, b) => {
-                    const aSelected = stripQuery(a.imageUrl) === stripQuery(scryfallSortKey);
-                    const bSelected = stripQuery(b.imageUrl) === stripQuery(scryfallSortKey);
-                    if (aSelected && !bSelected) return -1;
-                    if (!aSelected && bSelected) return 1;
-                    return 0;
-                });
+            if (scryfallSortKey) {
+                return pinSelectedPrint(basePrints, scryfallSortKey);
             }
             return basePrints;
         },
@@ -284,7 +290,7 @@ export function CardArtContent({
         : mpcData.hasSearched;
     // For MPC, check filteredCards (not raw cards) so empty state shows when filters hide everything
     const hasResults = artSource === 'scryfall'
-        ? (mode === 'prints' ? (filteredPrints?.length ?? 0) > 0 : scryfallSearchData.hasResults)
+        ? (mode === 'prints' ? filteredPrints.length > 0 : scryfallSearchData.hasResults)
         : mpcData.filteredCards.length > 0;
 
     // Collapsed source groups state (for MPC source sort mode)
@@ -543,7 +549,7 @@ export function CardArtContent({
                             {artSource === 'scryfall' ? (
                                 <CardGrid cardSize={cardSize}>
                                     {mode === 'prints'
-                                        ? (filteredPrints || []).map(renderPrint)
+                                        ? filteredPrints.map(renderPrint)
                                         : scryfallSearchData.cards.map(renderScryfallCard)
                                     }
                                 </CardGrid>

@@ -1,4 +1,3 @@
-import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -58,5 +57,47 @@ describe('ColorPicker EyeDropper support', () => {
 
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('#123456'));
     expect(onChangeEnd).toHaveBeenCalledWith('#123456', '#abcdef');
+  });
+
+  it('ignores EyeDropper cancellation without an end callback', async () => {
+    class CancelledEyeDropper {
+      open = vi.fn().mockRejectedValue(new Error('cancelled'));
+    }
+
+    vi.stubGlobal('EyeDropper', CancelledEyeDropper);
+    const { ColorPicker } = await import('./ColorPicker');
+    const onChange = vi.fn();
+    const { container } = render(
+      <ColorPicker label="Pick" value="#abcdef" onChange={onChange} />,
+    );
+
+    fireEvent.click(container.querySelector('button[title="Click to pick color"]')!);
+    fireEvent.click(screen.getByTitle('Pick color from screen'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('commits an EyeDropper result without requiring an end callback', async () => {
+    class SimpleEyeDropper {
+      open = vi.fn().mockResolvedValue({ sRGBHex: '#654321' });
+    }
+
+    vi.stubGlobal('EyeDropper', SimpleEyeDropper);
+    const { ColorPicker } = await import('./ColorPicker');
+    const onChange = vi.fn();
+    const { container } = render(
+      <ColorPicker label="Pick" value="#abcdef" onChange={onChange} />,
+    );
+
+    fireEvent.click(container.querySelector('button[title="Click to pick color"]')!);
+    fireEvent.click(screen.getByTitle('Pick color from screen'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onChange).toHaveBeenCalledWith('#654321');
   });
 });

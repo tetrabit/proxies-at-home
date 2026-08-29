@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 
 // Mock hoisted values
@@ -22,6 +22,8 @@ const mockState = vi.hoisted(() => ({
     printerCalibrationProfileId: null as string | null,
 }));
 
+const mockOpenCalibrationModal = vi.hoisted(() => vi.fn());
+
 const mockSetters = vi.hoisted(() => ({
     setCardSpacingMm: vi.fn(),
     setCardPositionX: vi.fn(),
@@ -43,7 +45,7 @@ vi.mock('@/store/settings', () => ({
 }));
 
 vi.mock('@/store', () => ({
-    useCalibrationModalStore: vi.fn((selector) => selector({ openModal: vi.fn() })),
+    useCalibrationModalStore: vi.fn((selector) => selector({ openModal: mockOpenCalibrationModal })),
 }));
 
 vi.mock('flowbite-react', () => ({
@@ -95,7 +97,7 @@ vi.mock('@/hooks/useInputHooks', () => ({
 }));
 
 vi.mock('@/components/PrinterCalibrationModal', () => ({
-    PrinterCalibrationModal: ({ isOpen }: { isOpen: boolean }) => isOpen ? <div data-testid="printer-calibration-modal" /> : null,
+    PrinterCalibrationModal: ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => isOpen ? <button data-testid="printer-calibration-modal" onClick={onClose}>Close calibration</button> : null,
 }));
 
 import { CardSection } from './CardSection';
@@ -105,6 +107,13 @@ describe('CardSection', () => {
         vi.clearAllMocks();
         mockState.dpi = 600;
         mockState.cardSpacingMm = 0;
+        mockState.pageSizeUnit = 'in';
+        mockState.pageWidth = 8.5;
+        mockState.pageHeight = 11;
+        mockState.bleedEdge = true;
+        mockState.useCustomBackOffset = false;
+        mockState.printerCalibrationEnabled = false;
+        mockState.printerCalibrationProfileId = null;
     });
 
     describe('rendering', () => {
@@ -150,6 +159,45 @@ describe('CardSection', () => {
             render(<CardSection />);
             expect(screen.getByText('Vertical Offset')).toBeDefined();
         });
+    });
+
+    it('handles calibration controls and every positioning input', async () => {
+        mockState.pageSizeUnit = 'mm';
+        mockState.pageWidth = 210;
+        mockState.pageHeight = 297;
+        mockState.bleedEdge = false;
+        mockState.useCustomBackOffset = true;
+        mockState.printerCalibrationEnabled = true;
+        mockState.printerCalibrationProfileId = 'profile-1';
+
+        render(<CardSection />);
+
+        expect(screen.getByText(/Active Profile:/)).toBeDefined();
+        fireEvent.click(screen.getByText('Printer Calibration (Translation)'));
+        expect(await screen.findByTestId('printer-calibration-modal')).toBeDefined();
+        fireEvent.click(screen.getByTestId('printer-calibration-modal'));
+        expect(screen.queryByTestId('printer-calibration-modal')).toBeNull();
+
+        fireEvent.click(screen.getByText('MPC Calibration Harness'));
+        expect(mockOpenCalibrationModal).toHaveBeenCalledWith(
+            expect.objectContaining({ cardUuid: 'settings-calibration' })
+        );
+
+        fireEvent.click(screen.getByTestId('checkbox-useCustomBackOffset'));
+        expect(mockSetters.setUseCustomBackOffset).toHaveBeenCalledWith(false);
+
+        fireEvent.change(screen.getByTestId('number-input-0'), { target: { value: '1' } });
+        const offsets = screen.getAllByTestId('number-input--0.0');
+        fireEvent.change(offsets[0], { target: { value: '0.1' } });
+        fireEvent.change(offsets[1], { target: { value: '0.2' } });
+        fireEvent.change(offsets[2], { target: { value: '0.3' } });
+        fireEvent.change(offsets[3], { target: { value: '0.4' } });
+
+        expect(mockSetters.setCardSpacingMm).toHaveBeenCalledWith(1);
+        expect(mockSetters.setCardPositionX).toHaveBeenCalledWith(0.1);
+        expect(mockSetters.setCardPositionY).toHaveBeenCalledWith(0.2);
+        expect(mockSetters.setCardBackPositionX).toHaveBeenCalledWith(0.3);
+        expect(mockSetters.setCardBackPositionY).toHaveBeenCalledWith(0.4);
     });
 
     describe('back card offset', () => {

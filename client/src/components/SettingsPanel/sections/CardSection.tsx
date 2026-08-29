@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useSettingsStore } from "@/store/settings";
 import { Label, Checkbox, Button } from "flowbite-react";
 import { NumberInput } from "@/components/common";
@@ -78,8 +77,8 @@ export function CardSection() {
     const roomX = pageWmm - columns * cardWmm;
     const roomY = pageHmm - rows * cardHmm;
 
-    const maxX = xDen > 0 ? Math.floor(Math.max(0, roomX / xDen)) : 0;
-    const maxY = yDen > 0 ? Math.floor(Math.max(0, roomY / yDen)) : 0;
+    const maxX = Math.floor(Math.max(0, roomX / xDen));
+    const maxY = Math.floor(Math.max(0, roomY / yDen));
 
     return Math.floor(Math.min(maxX, maxY));
   }, [pageWmm, pageHmm, columns, rows, cardWmm, cardHmm]);

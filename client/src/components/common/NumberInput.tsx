@@ -28,6 +28,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
 
         const triggerChange = useCallback(() => {
             const input = innerRef.current;
+            /* v8 ignore next -- spinner controls are rendered only after Flowbite forwards the mounted input ref; this guard protects third-party ref regressions. @preserve */
             if (!input) return;
             // Dispatch native events for any non-React listeners
             const nativeChange = new Event("change", { bubbles: true });
@@ -61,6 +62,7 @@ export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
         const updateValue = useCallback(
             (delta: number) => {
                 const input = innerRef.current;
+                /* v8 ignore next -- spinner controls are rendered only after Flowbite forwards the mounted input ref; this guard protects third-party ref regressions. @preserve */
                 if (!input) return;
 
                 const currentValue = parseFloat(input.value) || 0;

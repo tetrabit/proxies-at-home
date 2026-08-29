@@ -114,6 +114,23 @@ describe('ExportSection', () => {
     expect(clamped).toBeLessThan(3000);
   });
 
+  it('labels intermediate DPI options and tolerates pages with no safe DPI', () => {
+    settingsState.pageWidth = 5;
+    settingsState.pageHeight = 5;
+    const { unmount } = render(<ExportSection cards={[] as never} />);
+
+    expect(screen.getByRole('option', { name: '1500' })).toBeDefined();
+
+    unmount();
+    vi.clearAllMocks();
+    settingsState.pageWidth = Number.POSITIVE_INFINITY;
+    settingsState.pageHeight = Number.POSITIVE_INFINITY;
+    settingsState.dpi = 600;
+    render(<ExportSection cards={[] as never} />);
+
+    expect(settingsState.setDpi).not.toHaveBeenCalled();
+  });
+
   it('ignores invalid DPI select values and reflects alpha order state', () => {
     settingsState.decklistSortAlpha = true;
     render(<ExportSection cards={[] as never} />);

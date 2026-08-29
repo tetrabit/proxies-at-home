@@ -14,6 +14,8 @@ const mockState = vi.hoisted(() => ({
     bleedEdge: true,
     bleedEdgeWidth: 3,
     cardSpacingMm: 0,
+    registrationMarks: 'none' as 'none' | '3' | '4',
+    registrationMarksPortrait: false,
 }));
 
 const mockSetters = vi.hoisted(() => ({
@@ -24,6 +26,8 @@ const mockSetters = vi.hoisted(() => ({
     setGuidePlacement: vi.fn(),
     setShowGuideLinesOnBackCards: vi.fn(),
     setCutGuideLengthMm: vi.fn(),
+    setRegistrationMarks: vi.fn(),
+    setRegistrationMarksPortrait: vi.fn(),
 }));
 
 const mockSetState = vi.hoisted(() => vi.fn());
@@ -93,6 +97,15 @@ describe('GuidesSection', () => {
         mockState.perCardGuideStyle = 'corners';
         mockState.guidePlacement = 'outside';
         mockState.guideWidth = 1;
+        mockState.guideColor = '#000000';
+        mockState.cutLineStyle = 'full';
+        mockState.showGuideLinesOnBackCards = true;
+        mockState.cutGuideLengthMm = 6.25;
+        mockState.bleedEdge = true;
+        mockState.bleedEdgeWidth = 3;
+        mockState.cardSpacingMm = 0;
+        mockState.registrationMarks = 'none';
+        mockState.registrationMarksPortrait = false;
     });
 
     describe('rendering', () => {
@@ -136,6 +149,21 @@ describe('GuidesSection', () => {
             expect(screen.getByTitle('Outside - stroke in bleed area')).toBeDefined();
             expect(screen.getByTitle('Center - stroke straddles cut line')).toBeDefined();
             expect(screen.getByTitle('Inside - stroke within card content')).toBeDefined();
+        });
+
+        it('renders selected center and inside placement styles plus disabled outside fallback styling', () => {
+            for (const placement of ['center', 'inside'] as const) {
+                mockState.guidePlacement = placement;
+                const view = render(<GuidesSection />);
+                expect(screen.getByTitle(`${placement === 'center' ? 'Center - stroke straddles cut line' : 'Inside - stroke within card content'}`).className).toContain('bg-blue');
+                view.unmount();
+            }
+
+            mockState.guidePlacement = 'center';
+            mockState.bleedEdge = false;
+            mockState.cardSpacingMm = 0;
+            render(<GuidesSection />);
+            expect(screen.getByTitle('Outside - stroke in bleed area').className).toContain('cursor-not-allowed');
         });
 
         it('should call setGuidePlacement when placement button clicked', () => {
@@ -231,6 +259,55 @@ describe('GuidesSection', () => {
         });
     });
 
+    it('updates color, width, length, placement, page style, and registration controls', () => {
+        mockState.registrationMarks = '3';
+        const { rerender } = render(<GuidesSection />);
+
+        const colorInput = screen.getByTestId('color-picker').querySelector('input')!;
+        fireEvent.change(colorInput, { target: { value: '#123456' } });
+        fireEvent.blur(colorInput);
+        expect(mockSetState).toHaveBeenCalledWith({ guideColor: '#123456' });
+        expect(mockSetState).toHaveBeenCalledWith({ guideColor: '#000000' });
+        expect(mockSetters.setGuideColor).toHaveBeenCalledWith('#123456');
+
+        fireEvent.change(screen.getByTestId('guideWidth'), { target: { value: '2' } });
+        expect(mockSetters.setGuideWidth).toHaveBeenCalledWith(2);
+        fireEvent.change(screen.getByTestId('guide-length-slider').querySelector('input')!, { target: { value: '7.5' } });
+        expect(mockSetters.setCutGuideLengthMm).toHaveBeenCalledWith(7.5);
+
+        fireEvent.click(screen.getByTitle('Outside - stroke in bleed area'));
+        expect(mockSetters.setGuidePlacement).toHaveBeenCalledWith('outside');
+        fireEvent.change(screen.getByTestId('cutLineStyle'), { target: { value: 'none' } });
+        expect(mockSetters.setCutLineStyle).toHaveBeenCalledWith('none');
+
+        fireEvent.click(screen.getByText('3-Point'));
+        fireEvent.click(screen.getByText('4-Point'));
+        expect(mockSetters.setRegistrationMarks).toHaveBeenNthCalledWith(1, '3');
+        expect(mockSetters.setRegistrationMarks).toHaveBeenNthCalledWith(2, '4');
+        fireEvent.click(screen.getByText('Landscape'));
+        fireEvent.click(screen.getByText('Portrait'));
+        expect(mockSetters.setRegistrationMarksPortrait).toHaveBeenNthCalledWith(1, false);
+        expect(mockSetters.setRegistrationMarksPortrait).toHaveBeenNthCalledWith(2, true);
+
+        mockState.registrationMarks = '4';
+        mockState.registrationMarksPortrait = true;
+        rerender(<GuidesSection />);
+        expect(screen.getByText('Portrait')).toBeDefined();
+        fireEvent.click(screen.getAllByText('None').at(-1)!);
+        expect(mockSetters.setRegistrationMarks).toHaveBeenLastCalledWith('none');
+    });
+
+    it('forces inside placement when outside guides cannot fit', () => {
+        mockState.bleedEdge = false;
+        mockState.cardSpacingMm = 0;
+        mockState.guideWidth = 10;
+        mockState.guidePlacement = 'outside';
+        render(<GuidesSection />);
+
+        expect(mockSetters.setGuidePlacement).toHaveBeenCalledWith('inside');
+        expect(screen.getByTitle('Outside - stroke in bleed area').hasAttribute('disabled')).toBe(true);
+    });
+
     describe('toggle buttons', () => {
         it('should toggle to Full when clicking Full button', () => {
             mockState.perCardGuideStyle = 'corners';
@@ -272,6 +349,43 @@ describe('GuidesSection', () => {
             render(<GuidesSection />);
             fireEvent.click(screen.getByText('Square'));
             expect(mockSetters.setPerCardGuideStyle).toHaveBeenCalledWith('corners');
+        });
+        it('covers every rounded, dashed, corner, and full style transition', () => {
+            const cases: Array<[string, string, string]> = [
+                ['dashed-rounded-rect', 'Corners', 'dashed-rounded-corners'],
+                ['solid-rounded-rect', 'Corners', 'rounded-corners'],
+                ['dashed-squared-rect', 'Corners', 'dashed-corners'],
+                ['solid-squared-rect', 'Corners', 'corners'],
+                ['dashed-rounded-corners', 'Full', 'dashed-rounded-rect'],
+                ['rounded-corners', 'Full', 'solid-rounded-rect'],
+                ['dashed-corners', 'Full', 'dashed-squared-rect'],
+                ['corners', 'Full', 'solid-squared-rect'],
+                ['dashed-rounded-corners', 'Solid', 'rounded-corners'],
+                ['dashed-rounded-rect', 'Solid', 'solid-rounded-rect'],
+                ['dashed-corners', 'Solid', 'corners'],
+                ['dashed-squared-rect', 'Solid', 'solid-squared-rect'],
+                ['rounded-corners', 'Dashed', 'dashed-rounded-corners'],
+                ['solid-rounded-rect', 'Dashed', 'dashed-rounded-rect'],
+                ['corners', 'Dashed', 'dashed-corners'],
+                ['solid-squared-rect', 'Dashed', 'dashed-squared-rect'],
+                ['dashed-rounded-corners', 'Square', 'dashed-corners'],
+                ['rounded-corners', 'Square', 'corners'],
+                ['dashed-rounded-rect', 'Square', 'dashed-squared-rect'],
+                ['solid-rounded-rect', 'Square', 'solid-squared-rect'],
+                ['dashed-corners', 'Round', 'dashed-rounded-corners'],
+                ['corners', 'Round', 'rounded-corners'],
+                ['dashed-squared-rect', 'Round', 'dashed-rounded-rect'],
+                ['solid-squared-rect', 'Round', 'solid-rounded-rect'],
+            ];
+
+            for (const [style, button, expected] of cases) {
+                mockSetters.setPerCardGuideStyle.mockClear();
+                mockState.perCardGuideStyle = style;
+                const view = render(<GuidesSection />);
+                fireEvent.click(screen.getByText(button));
+                expect(mockSetters.setPerCardGuideStyle).toHaveBeenCalledWith(expected);
+                view.unmount();
+            }
         });
     });
 

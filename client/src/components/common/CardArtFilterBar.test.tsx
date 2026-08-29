@@ -8,7 +8,12 @@ const prefState = vi.hoisted(() => ({
     favoriteMpcTags: ['foil'],
     favoriteMpcDpi: 1000 as number | null,
     favoriteMpcSort: 'source' as 'name' | 'dpi' | 'source' | null,
-  },
+  } as {
+    favoriteMpcSources: string[];
+    favoriteMpcTags: string[];
+    favoriteMpcDpi: number | null;
+    favoriteMpcSort: 'name' | 'dpi' | 'source' | null;
+  } | undefined,
   toggleFavoriteMpcSource: vi.fn(),
   toggleFavoriteMpcTag: vi.fn(),
   setFavoriteMpcDpi: vi.fn(),
@@ -50,6 +55,7 @@ const cards = [
 function renderBar(overrides: Partial<React.ComponentProps<typeof CardArtFilterBar>> = {}) {
   const props: React.ComponentProps<typeof CardArtFilterBar> = {
     filters: {
+      fuzzySearch: false,
       minDpi: 0,
       sourceFilters: new Set<string>(),
       tagFilters: new Set<string>(),
@@ -73,8 +79,8 @@ function renderBar(overrides: Partial<React.ComponentProps<typeof CardArtFilterB
     setAllSourcesCollapsed: vi.fn(),
     ...overrides,
   };
-  render(<CardArtFilterBar {...props} />);
-  return props;
+  const view = render(<CardArtFilterBar {...props} />);
+  return Object.assign(props, view);
 }
 
 describe('CardArtFilterBar', () => {
@@ -91,7 +97,7 @@ describe('CardArtFilterBar', () => {
 
   it('renders counts, toggles fuzzy search, sort direction, and clear filters', () => {
     const props = renderBar({
-      filters: { minDpi: 800, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'source', sortDir: 'asc' },
+      filters: { fuzzySearch: false, minDpi: 800, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'source', sortDir: 'asc' },
     });
 
     expect(screen.getByText('1')).toBeDefined();
@@ -119,43 +125,67 @@ describe('CardArtFilterBar', () => {
     expect(prefState.setFavoriteMpcDpi).toHaveBeenCalledWith(0);
     fireEvent.click(screen.getByText('800+'));
     expect(props.setMinDpi).toHaveBeenCalledWith(800);
+    fireEvent.click(screen.getByText('DPI: Any'));
+    fireEvent.click(screen.getByText('close DPI'));
 
     fireEvent.click(screen.getByText('Sort: Name'));
     fireEvent.click(screen.getByTitle('Remove from favorites'));
     expect(prefState.setFavoriteMpcSort).toHaveBeenCalledWith(null);
     fireEvent.click(screen.getByText('Source'));
     expect(props.setSortBy).toHaveBeenCalledWith('source');
+    fireEvent.click(screen.getByText('Sort: Name'));
+    fireEvent.click(screen.getByText('close Sort'));
   });
 
   it('handles source and tag dropdown search, selection, favorites, and bulk actions', () => {
     const props = renderBar();
 
     fireEvent.click(screen.getByText('Source: 0'));
-    fireEvent.change(screen.getByPlaceholderText('Search sources...'), { target: { value: 'other' } });
+    const sourceSearch = screen.getByPlaceholderText('Search sources...');
+    fireEvent.change(sourceSearch, { target: { value: 'other' } });
+    fireEvent.click(sourceSearch);
     expect(screen.getByText('Other Source')).toBeDefined();
     fireEvent.click(screen.getByTestId('Source-menu').querySelectorAll('button')[1]);
     expect(props.setSourceFilters).toHaveBeenCalledWith(new Set(['Favorite Source', 'Other Source']));
+    fireEvent.click(screen.getByTestId('Source-menu').querySelectorAll('button')[2]);
+    const selectFavoriteSources = (props.setSourceFilters as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as (prev: Set<string>) => Set<string>;
+    expect(selectFavoriteSources(new Set()).has('Favorite Source')).toBe(true);
+    fireEvent.click(screen.getByText('Other Source').parentElement!.querySelector('input')!);
+    expect(props.toggleSource).toHaveBeenCalledWith('Other Source');
     fireEvent.click(screen.getByTitle('Add to favorites'));
     expect(prefState.toggleFavoriteMpcSource).toHaveBeenCalledWith('Other Source');
+    fireEvent.click(screen.getByText('close Source'));
 
     fireEvent.click(screen.getByText('Tags: 0'));
-    fireEvent.change(screen.getByPlaceholderText('Search tags...'), { target: { value: 'etch' } });
+    const tagSearch = screen.getByPlaceholderText('Search tags...');
+    fireEvent.change(tagSearch, { target: { value: 'etch' } });
+    fireEvent.click(tagSearch);
     expect(screen.getByText('etched')).toBeDefined();
     fireEvent.click(screen.getByTestId('Tags-menu').querySelectorAll('button')[1]);
     expect(props.setTagFilters).toHaveBeenCalledWith(new Set(['foil', 'etched']));
+    fireEvent.click(screen.getByTestId('Tags-menu').querySelectorAll('button')[2]);
+    const selectFavoriteTags = (props.setTagFilters as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as (prev: Set<string>) => Set<string>;
+    expect(selectFavoriteTags(new Set()).has('foil')).toBe(true);
+    fireEvent.click(screen.getByText('etched').parentElement!.querySelector('input')!);
+    expect(props.toggleTag).toHaveBeenCalledWith('etched');
     fireEvent.click(screen.getByTestId('Tags-menu').querySelector('[title="Add to favorites"]')!);
     expect(prefState.toggleFavoriteMpcTag).toHaveBeenCalledWith('etched');
+    fireEvent.click(screen.getByText('close Tags'));
   });
 
   it('deselects all favorites when all favorites are active and expands collapsed sources', () => {
     const props = renderBar({
-      filters: { minDpi: 1000, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'source', sortDir: 'desc' },
+      filters: { fuzzySearch: false, minDpi: 1000, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'source', sortDir: 'desc' },
       allSourcesCollapsed: true,
     });
 
     fireEvent.click(screen.getByTitle('Deselect all favorites'));
     expect(props.setSourceFilters).toHaveBeenCalled();
     expect(props.setTagFilters).toHaveBeenCalled();
+    const removeFavoriteSources = (props.setSourceFilters as ReturnType<typeof vi.fn>).mock.calls[0][0] as (prev: Set<string>) => Set<string>;
+    const removeFavoriteTags = (props.setTagFilters as ReturnType<typeof vi.fn>).mock.calls[0][0] as (prev: Set<string>) => Set<string>;
+    expect(removeFavoriteSources(new Set(['Favorite Source', 'Other Source']))).toEqual(new Set(['Other Source']));
+    expect(removeFavoriteTags(new Set(['foil', 'etched']))).toEqual(new Set(['etched']));
 
     fireEvent.click(screen.getByText('Expand All'));
     expect(props.setAllSourcesCollapsed).toHaveBeenCalledWith(false);
@@ -179,7 +209,7 @@ describe('CardArtFilterBar', () => {
 
   it('clears favorite source and tag filters through dropdown updaters', () => {
     const props = renderBar({
-      filters: { minDpi: 0, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'name', sortDir: 'asc' },
+      filters: { fuzzySearch: false, minDpi: 0, sourceFilters: new Set(['Favorite Source']), tagFilters: new Set(['foil']), sortBy: 'name', sortDir: 'asc' },
     });
 
     fireEvent.click(screen.getByText('Source: 1'));
@@ -219,6 +249,93 @@ describe('CardArtFilterBar', () => {
     expect(props.toggleTag).not.toHaveBeenCalledWith('ghost');
   });
 
+  it('selects each favorite category independently and skips unavailable favorite values', () => {
+    const cases = [
+      { sources: ['Favorite Source', 'Ghost Source'], tags: [], dpi: null, sort: null },
+      { sources: [], tags: ['foil', 'ghost'], dpi: null, sort: null },
+      { sources: [], tags: [], dpi: 1000, sort: null },
+      { sources: [], tags: [], dpi: null, sort: 'source' as const },
+    ];
+
+    for (const entry of cases) {
+      prefState.preferences = {
+        favoriteMpcSources: entry.sources,
+        favoriteMpcTags: entry.tags,
+        favoriteMpcDpi: entry.dpi,
+        favoriteMpcSort: entry.sort,
+      };
+      const view = renderBar({
+        cards: [...cards, { id: '3', name: 'No Tags', sourceName: 'Third Source', dpi: 600 }] as never,
+      });
+      fireEvent.click(screen.getByTitle('Select all favorites'));
+
+      if (entry.sources.length) {
+        const updater = (view.setSourceFilters as ReturnType<typeof vi.fn>).mock.calls[0][0] as (prev: Set<string>) => Set<string>;
+        expect(updater(new Set())).toEqual(new Set(['Favorite Source']));
+      }
+      if (entry.tags.length) {
+        const updater = (view.setTagFilters as ReturnType<typeof vi.fn>).mock.calls[0][0] as (prev: Set<string>) => Set<string>;
+        expect(updater(new Set())).toEqual(new Set(['foil']));
+      }
+      if (entry.dpi !== null) expect(view.setMinDpi).toHaveBeenCalledWith(entry.dpi);
+      if (entry.sort !== null) expect(view.setSortBy).toHaveBeenCalledWith(entry.sort);
+
+      view.unmount();
+      vi.clearAllMocks();
+    }
+  });
+
+  it('handles exact default favorites, removal toggles, and populated bulk clears', () => {
+    prefState.preferences = {
+      favoriteMpcSources: [],
+      favoriteMpcTags: [],
+      favoriteMpcDpi: 800,
+      favoriteMpcSort: 'dpi',
+    };
+    const props = renderBar({
+      filters: {
+        fuzzySearch: false,
+        minDpi: 800,
+        sourceFilters: new Set(['Other Source']),
+        tagFilters: new Set(['etched']),
+        sortBy: 'dpi',
+        sortDir: 'asc',
+      },
+    });
+
+    fireEvent.click(screen.getByTitle('Deselect all favorites'));
+    expect(props.setMinDpi).not.toHaveBeenCalled();
+    expect(props.setSortBy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('DPI: 800+'));
+    fireEvent.click(screen.getByTitle('Remove from favorites'));
+    expect(prefState.setFavoriteMpcDpi).toHaveBeenCalledWith(null);
+
+    fireEvent.click(screen.getByText('Sort: DPI'));
+    fireEvent.click(screen.getByTestId('Sort-menu').querySelector('[title="Set as favorite"]')!);
+    expect(prefState.setFavoriteMpcSort).toHaveBeenCalledWith('name');
+    fireEvent.click(screen.getByText('Name'));
+    expect(props.setSortBy).toHaveBeenCalledWith('name');
+
+    fireEvent.click(screen.getByText('Source: 1'));
+    fireEvent.click(screen.getByText('Clear All'));
+    expect(props.setSourceFilters).toHaveBeenCalledWith(new Set());
+    fireEvent.click(screen.getByText('close Source'));
+
+    fireEvent.click(screen.getByText('Tags: 1'));
+    fireEvent.click(screen.getByText('Clear All'));
+    expect(props.setTagFilters).toHaveBeenCalledWith(new Set());
+  });
+
+  it('uses empty preference defaults when preferences are unavailable', () => {
+    prefState.preferences = undefined;
+    renderBar();
+
+    expect(screen.queryByTitle('Select all favorites')).toBeNull();
+    expect(screen.getByText('DPI: Any')).toBeDefined();
+    expect(screen.getByText('Sort: Name')).toBeDefined();
+  });
+
   it('hides optional controls without favorites or active filters', () => {
     prefState.preferences = {
       favoriteMpcSources: [],
@@ -228,7 +345,7 @@ describe('CardArtFilterBar', () => {
     };
     settingsState.mpcFuzzySearch = true;
     const props = renderBar({
-      filters: { minDpi: 0, sourceFilters: new Set(), tagFilters: new Set(), sortBy: 'dpi', sortDir: 'desc' },
+      filters: { fuzzySearch: false, minDpi: 0, sourceFilters: new Set(), tagFilters: new Set(), sortBy: 'dpi', sortDir: 'desc' },
       filteredCards: cards,
       groupedBySource: null,
     });

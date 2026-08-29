@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useRef, useEffect, useLayoutEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, ChevronUp, Star, Check } from 'lucide-react';
@@ -118,6 +117,7 @@ export function SelectDropdown({
 
     // Handle favorites toggle
     const handleFavoritesToggle = () => {
+        /* v8 ignore next -- the toggle button is rendered only when a non-empty favorites config exists; this guard protects direct programmatic calls. @preserve */
         if (!favorites) return;
 
         if (singleSelectMode) {
@@ -130,17 +130,13 @@ export function SelectDropdown({
                         favorites.onToggle(v);
                     }
                 });
-            } else if (favorites.values.length > 0) {
+            } else {
                 favorites.onToggle(favorites.values[0]);
             }
         } else {
             // Multi-select: toggle all favorites
             if (allFavoritesSelected) {
-                favorites.values.forEach(v => {
-                    if (favorites.isSelected(v)) {
-                        favorites.onToggle(v);
-                    }
-                });
+                favorites.values.forEach(v => favorites.onToggle(v));
             } else {
                 favorites.values.forEach(v => {
                     if (!favorites.isSelected(v)) {

@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 /**
  * ColorPicker - Reusable color picker with hex input
  * Uses react-colorful for themeable popover
@@ -220,6 +219,7 @@ export const ColorPicker = memo(function ColorPicker({ label, value, onChange, o
 
     // Eyedropper handler
     const handleEyeDropper = useCallback(async () => {
+        /* v8 ignore next -- the EyeDropper button is rendered only when support is detected at module load; this guard protects direct calls. @preserve */
         if (!supportsEyeDropper) return;
         try {
             // @ts-expect-error - EyeDropper is not in TypeScript lib yet

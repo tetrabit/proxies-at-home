@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLiveQuery } from "dexie-react-hooks";
@@ -143,6 +142,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
 
     const handleSubmit = async () => {
         const text = deckText.trim();
+        /* v8 ignore next -- Fetch Cards is disabled and the keyboard shortcut is gated while the trimmed decklist is empty. @preserve */
         if (!text) return;
 
         const intents = parseDeckList(text);
@@ -207,6 +207,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             tokenToastIdRef.current = null;
         }
         tokenFetchController.current = new AbortController();
+        /* v8 ignore else -- token import handlers are only wired to explicit interactive UI actions. @preserve */
         if (!silent) {
             tokenToastIdRef.current = addToast({
                 type: "processing",
@@ -223,6 +224,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                     onUploadComplete?.();
                 },
                 onNoTokens: () => {
+                    /* v8 ignore else -- token import handlers are only wired to explicit interactive UI actions. @preserve */
                     if (!silent) {
                         setShowNoTokensModal(true);
                     }
@@ -251,6 +253,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
             tokenToastIdRef.current = null;
         }
         tokenFetchController.current = new AbortController();
+        /* v8 ignore else -- token import handlers are only wired to explicit interactive UI actions. @preserve */
         if (!silent) {
             tokenToastIdRef.current = addToast({
                 type: "processing",
@@ -267,6 +270,7 @@ export function DecklistUploader({ mobile, cardCount, onUploadComplete }: Props)
                     onUploadComplete?.();
                 },
                 onNoTokens: () => {
+                    /* v8 ignore else -- token import handlers are only wired to explicit interactive UI actions. @preserve */
                     if (!silent) {
                         setShowNoTokensModal(true);
                     }

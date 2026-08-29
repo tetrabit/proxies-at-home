@@ -143,6 +143,7 @@ vi.mock("@/helpers/moxfieldApi", () => ({
       number: "163",
       quantity: 4,
       category: "removal",
+      isToken: true,
     },
   ]),
   getDeckSummary: vi.fn(() => ({ name: "Moxfield Deck", cardCount: 4 })),
@@ -271,6 +272,14 @@ describe("DeckBuilderImporter", () => {
           category: "",
           isToken: true,
         },
+        {
+          name: "Counterspell",
+          set: "lea",
+          number: "54",
+          scryfallId: "counterspell-id",
+          quantity: 1,
+          category: "",
+        },
       ]);
 
       render(<DeckBuilderImporter />);
@@ -285,7 +294,7 @@ describe("DeckBuilderImporter", () => {
       await waitFor(() => {
         expect(fetchMoxfieldDeck).toHaveBeenCalledWith("abc123");
         expect(mockShowSuccessToast).toHaveBeenCalledWith(
-          "Importing 1 cards from deck..."
+          "Importing 2 cards from deck..."
         );
       });
     });

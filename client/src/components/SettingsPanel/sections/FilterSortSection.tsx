@@ -1,4 +1,3 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useSettingsStore } from "@/store/settings";
 import { useUserPreferencesStore } from "@/store/userPreferences";
 import { useProjectStore } from "@/store/projectStore";
@@ -16,15 +15,14 @@ interface FilterSectionProps {
     id: string;
     title: string;
     children: React.ReactNode;
-    defaultOpen?: boolean;
-    activeCount?: number;
-    onClear?: () => void;
+    activeCount: number;
+    onClear: () => void;
 }
 
-function FilterSection({ id, title, children, defaultOpen = true, activeCount = 0, onClear }: FilterSectionProps) {
+function FilterSection({ id, title, children, activeCount, onClear }: FilterSectionProps) {
     const filterSectionCollapsed = useUserPreferencesStore((state) => state.preferences?.filterSectionCollapsed);
     const allCollapsed = useMemo(() => filterSectionCollapsed ?? {}, [filterSectionCollapsed]);
-    const collapsed = allCollapsed[id] ?? !defaultOpen;
+    const collapsed = allCollapsed[id] ?? false;
     const setFilterSectionCollapsed = useUserPreferencesStore((state) => state.setFilterSectionCollapsed);
 
     const handleToggle = useCallback((e: React.MouseEvent) => {
@@ -34,7 +32,7 @@ function FilterSection({ id, title, children, defaultOpen = true, activeCount = 
 
     const handleClear = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
-        onClear?.();
+        onClear();
     }, [onClear]);
 
     return (
@@ -53,16 +51,14 @@ function FilterSection({ id, title, children, defaultOpen = true, activeCount = 
                             <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300">
                                 {activeCount}
                             </span>
-                            {onClear && (
-                                <button
-                                    type="button"
-                                    onClick={handleClear}
-                                    className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer active:translate-y-px"
-                                    title="Clear filters"
-                                >
-                                    <X className="w-3.5 h-3.5" />
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                onClick={handleClear}
+                                className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer active:translate-y-px"
+                                title="Clear filters"
+                            >
+                                <X className="w-3.5 h-3.5" />
+                            </button>
                         </>
                     )}
                 </span>
@@ -117,7 +113,7 @@ export function FilterSortSection({ cards }: { cards?: CardOption[] }) {
 
     // Extract unique card types and categories from loaded cards
     const { types: availableTypes, categories: availableCategories } = useMemo(() => {
-        if (!cardsFromDb || cardsFromDb.length === 0) return { types: [], categories: [] };
+        if (cardsFromDb.length === 0) return { types: [], categories: [] };
         return extractAvailableFilters(cardsFromDb);
     }, [cardsFromDb]);
 
