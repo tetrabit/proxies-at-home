@@ -8,6 +8,7 @@
     "build:prerender": "react-static-prerender --with-build && sed -i 's|http://localhost:[0-9]\\+/|./|g' static-pages/index.html",
     "lint": "eslint .",
     "test": "vitest run --silent",
+    "test:coverage-stability": "vitest run --silent=true src/components/ArtworkModal/AdvancedSearch.test.tsx src/components/ArtworkModal/ArtworkModal.test.tsx src/components/ArtworkModal/CardbackLibrary.test.tsx src/components/ArtworkModal/ArtworkTabContent.test.tsx src/components/SettingsPanel/sections/ApplicationSection.test.tsx --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",
     "test:ui": "vitest --ui --coverage.enabled=true",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
