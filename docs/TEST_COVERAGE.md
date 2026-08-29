@@ -30,6 +30,7 @@ Do not exclude first-party source because it is hard to test. Workers, entrypoin
 | Client | `**/vitest.setup.ts` | Harness initialization is exercised by every client Vitest command. |
 | Client | `**/vite-env.d.ts` | Generated/type-only Vite declarations have no runtime statements. |
 | Client | `**/main.tsx` | Browser bootstrap is verified by `App.test.tsx`, `App.lifecycle.test.tsx`, and `npm --prefix client run build`. |
+| Client aggregate | `**/ArtworkModal/ArtworkModal.tsx` | Vitest's aggregate V8 merge loses branch hits when this module is transformed by mixed mocks. `coverage:client` excludes it only from the aggregate pass and then enforces it separately with `npm --prefix client run test:coverage-artwork` at 100% for all metrics. |
 | Client | `**/*.worker.ts` | The three worker entrypoints—`bleed.webgl.worker.ts`, `effect.worker.ts`, and `pdf.worker.ts`—are browser message-loop shells. Their deterministic logic is verified by image/WebGL/PDF helper tests, and their bundling is verified by `npm --prefix client run build`. |
 | Server | `**/*.test.ts` | Test code is the coverage driver, not product source. |
 | Electron | `electron/*.test.ts` | Test code is the coverage driver, not product source. |
@@ -68,7 +69,7 @@ After all coverage tasks land, reviewers must run:
 npm run coverage:all
 ```
 
-The gate delegates to package-level commands and each package command must also pass independently:
+The gate first runs `coverage:policy`, then delegates to package-level commands. This makes invalid thresholds or undocumented file-level exclusions fail before package coverage starts. Each package command must also pass independently:
 
 ```bash
 npm run coverage:client

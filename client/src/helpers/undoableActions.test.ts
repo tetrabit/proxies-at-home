@@ -462,8 +462,11 @@ describe("undoableActions", () => {
         .mockResolvedValueOnce([{ id: "img-shared", refCount: 3 }] as never);
 
       await pushedAction.undo();
+      vi.mocked(db.cards.get).mockResolvedValueOnce({
+        uuid: "front-survives",
+        name: "Front Survives",
+      } as CardOption);
       await pushedAction.redo();
-
       expect(db.images.bulkUpdate).toHaveBeenCalledWith([
         { key: "img-shared", changes: { refCount: 3 } },
       ]);
@@ -910,6 +913,13 @@ describe("undoableActions", () => {
       ]);
 
       expect(mockPushAction.mock.calls[0][0].description).toBe("Duplicate 2 cards");
+      const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
+        { uuid: "new-a", name: "A", imageId: "cardback_a" },
+        { uuid: "new-b", name: "B" },
+      ] as CardOption[]);
+      await pushedAction.undo();
+      expect(db.images.bulkGet).not.toHaveBeenCalled();
     });
 
     it("skips missing images during duplicate ref increments and undo decrements", async () => {
