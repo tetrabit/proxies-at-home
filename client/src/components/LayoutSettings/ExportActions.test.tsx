@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   dbCardsBulkGet: vi.fn(),
   dbCardbacksGet: vi.fn(),
   clipboardWriteText: vi.fn().mockResolvedValue(undefined),
+  extractMpcIdentifier: vi.fn((value: string) => value.includes('mpc') ? 'mpc-back-id' : null),
 }));
 
 vi.mock('@/store/loading', () => ({
@@ -120,7 +121,7 @@ vi.mock('@/helpers/serializeSettingsForWorker', () => ({
 }));
 
 vi.mock('@/helpers/mpcAutofillApi', () => ({
-  extractMpcIdentifierFromImageId: (value: string) => value.includes('mpc') ? 'mpc-back-id' : null,
+  extractMpcIdentifierFromImageId: (value: string) => mocks.extractMpcIdentifier(value),
 }));
 
 vi.mock('@/helpers/imageSourceUtils', () => ({
@@ -188,7 +189,7 @@ function makePdf(pageCount = 1) {
   };
 }
 
-function renderExport(cards = [front1, front2]) {
+function renderExport(cards: Array<Record<string, unknown>> = [front1, front2]) {
   mocks.filteredAndSortedCards = cards;
   return render(<ExportActions cards={cards as never[]} />);
 }
@@ -199,6 +200,17 @@ describe('ExportActions', () => {
     mocks.exportMode = 'fronts';
     mocks.decklistSortAlpha = false;
     mocks.defaultCardbackId = 'cardback-mpc';
+    mocks.pageSizeUnit = 'in';
+    mocks.pageWidth = 8.5;
+    mocks.pageHeight = 11;
+    mocks.dpi = 300;
+    mocks.columns = 3;
+    mocks.settingsState.useCustomBackOffset = false;
+    mocks.settingsState.cardBackPositionX = 0;
+    mocks.settingsState.cardBackPositionY = 0;
+    mocks.settingsState.printerCalibrationEnabled = false;
+    mocks.settingsState.printerCalibrationProfileId = undefined;
+    mocks.extractMpcIdentifier.mockImplementation((value: string) => value.includes('mpc') ? 'mpc-back-id' : null);
     mocks.filteredAndSortedCards = [front1, front2];
     mocks.dbCardsToArray.mockResolvedValue([front1, front2, linkedBack, hiddenBack]);
     mocks.dbImagesToArray.mockResolvedValue([{ id: 'img-1' }, { id: 'img-2' }]);
@@ -224,7 +236,7 @@ describe('ExportActions', () => {
   });
 
   it('copies decklists with MPC IDs by default and can switch to basic copy mode', async () => {
-    renderExport();
+    const { unmount } = renderExport();
 
     fireEvent.click(screen.getByText('Copy Decklist'));
     await waitFor(() => expect(mocks.clipboardWriteText).toHaveBeenCalledWith('deck text'));
@@ -235,6 +247,15 @@ describe('ExportActions', () => {
     fireEvent.click(screen.getByText('Copy Decklist: Basic'));
     fireEvent.click(screen.getByText('Copy Decklist'));
     await waitFor(() => expect(mocks.buildDecklist).toHaveBeenLastCalledWith([front1, front2], { style: 'withSetNum', sort: 'none' }));
+
+    unmount();
+    mocks.decklistSortAlpha = true;
+    renderExport();
+    fireEvent.click(screen.getByText('Copy Decklist'));
+    await waitFor(() => expect(mocks.buildDecklist).toHaveBeenLastCalledWith(
+      [front1, front2],
+      { style: 'withMpc', sort: 'alpha' },
+    ));
   });
 
   it('downloads basic, MPC, and XML decklists including missing linked backs and default MPC back id', async () => {
@@ -255,6 +276,38 @@ describe('ExportActions', () => {
     expect(mocks.dbCardsBulkGet).toHaveBeenCalledWith(['back-1', 'back-2']);
     expect(mocks.downloadMpcXml.mock.calls[0][0]).toEqual([front1, front2, hiddenBack]);
     expect(mocks.downloadMpcXml.mock.calls[0][2]).toBe('mpc-back-id');
+  });
+
+  it('handles missing XML backs and unavailable default cardbacks', async () => {
+    const xmlFront = { ...front1, linkedBackId: 'missing-back' };
+    mocks.dbCardsBulkGet.mockResolvedValue([undefined]);
+    mocks.defaultCardbackId = undefined as unknown as string;
+    const first = renderExport([xmlFront]);
+    fireEvent.click(screen.getByText('Download Decklist modes'));
+    fireEvent.click(screen.getByText('Download Decklist: MPC Autofill (.xml)'));
+    fireEvent.click(screen.getByText('Download Decklist'));
+    await waitFor(() => expect(mocks.downloadMpcXml).toHaveBeenCalledTimes(1));
+    expect(mocks.downloadMpcXml.mock.calls[0][0]).toEqual([xmlFront]);
+    first.unmount();
+
+    mocks.defaultCardbackId = 'missing-cardback';
+    mocks.dbCardbacksGet.mockResolvedValue(undefined);
+    const second = renderExport([xmlFront]);
+    fireEvent.click(screen.getByText('Download Decklist modes'));
+    fireEvent.click(screen.getByText('Download Decklist: MPC Autofill (.xml)'));
+    fireEvent.click(screen.getByText('Download Decklist'));
+    await waitFor(() => expect(mocks.downloadMpcXml).toHaveBeenCalledTimes(2));
+    second.unmount();
+
+    mocks.defaultCardbackId = 'mpc-cardback';
+    mocks.dbCardbacksGet.mockResolvedValue({ id: 'mpc-cardback', sourceUrl: 'mpc-source' });
+    mocks.extractMpcIdentifier.mockReturnValue(null);
+    renderExport([xmlFront]);
+    fireEvent.click(screen.getByText('Download Decklist modes'));
+    fireEvent.click(screen.getByText('Download Decklist: MPC Autofill (.xml)'));
+    fireEvent.click(screen.getByText('Download Decklist'));
+    await waitFor(() => expect(mocks.downloadMpcXml).toHaveBeenCalledTimes(3));
+    expect(mocks.downloadMpcXml.mock.calls.at(-1)?.[2]).toBe('1LrVX0pUcye9n_0RtaDNVl2xPrQgn7CYf');
   });
 
   it('exports ZIP and individual card images with merged image/cardback sources', async () => {
@@ -301,6 +354,33 @@ describe('ExportActions', () => {
     expect(screen.getByText('pdf failed')).toBeDefined();
     fireEvent.click(screen.getByText('Close'));
     await waitFor(() => expect(screen.queryByText('pdf failed')).toBeNull());
+  });
+
+  it('normalizes legacy modes, non-Enter keys, alpha downloads, and non-Error failures', async () => {
+    mocks.exportMode = 'legacy-mode';
+    mocks.decklistSortAlpha = true;
+    mocks.serializePdfSettingsForWorker.mockReturnValue({ columns: 3 } as never);
+    renderExport();
+
+    const pageLimit = screen.getByLabelText('PDF pages');
+    fireEvent.change(pageLimit, { target: { value: '3' } });
+    fireEvent.keyDown(pageLimit, { key: 'Escape' });
+    expect((pageLimit as HTMLInputElement).value).toBe('3');
+
+    fireEvent.click(screen.getByText('Download Decklist'));
+    await waitFor(() => expect(mocks.buildDecklist).toHaveBeenCalledWith(
+      [front1, front2],
+      { style: 'withMpc', sort: 'alpha' },
+    ));
+
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledWith(
+      expect.objectContaining({ cards: [] }),
+    ));
+
+    mocks.exportProxyPagesToPdf.mockRejectedValueOnce('legacy failure');
+    fireEvent.click(screen.getByText('Export to PDF'));
+    expect(await screen.findByText('legacy failure')).toBeDefined();
   });
 
   it('exports interleaved, visible-face, and back-only PDF modes', async () => {
@@ -356,6 +436,31 @@ describe('ExportActions', () => {
     mocks.settingsState.useCustomBackOffset = false;
   });
 
+  it('skips absent, blank, and default backs in interleaved modes', async () => {
+    const noBack = { uuid: 'front-3', name: 'Plains', quantity: 1, imageId: 'img-3' };
+    const defaultBack = {
+      ...hiddenBack,
+      imageId: 'cardback_builtin_blank',
+      usesDefaultCardback: true,
+    };
+    mocks.dbCardsGet.mockImplementation(async (id: string) => ({
+      'back-1': undefined,
+      'back-2': defaultBack,
+    }[id]));
+    mocks.exportMode = 'interleaved-all';
+    const all = renderExport([noBack, front1, front2]);
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(1));
+    expect(mocks.exportProxyPagesToPdf.mock.calls[0][0].cards).toEqual([noBack, front1, front2]);
+    all.unmount();
+
+    mocks.exportMode = 'interleaved-custom';
+    renderExport([noBack, front1, front2]);
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(2));
+    expect(mocks.exportProxyPagesToPdf.mock.calls[1][0].cards).toEqual([noBack, front1, front2]);
+  });
+
   it('exports duplex PDF modes through merge and calibration paths', async () => {
     mocks.exportProxyPagesToPdf.mockImplementation(async (options?: { onProgress?: (value: number) => void }) => {
       options?.onProgress?.(10);
@@ -395,6 +500,60 @@ describe('ExportActions', () => {
     mocks.settingsState.useCustomBackOffset = false;
     mocks.settingsState.printerCalibrationEnabled = false;
     mocks.settingsState.printerCalibrationProfileId = undefined;
+  });
+
+  it('calibrates duplex exports when only one side has pages', async () => {
+    mocks.exportMode = 'duplex';
+    mocks.settingsState.printerCalibrationEnabled = true;
+    mocks.settingsState.printerCalibrationProfileId = 'profile-one-side';
+    mocks.exportProxyPagesToPdf
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(new Uint8Array([1]));
+    const backsOnly = renderExport();
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.applyCalibration).toHaveBeenCalledTimes(1));
+    backsOnly.unmount();
+
+    mocks.exportProxyPagesToPdf
+      .mockResolvedValueOnce(new Uint8Array([1]))
+      .mockResolvedValueOnce(undefined);
+    renderExport();
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.applyCalibration).toHaveBeenCalledTimes(2));
+  });
+
+  it('handles empty duplex buffers, uncalibrated collation, and empty calibrated backs', async () => {
+    mocks.pageSizeUnit = 'mm';
+    mocks.serializePdfSettingsForWorker.mockReturnValue({ columns: 3 } as never);
+    mocks.exportProxyPagesToPdf
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(new Uint8Array());
+    mocks.exportMode = 'duplex';
+    const duplex = renderExport();
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(2));
+    expect(mocks.pdfLoad).not.toHaveBeenCalled();
+    duplex.unmount();
+
+    mocks.exportProxyPagesToPdf
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(new Uint8Array());
+    mocks.exportMode = 'duplex-collated';
+    const collated = renderExport();
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(4));
+    expect(mocks.applyCalibration).not.toHaveBeenCalled();
+    collated.unmount();
+
+    mocks.exportProxyPagesToPdf.mockResolvedValueOnce(undefined);
+    mocks.exportMode = 'backs';
+    mocks.settingsState.printerCalibrationEnabled = true;
+    mocks.settingsState.printerCalibrationProfileId = 'profile-empty';
+    renderExport();
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(5));
+    expect(mocks.applyCalibration).not.toHaveBeenCalled();
+    expect(mocks.setProgress).toHaveBeenCalledWith(100);
   });
 
   it('uses fallback backs, missing linked-back fallbacks, and fallback MPC XML cardback ids', async () => {

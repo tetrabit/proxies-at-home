@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { Image } from "@/db";
 
@@ -49,6 +49,18 @@ const state = vi.hoisted(() => ({
   },
   modalState: { artwork: false, editor: false, upgrade: false },
   zoomHook: { updateCenterOffset: vi.fn() },
+  resizeCallbacks: [] as Array<(entries: Array<{ contentRect: { width: number; height: number } }>) => void>,
+  mediaChangeHandlers: [] as Array<(event: { matches: boolean }) => void>,
+  mediaRemove: vi.fn(),
+  dndProps: [] as Array<{
+    onDragStart: (event: { active: { id: string } }) => void;
+    onDragOver: (event: { active: { id: string }; over: { id: string } | null }) => void;
+    onDragEnd: (event: { active: { id: string }; over: { id: string } | null }) => Promise<void>;
+  }>,
+  undoableReorderCards: vi.fn(async (..._args: unknown[]) => undefined),
+  undoableReorderMultipleCards: vi.fn(async (..._args: unknown[]) => undefined),
+  rebalanceCardOrders: vi.fn(async (..._args: unknown[]) => undefined),
+  dbUpdate: vi.fn(async (..._args: unknown[]) => undefined),
   pixiProps: [] as unknown[],
   overlayProps: [] as unknown[],
   floatingProps: [] as unknown[],
@@ -89,14 +101,26 @@ vi.mock("@/hooks/usePageViewZoom", () => ({
 }));
 
 vi.mock("@/helpers/undoableActions", () => ({
-  undoableReorderCards: vi.fn(async () => undefined),
-  undoableReorderMultipleCards: vi.fn(async () => undefined),
+  undoableReorderCards: (...args: unknown[]) => state.undoableReorderCards(...args),
+  undoableReorderMultipleCards: (...args: unknown[]) => state.undoableReorderMultipleCards(...args),
 }));
-vi.mock("@/helpers/dbUtils", () => ({ rebalanceCardOrders: vi.fn(async () => undefined) }));
-vi.mock("@/db", () => ({ db: { cards: { update: vi.fn(async () => undefined) } } }));
+vi.mock("@/helpers/dbUtils", () => ({
+  rebalanceCardOrders: (...args: unknown[]) => state.rebalanceCardOrders(...args),
+}));
+vi.mock("@/db", () => ({
+  db: { cards: { update: (...args: unknown[]) => state.dbUpdate(...args) } },
+}));
 
 vi.mock("@dnd-kit/core", () => ({
-  DndContext: ({ children }: { children: React.ReactNode }) => <div data-testid="dnd-context">{children}</div>,
+  DndContext: (props: {
+    children: React.ReactNode;
+    onDragStart: (event: { active: { id: string } }) => void;
+    onDragOver: (event: { active: { id: string }; over: { id: string } | null }) => void;
+    onDragEnd: (event: { active: { id: string }; over: { id: string } | null }) => Promise<void>;
+  }) => {
+    state.dndProps.push(props);
+    return <div data-testid="dnd-context">{props.children}</div>;
+  },
   DragOverlay: ({ children }: { children: React.ReactNode }) => <div data-testid="drag-overlay">{children}</div>,
   closestCenter: vi.fn(),
   MouseSensor: function MouseSensor() {},
@@ -155,7 +179,10 @@ vi.mock("../MpcUpgradeModal", () => ({
   default: () => <div data-testid="mpc-modal" />,
   MpcUpgradeModal: () => <div data-testid="mpc-modal" />,
 }));
-vi.mock("../CalibrationModal", () => ({ default: () => <div data-testid="calibration-modal" /> }));
+vi.mock("../CalibrationModal", () => ({
+  default: () => <div data-testid="calibration-modal" />,
+  CalibrationModal: () => <div data-testid="calibration-modal" />,
+}));
 
 import { PageView } from "./PageView";
 
@@ -190,35 +217,57 @@ function renderPage(cards: CardOption[], allCards: CardOption[] = cards, mobile 
 
 describe("PageView behavior", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     cleanup();
     state.settings.zoom = 1;
     state.settings.pageSizeUnit = "in";
     state.settings.bleedEdge = false;
+    state.settings.perCardGuideStyle = "solid-rounded-rect";
+    state.settings.showGuideLinesOnBackCards = false;
     state.selection.selectedCards = new Set();
     state.selection.flippedCards = new Set();
     state.selection.lastClickedIndex = null;
     state.modalState.artwork = false;
     state.modalState.editor = false;
     state.modalState.upgrade = false;
+    state.dndProps = [];
+    state.undoableReorderCards.mockClear();
+    state.undoableReorderMultipleCards.mockClear();
+    state.rebalanceCardOrders.mockClear();
+    state.dbUpdate.mockClear();
     state.pixiProps = [];
     state.overlayProps = [];
     state.floatingProps = [];
     state.contextMenuProps = [];
+    state.resizeCallbacks = [];
+    state.mediaChangeHandlers = [];
+    state.mediaRemove.mockClear();
     vi.stubGlobal("ResizeObserver", class ResizeObserver {
+      constructor(callback: (entries: Array<{ contentRect: { width: number; height: number } }>) => void) {
+        state.resizeCallbacks.push(callback);
+      }
       observe = vi.fn();
       unobserve = vi.fn();
       disconnect = vi.fn();
     });
     Object.defineProperty(window, "matchMedia", {
+      configurable: true,
       writable: true,
-      value: vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn((_event: string, handler: (event: { matches: boolean }) => void) => {
+          state.mediaChangeHandlers.push(handler);
+        }),
+        removeEventListener: state.mediaRemove,
+      })),
     });
     vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:card"), revokeObjectURL: vi.fn() });
   });
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -243,6 +292,62 @@ describe("PageView behavior", () => {
     expect(screen.getByTestId("pull-to-refresh").getAttribute("data-disabled")).toBe("false");
   });
 
+  it("reacts to media, resize, wheel, keyboard, and card-clear lifecycle changes", async () => {
+    const wheelHandlers: EventListener[] = [];
+    const originalAddEventListener = HTMLElement.prototype.addEventListener;
+    const addListener = vi
+      .spyOn(HTMLElement.prototype, "addEventListener")
+      .mockImplementation(function (this: HTMLElement, type, listener, options) {
+        if (type === "wheel") wheelHandlers.push(listener as EventListener);
+        return originalAddEventListener.call(this, type, listener, options);
+      });
+    const first = makeCard();
+    const { rerender, unmount } = renderPage([first]);
+    await act(async () => undefined);
+
+    act(() => state.mediaChangeHandlers[0]?.({ matches: true }));
+    act(() => state.resizeCallbacks[0]?.([]));
+    act(() => state.resizeCallbacks[0]?.([
+      { contentRect: { width: 640, height: 480 } },
+    ]));
+
+    const scrollRoot = screen.getByTestId("pull-to-refresh");
+    const wheel = wheelHandlers.at(-1)!;
+    wheel({ ctrlKey: false } as unknown as Event);
+    wheel({
+      ctrlKey: true,
+      target: document.body,
+      preventDefault: vi.fn(),
+      deltaY: 100,
+    } as unknown as Event);
+    const preventDefault = vi.fn();
+    wheel({
+      ctrlKey: true,
+      target: scrollRoot,
+      preventDefault,
+      deltaY: -100,
+    } as unknown as Event);
+    expect(preventDefault).toHaveBeenCalled();
+    expect(state.settings.setZoom).toHaveBeenCalledWith(1.1);
+
+    fireEvent.keyDown(document, { key: "x" });
+    fireEvent.keyDown(document, { key: "x", ctrlKey: true });
+
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[]}
+        allCards={[]}
+        images={[]}
+      />,
+    );
+    await act(async () => undefined);
+    unmount();
+    expect(state.mediaRemove).toHaveBeenCalled();
+    addListener.mockRestore();
+  });
+
   it("maps visible front cards, back-card blobs, blank backs, rendered cards, context menu, scroll, and keyboard shortcuts", async () => {
     const front = makeCard({ linkedBackId: "back-card" });
     const back = makeCard({ uuid: "back-card", linkedFrontId: "card-1", imageId: "img-back" });
@@ -258,7 +363,7 @@ describe("PageView behavior", () => {
     expect(pixiProps.cards[0].backImageId).toBe("img-back");
     expect(pixiProps.perCardGuideColor).toBe(0x39ff14);
 
-    pixiProps.onRenderedCardsChange(new Set(["card-1"]));
+    act(() => pixiProps.onRenderedCardsChange(new Set(["card-1"])));
     await waitFor(() => expect(state.overlayProps.length).toBeGreaterThan(1));
 
     fireEvent.scroll(screen.getByTestId("pull-to-refresh"), { target: { scrollTop: 48 } });
@@ -266,6 +371,22 @@ describe("PageView behavior", () => {
 
     fireEvent.click(screen.getByTestId("card-controls"));
     expect(state.contextMenuProps.at(-1)).toEqual(expect.objectContaining({ contextMenu: expect.objectContaining({ visible: true, cardUuid: "card-1" }) }));
+
+    const rangeProps = state.overlayProps.at(-1) as { onRangeSelect: (index: number) => void };
+    rangeProps.onRangeSelect(1);
+    expect(state.selection.selectRange).not.toHaveBeenCalled();
+    state.selection.lastClickedIndex = 0;
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[front, back, second]}
+        allCards={[front, back, second]}
+        images={images}
+      />,
+    );
+    (state.overlayProps.at(-1) as { onRangeSelect: (index: number) => void }).onRangeSelect(1);
+    expect(state.selection.selectRange).toHaveBeenCalledWith(["card-1", "card-2"], 1);
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(state.selection.clearSelection).toHaveBeenCalled();
@@ -297,6 +418,252 @@ describe("PageView behavior", () => {
       />,
     );
     await waitFor(() => expect(state.pixiProps.at(-1)).toEqual(expect.objectContaining({ zoom: 0.4 })));
+  });
+
+  it("reorders multi-selected cards and restores a cancelled multi-drag", async () => {
+    vi.useFakeTimers();
+    const first = makeCard({ uuid: "card-1", order: 10 });
+    const second = makeCard({ uuid: "card-2", order: 20, imageId: "img-1" });
+    const third = makeCard({ uuid: "card-3", order: 30, imageId: "img-1" });
+    state.selection.selectedCards = new Set(["card-1", "card-2"]);
+    renderPage([first, second, third]);
+
+    await act(async () => undefined);
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "card-1" },
+      over: { id: "card-3" },
+    }));
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => undefined);
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-1" },
+        over: { id: "card-3" },
+      });
+    });
+
+    expect(state.undoableReorderMultipleCards).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ uuid: "card-1" }),
+        expect.objectContaining({ uuid: "card-3" }),
+      ]),
+    );
+    expect(state.rebalanceCardOrders).toHaveBeenCalledWith("project-1");
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({ active: { id: "card-1" }, over: null });
+    });
+  });
+
+  it("recovers when a multi-drag leader is missing from the rendered cards", async () => {
+    vi.useFakeTimers();
+    const withoutImage = makeCard({ uuid: "card-2", order: 20, imageId: undefined });
+    const withImage = makeCard({ uuid: "card-4", order: 25, imageId: "img-1" });
+    const remaining = makeCard({ uuid: "card-3", order: 30, imageId: "img-1" });
+    state.selection.selectedCards = new Set(["missing", "card-2", "card-4"]);
+    renderPage([withoutImage, withImage, remaining]);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "missing" } }));
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+    expect(screen.getByTestId("drag-overlay").querySelector("img")).not.toBeNull();
+
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "missing" },
+        over: { id: "card-3" },
+      });
+    });
+    expect(state.undoableReorderMultipleCards).not.toHaveBeenCalled();
+  });
+
+  it("persists single-card drags, fallback updates, and invalid drop exits", async () => {
+    vi.useFakeTimers();
+    const first = makeCard({ uuid: "card-1", order: 10 });
+    const second = makeCard({ uuid: "card-2", order: 20, imageId: "img-1" });
+    const third = makeCard({ uuid: "card-3", order: 30, imageId: "img-1" });
+    state.selection.flippedCards = new Set(["card-1"]);
+    const { rerender } = renderPage([first, second, third]);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragOver({ active: { id: "card-1" }, over: null }));
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "card-1" },
+      over: { id: "card-1" },
+    }));
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "card-1" },
+      over: { id: "card-2" },
+    }));
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "card-1" },
+      over: { id: "card-3" },
+    }));
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => undefined);
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-1" },
+        over: { id: "card-3" },
+      });
+    });
+    act(() => vi.advanceTimersByTime(500));
+    expect(state.undoableReorderCards).toHaveBeenCalledWith("card-1", 10, 25);
+
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[second, first, third]}
+        allCards={[second, first, third]}
+        images={[...images, { id: "no-display" } as Image]}
+      />,
+    );
+    await act(async () => undefined);
+
+    state.undoableReorderCards.mockClear();
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-2" },
+        over: { id: "card-1" },
+      });
+    });
+    expect(state.dbUpdate).toHaveBeenCalled();
+
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "missing" },
+        over: { id: "card-1" },
+      });
+      await state.dndProps.at(-1)!.onDragEnd({ active: { id: "card-1" }, over: null });
+    });
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "missing" } }));
+    await act(async () => undefined);
+    expect(screen.getByTestId("drag-overlay").querySelector("img")).toBeNull();
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "missing" },
+      over: { id: "card-1" },
+    }));
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => undefined);
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({ active: { id: "missing" }, over: null });
+    });
+    act(() => vi.advanceTimersByTime(500));
+
+    const noImageSecond = { ...second, imageId: undefined };
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[noImageSecond, first, third]}
+        allCards={[noImageSecond, first, third]}
+        images={images}
+      />,
+    );
+    await act(async () => undefined);
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-2" } }));
+    await act(async () => undefined);
+    expect(screen.getByTestId("drag-overlay").querySelector("img")).toBeNull();
+  });
+
+  it("computes first and last insertion orders", async () => {
+    state.settings.perCardGuideStyle = "solid-squared-rect";
+    const first = makeCard({ uuid: "card-1", order: 0 });
+    const second = makeCard({ uuid: "card-2", order: 20, imageId: "img-1" });
+    const third = makeCard({ uuid: "card-3", order: 30, imageId: "img-1" });
+    renderPage([first, second, third]);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-3" } }));
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-3" },
+        over: { id: "card-1" },
+      });
+    });
+    expect(state.undoableReorderCards).toHaveBeenLastCalledWith("card-3", 30, -10);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-3" } }));
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-3" },
+        over: { id: "card-2" },
+      });
+    });
+    expect(state.undoableReorderCards).toHaveBeenLastCalledWith("card-3", 30, 30);
+
+    cleanup();
+    state.dndProps = [];
+    const zeroFirst = makeCard({ uuid: "zero-1", order: 0 });
+    const zeroSecond = makeCard({ uuid: "zero-2", order: 0 });
+    renderPage([zeroFirst, zeroSecond]);
+    await act(async () => undefined);
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "zero-1" } }));
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "zero-1" },
+        over: { id: "zero-2" },
+      });
+    });
+    expect(state.undoableReorderCards).toHaveBeenLastCalledWith("zero-1", 0, 10);
+  });
+
+  it("records and rebalances a precision-limited drag", async () => {
+    const first = makeCard({ uuid: "card-1", order: 10 });
+    const second = makeCard({ uuid: "card-2", order: 10.0005 });
+    const third = makeCard({ uuid: "card-3", order: 20 });
+    renderPage([first, second, third]);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-3" } }));
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-3" },
+        over: { id: "card-2" },
+      });
+    });
+
+    expect(state.undoableReorderCards).toHaveBeenCalledWith(
+      "card-3",
+      20,
+      expect.any(Number),
+    );
+    expect(state.rebalanceCardOrders).toHaveBeenCalledWith("project-1");
+  });
+
+  it("uses the precision fallback without rebalancing cards that lack a project", async () => {
+    const first = makeCard({ uuid: "card-1", order: 10, projectId: undefined });
+    const second = makeCard({ uuid: "card-2", order: 10.0005, projectId: undefined });
+    const third = makeCard({ uuid: "card-3", order: 20, projectId: undefined });
+    renderPage([first, second, third]);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-3" },
+        over: { id: "card-2" },
+      });
+    });
+
+    expect(state.dbUpdate).toHaveBeenCalledWith(
+      "card-3",
+      expect.objectContaining({ order: expect.any(Number) }),
+    );
+    const precisionOrder = state.dbUpdate.mock.calls.at(-1)?.[1] as { order: number };
+    expect(precisionOrder.order).toBeCloseTo(10.00025);
+    expect(state.rebalanceCardOrders).not.toHaveBeenCalled();
   });
 
   it("keeps flipped manual cardback override bleed at the global page size", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { CardWithGlobalLayout, PageLayoutInfo } from "./PixiVirtualCanvas";
 
@@ -177,7 +177,7 @@ vi.doMock("../../store/settings", () => {
 });
 
 const { default: PixiVirtualCanvas } = await import("./PixiVirtualCanvas");
-const { pixiSingleton, resetPixiSingleton } = await import("./pixiSingleton");
+const { pixiSingleton, resetPixiSingleton, setPixiApp, getPixiApp } = await import("./pixiSingleton");
 
 class MockImage {
   onload: (() => void) | null = null;
@@ -223,19 +223,15 @@ function card(overrides: Partial<CardWithGlobalLayout> = {}): CardWithGlobalLayo
   };
 }
 
-function renderCanvas(overrides: Partial<React.ComponentProps<typeof PixiVirtualCanvas>> = {}) {
-  const scrollHost = document.createElement("div");
-  scrollHost.scrollTop = 17;
-  const scrollRef = { current: scrollHost };
-
-  return render(
+function canvasElement(overrides: Partial<React.ComponentProps<typeof PixiVirtualCanvas>> = {}) {
+  return (
     <PixiVirtualCanvas
       cards={[card()]}
       pages={pages}
       viewportWidth={320}
       viewportHeight={240}
       scrollTop={0}
-      scrollContainerRef={scrollRef}
+      scrollContainerRef={{ current: null }}
       zoom={1}
       globalDarkenMode="none"
       flippedCards={new Set()}
@@ -254,12 +250,21 @@ function renderCanvas(overrides: Partial<React.ComponentProps<typeof PixiVirtual
       className="pixi-test"
       style={{ opacity: 0.5 }}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderCanvas(overrides: Partial<React.ComponentProps<typeof PixiVirtualCanvas>> = {}) {
+  const scrollHost = document.createElement("div");
+  scrollHost.scrollTop = 17;
+  const scrollRef = { current: scrollHost };
+
+  return render(canvasElement({ scrollContainerRef: scrollRef, ...overrides }));
 }
 
 describe("PixiVirtualCanvas", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     cleanup();
     const state = pixiState();
     state.apps = [];
@@ -287,8 +292,202 @@ describe("PixiVirtualCanvas", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     resetPixiSingleton();
     vi.unstubAllGlobals();
+  });
+
+  it("drops stale asynchronous texture passes and reuses cached blob URLs", async () => {
+    const pendingImages: Array<{
+      onload: (() => void) | null;
+      onerror: (() => void) | null;
+    }> = [];
+    class ControlledImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        pendingImages.push(this);
+      }
+    }
+    vi.stubGlobal("Image", ControlledImage);
+    const stable = card();
+    stable.card = {
+      ...stable.card,
+      overrides: { ...stable.card.overrides, holoEffect: "none" },
+    };
+    const second = card({
+      card: { ...stable.card, uuid: "card-2" },
+      frontImageId: "front-2",
+      backImageId: "back-2",
+    });
+    const { rerender } = renderCanvas({ cards: [stable, second] });
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThanOrEqual(2));
+    const initialCount = pendingImages.length;
+
+    rerender(canvasElement({ cards: [{ ...stable, globalX: 13 }, second] }));
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(initialCount));
+    const currentFrontIndex = pendingImages.length - 1;
+    for (let index = 0; index < initialCount; index += 1) {
+      await act(async () => pendingImages[index].onload?.());
+    }
+    await act(async () => pendingImages[currentFrontIndex].onload?.());
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(currentFrontIndex + 1));
+    const staleBackIndex = pendingImages.length - 1;
+
+    rerender(canvasElement({ cards: [{ ...stable, globalX: 14 }, second] }));
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(staleBackIndex + 1));
+    await act(async () => pendingImages[staleBackIndex].onload?.());
+
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds offscreen sprite allocation and evicts existing offscreen cards", async () => {
+    const state = pixiState();
+    const makeVirtualCard = (index: number, globalY: number) => {
+      const value = card({
+        card: {
+          ...card().card,
+          uuid: `virtual-${index}`,
+          overrides: undefined,
+        },
+        imageBlob: undefined,
+        backBlob: undefined,
+        frontImageId: `virtual-front-${index}`,
+        backImageId: undefined,
+        globalY,
+      });
+      return value;
+    };
+    const farCards = Array.from({ length: 38 }, (_, index) =>
+      makeVirtualCard(index, 10_000),
+    );
+    const { rerender } = renderCanvas({ cards: farCards });
+
+    await waitFor(() => expect(state.sprites).toHaveLength(36));
+
+    const visibleCards = farCards.map((value, index) =>
+      index >= 36 ? { ...value, globalY: 0 } : value,
+    );
+    rerender(canvasElement({ cards: visibleCards }));
+    await waitFor(() => expect(state.sprites).toHaveLength(38));
+
+    const cardsContainer = state.containers.find(
+      (container) => container.label === "cards-container",
+    )!;
+    (cardsContainer.removeChild as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("remove failed");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    rerender(canvasElement({ cards: visibleCards.slice(0, -1) }));
+
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "[PixiVirtualCanvas] Error removing sprite:",
+      expect.any(Error),
+    ));
+    rerender(canvasElement({ cards: farCards }));
+    await act(async () => undefined);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("updates existing sprites across flip, drag, drop, clipping, and resize failures", async () => {
+    const state = pixiState();
+    const stableCard = card();
+    stableCard.card = {
+      ...stableCard.card,
+      overrides: { ...stableCard.card.overrides, holoEffect: "none" },
+    };
+    const scrollHost = document.createElement("div");
+    scrollHost.scrollTop = 0;
+    const scrollRef = { current: scrollHost };
+    const view = (overrides: Partial<React.ComponentProps<typeof PixiVirtualCanvas>> = {}) => (
+      <PixiVirtualCanvas
+        cards={[stableCard]}
+        pages={pages}
+        viewportWidth={320}
+        viewportHeight={240}
+        scrollTop={0}
+        scrollContainerRef={scrollRef}
+        zoom={1}
+        globalDarkenMode="none"
+        flippedCards={new Set()}
+        activeId={null}
+        guideWidth={1}
+        cutLineStyle="full"
+        perCardGuideStyle="solid-rounded-rect"
+        perCardGuideColor={0xff00ff}
+        perCardGuidePlacement="inside"
+        showGuideLinesOnBackCards
+        cutGuideLengthMm={3}
+        registrationMarks="4"
+        registrationMarksPortrait
+        isDarkMode={false}
+        onRenderedCardsChange={vi.fn()}
+        {...overrides}
+      />
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { rerender } = render(view());
+
+    await waitFor(() => expect(state.sprites).toHaveLength(1));
+    const sprite = state.sprites[0];
+    rerender(view({ flippedCards: new Set(["card-1"]) }));
+    await waitFor(() => expect(sprite.texture).toBe(state.textures[1]));
+
+    rerender(view({ activeId: "card-1" }));
+    await waitFor(() => expect(sprite.visible).toBe(false));
+    rerender(view({ activeId: null }));
+    await waitFor(() => expect(sprite.visible).toBe(false));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    });
+    await waitFor(() => expect(sprite.visible).toBe(true));
+
+    scrollHost.scrollTop = 50;
+    rerender(view({ scrollTop: 50 }));
+    await waitFor(() => expect(
+      (filterState().adjustment[0].holoUvOffset as number[])[1],
+    ).toBeGreaterThan(0));
+
+    ((state.apps[0].renderer as { resize: ReturnType<typeof vi.fn> }).resize).mockImplementationOnce(() => {
+      throw new Error("resize failed");
+    });
+    rerender(view({ viewportWidth: 321 }));
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "[PixiVirtualCanvas] Resize failed:",
+      expect.any(Error),
+    ));
+
+    (state.apps[0].render as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("render failed");
+    });
+    rerender(view({ viewportWidth: 321, globalDarkenMode: "darken-all" }));
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "[PixiVirtualCanvas] Render failed:",
+      expect.any(Error),
+    ));
+  });
+
+  it("animates holographic cards with default motion settings", async () => {
+    vi.useFakeTimers();
+    const animated = card();
+    animated.card = {
+      ...animated.card,
+      overrides: {
+        holoEffect: "rainbow",
+        holoAnimation: "wave",
+      },
+    };
+    renderCanvas({ cards: [animated] });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+
+    expect(pixiState().apps[0]?.render).toHaveBeenCalled();
+    expect(filterState().adjustment[0]).toBeDefined();
   });
 
   it("initializes the singleton app, paints pages, syncs scroll, renders sprites, and cleans up resources", async () => {
@@ -397,6 +596,124 @@ describe("PixiVirtualCanvas", () => {
     expect(guideHookState().registration.at(-1)).toEqual(expect.objectContaining({ registrationMarks: "none" }));
   });
 
+  it("keeps a flipped card hidden when its back texture fails", async () => {
+    const pendingImages: Array<{
+      onload: (() => void) | null;
+      onerror: (() => void) | null;
+    }> = [];
+    class FrontOnlyImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        pendingImages.push(this);
+      }
+    }
+    vi.stubGlobal("Image", FrontOnlyImage);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onRenderedCardsChange = vi.fn();
+    const flipped = card({ backOverrides: undefined });
+    flipped.card = {
+      ...flipped.card,
+      overrides: { ...flipped.card.overrides, holoEffect: "none" },
+    };
+    renderCanvas({
+      cards: [flipped],
+      flippedCards: new Set(["card-1"]),
+      onRenderedCardsChange,
+    });
+
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThanOrEqual(2));
+    const currentFrontIndex = pendingImages.length - 1;
+    for (let index = 0; index < currentFrontIndex; index += 1) {
+      await act(async () => pendingImages[index].onload?.());
+    }
+    await act(async () => pendingImages[currentFrontIndex].onload?.());
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(currentFrontIndex + 1));
+    await act(async () => pendingImages.at(-1)?.onerror?.());
+
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "[PixiVirtualCanvas] Failed to create texture:",
+      expect.any(Error),
+    ));
+    await waitFor(() => expect(pixiState().sprites).toHaveLength(1));
+    expect(pixiState().sprites[0].visible).toBe(false);
+    expect(onRenderedCardsChange).toHaveBeenCalledWith(new Set());
+  });
+
+  it("attaches after an in-flight singleton initialization completes", async () => {
+    const state = pixiState();
+    let resolveInit: () => void = () => undefined;
+    pixiSingleton.isInitializing = true;
+    pixiSingleton.initPromise = new Promise<void>((resolve) => {
+      resolveInit = resolve;
+    });
+    const first = renderCanvas({ zoom: 1.75 });
+    await act(async () => undefined);
+
+    const app = new state.Application!();
+    const world = new state.Container!();
+    pixiSingleton.app = app as never;
+    pixiSingleton.worldContainer = world as never;
+    pixiSingleton.pagesContainer = new state.Container!() as never;
+    pixiSingleton.cardsContainer = new state.Container!() as never;
+    pixiSingleton.guidesContainer = new state.Container!() as never;
+    await act(async () => resolveInit());
+    await waitFor(() => expect(
+      (world.scale as { set: ReturnType<typeof vi.fn> }).set,
+    ).toHaveBeenCalledWith(1.75));
+    first.unmount();
+
+    cleanup();
+    resetPixiSingleton();
+    let resolveWithoutWorld: () => void = () => undefined;
+    pixiSingleton.isInitializing = true;
+    pixiSingleton.initPromise = new Promise<void>((resolve) => {
+      resolveWithoutWorld = resolve;
+    });
+    renderCanvas();
+    pixiSingleton.app = new state.Application!() as never;
+    pixiSingleton.worldContainer = null;
+    await act(async () => resolveWithoutWorld());
+    expect(pixiSingleton.app).not.toBeNull();
+  });
+
+  it("handles singleton states without a world, promise, or valid stage", async () => {
+    const state = pixiState();
+    const existing = new state.Application!();
+    pixiSingleton.app = existing as never;
+    pixiSingleton.worldContainer = null;
+    const first = renderCanvas();
+    await act(async () => undefined);
+    expect(state.apps.filter((app) => app !== existing)).toHaveLength(0);
+    first.unmount();
+
+    cleanup();
+    resetPixiSingleton();
+    pixiSingleton.isInitializing = true;
+    pixiSingleton.initPromise = null;
+    pixiSingleton.app = null;
+    const pending = renderCanvas();
+    await act(async () => undefined);
+    expect(pixiSingleton.app).toBeNull();
+    pending.unmount();
+
+    cleanup();
+    resetPixiSingleton();
+    pixiSingleton.app = {
+      stage: null,
+      ticker: { stop: vi.fn() },
+      destroy: vi.fn(),
+    } as never;
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 0,
+    });
+    renderCanvas({ viewportWidth: 0, viewportHeight: 0 });
+    await waitFor(() => expect(state.apps.at(-1)?.init).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 816, height: 1056, resolution: 1 }),
+    ));
+  });
+
   it("reuses in-flight and existing singleton apps and reports init failures", async () => {
     const state = pixiState();
     const existing = new state.Application!();
@@ -431,5 +748,28 @@ describe("PixiVirtualCanvas", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     renderCanvas();
     await waitFor(() => expect(warn).toHaveBeenCalledWith("[PixiVirtualCanvas] Init failed:", expect.any(Error)));
+  });
+
+  it("exposes the preview app and resets singleton state after cleanup errors", () => {
+    const state = pixiState();
+    const app = new state.Application!();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (app.destroy as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("destroy failed");
+    });
+
+    setPixiApp(app as never);
+    expect(getPixiApp()).toBe(app);
+    pixiSingleton.app = app as never;
+
+    expect(() => resetPixiSingleton()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      "[PixiSingleton] Error during cleanup:",
+      expect.any(Error),
+    );
+    expect(pixiSingleton.app).toBeNull();
+
+    setPixiApp(null);
+    expect(getPixiApp()).toBeNull();
   });
 });
