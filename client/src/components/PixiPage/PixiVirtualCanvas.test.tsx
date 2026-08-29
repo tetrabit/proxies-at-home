@@ -490,6 +490,20 @@ describe("PixiVirtualCanvas", () => {
     expect(filterState().adjustment[0]).toBeDefined();
   });
 
+  it("ticks holographic cards that have no automatic animation", async () => {
+    vi.useFakeTimers();
+    renderCanvas({ cards: [card()] });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+
+    expect(pixiState().apps[0]?.render).toHaveBeenCalled();
+  });
+
   it("initializes the singleton app, paints pages, syncs scroll, renders sprites, and cleans up resources", async () => {
     const state = pixiState();
     const onRenderedCardsChange = vi.fn();
