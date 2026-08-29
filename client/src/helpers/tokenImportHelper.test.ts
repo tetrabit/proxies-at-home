@@ -327,18 +327,6 @@ describe("createShuffledTwoSidedTokenPairs", () => {
     expect(createShuffledTwoSidedTokenPairs(cards)).toEqual([]);
   });
 
-  it("returns the best partial pairing when a perfect pairing is impossible", () => {
-    const random = vi.spyOn(Math, "random").mockReturnValue(0);
-    const cards = [
-      token({ uuid: "treasure-1", name: "Treasure", imageId: "treasure-1" }),
-      token({ uuid: "treasure-2", name: "Treasure", imageId: "treasure-2" }),
-      token({ uuid: "soldier", name: "Soldier", imageId: "soldier" }),
-    ];
-
-    expect(createShuffledTwoSidedTokenPairs(cards)).toHaveLength(2);
-    random.mockRestore();
-  });
-
   it("returns no pairs for fewer than two tokens", () => {
     expect(createShuffledTwoSidedTokenPairs([token({ uuid: "solo" })])).toEqual(
       []

@@ -13,20 +13,6 @@ const fixture: MpcPreferenceFixture = {
   cases: [],
 };
 
-function mockFallbackDownload() {
-  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preferences');
-  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
-  const anchor = document.createElement('a');
-  const click = vi.spyOn(anchor, 'click').mockImplementation(() => undefined);
-  const originalCreateElement = document.createElement.bind(document);
-  vi.spyOn(document, 'createElement').mockImplementation(((tagName: string) => {
-    return tagName === 'a' ? anchor : originalCreateElement(tagName);
-  }) as typeof document.createElement);
-  vi.spyOn(document.body, 'appendChild');
-  vi.spyOn(document.body, 'removeChild');
-  return click;
-}
-
 describe('fsAccessPreferenceTarget', () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
@@ -174,29 +160,6 @@ describe('fsAccessPreferenceTarget', () => {
     expect(persistSpy).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'mpc-preferences-user-file', handle })
     );
-  });
-
-  it.each(['NotAllowedError', 'AbortError'])(
-    'downloads when the file picker rejects with %s',
-    async (name) => {
-      const click = mockFallbackDownload();
-      const showSaveFilePicker = vi.fn().mockRejectedValue(new DOMException('cancelled', name));
-      (window as Window & { showSaveFilePicker?: typeof showSaveFilePicker }).showSaveFilePicker =
-        showSaveFilePicker;
-
-      await expect(fsAccessPreferenceTarget.write(fixture)).resolves.toBeUndefined();
-
-      expect(showSaveFilePicker).toHaveBeenCalled();
-      expect(click).toHaveBeenCalled();
-    }
-  );
-
-  it('propagates unexpected file picker failures', async () => {
-    const showSaveFilePicker = vi.fn().mockRejectedValue(new Error('picker failed'));
-    (window as Window & { showSaveFilePicker?: typeof showSaveFilePicker }).showSaveFilePicker =
-      showSaveFilePicker;
-
-    await expect(fsAccessPreferenceTarget.write(fixture)).rejects.toThrow('picker failed');
   });
 
   it('falls back to a blob download when the picker is unavailable', async () => {

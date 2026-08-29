@@ -396,7 +396,6 @@ export function ArtworkModal() {
         modalCard &&
         selectedCards.has(modalCard.uuid);
 
-      /* v8 ignore next -- aggregate V8 loses this covered hit across mixed module transforms; `should mark each selected front card for enrichment in multi-select mode` verifies the branch. @preserve */
       if (isMultiSelect && selectedFace === "front") {
         const selectedUuids = Array.from(selectedCards);
         const cardsToUpdate = await db.cards.bulkGet(selectedUuids);
@@ -756,7 +755,6 @@ export function ArtworkModal() {
 
     setIsSearching(true);
     try {
-      /* v8 ignore next -- aggregate V8 loses this covered declaration across mixed module transforms; the specific-print search test asserts fetchCardBySetAndNumber. @preserve */
       let cardWithPrints: ScryfallCard | null = null;
       if (specificPrint) {
         cardWithPrints = await fetchCardBySetAndNumber(

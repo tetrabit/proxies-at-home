@@ -397,6 +397,10 @@ function getIntentIdentityKey(intent: ImportIntent): string {
     return intent.scryfallId ? `id:${intent.scryfallId}` : `name:${normalizeTokenName(intent.name)}`;
 }
 
+function getTokenPartIdentityKey(token: { name: string; id?: string }): string {
+    return token.id ? `id:${token.id}` : `name:${normalizeTokenName(token.name)}`;
+}
+
 function getCardIdentityKey(card: Pick<CardOption, "name" | "scryfall_id">): string {
     return card.scryfall_id ? `id:${card.scryfall_id}` : `name:${normalizeTokenName(card.name)}`;
 }
