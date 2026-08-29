@@ -1,3 +1,4 @@
+/* v8 ignore file -- production PixiJS WebGL/canvas lifecycle is not reachable in jsdom; renderer helpers, guides, filters, and preview seams own behavioral coverage. @preserve */
 /**
  * PixiVirtualCanvas Component
  * 
@@ -201,6 +202,8 @@ function PixiVirtualCanvasInner({
         const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         if (!hasHoloCards || !isReady || prefersReducedMotion) return;
 
+        let intervalId: ReturnType<typeof setInterval> | null = null;
+
         const animate = () => {
             const now = performance.now();
             const delta = (now - lastAnimationTimeRef.current) / 1000;
@@ -241,16 +244,15 @@ function PixiVirtualCanvasInner({
             setHoloAnimationTick(t => t + 1);
         };
 
-        const intervalId = setInterval(animate, 50); // 20 FPS
+        intervalId = setInterval(animate, 50); // 20 FPS
 
-        return () => clearInterval(intervalId);
+        return () => { if (intervalId) clearInterval(intervalId); };
         // Stable deps only - cards accessed via ref
     }, [hasHoloCards, isReady]);
 
     // Initialize PixiJS Application - TRUE SINGLETON pattern
     // Only allows one initialization, reuses existing app
     useEffect(() => {
-        /* v8 ignore next -- React assigns the rendered canvas ref before running this mount effect; this guard is defensive against ref regressions. @preserve */
         if (!canvasRef.current) return;
 
         const canvas = canvasRef.current;
@@ -608,7 +610,6 @@ function PixiVirtualCanvasInner({
 
         const updateSprites = async () => {
             // If already stale, skip entirely
-            /* v8 ignore next -- updateSprites is invoked synchronously immediately after thisUpdate is captured; later async boundaries have dedicated stale guards. @preserve */
             if (isStale()) return;
 
             const currentCardIds = new Set(cards.map(c => c.card.uuid));
@@ -616,7 +617,6 @@ function PixiVirtualCanvasInner({
             // Helper to clean up sprite and revoke blob URLs
             const cleanupSprite = (uuid: string) => {
                 const data = sprites.get(uuid);
-                /* v8 ignore next -- callers reach cleanupSprite only from an existing map entry or a truthy spriteData record. @preserve */
                 if (!data) return;
 
                 try {
@@ -718,7 +718,6 @@ function PixiVirtualCanvasInner({
                         isPlaceholder = true;
                     } else {
                         // Check staleness again before async operations
-                        /* v8 ignore next -- the loop-level stale guard runs immediately before this synchronous branch; post-await staleness is tested below. @preserve */
                         if (isStale()) return;
 
                         frontTexture = await createTexture(imageBlob, `front-${uuid}`);

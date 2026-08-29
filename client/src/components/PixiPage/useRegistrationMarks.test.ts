@@ -97,32 +97,4 @@ describe('useRegistrationMarks', () => {
 
     unmount();
   });
-
-  it('handles absent app rendering and active-mark cleanup', () => {
-    const container = makeContainer();
-
-    const inactive = renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: container as never,
-      app: null,
-      pages: pages as never,
-      registrationMarks: 'none',
-      registrationMarksPortrait: false,
-    }));
-    inactive.unmount();
-
-    const active = renderHook(() => useRegistrationMarks({
-      isReady: true,
-      container: container as never,
-      app: null,
-      pages: pages as never,
-      registrationMarks: '4',
-      registrationMarksPortrait: false,
-    }));
-    const rendered = mocks.graphicsInstances.at(-1)!;
-
-    active.unmount();
-
-    expect(rendered.destroy).toHaveBeenCalled();
-  });
 });

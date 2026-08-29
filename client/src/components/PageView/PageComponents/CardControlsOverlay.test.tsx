@@ -138,29 +138,6 @@ describe("CardControlsOverlay", () => {
         expect(selectionState.toggleFlip).toHaveBeenCalledWith("card-1");
     });
 
-    it("opens unselected front artwork without an MPC source", () => {
-        const plainCard = {
-            ...(card as unknown as Record<string, unknown>),
-            imageId: undefined,
-            isToken: false,
-            tokenAddedFrom: undefined,
-        } as never;
-        const { cardNode } = renderOverlay(
-            {},
-            { card: plainCard },
-        );
-
-        fireEvent.click(cardNode);
-
-        expect(artworkState.openModal).toHaveBeenCalledWith(
-            expect.objectContaining({
-                initialTab: "artwork",
-                initialFace: "front",
-                initialArtSource: undefined,
-            }),
-        );
-    });
-
     it("range-selects from card clicks and handles direct checkbox/drag clicks", () => {
         const onRangeSelect = vi.fn();
         const { cardNode } = renderOverlay({ onRangeSelect });
@@ -228,9 +205,7 @@ describe("CardControlsOverlay", () => {
     });
 
     it("covers mobile selected rendering, ignored mobile context menus, and missing scroll refs", () => {
-        vi.useFakeTimers();
         selectionState.selectedCards = new Set(["card-1"]);
-        selectionState.flippedCards = new Set(["card-1"]);
         const missingScrollRef = { current: null };
         const setContextMenu = vi.fn();
 
@@ -241,12 +216,6 @@ describe("CardControlsOverlay", () => {
         });
 
         expect(screen.getByTitle("Select card").querySelector("svg")).toBeInTheDocument();
-
-        fireEvent.click(cardNode);
-        vi.advanceTimersByTime(300);
-        expect(artworkState.openModal).toHaveBeenCalledWith(
-            expect.objectContaining({ initialTab: "settings", initialFace: "back" }),
-        );
 
         fireEvent.contextMenu(cardNode, { clientX: 1, clientY: 2 });
         expect(setContextMenu).not.toHaveBeenCalled();

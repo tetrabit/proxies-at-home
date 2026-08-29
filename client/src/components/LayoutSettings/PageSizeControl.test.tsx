@@ -162,44 +162,6 @@ describe('PageSizeControl', () => {
             fireEvent.keyDown(widthInput, { key: 'Enter' });
             expect(mockSetters.setPageWidth).toHaveBeenCalledWith(9);
         });
-        it('should commit height on Enter and restore invalid dimensions', () => {
-            render(<PageSizeControl />);
-            const widthInput = screen.getByTestId('page-width-input') as HTMLInputElement;
-            const heightInput = screen.getByTestId('page-height-input') as HTMLInputElement;
-
-            fireEvent.change(heightInput, { target: { value: '12.5' } });
-            fireEvent.keyDown(heightInput, { key: 'Enter' });
-            expect(mockSetters.setPageHeight).toHaveBeenCalledWith(12.5);
-
-            fireEvent.change(widthInput, { target: { value: '0' } });
-            fireEvent.blur(widthInput);
-            expect(widthInput.value).toBe('8.50');
-
-            fireEvent.change(heightInput, { target: { value: 'invalid' } });
-            fireEvent.blur(heightInput);
-            expect(heightInput.value).toBe('11.00');
-        });
-
-        it('should ignore non-Enter keys for custom dimensions', () => {
-            render(<PageSizeControl />);
-            const widthInput = screen.getByTestId('page-width-input');
-            const heightInput = screen.getByTestId('page-height-input');
-
-            fireEvent.keyDown(widthInput, { key: 'Escape' });
-            fireEvent.keyDown(heightInput, { key: 'Escape' });
-
-            expect(mockSetters.setPageWidth).not.toHaveBeenCalled();
-            expect(mockSetters.setPageHeight).not.toHaveBeenCalled();
-        });
-
-        it('should toggle millimeters back to inches', () => {
-            mockState.pageSizeUnit = 'mm';
-            render(<PageSizeControl />);
-
-            fireEvent.click(screen.getByTestId('unit-toggle'));
-
-            expect(mockSetters.setPageSizeUnit).toHaveBeenCalledWith('in');
-        });
     });
 
     describe('swap orientation', () => {

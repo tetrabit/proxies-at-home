@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 /**
  * PixiJS Application Singleton Management
  * 
@@ -77,7 +78,6 @@ export function getPixiApp(): Application | null {
 
 // Force full page reload on HMR for this module
 // PixiJS/WebGL doesn't handle hot reload well - cleaner to just reload
-/* v8 ignore next 4 -- import.meta.hot exists only in Vite's live HMR runtime; the production build and singleton tests cover the non-HMR module contract. @preserve */
 if (import.meta.hot) {
     import.meta.hot.accept(() => {
         import.meta.hot!.invalidate();

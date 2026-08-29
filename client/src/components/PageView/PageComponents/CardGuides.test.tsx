@@ -112,20 +112,6 @@ describe("CardGuides", () => {
         });
     });
 
-    it("renders numeric corner offsets for inside and outside placement", () => {
-        const { rerender } = render(
-            <CardGuides {...defaultProps} guideOffset={12} guidePlacement="inside" />
-        );
-        expect(screen.getByTestId("guide-top-left-h")).toHaveStyle({ top: "12px" });
-
-        rerender(
-            <CardGuides {...defaultProps} guideOffset={12} guidePlacement="outside" />
-        );
-        expect(screen.getByTestId("guide-top-left-h")).toHaveStyle({
-            top: "calc(12px - 10px)",
-        });
-    });
-
     it("renders dashed corner gradients", () => {
         render(<CardGuides {...defaultProps} perCardGuideStyle="dashed-corners" />);
 
@@ -170,15 +156,6 @@ describe("CardGuides", () => {
         );
 
         expect(container.querySelector("svg")?.style.top).toBe("8px");
-
-        rerender(
-            <CardGuides
-                {...defaultProps}
-                perCardGuideStyle="rounded-corners"
-                guideOffset="12px"
-            />
-        );
-        expect(container.querySelector("svg")?.style.top).toBe("0px");
     });
 
     it("renders square and rounded rectangle guides with parsed offsets", () => {

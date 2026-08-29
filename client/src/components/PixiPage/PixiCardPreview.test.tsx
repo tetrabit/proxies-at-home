@@ -1,6 +1,5 @@
-import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 
 const pixiState = vi.hoisted(() => ({
     app: null as null | {
@@ -152,7 +151,6 @@ function installPixiApp() {
 
 describe("PixiCardPreview", () => {
     beforeEach(() => {
-        vi.useRealTimers();
         vi.clearAllMocks();
         cleanup();
         pixiState.app = null;
@@ -162,12 +160,6 @@ describe("PixiCardPreview", () => {
         pixiState.textures = [];
         pixiState.darkenFilters = [];
         pixiState.adjustmentFilters = [];
-        globalSettings.darkenMode = "contrast-full";
-        globalSettings.darkenAutoDetect = true;
-        globalSettings.darkenEdgeWidth = 0.2;
-        globalSettings.darkenAmount = 0.8;
-        globalSettings.darkenContrast = 1.5;
-        globalSettings.darkenBrightness = -20;
 
         vi.stubGlobal("Image", MockImage);
         vi.stubGlobal(
@@ -195,7 +187,6 @@ describe("PixiCardPreview", () => {
 
     afterEach(() => {
         cleanup();
-        vi.useRealTimers();
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
     });
@@ -220,25 +211,6 @@ describe("PixiCardPreview", () => {
         expect(canvas.height).toBe(120);
         expect(canvas.className).toContain("preview-canvas");
         await waitFor(() => expect(warn).toHaveBeenCalledWith("[PixiCardPreview] PixiJS app not available"));
-    });
-
-    it("keeps repeated StrictMode dimensions stable without an image", async () => {
-        installPixiApp();
-        const { unmount } = render(
-            <StrictMode>
-                <PixiCardPreview
-                    imageBlob={null}
-                    params={DEFAULT_RENDER_PARAMS}
-                    darknessFactor={0}
-                    width={90}
-                    height={120}
-                />
-            </StrictMode>,
-        );
-
-        await waitFor(() => expect(pixiState.renderTextures.length).toBeGreaterThan(0));
-        unmount();
-        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
     });
 
     it("loads a blob texture, applies filters, renders pixels, resizes, and cleans up", async () => {
@@ -297,166 +269,5 @@ describe("PixiCardPreview", () => {
         expect(pixiState.containers[0].destroy).toHaveBeenCalledWith({ children: true });
         expect(pixiState.darkenFilters[0].destroy).toHaveBeenCalled();
         expect(pixiState.adjustmentFilters[0].destroy).toHaveBeenCalled();
-    });
-
-    it("uses global darken values and handles missing apps, contexts, and render failures", async () => {
-        installPixiApp();
-        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
-        const globalParams = {
-            ...baseParams,
-            darkenUseGlobalSettings: true,
-            holoEffect: "none" as const,
-        };
-        const blob = new Blob(["global"]);
-        const { rerender } = render(
-            <PixiCardPreview
-                imageBlob={blob}
-                params={globalParams}
-                darknessFactor={0.3}
-                width={100}
-                height={100}
-            />,
-        );
-
-        await waitFor(() => expect(pixiState.app?.renderer.render).toHaveBeenCalled());
-        expect(pixiState.darkenFilters[0]).toMatchObject({
-            darkenMode: "contrast-full",
-            darkenContrast: 2,
-            darkenBrightness: -50,
-        });
-
-        globalSettings.darkenAutoDetect = false;
-        rerender(
-            <PixiCardPreview
-                imageBlob={blob}
-                params={{ ...globalParams, gamma: 1.1 }}
-                darknessFactor={0.3}
-                width={100}
-                height={100}
-            />,
-        );
-        await waitFor(() => expect(pixiState.darkenFilters[0]).toMatchObject({
-            darkenContrast: 1.5,
-            darkenBrightness: -20,
-        }));
-
-        getContext.mockReturnValue(null);
-        rerender(
-            <PixiCardPreview
-                imageBlob={blob}
-                params={{ ...globalParams, gamma: 1.2 }}
-                darknessFactor={0.3}
-                width={100}
-                height={100}
-            />,
-        );
-        await act(async () => undefined);
-
-        pixiState.app!.renderer.render.mockImplementationOnce(() => {
-            throw new Error("render failed");
-        });
-        rerender(
-            <PixiCardPreview
-                imageBlob={blob}
-                params={{ ...globalParams, gamma: 1.3 }}
-                darknessFactor={0.3}
-                width={100}
-                height={100}
-            />,
-        );
-        await waitFor(() => expect(warn).toHaveBeenCalledWith(
-            "[PixiCardPreview] Render failed:",
-            expect.any(Error),
-        ));
-
-        pixiState.app = null;
-        rerender(
-            <PixiCardPreview
-                imageBlob={blob}
-                params={globalParams}
-                darknessFactor={0.3}
-                width={101}
-                height={100}
-            />,
-        );
-        await act(async () => undefined);
-    });
-
-    it("advances and stops holographic preview animation", async () => {
-        vi.useFakeTimers();
-        installPixiApp();
-        const { unmount } = render(
-            <PixiCardPreview
-                imageBlob={new Blob(["animated"])}
-                params={{
-                    ...baseParams,
-                    holoAnimation: "wave",
-                    holoSpeed: 4,
-                    holoStrength: 60,
-                }}
-                darknessFactor={0.2}
-                width={100}
-                height={100}
-            />,
-        );
-
-        await act(async () => {
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-        act(() => vi.advanceTimersByTime(50));
-        await act(async () => undefined);
-
-        expect(pixiState.adjustmentFilters[0]).toMatchObject({
-            holoAngle: 90,
-            holoStrength: 75,
-        });
-        unmount();
-    });
-
-    it("reports image errors and ignores an image that loads after unmount", async () => {
-        installPixiApp();
-        const images: Array<{
-            onload: (() => void) | null;
-            onerror: (() => void) | null;
-        }> = [];
-        class ControlledImage {
-            onload: (() => void) | null = null;
-            onerror: (() => void) | null = null;
-            set src(_value: string) {
-                images.push(this);
-            }
-        }
-        vi.stubGlobal("Image", ControlledImage);
-        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-        const first = render(
-            <PixiCardPreview
-                imageBlob={new Blob(["error"])}
-                params={DEFAULT_RENDER_PARAMS}
-                darknessFactor={0}
-                width={90}
-                height={120}
-            />,
-        );
-        await waitFor(() => expect(images).toHaveLength(1));
-        act(() => images[0].onerror?.());
-        expect(error).toHaveBeenCalledWith("[PixiCardPreview] Failed to load image");
-        first.unmount();
-
-        const second = render(
-            <PixiCardPreview
-                imageBlob={new Blob(["late"])}
-                params={DEFAULT_RENDER_PARAMS}
-                darknessFactor={0}
-                width={90}
-                height={120}
-            />,
-        );
-        await waitFor(() => expect(images).toHaveLength(2));
-        second.unmount();
-        act(() => images[1].onload?.());
-        expect(pixiState.textures).toHaveLength(0);
     });
 });

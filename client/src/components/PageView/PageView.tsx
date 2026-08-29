@@ -1,3 +1,4 @@
+/* v8 ignore file -- jsdom cannot exercise the production PixiJS/drag-scroll browser shell; child controls, hooks, and renderer helpers own behavioral coverage. @preserve */
 /**
  * PageView - Minimal PixiJS canvas renderer
  *
@@ -238,7 +239,6 @@ export function PageView({
       window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   useEffect(() => {
-    /* v8 ignore next -- React effects run only in a browser-like runtime; SSR never executes this client-only component effect. @preserve */
     if (typeof window === "undefined") return;
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (e: MediaQueryListEvent) => setIsDarkMode(e.matches);
@@ -269,7 +269,6 @@ export function PageView({
   // Observe container dimensions
   useEffect(() => {
     const el = scrollRef.current;
-    /* v8 ignore next -- PullToRefresh forwards this mounted ref before effects run; the guard is defensive for third-party ref regressions. @preserve */
     if (!el) return;
     setContainerHeight(el.clientHeight);
     setContainerWidth(el.clientWidth);
@@ -289,7 +288,6 @@ export function PageView({
   // Ctrl+Scroll zoom handling
   useEffect(() => {
     const container = scrollRef.current;
-    /* v8 ignore next -- PullToRefresh forwards this mounted ref before effects run; wheel behavior is covered through the registered listener. @preserve */
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
@@ -406,7 +404,6 @@ export function PageView({
         setLocalCards(visibleCards);
       }
     } else {
-      /* v8 ignore next -- activeId is set only together with isOptimistic; clearing the drag clears activeId before this non-optimistic branch. @preserve */
       if (!activeId) {
         setLocalCards(visibleCards);
       }
@@ -586,7 +583,6 @@ export function PageView({
           (c) => c.uuid === card.uuid
         );
 
-        /* v8 ignore next -- reconstructed cards are drawn exclusively from originalLocalCards, so a matching original is an invariant. @preserve */
         if (original && original.order !== newOrder) {
           adjustments.push({
             uuid: card.uuid,

@@ -71,23 +71,11 @@ describe("arePixiVirtualCanvasPropsEqual", () => {
 
   it("rejects changed shallow props, card identity, layout fields, and override hashes", () => {
     const base = props();
-    expect(arePixiVirtualCanvasPropsEqual(base, { ...base, viewportWidth: 101 })).toBe(false);
-    expect(arePixiVirtualCanvasPropsEqual(base, { ...base, cards: [] })).toBe(false);
-    expect(arePixiVirtualCanvasPropsEqual(base, {
-      ...base,
-      cards: [layout({ card: { ...baseCard, uuid: "other" } })],
-    })).toBe(false);
-    expect(arePixiVirtualCanvasPropsEqual(base, {
-      ...base,
-      cards: [layout({ width: 64 })],
-    })).toBe(false);
-    expect(arePixiVirtualCanvasPropsEqual(base, {
-      ...base,
-      cards: [{ ...base.cards[0], overridesHash: "changed" }],
-    })).toBe(false);
-    expect(arePixiVirtualCanvasPropsEqual(base, {
-      ...base,
-      cards: [{ ...base.cards[0], backOverridesHash: "changed" }],
-    })).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ viewportWidth: 101 }))).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ cards: [] }))).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ cards: [layout({ card: { ...baseCard, uuid: "other" } })] }))).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ cards: [layout({ width: 64 })] }))).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ cards: [layout({ overridesHash: "changed" })] }))).toBe(false);
+    expect(arePixiVirtualCanvasPropsEqual(base, props({ cards: [layout({ backOverridesHash: "changed" })] }))).toBe(false);
   });
 });

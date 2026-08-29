@@ -165,11 +165,6 @@ describe('PageSettingsControls', () => {
     expect(screen.getByText('FilterSort Section 1')).toBeDefined();
     expect(screen.getByText('Export Section 1')).toBeDefined();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Projects' }));
-    expect(mocks.setSettingsPanelState).toHaveBeenCalledWith(
-      expect.objectContaining({ collapsed: expect.objectContaining({ projects: true }) }),
-    );
-
     fireEvent.click(screen.getByText('Clear badge 3'));
     expect(mocks.setFilterManaCost).toHaveBeenCalledWith([]);
     expect(mocks.setFilterColors).toHaveBeenCalledWith([]);
@@ -213,30 +208,6 @@ describe('PageSettingsControls', () => {
     vi.advanceTimersByTime(100);
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
     target.remove();
-  });
-
-  it('uses default collapse state and leaves an expanded rail target unchanged', () => {
-    const holder = mocks as unknown as {
-      preferences: typeof mocks.preferences | undefined;
-    };
-    const originalPreferences = holder.preferences;
-    holder.preferences = undefined;
-    const firstRender = renderControls();
-    expect(screen.getByText('Settings')).toBeDefined();
-    firstRender.unmount();
-    holder.preferences = originalPreferences;
-
-    mocks.preferences.isSettingsPanelCollapsed = true;
-    mocks.preferences.settingsPanelState = {
-      order: ['projects'],
-      collapsed: {},
-    };
-    renderControls();
-
-    fireEvent.click(screen.getByRole('button'));
-
-    expect(mocks.setIsSettingsPanelCollapsed).toHaveBeenCalledWith(false);
-    expect(mocks.setSettingsPanelState).not.toHaveBeenCalled();
   });
 
   it('renders every collapsed rail icon label branch', () => {

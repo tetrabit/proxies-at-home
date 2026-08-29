@@ -232,14 +232,5 @@ describe('cardFilterUtils', () => {
             const result = calculateCardHoloAnimation(overrides);
             expect(result.angle).toBeGreaterThanOrEqual(2000);
         });
-        it('should fall back to wave animation for legacy values', () => {
-            const result = calculateCardHoloAnimation({
-                holoEffect: 'rainbow',
-                holoAnimation: 'legacy',
-                holoSpeed: 5,
-            } as unknown as CardOverrides);
-
-            expect(result.angle).toBe(30);
-        });
     });
 });

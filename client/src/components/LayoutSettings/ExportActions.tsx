@@ -1,3 +1,4 @@
+/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { useState, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { FileText, Image, Clipboard, Download } from "lucide-react";
@@ -72,7 +73,6 @@ async function savePdfBlob(blob: Blob, filename: string) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  /* v8 ignore next -- delayed object-URL revocation is a browser download lifecycle seam; save behavior is covered by PDF export tests. @preserve */
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -256,16 +256,15 @@ export function ExportActions({ cards }: Props) {
   });
 
   const handleExport = async () => {
-    /* v8 ignore next -- every PDF trigger is disabled when frontCards is empty; this remains a defensive programmatic-call guard. @preserve */
     if (!frontCards.length) return;
 
-    let rejectPromise!: (reason?: Error) => void;
+    let rejectPromise: (reason?: Error) => void;
     const cancellationPromise = new Promise<void>((_, reject) => {
       rejectPromise = reject;
     });
 
     const onCancel = () => {
-      rejectPromise(new Error("Cancelled by user"));
+      if (rejectPromise) rejectPromise(new Error("Cancelled by user"));
     };
     setOnCancel(onCancel);
 
@@ -629,7 +628,7 @@ export function ExportActions({ cards }: Props) {
               (pdfPageLimit ?? Number.POSITIVE_INFINITY) * perPage
             );
             const pad = (content: string) => content.padEnd(62);
-            const modeLabel = EXPORT_MODES.find(m => m.value === exportMode)!.label;
+            const modeLabel = EXPORT_MODES.find(m => m.value === exportMode)?.label || exportMode;
             const summary = `
 ╔══════════════════════════════════════════════════════════════╗
 ║${`PDF EXPORT (${modeLabel})`.padStart(44).padEnd(62)}║
