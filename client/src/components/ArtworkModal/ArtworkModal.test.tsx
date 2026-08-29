@@ -11,6 +11,7 @@ const {
     mockState,
     mockDefaultCardbackId,
     mockChangeCardArtwork,
+    mockGetArtworkApplyAllTargets,
     mockCreateLinkedBackCard,
     mockUndoableChangeCardback,
     mockFetchCardWithPrints,
@@ -41,6 +42,7 @@ const {
             index: null as number | null,
         },
         mockChangeCardArtwork: vi.fn(),
+        mockGetArtworkApplyAllTargets: vi.fn(),
         mockCreateLinkedBackCard: vi.fn(),
         mockUndoableChangeCardback: vi.fn(),
         mockFetchCardWithPrints: vi.fn(),
@@ -50,7 +52,11 @@ const {
             get: vi.fn(),
             update: vi.fn().mockResolvedValue(undefined),
             bulkGet: vi.fn().mockResolvedValue([]),
-            filter: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([]) })),
+            filter: vi.fn(
+                (_predicate: (card: Record<string, unknown> & { linkedFrontId?: string }) => boolean) => ({
+                    toArray: vi.fn().mockResolvedValue([]),
+                })
+            ),
         },
         mockDbImages: {
             get: vi.fn(),
@@ -136,6 +142,7 @@ vi.mock('@/db', () => ({
 
 vi.mock('@/helpers/dbUtils', () => ({
     changeCardArtwork: mockChangeCardArtwork,
+    getArtworkApplyAllTargets: mockGetArtworkApplyAllTargets,
     createLinkedBackCard: mockCreateLinkedBackCard,
 }));
 
@@ -866,22 +873,75 @@ describe('ArtworkModal', () => {
             });
         });
 
-        it('should apply selected cardback to all front cards when apply-to-all is enabled', async () => {
+        it('should apply a cardback to every front when no linked back exists', async () => {
             mockDbCards.filter.mockImplementationOnce((predicate) => {
-                predicate({ uuid: 'front-1' });
-                predicate({ uuid: 'back-1', linkedFrontId: 'front-1' });
+                expect(predicate({ uuid: 'front-1' })).toBe(true);
+                expect(
+                    predicate({ uuid: 'back-1', linkedFrontId: 'front-1' })
+                ).toBe(false);
                 return {
-                toArray: vi.fn().mockResolvedValue([
-                    { uuid: 'front-1', name: 'Front 1' },
-                    { uuid: 'front-2', name: 'Front 2' },
-                ])
-            }});
+                    toArray: vi.fn().mockResolvedValue([
+                        { uuid: 'front-1', name: 'Front 1' },
+                        { uuid: 'front-2', name: 'Front 2' },
+                    ]),
+                };
+            });
 
             render(<ArtworkModal />);
             fireEvent.click(screen.getByTestId('toggle-apply-to-all'));
             fireEvent.click(screen.getByTestId('select-cardback'));
 
             await waitFor(() => {
+                expect(mockUndoableChangeCardback).toHaveBeenCalledWith(
+                    ['front-1', 'front-2'],
+                    'cardback-1',
+                    'Custom Back',
+                    true
+                );
+            });
+        });
+
+        it('should resolve safe same-name backs before applying a cardback to all', async () => {
+            mockState.modalCard = {
+                uuid: 'front-1',
+                name: 'Front 1',
+                imageId: 'front-image',
+                linkedBackId: 'back-1',
+            };
+            const linkedBack = {
+                uuid: 'back-1',
+                name: 'Rose',
+                imageId: 'old-back',
+                linkedFrontId: 'front-1',
+                projectId: 'project-a',
+            };
+            vi.mocked(useLiveQuery).mockImplementation(
+                (_querier, dependencies) =>
+                    dependencies?.[0] === 'back-1' ? linkedBack : null
+            );
+            mockGetArtworkApplyAllTargets.mockResolvedValue([
+                linkedBack,
+                {
+                    uuid: 'back-2',
+                    name: 'Rose',
+                    imageId: 'old-back',
+                    linkedFrontId: 'front-2',
+                    projectId: 'project-a',
+                },
+                {
+                    uuid: 'orphan-back',
+                    name: 'Rose',
+                    imageId: 'old-back',
+                    projectId: 'project-a',
+                },
+            ]);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('toggle-apply-to-all'));
+            fireEvent.click(screen.getByTestId('select-cardback'));
+
+            await waitFor(() => {
+                expect(mockGetArtworkApplyAllTargets).toHaveBeenCalledWith(linkedBack);
                 expect(mockUndoableChangeCardback).toHaveBeenCalledWith(
                     ['front-1', 'front-2'],
                     'cardback-1',

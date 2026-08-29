@@ -1458,12 +1458,67 @@ export async function duplicateCard(uuid: string): Promise<void> {
  * @param oldImageId The previous image ID.
  * @param newImageId The new image ID.
  * @param cardToUpdate The primary card being updated.
- * @param applyToAll If true, all cards using oldImageId will be updated.
+ * @param applyToAll If true, same-name cards with the same face role in the
+ * current project will be updated. Linked backs of true DFCs are excluded.
  * @param newName Optional new name for the card.
  * @param newImageUrls Optional new image URLs array.
  * @param cardMetadata Optional metadata to update (set, number, colors, etc.)
  * @param hasBuiltInBleed Optional override for hasBuiltInBleed flag (e.g., for cardbacks with bleed).
  */
+function hasPhysicalBackFace(card: CardOption): boolean {
+  // Persisted CardOption records keep only the front name while a physical
+  // DFC's type line contains both faces. Split and adventure cards also use
+  // "//" but do not have a printable back, so exclude their stored shapes.
+  return Boolean(
+    card.type_line?.includes("//") &&
+      !card.type_line.toLowerCase().includes("adventure") &&
+      !card.name.includes("//")
+  );
+}
+
+export async function getArtworkApplyAllTargets(
+  cardToUpdate: CardOption
+): Promise<CardOption[]> {
+  if (!cardToUpdate.projectId) {
+    return [cardToUpdate];
+  }
+
+  const sameNameCards = await db.cards
+    .where("projectId")
+    .equals(cardToUpdate.projectId)
+    .filter((candidate) => candidate.name === cardToUpdate.name)
+    .toArray();
+
+  if (!cardToUpdate.linkedFrontId) {
+    return sameNameCards.filter((candidate) => !candidate.linkedFrontId);
+  }
+
+  const backCandidates = sameNameCards.filter(
+    (candidate): candidate is CardOption & { linkedFrontId: string } =>
+      Boolean(candidate.linkedFrontId)
+  );
+  const frontIds = Array.from(
+    new Set(backCandidates.map((candidate) => candidate.linkedFrontId))
+  );
+  const fronts = await db.cards.bulkGet(frontIds);
+  const frontById = new Map(
+    fronts
+      .filter((front): front is CardOption => Boolean(front))
+      .map((front) => [front.uuid, front])
+  );
+  const selectedFront = frontById.get(cardToUpdate.linkedFrontId);
+
+  if (!selectedFront || hasPhysicalBackFace(selectedFront)) {
+    return [cardToUpdate];
+  }
+
+  return backCandidates.filter((candidate) => {
+    if (candidate.uuid === cardToUpdate.uuid) return true;
+    const front = frontById.get(candidate.linkedFrontId);
+    return Boolean(front && !hasPhysicalBackFace(front));
+  });
+}
+
 export async function changeCardArtwork(
   oldImageId: string | undefined,
   newImageId: string,
@@ -1502,7 +1557,7 @@ export async function changeCardArtwork(
 
     // Determine which cards to update
     const cardsToUpdate = applyToAll
-      ? await db.cards.where("name").equals(cardToUpdate.name).toArray()
+      ? await getArtworkApplyAllTargets(cardToUpdate)
       : [cardToUpdate];
 
     if (cardsToUpdate.length === 0) return;

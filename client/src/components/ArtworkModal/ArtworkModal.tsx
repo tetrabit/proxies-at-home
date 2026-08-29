@@ -1,5 +1,8 @@
-/* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
-import { changeCardArtwork, createLinkedBackCard } from "@/helpers/dbUtils";
+import {
+  changeCardArtwork,
+  createLinkedBackCard,
+  getArtworkApplyAllTargets,
+} from "@/helpers/dbUtils";
 import { parseImageIdFromUrl } from "@/helpers/imageHelper";
 import {
   getMpcAutofillImageUrl,
@@ -801,7 +804,12 @@ export function ArtworkModal() {
       selectedCards.size > 1 && selectedCards.has(modalCard.uuid);
     let frontCardUuids: string[];
 
-    if (applyToAll) {
+    if (applyToAll && linkedBackCard) {
+      const matchingBacks = await getArtworkApplyAllTargets(linkedBackCard);
+      frontCardUuids = matchingBacks.flatMap((card) =>
+        card.linkedFrontId ? [card.linkedFrontId] : []
+      );
+    } else if (applyToAll) {
       const allFrontCards = await db.cards
         /* v8 ignore next -- predicate is exercised by Dexie; jsdom mock calls representative records separately. @preserve */
         .filter((c) => !c.linkedFrontId)

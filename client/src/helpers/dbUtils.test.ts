@@ -988,9 +988,24 @@ describe("dbUtils", () => {
       const id2 = await addCustomImage(blob2);
 
       await addCards([
-        { name: "Card A", isUserUpload: true, imageId: id1 },
-        { name: "Card A", isUserUpload: true, imageId: id1 }, // Same name
-        { name: "Card B", isUserUpload: true, imageId: id1 },
+        {
+          name: "Card A",
+          projectId: "project-a",
+          isUserUpload: true,
+          imageId: id1,
+        },
+        {
+          name: "Card A",
+          projectId: "project-a",
+          isUserUpload: true,
+          imageId: id1,
+        }, // Same name
+        {
+          name: "Card B",
+          projectId: "project-a",
+          isUserUpload: true,
+          imageId: id1,
+        },
       ]);
 
       // Manually update refCount to match usage (3 cards)
@@ -1019,6 +1034,133 @@ describe("dbUtils", () => {
       // Wait, addCustomImage sets refCount to 1.
       // changeCardArtwork increments by number of cards (2).
       // So 1 + 2 = 3. Correct.
+    });
+
+    it("changeCardArtwork apply-to-all keeps generic backs away from DFC backs, fronts, and other projects", async () => {
+      const { addCustomImage, changeCardArtwork } = await import("./dbUtils");
+      const oldImageId = await addCustomImage(
+        new Blob(["old"], { type: "image/png" })
+      );
+      const newImageId = await addCustomImage(
+        new Blob(["new"], { type: "image/png" })
+      );
+
+      await db.cards.bulkAdd([
+        {
+          uuid: "ordinary-front-a",
+          projectId: "project-a",
+          name: "Ordinary A",
+          order: 1,
+          imageId: "front-a",
+          isUserUpload: false,
+          linkedBackId: "ordinary-back-a",
+          type_line: "Creature — Human",
+        },
+        {
+          uuid: "ordinary-back-a",
+          projectId: "project-a",
+          name: "Rose",
+          order: 1,
+          imageId: oldImageId,
+          isUserUpload: false,
+          linkedFrontId: "ordinary-front-a",
+          usesDefaultCardback: true,
+        },
+        {
+          uuid: "ordinary-front-b",
+          projectId: "project-a",
+          name: "Ordinary B",
+          order: 2,
+          imageId: "front-b",
+          isUserUpload: false,
+          linkedBackId: "ordinary-back-b",
+          type_line: "Sorcery",
+        },
+        {
+          uuid: "ordinary-back-b",
+          projectId: "project-a",
+          name: "Rose",
+          order: 2,
+          imageId: oldImageId,
+          isUserUpload: false,
+          linkedFrontId: "ordinary-front-b",
+          usesDefaultCardback: true,
+        },
+        {
+          uuid: "dfc-front",
+          projectId: "project-a",
+          name: "Malakir Rebirth",
+          order: 3,
+          imageId: "dfc-front-image",
+          isUserUpload: false,
+          linkedBackId: "dfc-back",
+          type_line: "Instant // Land",
+        },
+        {
+          uuid: "dfc-back",
+          projectId: "project-a",
+          name: "Rose",
+          order: 3,
+          imageId: oldImageId,
+          isUserUpload: false,
+          linkedFrontId: "dfc-front",
+          usesDefaultCardback: false,
+        },
+        {
+          uuid: "same-name-front",
+          projectId: "project-a",
+          name: "Rose",
+          order: 4,
+          imageId: oldImageId,
+          isUserUpload: false,
+        },
+        {
+          uuid: "other-project-front",
+          projectId: "project-b",
+          name: "Other Project",
+          order: 1,
+          imageId: "other-front-image",
+          isUserUpload: false,
+          linkedBackId: "other-project-back",
+        },
+        {
+          uuid: "other-project-back",
+          projectId: "project-b",
+          name: "Rose",
+          order: 1,
+          imageId: oldImageId,
+          isUserUpload: false,
+          linkedFrontId: "other-project-front",
+          usesDefaultCardback: true,
+        },
+      ]);
+      await db.images.update(oldImageId, { refCount: 5 });
+
+      const selectedBack = await db.cards.get("ordinary-back-a");
+      if (!selectedBack) throw new Error("Selected Rose back missing");
+      await changeCardArtwork(oldImageId, newImageId, selectedBack, true);
+
+      await expect(db.cards.get("ordinary-back-a")).resolves.toMatchObject({
+        imageId: newImageId,
+      });
+      await expect(db.cards.get("ordinary-back-b")).resolves.toMatchObject({
+        imageId: newImageId,
+      });
+      await expect(db.cards.get("dfc-back")).resolves.toMatchObject({
+        imageId: oldImageId,
+      });
+      await expect(db.cards.get("same-name-front")).resolves.toMatchObject({
+        imageId: oldImageId,
+      });
+      await expect(db.cards.get("other-project-back")).resolves.toMatchObject({
+        imageId: oldImageId,
+      });
+      await expect(db.images.get(oldImageId)).resolves.toMatchObject({
+        refCount: 3,
+      });
+      await expect(db.images.get(newImageId)).resolves.toMatchObject({
+        refCount: 3,
+      });
     });
   });
 
