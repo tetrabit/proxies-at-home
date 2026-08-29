@@ -20,13 +20,33 @@ Coverage configuration may exclude only files that are not executable first-part
 - Generated declaration/source-map artifacts: `*.d.ts`, `*.d.ts.map`, `*.js.map`, and generated compiled JavaScript emitted beside TypeScript sources.
 - Type-only modules where runtime coverage is not meaningful, such as shared declaration/type surfaces.
 
-Do not exclude first-party source because it is hard to test. Workers, entrypoints, Electron preload/main code, rendering helpers, and service code must either be covered directly or refactored to expose deterministic test seams.
+Do not exclude first-party source because it is hard to test. Workers, entrypoints, Electron preload/main code, rendering helpers, and service code must either be covered directly or have the alternate verification named below.
+
+### Configuration exclusion registry
+
+| Scope | Literal exclusion | Reason and alternate verification |
+| --- | --- | --- |
+| Client | `**/*.test.{ts,tsx}` | Test code is the coverage driver, not product source. |
+| Client | `**/vitest.setup.ts` | Harness initialization is exercised by every client Vitest command. |
+| Client | `**/vite-env.d.ts` | Generated/type-only Vite declarations have no runtime statements. |
+| Client | `**/main.tsx` | Browser bootstrap is verified by `App.test.tsx`, `App.lifecycle.test.tsx`, and `npm --prefix client run build`. |
+| Client | `**/*.worker.ts` | The three worker entrypoints—`bleed.webgl.worker.ts`, `effect.worker.ts`, and `pdf.worker.ts`—are browser message-loop shells. Their deterministic logic is verified by image/WebGL/PDF helper tests, and their bundling is verified by `npm --prefix client run build`. |
+| Server | `**/*.test.ts` | Test code is the coverage driver, not product source. |
+| Electron | `electron/*.test.ts` | Test code is the coverage driver, not product source. |
+| Shared | `**/*.test.ts` | Test code is the coverage driver, not product source. |
+| Shared | `**/*.d.ts` and `**/schema.d.ts` | Generated/type-only declarations have no executable runtime statements. |
+| Shared | `**/types.ts` | Shared type-only surfaces have no executable runtime statements. |
+
+### Source-level V8 directives
+
+A `v8 ignore file` directive is a coverage exclusion and is never implicit. It is allowed only when the same line contains both an inline `--` rationale naming the alternate behavioral/runtime seam and `@preserve`, so the transpiler retains the declaration. `npm run coverage:policy` scans all first-party TypeScript and fails if a file-level directive lacks either marker. New directives must identify the concrete deterministic tests or runtime/build contract that replaces direct instrumentation; “hard to test” is not an acceptable rationale. Temporary directives remain coverage debt and must be removed when deterministic seams become available.
 
 ## Baseline commands
 
-Baseline commands collect coverage without enforcing the final 100% threshold. They exist so reviewers can inspect progress while stabilization tasks are still landing:
+Baseline commands collect coverage without enforcing the final 100% threshold. They exist so reviewers can inspect progress while stabilization tasks are still landing. Run the policy check first so a green report cannot hide a configuration or source-level exclusion:
 
 ```bash
+npm run coverage:policy
 npm run coverage:client:baseline
 npm run coverage:server:baseline
 npm run coverage:electron:baseline
