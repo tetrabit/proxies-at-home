@@ -7,6 +7,7 @@
     "test": "vitest run --silent",
     "test:db-cache": "vitest run --silent=true src/db/nativeCompatibility.test.ts src/db/db.test.ts src/db/mpcSearchCache.test.ts --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",
     "test:coverage-internals": "vitest run --silent=true src/db src/services src/utils src/index.test.ts --coverage.enabled=true --coverage.include='src/db/**/*.ts' --coverage.include='src/services/**/*.ts' --coverage.include='src/utils/**/*.ts' --coverage.include='src/index.ts' --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --retry=0",
+    "test:coverage-routes": "vitest run --silent=true src/routes --coverage.enabled=true --coverage.include='src/routes/**/*.ts' --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --retry=0",
     "test:ui": "vitest --ui --coverage.enabled=true",
     "dev": "NODE_ENV=development nodemon --exec tsx src/index.ts",
     "build": "rm -rf dist .tsbuildinfo && node -e \"require('fs').mkdirSync('.tsbuildinfo',{recursive:true})\" && mkdir -p cardbacks && tsc -p tsconfig.build.json && cp -r cardbacks dist/server/",
