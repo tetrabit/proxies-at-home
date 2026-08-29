@@ -123,7 +123,42 @@ vi.mock("./cardbackLibrary", () => ({
 
 describe("undoableActions", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+
+    // Reset one-shot implementations as well as call history so a test that
+    // intentionally leaves a queued value cannot affect the next test.
+    vi.mocked(db.cards.get).mockReset();
+    vi.mocked(db.cards.bulkGet).mockReset();
+    vi.mocked(db.cards.orderBy).mockReset().mockImplementation(
+      () => ({ toArray: vi.fn().mockResolvedValue([]) }) as never
+    );
+    vi.mocked(db.cards.where).mockReset().mockImplementation(
+      () => ({
+        equals: vi.fn(() => ({
+          first: vi.fn(),
+          toArray: vi.fn().mockResolvedValue([]),
+        })),
+        anyOf: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([]) })),
+      }) as never
+    );
+    vi.mocked(db.cards.filter).mockReset().mockImplementation(
+      () => ({ toArray: vi.fn().mockResolvedValue([]) }) as never
+    );
+    vi.mocked(db.images.get).mockReset();
+    vi.mocked(db.images.bulkGet).mockReset().mockResolvedValue([]);
+
+    vi.mocked(addCards).mockReset().mockResolvedValue([]);
+    vi.mocked(addRemoteImage).mockReset();
+    vi.mocked(changeCardArtwork).mockReset();
+    vi.mocked(createLinkedBackCard).mockReset().mockResolvedValue("back-uuid");
+    vi.mocked(createLinkedBackCardsBulk).mockReset().mockResolvedValue(["back-uuid"]);
+    vi.mocked(deleteCard).mockReset();
+    vi.mocked(duplicateCard).mockReset();
+    vi.mocked(rebalanceCardOrders).mockReset();
+    vi.mocked(useSettingsStore.getState).mockReset().mockReturnValue({
+      defaultCardbackId: "__builtin_mtg__",
+    } as never);
   });
 
   describe("undoableReorderCards", () => {
@@ -233,6 +268,9 @@ describe("undoableActions", () => {
 
     it("undoes and redoes multiple-card reorders", async () => {
       const adjustments = [{ uuid: "card-1", oldOrder: 0, newOrder: 2 }];
+      vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
+        { uuid: "card-1", order: 0 } as CardOption,
+      ]);
 
       await undoableReorderMultipleCards(adjustments);
 
@@ -831,6 +869,7 @@ describe("undoableActions", () => {
         "new-front-missing-back",
       ]);
       const pushedAction = mockPushAction.mock.calls[0][0];
+      vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([]);
       await pushedAction.undo();
 
       expect(db.images.bulkGet).not.toHaveBeenCalled();
