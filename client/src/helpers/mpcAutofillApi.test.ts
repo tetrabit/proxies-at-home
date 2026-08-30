@@ -238,6 +238,52 @@ describe("mpcAutofillApi", () => {
             expect(fetch).not.toHaveBeenCalled();
         });
 
+        it("should isolate all-language calibration searches in the cache and request body", async () => {
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({
+                    cards: [createMpcCard({
+                        identifier: "shipwreck-fr",
+                        name: "Shipwreck Marsh (Min Steven Belledin)",
+                    })],
+                }),
+            } as Response);
+
+            const searchWithOptions = searchMpcAutofill as unknown as (
+                query: string,
+                cardType: "CARD" | "CARDBACK" | "TOKEN",
+                fuzzySearch: boolean,
+                options: { includeAllLanguages: boolean }
+            ) => Promise<MpcAutofillCard[]>;
+            await searchWithOptions("Shipwreck Marsh", "CARD", false, {
+                includeAllLanguages: true,
+            });
+
+            expect(mockGetCachedMpcSearch).toHaveBeenCalledWith(
+                "shipwreck marsh:exact:all-languages",
+                "CARD"
+            );
+            expect(fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/mpcfill/search"),
+                expect.objectContaining({
+                    body: JSON.stringify({
+                        query: "Shipwreck Marsh",
+                        cardType: "CARD",
+                        fuzzySearch: false,
+                        includeAllLanguages: true,
+                    }),
+                })
+            );
+            expect(mockCacheMpcSearch).toHaveBeenCalledWith(
+                "shipwreck marsh:exact:all-languages",
+                "CARD",
+                expect.arrayContaining([
+                    expect.objectContaining({ identifier: "shipwreck-fr" }),
+                ])
+            );
+        });
+
         it("should return an empty array and skip caching when search responds with no cards", async () => {
             mockGetCachedMpcSearch.mockResolvedValue(null);
             vi.mocked(fetch).mockResolvedValue({

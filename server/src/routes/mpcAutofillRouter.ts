@@ -4,32 +4,123 @@ import { getCachedMpcSearch, cacheMpcSearch, type MpcCard } from "../db/mpcSearc
 import { debugLog } from "../utils/debug.js";
 
 const MPC_AUTOFILL_BASE = "https://mpcfill.com";
+const MPC_CATALOG_TTL_MS = 60 * 60 * 1000;
+const FALLBACK_SOURCE_IDS = Array.from({ length: 512 }, (_, index) => index + 1);
+const FALLBACK_LANGUAGE_CODES = [
+    "AR",
+    "ZH",
+    "EN",
+    "FR",
+    "DE",
+    "IT",
+    "JA",
+    "PT",
+    "RU",
+    "SA",
+    "ES",
+];
 
 const mpcAutofillRouter = express.Router();
-// Search settings - API requires sourceSettings
-// Base settings without fuzzySearch (will be set per-request)
-const getSearchSettings = (fuzzySearch: boolean = true) => ({
-    searchTypeSettings: {
-        filterCardbacks: false,
-        fuzzySearch,
-    },
-    sourceSettings: {
-        sources: Array.from({ length: 264 }, (_, i) => [i + 1, true] as [number, boolean]),
-    },
-    filterSettings: {
-        excludesTags: ["NSFW"],
-        includesTags: [],
-        languages: ["EN"],
-        maximumDPI: 1500,
-        maximumSize: 30,
-        minimumDPI: 0,
-    },
-});
+
+interface MpcCatalog {
+    sourceIds: number[];
+    languageCodes: string[];
+    fetchedAt: number;
+}
+
+interface MpcSourcesResponse {
+    results?: Record<string, unknown>;
+}
+
+interface MpcLanguagesResponse {
+    languages?: Array<{ code?: string }>;
+}
+
+let mpcCatalogCache: MpcCatalog | null = null;
+
+export function resetMpcCatalogCacheForTests(): void {
+    mpcCatalogCache = null;
+}
+
+async function getMpcCatalog(): Promise<MpcCatalog> {
+    if (
+        mpcCatalogCache &&
+        Date.now() - mpcCatalogCache.fetchedAt < MPC_CATALOG_TTL_MS
+    ) {
+        return mpcCatalogCache;
+    }
+
+    try {
+        const [sourcesResponse, languagesResponse] = await Promise.all([
+            axios.get<MpcSourcesResponse>(`${MPC_AUTOFILL_BASE}/2/sources/`, {
+                timeout: 10000,
+            }),
+            axios.get<MpcLanguagesResponse>(`${MPC_AUTOFILL_BASE}/2/languages/`, {
+                timeout: 10000,
+            }),
+        ]);
+        const sourceIds = Object.keys(sourcesResponse.data.results || {})
+            .map(Number)
+            .filter((sourceId) => Number.isInteger(sourceId) && sourceId > 0)
+            .sort((left, right) => left - right);
+        const languageCodes = (languagesResponse.data.languages || [])
+            .map((language) => language.code?.trim().toUpperCase())
+            .filter((code): code is string => Boolean(code));
+
+        mpcCatalogCache = {
+            sourceIds: sourceIds.length > 0 ? sourceIds : FALLBACK_SOURCE_IDS,
+            languageCodes:
+                languageCodes.length > 0
+                    ? languageCodes
+                    : FALLBACK_LANGUAGE_CODES,
+            fetchedAt: Date.now(),
+        };
+        return mpcCatalogCache;
+    } catch (error) {
+        console.warn(
+            "[MPC Autofill] Failed to refresh source/language catalog; using fallback settings:",
+            error instanceof Error ? error.message : String(error)
+        );
+        return {
+            sourceIds: FALLBACK_SOURCE_IDS,
+            languageCodes: FALLBACK_LANGUAGE_CODES,
+            fetchedAt: Date.now(),
+        };
+    }
+}
+
+// The upstream API requires an explicit source/language selection.
+async function getSearchSettings(
+    fuzzySearch: boolean = true,
+    includeAllLanguages: boolean = false
+) {
+    const catalog = await getMpcCatalog();
+    return {
+        searchTypeSettings: {
+            filterCardbacks: false,
+            fuzzySearch,
+        },
+        sourceSettings: {
+            sources: catalog.sourceIds.map(
+                (sourceId) => [sourceId, true] as [number, boolean]
+            ),
+        },
+        filterSettings: {
+            excludesTags: ["NSFW"],
+            includesTags: [],
+            languages: includeAllLanguages ? catalog.languageCodes : ["EN"],
+            maximumDPI: 1500,
+            maximumSize: 30,
+            minimumDPI: 0,
+        },
+    };
+}
 
 interface MpcSearchRequest {
     query: string;
     cardType?: "CARD" | "CARDBACK" | "TOKEN";
     fuzzySearch?: boolean;
+    includeAllLanguages?: boolean;
 }
 
 interface MpcBatchSearchRequest {
@@ -121,7 +212,12 @@ async function fetchCardsData(identifiers: string[]): Promise<Record<string, Mpc
  * 3. Returns combined results
  */
 mpcAutofillRouter.post("/search", async (req: Request<unknown, unknown, MpcSearchRequest>, res: Response) => {
-    const { query, cardType = "CARD", fuzzySearch = true } = req.body;
+    const {
+        query,
+        cardType = "CARD",
+        fuzzySearch = true,
+        includeAllLanguages = false,
+    } = req.body;
 
     if (!query || typeof query !== "string") {
         return res.status(400).json({ error: "Missing or invalid query" });
@@ -130,7 +226,9 @@ mpcAutofillRouter.post("/search", async (req: Request<unknown, unknown, MpcSearc
     try {
         const normalizedQuery = query.toLowerCase().trim();
         // Include fuzzy setting in cache key
-        const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}`;
+        const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}${
+            includeAllLanguages ? ':all-languages' : ''
+        }`;
 
         // Check server cache first
         const cached = getCachedMpcSearch(cacheKey, cardType);
@@ -146,7 +244,10 @@ mpcAutofillRouter.post("/search", async (req: Request<unknown, unknown, MpcSearc
             `${MPC_AUTOFILL_BASE}/2/editorSearch/`,
             {
                 queries: [{ query: query.toLowerCase(), cardType }],
-                searchSettings: getSearchSettings(fuzzySearch),
+                searchSettings: await getSearchSettings(
+                    fuzzySearch,
+                    includeAllLanguages
+                ),
             },
             {
                 headers: { "Content-Type": "application/json" },
@@ -284,7 +385,7 @@ mpcAutofillRouter.post("/batch-search", async (req: Request<unknown, unknown, Mp
             `${MPC_AUTOFILL_BASE}/2/editorSearch/`,
             {
                 queries: uncachedQueries.map(q => ({ query: q.toLowerCase(), cardType })),
-                searchSettings: getSearchSettings(true), // Always fuzzy for batch imports
+                searchSettings: await getSearchSettings(true), // Always fuzzy for batch imports
             },
             {
                 headers: { "Content-Type": "application/json" },

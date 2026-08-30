@@ -223,6 +223,19 @@ describe("CalibrationModal", () => {
     ]);
   });
 
+  it("requests the complete all-language MPC candidate pool", async () => {
+    render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockSearchMpcAutofill).toHaveBeenCalledWith(
+        "Sol Ring",
+        "CARD",
+        false,
+        { includeAllLanguages: true }
+      );
+    });
+  });
+
   it("captures the selected expected candidate into the dataset", async () => {
     mockCaptureCase.mockResolvedValue({
       caseRecord: {

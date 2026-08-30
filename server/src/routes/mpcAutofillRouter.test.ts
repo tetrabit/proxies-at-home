@@ -3,6 +3,7 @@ import express from 'express';
 import request from 'supertest';
 
 const mocks = vi.hoisted(() => ({
+  axiosGet: vi.fn(),
   axiosPost: vi.fn(),
   isAxiosError: vi.fn(),
   getCachedMpcSearch: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('axios', () => ({
   default: {
+    get: mocks.axiosGet,
     post: mocks.axiosPost,
     isAxiosError: mocks.isAxiosError,
   },
@@ -24,7 +26,11 @@ vi.mock('../db/mpcSearchCache.js', () => ({
 
 vi.mock('../utils/debug.js', () => ({ debugLog: mocks.debugLog }));
 
-const { mpcAutofillRouter } = await import('./mpcAutofillRouter.js');
+const routerModule = await import('./mpcAutofillRouter.js');
+const { mpcAutofillRouter } = routerModule;
+const resetMpcCatalogCacheForTests =
+  (routerModule as { resetMpcCatalogCacheForTests?: () => void })
+    .resetMpcCatalogCacheForTests ?? (() => undefined);
 
 const app = express();
 app.use(express.json());
@@ -51,6 +57,20 @@ describe('mpcAutofillRouter', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     mocks.getCachedMpcSearch.mockReturnValue(null);
     mocks.isAxiosError.mockReturnValue(false);
+    resetMpcCatalogCacheForTests();
+    mocks.axiosGet.mockImplementation((url: string) => {
+      if (url.endsWith('/sources/')) {
+        return Promise.resolve({
+          data: { results: { '1': { name: 'MrTeferi' }, '273': { name: 'Spizzo' } } },
+        });
+      }
+      if (url.endsWith('/languages/')) {
+        return Promise.resolve({
+          data: { languages: [{ code: 'EN' }, { code: 'FR' }] },
+        });
+      }
+      return Promise.reject(new Error(`Unexpected GET ${url}`));
+    });
   });
 
   it('rejects invalid single search queries', async () => {
@@ -83,6 +103,70 @@ describe('mpcAutofillRouter', () => {
       queries: [{ query: 'sol ring', cardType: 'CARD' }],
     }), expect.objectContaining({ timeout: 15000 }));
     expect(mocks.cacheMpcSearch).toHaveBeenCalledWith('sol ring:fuzzy', 'CARD', [cardPayload('id1', 'Sol Ring')]);
+  });
+
+  it('includes every current source and language for calibration searches', async () => {
+    mocks.axiosPost
+      .mockResolvedValueOnce({
+        data: {
+          results: {
+            'shipwreck marsh': {
+              CARD: ['shipwreck-en', 'shipwreck-fr', 'shipwreck-source-273'],
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          results: {
+            'shipwreck-en': cardPayload('shipwreck-en', 'Shipwreck Marsh'),
+            'shipwreck-fr': cardPayload('shipwreck-fr', 'Shipwreck Marsh'),
+            'shipwreck-source-273': cardPayload(
+              'shipwreck-source-273',
+              'Shipwreck Marsh (Min Steven Belledin)'
+            ),
+          },
+        },
+      });
+
+    const response = await request(app).post('/api/mpc/search').send({
+      query: 'Shipwreck Marsh',
+      fuzzySearch: false,
+      includeAllLanguages: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.cards).toHaveLength(3);
+    expect(mocks.getCachedMpcSearch).toHaveBeenCalledWith(
+      'shipwreck marsh:exact:all-languages',
+      'CARD'
+    );
+    expect(mocks.axiosPost).toHaveBeenNthCalledWith(
+      1,
+      'https://mpcfill.com/2/editorSearch/',
+      expect.objectContaining({
+        searchSettings: expect.objectContaining({
+          sourceSettings: {
+            sources: expect.arrayContaining([
+              [1, true],
+              [273, true],
+            ]),
+          },
+          filterSettings: expect.objectContaining({
+            languages: ['EN', 'FR'],
+          }),
+        }),
+      }),
+      expect.objectContaining({ timeout: 15000 })
+    );
+    expect(mocks.cacheMpcSearch).toHaveBeenCalledWith(
+      'shipwreck marsh:exact:all-languages',
+      'CARD',
+      expect.arrayContaining([
+        expect.objectContaining({ identifier: 'shipwreck-fr' }),
+        expect.objectContaining({ identifier: 'shipwreck-source-273' }),
+      ])
+    );
   });
 
   it('defaults missing MPC card tag arrays during single search transforms', async () => {

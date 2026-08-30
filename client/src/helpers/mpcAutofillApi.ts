@@ -30,6 +30,11 @@ interface MpcBatchSearchResponse {
     error?: string;
 }
 
+export interface MpcSearchOptions {
+    /** Include every MPCFill language and current source in the result pool. */
+    includeAllLanguages?: boolean;
+}
+
 /**
  * Search MPC Autofill for custom card art
  * @param query Card name to search for
@@ -40,7 +45,8 @@ interface MpcBatchSearchResponse {
 export async function searchMpcAutofill(
     query: string,
     cardType: "CARD" | "CARDBACK" | "TOKEN" = "CARD",
-    fuzzySearch: boolean = true
+    fuzzySearch: boolean = true,
+    options: MpcSearchOptions = {}
 ): Promise<MpcAutofillCard[]> {
     if (!query.trim()) {
         return [];
@@ -50,7 +56,9 @@ export async function searchMpcAutofill(
 
     // Check client cache first (cache key includes fuzzy setting)
     const { getCachedMpcSearch, cacheMpcSearch } = await import('./mpcSearchCache');
-    const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}`;
+    const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}${
+        options.includeAllLanguages ? ':all-languages' : ''
+    }`;
     const cached = await getCachedMpcSearch(cacheKey, cardType);
     if (cached) {
         return cached;
@@ -60,7 +68,14 @@ export async function searchMpcAutofill(
         const response = await fetch(`${API_BASE}/api/mpcfill/search`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: query.trim(), cardType, fuzzySearch }),
+            body: JSON.stringify({
+                query: query.trim(),
+                cardType,
+                fuzzySearch,
+                ...(options.includeAllLanguages
+                    ? { includeAllLanguages: true }
+                    : {}),
+            }),
         });
 
         if (!response.ok) {

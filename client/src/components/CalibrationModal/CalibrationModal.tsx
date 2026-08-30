@@ -237,7 +237,9 @@ export function CalibrationModal() {
         if (card?.imageId) {
           const [imageRecord, matches] = await Promise.all([
             db.images.get(card.imageId),
-            searchMpcAutofill(card.name, "CARD", false),
+            searchMpcAutofill(card.name, "CARD", false, {
+              includeAllLanguages: true,
+            }),
           ]);
           if (signal.aborted) return;
 

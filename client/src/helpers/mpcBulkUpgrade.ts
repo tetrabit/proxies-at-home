@@ -1,7 +1,11 @@
 import { db } from "@/db";
 import type { CardOption } from "@/types";
 import { inferImageSource, inferSourceFromUrl } from "./imageSourceUtils";
-import { searchMpcAutofill, getMpcAutofillImageUrl } from "./mpcAutofillApi";
+import {
+  batchSearchMpcAutofill,
+  getMpcAutofillImageUrl,
+  type MpcAutofillCard,
+} from "./mpcAutofillApi";
 import { addRemoteImage } from "./dbUtils";
 import { normalizeDfcName } from "../../../shared/cardNameUtils";
 import {
@@ -20,10 +24,9 @@ import {
   trainMpcPreferenceModel,
   type MpcPreferenceModel,
 } from "./mpcPreferenceModel";
-import { hydrateMpcPreferences } from "./mpcPreferenceBootstrap";
 import {
-  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-  harvestSourcePreferenceCandidates,
+  hydrateMpcPreferences,
+  type MpcHarvestedSourceExample,
 } from "./mpcPreferenceBootstrap";
 import {
   buildMpcSourceVisualProfiles,
@@ -70,6 +73,121 @@ interface PreferenceContext {
   profiles: Record<string, MpcSourceVisualProfile>;
 }
 
+type BulkImageRecord =
+  | { source?: string; sourceUrl?: string; imageUrls?: string[] }
+  | undefined;
+
+type MpcCardType = "CARD" | "TOKEN";
+
+const PREFERENCE_PROFILE_SOURCES = new Set([
+  "Hathwellcrisping",
+  "Chilli_Axe",
+]);
+const MAX_VISUAL_SAMPLES_PER_SOURCE = 8;
+
+function getCardType(card: CardOption): MpcCardType {
+  return card.isToken ||
+    (card.type_line && card.type_line.toLowerCase().includes("token"))
+    ? "TOKEN"
+    : "CARD";
+}
+
+function getImageSource(imageId: string, imageRecord: BulkImageRecord) {
+  return (
+    imageRecord?.source ??
+    inferSourceFromUrl(imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0]) ??
+    inferImageSource(imageId)
+  );
+}
+
+function getSearchKey(cardType: MpcCardType, normalizedName: string) {
+  return `${cardType}:${normalizedName}`;
+}
+
+function buildStoredPreferenceExamples(
+  calibrationCases: MpcCalibrationCaseRecord[]
+): MpcHarvestedSourceExample[] {
+  const sampleCounts = new Map<string, number>();
+  const examples: MpcHarvestedSourceExample[] = [];
+
+  for (const calibrationCase of calibrationCases) {
+    const expected = calibrationCase.expectedIdentifier
+      ? calibrationCase.candidates.find(
+          (candidate) =>
+            candidate.identifier === calibrationCase.expectedIdentifier
+        )
+      : undefined;
+    if (
+      !expected ||
+      !PREFERENCE_PROFILE_SOURCES.has(expected.sourceName) ||
+      !expected.imageUrl
+    ) {
+      continue;
+    }
+
+    const sampleCount = sampleCounts.get(expected.sourceName) ?? 0;
+    if (sampleCount >= MAX_VISUAL_SAMPLES_PER_SOURCE) continue;
+
+    sampleCounts.set(expected.sourceName, sampleCount + 1);
+    examples.push({
+      cardName: calibrationCase.source.name,
+      sourceName: expected.sourceName,
+      candidates: [
+        {
+          identifier: expected.identifier,
+          name: expected.name,
+          rawName: expected.rawName ?? expected.name,
+          dpi: expected.dpi,
+          tags: expected.tags,
+          sourceName: expected.sourceName,
+          imageUrl: expected.imageUrl,
+        },
+      ],
+    });
+  }
+
+  return examples;
+}
+
+async function prefetchMpcCandidates(
+  entries: Array<[string, CardOption[]]>,
+  imageById: Map<string, BulkImageRecord>,
+  signal?: AbortSignal
+): Promise<Map<string, MpcAutofillCard[]>> {
+  const queriesByType: Record<MpcCardType, string[]> = {
+    CARD: [],
+    TOKEN: [],
+  };
+
+  for (const [imageId, group] of entries) {
+    if (signal?.aborted) break;
+    if (getImageSource(imageId, imageById.get(imageId)) !== "scryfall") {
+      continue;
+    }
+
+    const representative = group[0];
+    const cardType = getCardType(representative);
+    const normalizedName = normalizeDfcName(representative.name);
+    if (!queriesByType[cardType].includes(normalizedName)) {
+      queriesByType[cardType].push(normalizedName);
+    }
+  }
+
+  const prefetched = new Map<string, MpcAutofillCard[]>();
+  for (const cardType of ["CARD", "TOKEN"] as const) {
+    if (signal?.aborted) break;
+    const queries = queriesByType[cardType];
+    if (queries.length === 0) continue;
+
+    const results = await batchSearchMpcAutofill(queries, cardType);
+    for (const query of queries) {
+      prefetched.set(getSearchKey(cardType, query), results[query] ?? []);
+    }
+  }
+
+  return prefetched;
+}
+
 /**
  * Prepares the preference context (trained model and visual profiles)
  * used to score candidates when no explicit user replay exists.
@@ -86,11 +204,7 @@ async function preparePreferenceContext(): Promise<PreferenceContext> {
     return { calibrationCases, model: null, profiles: {} };
   }
 
-  const harvested = await harvestSourcePreferenceCandidates(
-    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-    async (name) => searchMpcAutofill(name, "CARD", true),
-    ["Hathwellcrisping", "Chilli_Axe"]
-  );
+  const harvested = buildStoredPreferenceExamples(calibrationCases);
 
   const profiles = await buildMpcSourceVisualProfiles(harvested);
 
@@ -106,10 +220,8 @@ async function preparePreferenceContext(): Promise<PreferenceContext> {
 async function processImageGroup(
   imageId: string,
   group: CardOption[],
-  imageById: Map<
-    string,
-    { source?: string; sourceUrl?: string; imageUrls?: string[] } | undefined
-  >,
+  imageById: Map<string, BulkImageRecord>,
+  prefetchedCandidates: Map<string, MpcAutofillCard[]>,
   ssimCompare: ReturnType<typeof createSsimCompare>,
   prefContext: PreferenceContext,
   signal?: AbortSignal
@@ -117,10 +229,7 @@ async function processImageGroup(
   const result = { upgraded: 0, skipped: 0, errors: 0 };
 
   const imageRecord = imageById.get(imageId);
-  const source =
-    imageRecord?.source ??
-    inferSourceFromUrl(imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0]) ??
-    inferImageSource(imageId);
+  const source = getImageSource(imageId, imageRecord);
 
   if (source !== "scryfall") {
     result.skipped = group.length;
@@ -129,13 +238,9 @@ async function processImageGroup(
 
   const representative = group[0];
   const normalizedName = normalizeDfcName(representative.name);
-  const cardType =
-    representative.isToken ||
-    (representative.type_line &&
-      representative.type_line.toLowerCase().includes("token"))
-      ? "TOKEN"
-      : "CARD";
-  const results = await searchMpcAutofill(normalizedName, cardType, true);
+  const cardType = getCardType(representative);
+  const results =
+    prefetchedCandidates.get(getSearchKey(cardType, normalizedName)) ?? [];
   const exactMatches = results
     ? filterByExactName(results, normalizedName)
     : [];
@@ -253,9 +358,6 @@ export async function bulkUpgradeToMpcAutofill(
 ): Promise<BulkMpcUpgradeSummary> {
   const { projectId, onProgress, signal } = options;
 
-  // Prepare preference context once before starting the loop
-  const prefContext = await preparePreferenceContext();
-
   const cards = projectId
     ? await db.cards.where("projectId").equals(projectId).toArray()
     : await db.cards.toArray();
@@ -298,6 +400,17 @@ export async function bulkUpgradeToMpcAutofill(
 
   const allEntries = Array.from(cardsByImageId.entries());
   const totalImages = allEntries.length;
+  const prefetchedCandidates = await prefetchMpcCandidates(
+    allEntries,
+    imageById,
+    signal
+  );
+  if (signal?.aborted) {
+    return summary;
+  }
+
+  // Prepare preference context once, without issuing unrelated live searches.
+  const prefContext = await preparePreferenceContext();
   const ssimCompare = createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE);
 
   for (let i = 0; i < totalImages; i++) {
@@ -322,6 +435,7 @@ export async function bulkUpgradeToMpcAutofill(
       imageId,
       group,
       imageById,
+      prefetchedCandidates,
       ssimCompare,
       prefContext,
       signal

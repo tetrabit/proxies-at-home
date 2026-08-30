@@ -26,6 +26,7 @@ const mockDb = vi.hoisted(() => ({
 }));
 
 const mockSearchMpcAutofill = vi.hoisted(() => vi.fn());
+const mockBatchSearchMpcAutofill = vi.hoisted(() => vi.fn());
 const mockGetMpcAutofillImageUrl = vi.hoisted(() => vi.fn());
 const mockAddRemoteImage = vi.hoisted(() => vi.fn());
 const mockInferImageSource = vi.hoisted(() => vi.fn());
@@ -41,6 +42,7 @@ vi.mock("@/db", () => ({ db: mockDb }));
 
 vi.mock("./mpcAutofillApi", () => ({
   searchMpcAutofill: mockSearchMpcAutofill,
+  batchSearchMpcAutofill: mockBatchSearchMpcAutofill,
   getMpcAutofillImageUrl: mockGetMpcAutofillImageUrl,
 }));
 
@@ -214,6 +216,17 @@ describe("bulkUpgradeToMpcAutofill", () => {
     mockHarvestCandidates.mockResolvedValue([]);
     mockBuildVisualProfiles.mockResolvedValue({});
     mockBuildVisualScoreMap.mockResolvedValue({});
+    mockBatchSearchMpcAutofill.mockImplementation(
+      async (queries: string[], cardType: "CARD" | "TOKEN") =>
+        Object.fromEntries(
+          await Promise.all(
+            queries.map(async (query) => [
+              query,
+              (await mockSearchMpcAutofill(query, cardType, true)) ?? [],
+            ])
+          )
+        )
+    );
     mockDb.transaction.mockImplementation(
       async (
         _mode: string,
@@ -229,6 +242,81 @@ describe("bulkUpgradeToMpcAutofill", () => {
         return callback();
       }
     );
+  });
+
+  it("batches Lich Lord Scryfall fronts without live bootstrap searches", async () => {
+    const cards = [
+      makeCardOption({
+        uuid: "varina",
+        name: "Varina, Lich Queen",
+        imageId: "scryfall-varina",
+        order: 0,
+      }),
+      makeCardOption({
+        uuid: "dreadhorde-invasion",
+        name: "Dreadhorde Invasion",
+        imageId: "mpc-existing",
+        hasBuiltInBleed: true,
+        order: 1,
+      }),
+      makeCardOption({
+        uuid: "murderous-rider",
+        name: "Murderous Rider",
+        imageId: "scryfall-murderous-rider",
+        order: 2,
+      }),
+    ];
+    mockDbCards.toArray.mockResolvedValue(cards);
+    mockDbImages.bulkGet.mockResolvedValue([
+      { source: "scryfall" },
+      { source: "mpc" },
+      { source: "scryfall" },
+    ]);
+    mockListDefaultCalibrationCases.mockResolvedValue([
+      makeCalibrationCase("Windborn Muse", "seed-1", "Hathwellcrisping"),
+      makeCalibrationCase("Talrand, Sky Summoner", "seed-2", "Hathwellcrisping"),
+      makeCalibrationCase("Thassa, Deep-Dwelling", "seed-3", "Chilli_Axe"),
+    ]);
+    mockSearchMpcAutofill.mockResolvedValue([]);
+    mockBatchSearchMpcAutofill.mockResolvedValue({
+      "Varina, Lich Queen": [
+        makeMpcCard({
+          identifier: "varina-match",
+          name: "Varina, Lich Queen",
+          rawName: "Varina, Lich Queen [C18] {48}",
+        }),
+      ],
+      "Murderous Rider": [
+        makeMpcCard({
+          identifier: "murderous-rider-match",
+          name: "Murderous Rider",
+          rawName: "Murderous Rider [ELD] {97}",
+        }),
+      ],
+    });
+    mockGetMpcAutofillImageUrl.mockImplementation(
+      (identifier: string) => `https://mpc.test/${identifier}`
+    );
+    mockAddRemoteImage.mockImplementation(
+      async ([url]: string[]) => `stored:${url}`
+    );
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
+    const result = await bulkUpgradeToMpcAutofill({ projectId: "proj-1" });
+
+    expect(mockBatchSearchMpcAutofill).toHaveBeenCalledTimes(1);
+    expect(mockBatchSearchMpcAutofill).toHaveBeenCalledWith(
+      ["Varina, Lich Queen", "Murderous Rider"],
+      "CARD"
+    );
+    expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
+    expect(mockHarvestCandidates).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      totalCards: 3,
+      upgraded: 2,
+      skipped: 1,
+      errors: 0,
+    });
   });
 
   it("uses deterministic fallback selection when multiple exact-name matches remain", async () => {
@@ -456,10 +544,6 @@ describe("bulkUpgradeToMpcAutofill", () => {
         sampleCount: 1,
       },
     });
-    mockHarvestCandidates.mockImplementation(async (names, search) => {
-      await search(names[0]);
-      return [];
-    });
     mockBuildVisualScoreMap.mockResolvedValue({
       "visual-pick": 8,
     });
@@ -469,7 +553,7 @@ describe("bulkUpgradeToMpcAutofill", () => {
     const result = await bulkUpgradeToMpcAutofill();
 
     expect(result.upgraded).toBe(1);
-    expect(mockHarvestCandidates).toHaveBeenCalled();
+    expect(mockHarvestCandidates).not.toHaveBeenCalled();
     expect(mockBuildVisualProfiles).toHaveBeenCalled();
     expect(mockBuildVisualScoreMap).toHaveBeenCalled();
     expect(mockAddRemoteImage).toHaveBeenCalledWith(

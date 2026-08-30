@@ -17,6 +17,18 @@ const mockLoadImage = vi.hoisted(() => vi.fn());
 
 vi.mock("./mpcAutofillApi", () => ({
   searchMpcAutofill: mockSearchMpcAutofill,
+  batchSearchMpcAutofill: async (
+    queries: string[],
+    cardType: "CARD" | "TOKEN"
+  ) =>
+    Object.fromEntries(
+      await Promise.all(
+        queries.map(async (query) => [
+          query,
+          (await mockSearchMpcAutofill(query, cardType, true)) ?? [],
+        ])
+      )
+    ),
   getMpcAutofillImageUrl: mockGetMpcAutofillImageUrl,
 }));
 
@@ -245,10 +257,22 @@ describe("bulkUpgradeToMpcAutofill calibration integration", () => {
   it("does not naturally resolve all cards to the expected identifier without stored preferences", async () => {
     const fullFixture = loadFixture();
     const fixture = pickRepresentativeCases(fullFixture);
+    const replayFixture: Fixture = {
+      cases: fixture.cases.map((calibrationCase) => ({
+        ...calibrationCase,
+        candidates: calibrationCase.candidates.filter((candidate) => {
+          const typed = candidate as { identifier?: string };
+          return (
+            typed.identifier === calibrationCase.expectedIdentifier ||
+            typed.identifier === calibrationCase.predictedIdentifier
+          );
+        }),
+      })),
+    };
 
-    await seedCards(fixture);
+    await seedCards(replayFixture);
 
-    const totalCases = fixture.cases.length;
+    const totalCases = replayFixture.cases.length;
     const result = await bulkUpgradeToMpcAutofill();
 
     expect(result).toEqual({
@@ -259,12 +283,12 @@ describe("bulkUpgradeToMpcAutofill calibration integration", () => {
     });
 
     const calledUrls = mockAddRemoteImage.mock.calls.map((call) => call[0][0]);
-    const matchedExpected = fixture.cases.filter((calibrationCase) =>
+    const matchedExpected = replayFixture.cases.filter((calibrationCase) =>
       calledUrls.includes(
         `https://mpc.test/${calibrationCase.expectedIdentifier}`
       )
     ).length;
 
-    expect(matchedExpected).toBeLessThan(fixture.cases.length);
+    expect(matchedExpected).toBeLessThan(replayFixture.cases.length);
   });
 });
