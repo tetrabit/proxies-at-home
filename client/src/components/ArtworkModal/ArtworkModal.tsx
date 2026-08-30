@@ -810,11 +810,9 @@ export function ArtworkModal() {
         card.linkedFrontId ? [card.linkedFrontId] : []
       );
     } else if (applyToAll) {
-      const allFrontCards = await db.cards
-        /* v8 ignore next -- predicate is exercised by Dexie; jsdom mock calls representative records separately. @preserve */
-        .filter((c) => !c.linkedFrontId)
-        .toArray();
-      frontCardUuids = allFrontCards.map((c) => c.uuid);
+      // The linked back may still be loading. Never widen an apply-all request
+      // without the back record needed to resolve same-name/topology scope.
+      frontCardUuids = [modalCard.uuid];
     } else if (isMultiSelect) {
       const selectedUuids = Array.from(selectedCards);
       const cardsToUpdate = await db.cards.bulkGet(selectedUuids);

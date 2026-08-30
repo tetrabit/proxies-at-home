@@ -873,27 +873,15 @@ describe('ArtworkModal', () => {
             });
         });
 
-        it('should apply a cardback to every front when no linked back exists', async () => {
-            mockDbCards.filter.mockImplementationOnce((predicate) => {
-                expect(predicate({ uuid: 'front-1' })).toBe(true);
-                expect(
-                    predicate({ uuid: 'back-1', linkedFrontId: 'front-1' })
-                ).toBe(false);
-                return {
-                    toArray: vi.fn().mockResolvedValue([
-                        { uuid: 'front-1', name: 'Front 1' },
-                        { uuid: 'front-2', name: 'Front 2' },
-                    ]),
-                };
-            });
-
+        it('should fall back to the selected front when apply-all has no linked back record', async () => {
             render(<ArtworkModal />);
             fireEvent.click(screen.getByTestId('toggle-apply-to-all'));
             fireEvent.click(screen.getByTestId('select-cardback'));
 
             await waitFor(() => {
+                expect(mockGetArtworkApplyAllTargets).not.toHaveBeenCalled();
                 expect(mockUndoableChangeCardback).toHaveBeenCalledWith(
-                    ['front-1', 'front-2'],
+                    ['test-uuid'],
                     'cardback-1',
                     'Custom Back',
                     true
