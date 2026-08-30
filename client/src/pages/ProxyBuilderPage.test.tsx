@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IMAGE_PROCESSING } from "../constants/imageProcessing";
 
 const mocks = vi.hoisted(() => {
   const settingsState = {
@@ -619,6 +620,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -658,6 +660,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -691,6 +694,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: undefined,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -725,6 +729,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 1,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -758,6 +763,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -796,6 +802,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
           generatedInsetBorderBleedMm: 4,
         });
       }
@@ -835,6 +842,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
           generatedInsetBorderBleedMm: 2,
         });
       }
@@ -873,6 +881,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -931,6 +940,7 @@ describe("ProxyBuilderPage", () => {
             generatedHasBuiltInBleed: false,
             generatedBleedMode: "add",
             generatedExistingBleedMm: 0,
+            generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
             ...overrides,
           });
         }
@@ -994,6 +1004,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -1034,6 +1045,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 0,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );
@@ -1080,6 +1092,7 @@ describe("ProxyBuilderPage", () => {
           generatedHasBuiltInBleed: false,
           generatedBleedMode: "add",
           generatedExistingBleedMm: 1,
+          generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
         });
       }
     );

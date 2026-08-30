@@ -29,6 +29,7 @@ import {
 import { queueBulkPreRender } from "../helpers/effectCache";
 import { hasActiveAdjustments } from "../helpers/adjustmentUtils";
 import { ensureBuiltinCardbacksInDb } from "../helpers/cardbackLibrary";
+import { IMAGE_PROCESSING } from "../constants/imageProcessing";
 import { initializeFlipState, useSelectionStore } from "../store/selection";
 import { useFilteredAndSortedCards } from "../hooks/useFilteredAndSortedCards";
 
@@ -487,6 +488,8 @@ export default function ProxyBuilderPage() {
           Math.abs(img.generatedInsetBorderBleedMm - insetBorderBleedMm) < 0.001;
 
         const isProcessed =
+          img.generatedRenderVersion ===
+            IMAGE_PROCESSING.RENDER_CACHE_VERSION &&
           isDpiMatch &&
           isBleedMatch &&
           isBuiltInBleedMatch &&
@@ -622,6 +625,13 @@ export default function ProxyBuilderPage() {
         const effectiveExistingBleedMm = getEffectiveExistingBleedMm(card, settings, img);
 
         // Conditions requiring reprocessing:
+        if (
+          img.generatedRenderVersion !==
+          IMAGE_PROCESSING.RENDER_CACHE_VERSION
+        ) {
+          return true;
+        }
+
         // 1. Export DPI mismatch
         if (img.exportDpi !== dpi) return true;
 

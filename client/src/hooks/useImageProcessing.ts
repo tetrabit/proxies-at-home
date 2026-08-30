@@ -20,6 +20,7 @@ import { toProxied } from "../helpers/imageHelper";
 import { darkenModeToInt } from "../components/CardCanvas/types";
 import { emergencyCleanup } from "../helpers/cacheUtils";
 import { debugLog } from "@/helpers/debug";
+import { IMAGE_PROCESSING } from "@/constants/imageProcessing";
 
 const REPROCESS_SUBMISSION_BATCH_SIZE = 24;
 
@@ -289,6 +290,8 @@ export function useImageProcessing({
           : cachedImage?.generatedInsetBorderBleedMm !== undefined &&
           Math.abs(cachedImage.generatedInsetBorderBleedMm - cachedInsetBorderBleedMm) < 0.001;
         const sessionCacheStillValid =
+          cachedImage?.generatedRenderVersion ===
+          IMAGE_PROCESSING.RENDER_CACHE_VERSION &&
           cachedImage?.exportBleedWidth === cachedExpectedBleedWidth &&
           cachedImage?.exportDpi === dpi &&
           cachedImage?.generatedBleedMode === cachedBleedMode &&
@@ -370,6 +373,8 @@ export function useImageProcessing({
           if (
             currentImage?.displayBlob &&
             currentImage?.displayBlobDarkened &&
+            currentImage.generatedRenderVersion ===
+              IMAGE_PROCESSING.RENDER_CACHE_VERSION &&
             currentImage.exportBleedWidth === expectedBleedWidth &&
             currentImage.exportDpi === dpi && // Check if export DPI matches current setting
             generatedHasBuiltInBleedMatches &&
@@ -462,6 +467,7 @@ export function useImageProcessing({
                 generatedBleedMode: effectiveBleedMode,
                 generatedExistingBleedMm: effectiveExistingBleedMm ?? 0,
                 generatedInsetBorderBleedMm: insetBorderBleedMm,
+                generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
               });
 
               await persistDetectedBleed(card, result.detectedHasBuiltInBleed, currentImage);
@@ -513,6 +519,8 @@ export function useImageProcessing({
                       generatedBleedMode: effectiveBleedMode,
                       generatedExistingBleedMm: effectiveExistingBleedMm ?? 0,
                       generatedInsetBorderBleedMm: insetBorderBleedMm,
+                      generatedRenderVersion:
+                        IMAGE_PROCESSING.RENDER_CACHE_VERSION,
                     });
                     await persistDetectedBleed(
                       card,

@@ -4,6 +4,12 @@
  * Centralized constants for image processing, workers, and MPC operations.
  */
 export const IMAGE_PROCESSING = {
+    /**
+     * Version of the processed display/export geometry contract.
+     * Bump whenever rendering changes can make same-sized cached blobs stale.
+     */
+    RENDER_CACHE_VERSION: 1,
+
     /** Base edge zone width in pixels at 300 DPI */
     EDGE_ZONE_BASE_PX: 64,
 

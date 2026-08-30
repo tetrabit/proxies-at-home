@@ -14,6 +14,7 @@ import { generatePerCardGuide, executePathCommands, type GuideStyle } from "./cu
 import { db, type EffectCacheEntry } from "../db";
 import type { CardOption, CardOverrides } from "../../../shared/types";
 import { debugLog } from "./debug";
+import { IMAGE_PROCESSING } from "../constants/imageProcessing";
 
 export { };
 declare const self: DedicatedWorkerGlobalScope;
@@ -736,6 +737,8 @@ self.onmessage = async (event: MessageEvent) => {
             let isCacheValid = !!(
                 !usesInsetBorderBleed &&
                 selectedExportBlob &&
+                imageInfo?.generatedRenderVersion ===
+                    IMAGE_PROCESSING.RENDER_CACHE_VERSION &&
                 imageInfo?.exportDpi === DPI &&
                 hasExpectedCachedBleed &&
                 hasExpectedCachedBleedMode &&
@@ -759,6 +762,7 @@ self.onmessage = async (event: MessageEvent) => {
                     `has=${hasBuiltInBleed === undefined ? 'auto' : String(hasBuiltInBleed)}`,
                     `mode=${effectiveMode}`,
                     `insetBorder=${usesInsetBorderBleed ? 'strict-scale' : '0'}`,
+                    `renderVersion=${IMAGE_PROCESSING.RENDER_CACHE_VERSION}`,
                     `darken=${effectiveDarkenMode}`,
                     `overrides=${advancedOverrideKey}`,
                     `dpi=${DPI}`,
