@@ -269,6 +269,7 @@ export function validateBackup(data: unknown): ProjectBackup {
     throw new Error('Invalid backup: missing cards array');
   }
 
+  const cardsByUuid = new Map<string, Record<string, unknown>>();
   for (const card of obj.cards) {
     if (
       !isRecord(card) ||
@@ -278,6 +279,40 @@ export function validateBackup(data: unknown): ProjectBackup {
       typeof card.isUserUpload !== 'boolean'
     ) {
       throw new Error('Invalid backup: invalid card record');
+    }
+
+    if (cardsByUuid.has(card.uuid)) {
+      throw new Error('Invalid backup: duplicate card UUID');
+    }
+    cardsByUuid.set(card.uuid, card);
+  }
+
+  for (const card of cardsByUuid.values()) {
+    for (const linkId of [card.linkedFrontId, card.linkedBackId]) {
+      if (linkId === card.uuid) {
+        throw new Error('Invalid backup: DFC self-link');
+      }
+      if (
+        linkId !== undefined &&
+        (typeof linkId !== 'string' || !cardsByUuid.has(linkId))
+      ) {
+        throw new Error('Invalid backup: dangling DFC link');
+      }
+    }
+  }
+
+  for (const card of cardsByUuid.values()) {
+    if (typeof card.linkedFrontId === 'string') {
+      const front = cardsByUuid.get(card.linkedFrontId)!;
+      if (front.linkedBackId !== card.uuid) {
+        throw new Error('Invalid backup: non-reciprocal DFC link');
+      }
+    }
+    if (typeof card.linkedBackId === 'string') {
+      const back = cardsByUuid.get(card.linkedBackId)!;
+      if (back.linkedFrontId !== card.uuid) {
+        throw new Error('Invalid backup: non-reciprocal DFC link');
+      }
     }
   }
 

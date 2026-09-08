@@ -19,7 +19,7 @@
  *   - No project is loaded
  *   - Project has 0 cards
  *   - Server is unreachable (fails silently, retries on next change)
- *   - A backup is already in flight
+ *   - A backup is already in flight (the newest revision is queued)
  */
 
 import { useEffect, useRef, useCallback } from 'react';
@@ -145,35 +145,118 @@ export function useAutoBackup(): void {
   }, [currentProjectId]);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trailingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
+  const activeProjectId = useRef<string | null>(null);
+  const lifecycle = useRef(0);
+  const dirtyRevision = useRef<number | null>(null);
+  const lastHandledRevision = useRef<number | null>(null);
+  const trailingRequested = useRef(false);
+  const backupAttempt = useRef<(projectId: string) => void>(() => undefined);
   const consecutiveFailures = useRef(0);
   const lastBackedUpDigest = useRef<string | null>(null);
   const previousProjectId = useRef<string | null>(null);
 
-  const doBackup = useCallback(async () => {
-    if (!currentProjectId) return;
-    if (inFlight.current) return;
+  // The current project owns all scheduled work. A completed export from an
+  // earlier lifecycle must not reset or reschedule work for the project now open.
+  useEffect(() => {
+    activeProjectId.current = currentProjectId;
+    const lifecycleId = lifecycle.current + 1;
+    lifecycle.current = lifecycleId;
+    dirtyRevision.current = null;
+    lastHandledRevision.current = null;
+    trailingRequested.current = false;
+    inFlight.current = false;
+    lastBackedUpDigest.current = null;
+    consecutiveFailures.current = 0;
 
-    // Enforce minimum interval
-    const lastTime = lastBackupTimeByProject.get(currentProjectId) || 0;
+    return () => {
+      if (lifecycle.current === lifecycleId) {
+        lifecycle.current++;
+      }
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+        debounceTimer.current = null;
+      }
+      if (trailingTimer.current) {
+        clearTimeout(trailingTimer.current);
+        trailingTimer.current = null;
+      }
+    };
+  }, [currentProjectId]);
+
+  const scheduleTrailingBackup = useCallback((projectId: string) => {
+    if (
+      activeProjectId.current !== projectId ||
+      trailingTimer.current ||
+      dirtyRevision.current === null ||
+      dirtyRevision.current === lastHandledRevision.current
+    ) {
+      return;
+    }
+
+    const lastTime = lastBackupTimeByProject.get(projectId) || 0;
+    const delay = Math.max(0, MIN_BACKUP_INTERVAL_MS - (Date.now() - lastTime));
+    trailingTimer.current = setTimeout(() => {
+      trailingTimer.current = null;
+      backupAttempt.current(projectId);
+    }, delay);
+  }, []);
+
+  const doBackup = useCallback(async (projectId: string) => {
+    const attemptLifecycle = lifecycle.current;
+    if (!projectId || activeProjectId.current !== projectId) return;
+    if (
+      dirtyRevision.current !== null &&
+      dirtyRevision.current === lastHandledRevision.current
+    ) {
+      return;
+    }
+    if (inFlight.current) {
+      trailingRequested.current = true;
+      return;
+    }
+
+    // Enforce minimum interval. Keep the dirty revision and arrange exactly one
+    // trailing attempt instead of dropping this admitted change.
+    const lastTime = lastBackupTimeByProject.get(projectId) || 0;
     const elapsed = Date.now() - lastTime;
-    if (elapsed < MIN_BACKUP_INTERVAL_MS) return;
+    if (elapsed < MIN_BACKUP_INTERVAL_MS) {
+      trailingRequested.current = true;
+      scheduleTrailingBackup(projectId);
+      return;
+    }
 
+    const revisionAtStart = dirtyRevision.current;
     inFlight.current = true;
+    trailingRequested.current = false;
 
     try {
-      const backup = await exportProject(currentProjectId);
-      const digest = backupContentDigest(backup);
-      if (digest === lastBackedUpDigest.current) {
-        consecutiveFailures.current = 0;
+      const backup = await exportProject(projectId);
+      if (attemptLifecycle !== lifecycle.current || activeProjectId.current !== projectId) {
         return;
       }
 
-      const success = await uploadBackup(currentProjectId, backup);
+      const digest = backupContentDigest(backup);
+      if (digest === lastBackedUpDigest.current) {
+        consecutiveFailures.current = 0;
+        if (revisionAtStart !== null) {
+          lastHandledRevision.current = revisionAtStart;
+        }
+        return;
+      }
+
+      const success = await uploadBackup(projectId, backup);
+      if (attemptLifecycle !== lifecycle.current || activeProjectId.current !== projectId) {
+        return;
+      }
 
       if (success) {
         consecutiveFailures.current = 0;
         lastBackedUpDigest.current = digest;
+        if (revisionAtStart !== null) {
+          lastHandledRevision.current = revisionAtStart;
+        }
       } else {
         consecutiveFailures.current++;
         if (consecutiveFailures.current >= FAILURE_WARN_THRESHOLD) {
@@ -183,35 +266,57 @@ export function useAutoBackup(): void {
         }
       }
     } catch {
-      consecutiveFailures.current++;
-      if (consecutiveFailures.current >= FAILURE_WARN_THRESHOLD) {
-        console.warn('[AutoBackup] Server unreachable after', consecutiveFailures.current, 'attempts');
+      if (attemptLifecycle === lifecycle.current && activeProjectId.current === projectId) {
+        consecutiveFailures.current++;
+        if (consecutiveFailures.current >= FAILURE_WARN_THRESHOLD) {
+          console.warn('[AutoBackup] Server unreachable after', consecutiveFailures.current, 'attempts');
+        }
       }
     } finally {
-      inFlight.current = false;
+      if (attemptLifecycle === lifecycle.current && activeProjectId.current === projectId) {
+        inFlight.current = false;
+        const hasUnprocessedRevision =
+          dirtyRevision.current !== null && dirtyRevision.current !== lastHandledRevision.current;
+        if ((trailingRequested.current || dirtyRevision.current !== revisionAtStart) && hasUnprocessedRevision) {
+          trailingRequested.current = true;
+          scheduleTrailingBackup(projectId);
+        } else {
+          trailingRequested.current = false;
+        }
+      }
     }
-  }, [currentProjectId]);
+  }, [scheduleTrailingBackup]);
+
+  backupAttempt.current = (projectId) => {
+    void doBackup(projectId);
+  };
 
   // Every relevant live-query invalidation debounces an admitted export. The
   // canonical digest after export, not record metadata, suppresses unchanged uploads.
   useEffect(() => {
     if (observedRevision === null || observedRevision === undefined || !currentProjectId) return;
 
-    // Clear existing timer and set a new one
+    dirtyRevision.current = observedRevision;
+    // A minimum-interval timer already owns the next admitted attempt and will
+    // read this newest revision when it fires.
+    if (trailingTimer.current) return;
+
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current);
     }
 
     debounceTimer.current = setTimeout(() => {
-      doBackup();
+      debounceTimer.current = null;
+      backupAttempt.current(currentProjectId);
     }, DEBOUNCE_MS);
 
     return () => {
       if (debounceTimer.current) {
         clearTimeout(debounceTimer.current);
+        debounceTimer.current = null;
       }
     };
-  }, [observedRevision, currentProjectId, doBackup]);
+  }, [observedRevision, currentProjectId]);
 
   // Backup outgoing project on switch, then schedule backup for the new one
   useEffect(() => {
@@ -226,15 +331,11 @@ export function useAutoBackup(): void {
     }
     previousProjectId.current = currentProjectId;
 
-    // Reset state for new project
-    lastBackedUpDigest.current = null;
-    consecutiveFailures.current = 0;
-
     if (!isProjectSwitch) return;
 
     // Schedule a backup shortly after project switch
     const timer = setTimeout(() => {
-      doBackup();
+      backupAttempt.current(currentProjectId);
     }, 5_000); // 5 seconds after project switch
 
     return () => clearTimeout(timer);

@@ -7,10 +7,18 @@ const updaterHandlers = new Map<string, (...args: unknown[]) => void>();
 const appHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const windows: BrowserWindowMock[] = [];
+const processListenerEvents = [
+  "uncaughtException",
+  "unhandledRejection",
+] as const;
+type ProcessListenerEvent = (typeof processListenerEvents)[number];
+const lifecycleFixtureParent = path.resolve(process.cwd(), ".review-artifacts");
+let lifecycleFixtureDirectory = "";
+let processListenerBaseline = new Map<ProcessListenerEvent, Function[]>();
 
 const appMock = {
   getPath: vi.fn((name: string) =>
-    name === "userData" ? "/tmp/proxxied-user-data-lifecycle" : "/tmp"
+    name === "userData" ? lifecycleFixtureDirectory : "/tmp"
   ),
   isPackaged: false,
   whenReady: vi.fn(() => ({
@@ -123,8 +131,34 @@ function response(status: number, body: unknown, statusText = "status text") {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createBeforeQuitEvent() {
+  return { preventDefault: vi.fn() };
+}
+
 describe("electron main lifecycle", () => {
   beforeEach(async () => {
+    await fs.promises.mkdir(lifecycleFixtureParent, { recursive: true });
+    lifecycleFixtureDirectory = await fs.promises.mkdtemp(
+      path.join(lifecycleFixtureParent, "electron-listener-fixture-01-")
+    );
+    processListenerBaseline = new Map(
+      processListenerEvents.map(
+        (event): [ProcessListenerEvent, Function[]] => [
+          event,
+          process.listeners(event),
+        ]
+      )
+    );
     vi.clearAllMocks();
     vi.resetModules();
     readyCallback = undefined;
@@ -134,21 +168,22 @@ describe("electron main lifecycle", () => {
     windows.length = 0;
     appMock.isPackaged = false;
     appMock.getPath.mockImplementation((name: string) =>
-      name === "userData" ? "/tmp/proxxied-user-data-lifecycle" : "/tmp"
+      name === "userData" ? lifecycleFixtureDirectory : "/tmp"
     );
     autoUpdaterMock.channel = undefined;
     microservice.start.mockResolvedValue(8181);
-    await fs.promises.rm("/tmp/proxxied-user-data-lifecycle", {
-      recursive: true,
-      force: true,
-    });
   });
 
-  afterEach(async () => {
-    await fs.promises.rm("/tmp/proxxied-user-data-lifecycle", {
-      recursive: true,
-      force: true,
-    });
+  afterEach(() => {
+    for (const event of processListenerEvents) {
+      const baselineListeners = processListenerBaseline.get(event) ?? [];
+      for (const listener of process.listeners(event)) {
+        if (!baselineListeners.includes(listener)) {
+          process.removeListener(event, listener);
+        }
+      }
+      expect(process.listenerCount(event)).toBe(baselineListeners.length);
+    }
   });
 
   it("boots in development, registers IPC handlers, creates the window, and forwards updater events", async () => {
@@ -247,9 +282,6 @@ describe("electron main lifecycle", () => {
     );
     expect(ipcHandlers.get("get-app-version")?.()).toBe("9.8.7");
     expect(ipcHandlers.get("get-update-channel")?.()).toBe("latest");
-    await fs.promises.mkdir("/tmp/proxxied-user-data-lifecycle", {
-      recursive: true,
-    });
     expect(ipcHandlers.get("set-update-channel")?.({}, "beta")).toBe(false);
     expect(ipcHandlers.get("set-update-channel")?.({}, "stable")).toBe(true);
     expect(autoUpdaterMock.channel).toBe("stable");
@@ -314,10 +346,8 @@ describe("electron main lifecycle", () => {
       configurable: true,
       value: "/opt/proxxied/resources",
     });
-    const userData = "/tmp/proxxied-user-data-lifecycle";
-    await fs.promises.mkdir(userData, { recursive: true });
     await fs.promises.writeFile(
-      path.join(userData, "electron-settings.json"),
+      path.join(lifecycleFixtureDirectory, "electron-settings.json"),
       JSON.stringify({ updateChannel: "stable", autoUpdateEnabled: false }),
       "utf8"
     );
@@ -342,10 +372,8 @@ describe("electron main lifecycle", () => {
       configurable: true,
       value: "/opt/proxxied/resources",
     });
-    const userData = "/tmp/proxxied-user-data-lifecycle";
-    await fs.promises.mkdir(userData, { recursive: true });
     await fs.promises.writeFile(
-      path.join(userData, "electron-settings.json"),
+      path.join(lifecycleFixtureDirectory, "electron-settings.json"),
       "{bad json",
       "utf8"
     );
@@ -401,8 +429,11 @@ describe("electron main lifecycle", () => {
     mainModule.electronMainRuntime.importServerModule = vi.fn(async () => {
       throw "server string failure";
     });
-    await appHandlers.get("before-quit")?.();
+    const beforeStartupQuit = createBeforeQuitEvent();
+    await appHandlers.get("before-quit")?.(beforeStartupQuit);
+    expect(beforeStartupQuit.preventDefault).toHaveBeenCalledOnce();
     expect(microservice.stop).not.toHaveBeenCalled();
+    expect(appMock.quit).toHaveBeenCalledOnce();
 
     await readyCallback?.();
 
@@ -425,6 +456,102 @@ describe("electron main lifecycle", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       "[Electron] startServer function not found in server module"
     );
+    errorSpy.mockRestore();
+  });
+
+  it("prevents repeated quit events until a deferred microservice stop settles, then permits reentry", async () => {
+    const stop = createDeferred<undefined>();
+    microservice.stop.mockImplementationOnce(() => stop.promise);
+    await importAndRunReady();
+
+    const initialQuit = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(initialQuit);
+    expect(initialQuit.preventDefault).toHaveBeenCalledOnce();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+
+    const repeatedQuit = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(repeatedQuit);
+    expect(repeatedQuit.preventDefault).toHaveBeenCalledOnce();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+
+    stop.resolve(undefined);
+    await vi.waitFor(() => expect(appMock.quit).toHaveBeenCalledOnce());
+
+    const reentryQuit = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(reentryQuit);
+    expect(reentryQuit.preventDefault).not.toHaveBeenCalled();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+  });
+
+  it("routes the updater install quit through the same non-recursive gate", async () => {
+    const stop = createDeferred<undefined>();
+    microservice.stop.mockImplementationOnce(() => stop.promise);
+    const updaterQuit = createBeforeQuitEvent();
+    autoUpdaterMock.quitAndInstall.mockImplementationOnce(() => {
+      appHandlers.get("before-quit")?.(updaterQuit);
+      return "installed";
+    });
+    await importAndRunReady();
+
+    expect(ipcHandlers.get("install-update")?.()).toBe("installed");
+    expect(autoUpdaterMock.quitAndInstall).toHaveBeenCalledOnce();
+    expect(updaterQuit.preventDefault).toHaveBeenCalledOnce();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+
+    const repeatedQuit = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(repeatedQuit);
+    expect(repeatedQuit.preventDefault).toHaveBeenCalledOnce();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+
+    stop.resolve(undefined);
+    await vi.waitFor(() => expect(appMock.quit).toHaveBeenCalledOnce());
+
+    const reentryQuit = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(reentryQuit);
+    expect(reentryQuit.preventDefault).not.toHaveBeenCalled();
+    expect(microservice.stop).toHaveBeenCalledOnce();
+  });
+
+  it("bounds a deferred microservice stop before continuing quit", async () => {
+    vi.useFakeTimers();
+    try {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const stop = createDeferred<undefined>();
+      microservice.stop.mockImplementationOnce(() => stop.promise);
+      await importAndRunReady();
+
+      const quitEvent = createBeforeQuitEvent();
+      appHandlers.get("before-quit")?.(quitEvent);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(quitEvent.preventDefault).toHaveBeenCalledOnce();
+      expect(microservice.stop).toHaveBeenCalledOnce();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[Electron] Timed out stopping Scryfall microservice during quit."
+      );
+      expect(appMock.quit).toHaveBeenCalledOnce();
+      errorSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("continues quitting when the owned microservice stop rejects", async () => {
+    microservice.stop.mockRejectedValueOnce(new Error("stop failed"));
+    await importAndRunReady();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const quitEvent = createBeforeQuitEvent();
+    appHandlers.get("before-quit")?.(quitEvent);
+    await vi.waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[Electron] Failed to stop Scryfall microservice during quit:",
+        expect.objectContaining({ message: "stop failed" })
+      )
+    );
+
+    expect(quitEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(appMock.quit).toHaveBeenCalledOnce();
     errorSpy.mockRestore();
   });
 
@@ -467,7 +594,9 @@ describe("electron main lifecycle", () => {
     expect(appMock.quit).toHaveBeenCalledOnce();
     if (platformDescriptor)
       Object.defineProperty(process, "platform", platformDescriptor);
-    await appHandlers.get("before-quit")?.();
+    const beforeQuit = createBeforeQuitEvent();
+    await appHandlers.get("before-quit")?.(beforeQuit);
+    expect(beforeQuit.preventDefault).toHaveBeenCalledOnce();
     expect(microservice.stop).toHaveBeenCalledOnce();
   });
 

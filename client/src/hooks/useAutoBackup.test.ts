@@ -44,6 +44,21 @@ async function seedProject(projectId: string, settings: Record<string, unknown> 
   } as never);
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function backupWithName(name: string): { project: { name: string }; cards: { linkedFrontId: null }[] } {
+  return {
+    project: { name },
+    cards: [{ linkedFrontId: null }],
+  };
+}
+
 describe('useAutoBackup', () => {
   beforeEach(async () => {
     vi.useRealTimers();
@@ -145,6 +160,144 @@ describe('useAutoBackup', () => {
     });
     expect(mockExportProject).toHaveBeenCalledTimes(1);
     expect(base64Reads).toBe(1);
+  });
+
+  it('runs one trailing backup with the newest revision after a change arrives during an active upload and minimum interval', async () => {
+    let observedRevision: number | null = 1;
+    mockUseLiveQuery.mockImplementation(() => observedRevision);
+
+    const firstUpload = deferred<{ ok: boolean }>();
+    mockExportProject
+      .mockResolvedValueOnce(backupWithName('first revision'))
+      .mockResolvedValueOnce(backupWithName('newest revision'));
+    mockFetch.mockReturnValueOnce(firstUpload.promise).mockResolvedValue({ ok: true });
+
+    const { rerender } = renderHook(() => useAutoBackup());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    observedRevision = 2;
+    rerender();
+    observedRevision = 3;
+    rerender();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    await act(async () => {
+      firstUpload.resolve({ ok: true });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_999);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).projectName).toBe('newest revision');
+  });
+
+  it('cancels an interval-deferred trailing backup on unmount', async () => {
+    currentProjectId = 'project-unmount';
+    let observedRevision: number | null = 1;
+    mockUseLiveQuery.mockImplementation(() => observedRevision);
+    mockExportProject.mockResolvedValue(backupWithName('initial revision'));
+    mockFetch.mockResolvedValue({ ok: true });
+
+    const { rerender, unmount } = renderHook(() => useAutoBackup());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    observedRevision = 2;
+    rerender();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an interval-deferred trailing backup on project switch', async () => {
+    currentProjectId = 'project-switch-one';
+    let observedRevision: number | null = 1;
+    mockUseLiveQuery.mockImplementation(() => observedRevision);
+    mockExportProject.mockResolvedValue(backupWithName('switch revision'));
+    mockFetch.mockResolvedValue({ ok: true });
+
+    const { rerender, unmount } = renderHook(() => useAutoBackup());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    observedRevision = 2;
+    rerender();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    currentProjectId = 'project-switch-two';
+    observedRevision = null;
+    rerender();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    unmount();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a completed prior-project upload suppress the new project lifecycle', async () => {
+    currentProjectId = 'project-active-switch-one';
+    let observedRevision: number | null = 1;
+    mockUseLiveQuery.mockImplementation(() => observedRevision);
+
+    const firstUpload = deferred<{ ok: boolean }>();
+    mockExportProject
+      .mockResolvedValueOnce(backupWithName('shared revision'))
+      .mockResolvedValueOnce(backupWithName('outgoing revision'))
+      .mockResolvedValueOnce(backupWithName('shared revision'));
+    mockFetch.mockReturnValueOnce(firstUpload.promise).mockResolvedValue({ ok: true });
+
+    const { rerender } = renderHook(() => useAutoBackup());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      await Promise.resolve();
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    currentProjectId = 'project-active-switch-two';
+    observedRevision = null;
+    rerender();
+    await act(async () => {
+      await Promise.resolve();
+      firstUpload.resolve({ ok: true });
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
   it('backs up a project directly', async () => {

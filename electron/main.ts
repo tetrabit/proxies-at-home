@@ -286,6 +286,31 @@ let mainWindow: BrowserWindow | null = null;
 let serverPort = 3001; // Default port, will be updated if server starts successfully
 let microserviceManager: MicroserviceManager | null = null;
 let microservicePort = 8080;
+const MICROSERVICE_STOP_TIMEOUT_MS = 5000;
+let isQuitReentryAllowed = false;
+let quitCleanupPromise: Promise<void> | null = null;
+
+async function stopMicroserviceBeforeQuit(): Promise<void> {
+  if (!microserviceManager) {
+    return;
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timeout = setTimeout(() => {
+      console.error("[Electron] Timed out stopping Scryfall microservice during quit.");
+      resolve();
+    }, MICROSERVICE_STOP_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([microserviceManager.stop(), timeoutPromise]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
 
 // Auto-updater logging
 autoUpdater.logger = console;
@@ -645,8 +670,27 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", async () => {
-  if (microserviceManager) {
-    await microserviceManager.stop();
+app.on("before-quit", (event) => {
+  if (isQuitReentryAllowed) {
+    return;
   }
+
+  event.preventDefault();
+  if (quitCleanupPromise) {
+    return;
+  }
+
+  quitCleanupPromise = (async () => {
+    try {
+      await stopMicroserviceBeforeQuit();
+    } catch (error) {
+      console.error(
+        "[Electron] Failed to stop Scryfall microservice during quit:",
+        error
+      );
+    } finally {
+      isQuitReentryAllowed = true;
+      app.quit();
+    }
+  })();
 });

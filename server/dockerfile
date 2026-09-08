@@ -47,29 +47,38 @@ COPY --from=deps /app/shared/scryfall-client /app/shared/scryfall-client
 # This should output to /app/server/dist/server/src/index.js
 RUN npm run build
 
-# --- Runtime image
-FROM node:20-alpine AS runtime
+# --- Isolated printer-calibration runtime
+# This target is independently buildable to verify Python dependency wiring.
+FROM node:20-alpine AS calibration-runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
 # Standalone image defaults; deployment adapters may override either runner.
-ENV PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration
+ENV PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration \
     PRINTER_CALIBRATION_PYTHON=/opt/printer-calibration-venv/bin/python
 
 COPY server/vendor/printer-calibration/pyproject.toml /opt/printer-calibration-src/pyproject.toml
+COPY server/vendor/printer-calibration/requirements.lock /opt/printer-calibration-src/requirements.lock
+COPY server/vendor/printer-calibration/build-requirements.lock /opt/printer-calibration-src/build-requirements.lock
 COPY server/vendor/printer-calibration/src /opt/printer-calibration-src/src
 
-# Printer calibration runtime deps.
+# Bootstrap Python only. ReportLab comes from the hash-checked PyPI lock below,
+# never from an unpinned Alpine package.
 RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     apk add --update-cache \
     python3 \
-    py3-pip \
-    py3-reportlab
+    py3-pip
 
+# Install the complete runtime and build-backend closures before building the
+# local package. No dependency resolver or build-isolation environment can add
+# an undeclared package after these hash-checked installs.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    python3 -m venv --system-site-packages /opt/printer-calibration-venv \
-    && /opt/printer-calibration-venv/bin/pip install -U pip \
-    && /opt/printer-calibration-venv/bin/pip install /opt/printer-calibration-src
+    python3 -m venv /opt/printer-calibration-venv \
+    && /opt/printer-calibration-venv/bin/pip install --require-hashes --no-deps -r /opt/printer-calibration-src/requirements.lock \
+    && /opt/printer-calibration-venv/bin/pip install --require-hashes --no-deps -r /opt/printer-calibration-src/build-requirements.lock \
+    && /opt/printer-calibration-venv/bin/pip install --no-build-isolation --no-deps /opt/printer-calibration-src
 
+# --- Runtime image
+FROM calibration-runtime AS runtime
 # Only ship what we need to run: the built dist
 COPY --from=build /app/server/dist ./dist
 

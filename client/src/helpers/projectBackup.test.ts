@@ -85,6 +85,113 @@ describe("projectBackup", () => {
       expect(validateBackup(validBackup)).toEqual(validBackup);
     });
 
+    it("rejects duplicate card UUIDs before import writes", async () => {
+      const card = {
+        uuid: "duplicate",
+        name: "Card",
+        order: 0,
+        isUserUpload: false,
+      };
+      const backup = { ...validBackup, cards: [card, { ...card, order: 1 }] };
+
+      expect(() => validateBackup(backup)).toThrow("duplicate card UUID");
+      await expect(importProject(backup)).rejects.toThrow("duplicate card UUID");
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects dangling DFC links before import writes", async () => {
+      const backup = {
+        ...validBackup,
+        cards: [
+          {
+            uuid: "front",
+            name: "Front",
+            order: 0,
+            isUserUpload: false,
+            linkedBackId: "missing-back",
+          },
+        ],
+      };
+
+      expect(() => validateBackup(backup)).toThrow("dangling DFC link");
+      await expect(importProject(backup)).rejects.toThrow("dangling DFC link");
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects DFC front and back self-links before import writes", async () => {
+      const cards = [
+        {
+          uuid: "front",
+          name: "Front",
+          order: 0,
+          isUserUpload: false,
+          linkedBackId: "front",
+        },
+        {
+          uuid: "back",
+          name: "Back",
+          order: 0,
+          isUserUpload: false,
+          linkedFrontId: "back",
+        },
+      ];
+
+      for (const card of cards) {
+        const backup = { ...validBackup, cards: [card] };
+        expect(() => validateBackup(backup)).toThrow("self-link");
+        await expect(importProject(backup)).rejects.toThrow("self-link");
+        expect(mocks.userImagesPut).not.toHaveBeenCalled();
+        expect(mocks.projectsAdd).not.toHaveBeenCalled();
+        expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+        expect(mocks.transaction).not.toHaveBeenCalled();
+      }
+    });
+
+    it("rejects non-reciprocal DFC links before import writes", async () => {
+      const card = (uuid: string, order: number, links = {}) => ({
+        uuid,
+        name: uuid,
+        order,
+        isUserUpload: false,
+        ...links,
+      });
+      const backups = [
+        {
+          ...validBackup,
+          cards: [
+            card("front", 0, { linkedBackId: "back" }),
+            card("back", 1, { linkedFrontId: "other-front" }),
+            card("other-front", 2),
+          ],
+        },
+        {
+          ...validBackup,
+          cards: [
+            card("front", 0, { linkedBackId: "other-back" }),
+            card("back", 1, { linkedFrontId: "front" }),
+            card("other-back", 2),
+          ],
+        },
+      ];
+
+      for (const backup of backups) {
+        expect(() => validateBackup(backup)).toThrow("non-reciprocal DFC link");
+        await expect(importProject(backup)).rejects.toThrow(
+          "non-reciprocal DFC link"
+        );
+        expect(mocks.userImagesPut).not.toHaveBeenCalled();
+        expect(mocks.projectsAdd).not.toHaveBeenCalled();
+        expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+        expect(mocks.transaction).not.toHaveBeenCalled();
+      }
+    });
+
     it("rejects invalid envelopes", () => {
       expect(() => validateBackup(null)).toThrow("not a JSON object");
       expect(() => validateBackup(undefined)).toThrow("not a JSON object");
