@@ -322,11 +322,11 @@ export class ImageProcessor {
   }
 
   cancelAll() {
-    this.allTasks.forEach(task => {
-      task.reject(new Error("Cancelled") as unknown as ErrorEvent);
-    });
+    const cancelledTasks = [...this.allTasks, ...this.activeTasks.values()];
+    this.activeTasks.clear();
     this.highPriorityQueue = [];
     this.lowPriorityQueue = [];
+    cancelledTasks.forEach(task => task.reject(new Error("Cancelled")));
 
     if (this.activeTaskCount > 0) {
       this.activeTaskCount = 0;

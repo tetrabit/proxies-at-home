@@ -106,17 +106,48 @@ describe("ImageProcessor", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const queuedPromise = instance.process({} as unknown as any);
 
+        const activeSettlements = Promise.allSettled(activePromises);
+
         // Cancel
         instance.cancelAll();
 
         // Expect queued promise to reject
         await expect(queuedPromise).rejects.toThrow("Cancelled");
 
-        // active promises should also be rejected or handled, but we focus on state here
+        expect((await activeSettlements).every(result => result.status === 'rejected')).toBe(true);
 
         // Expect workers to be cleared
         // @ts-expect-error: Accessing private member
         expect(instance.allWorkers.size).toBe(0);
+    });
+
+    it("rejects an active task once and ignores its late worker response after cancellation", async () => {
+        const instance = ImageProcessor.getInstance();
+        const activity = vi.fn();
+        instance.onActivityChange(activity);
+        const settled = vi.fn();
+        const pending = instance.process({ uuid: 'cancel-active' } as Parameters<typeof instance.process>[0]);
+        const observed = pending.then(settled, settled);
+        const worker = workerInstances()[0];
+        const lateMessage = worker.onmessage;
+
+        instance.cancelAll();
+        await Promise.resolve();
+
+        expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'Cancelled' }));
+        // @ts-expect-error: Inspect owned active tasks for lifecycle evidence.
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Inspect activity count for lifecycle evidence.
+        expect(instance.activeTaskCount).toBe(0);
+        expect(activity).toHaveBeenLastCalledWith(false);
+        expect(worker.terminate).toHaveBeenCalled();
+
+        lateMessage?.({ data: {} } as MessageEvent);
+        instance.cancelAll();
+        await observed;
+        expect(settled).toHaveBeenCalledTimes(1);
+        // @ts-expect-error: Late responses must not reintroduce idle workers.
+        expect(instance.idleWorkers).toHaveLength(0);
     });
 
     it("should use hardwareConcurrency - 1 if less than cap", () => {
