@@ -5,6 +5,7 @@ import { batchFetchCards, getCardDataForCardInfo, getCardsWithImagesForCardInfo 
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
 import { trackMicroserviceCall } from "../services/microserviceMetrics.js";
 import { debugLog } from "./debug.js";
+import { scryfallRequestBroker } from "./scryfallRequestBroker.js";
 import axios from "axios";
 
 // Microservice response wrapper types
@@ -28,8 +29,6 @@ const tokenIdLookupAxios = axios.create({
   timeout: 10_000,
 });
 
-let lastTokenIdLookupAt = 0;
-
 function parseTokenUri(uri?: string): ParsedTokenUri {
   if (!uri) return {};
   try {
@@ -47,22 +46,15 @@ function parseTokenUri(uri?: string): ParsedTokenUri {
   }
 }
 
-async function delayTokenIdLookup(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastTokenIdLookupAt;
-  if (elapsed < 100) {
-    await new Promise((resolve) => setTimeout(resolve, 100 - elapsed));
-  }
-  lastTokenIdLookupAt = Date.now();
-}
-
 async function fetchCardByScryfallId(id: string): Promise<ScryfallApiCard | undefined> {
   /* v8 ignore next -- private callers pass non-empty parsed Scryfall ids; guard documents the defensive contract. @preserve */
   if (!id) return undefined;
-  await delayTokenIdLookup();
   try {
-    const response = await tokenIdLookupAxios.get<ScryfallApiCard>(
-      `https://api.scryfall.com/cards/${encodeURIComponent(id)}`
+    const response = await scryfallRequestBroker.enqueue((signal) =>
+      tokenIdLookupAxios.get<ScryfallApiCard>(
+        `https://api.scryfall.com/cards/${encodeURIComponent(id)}`,
+        { signal }
+      )
     );
     return response.data;
   } catch {

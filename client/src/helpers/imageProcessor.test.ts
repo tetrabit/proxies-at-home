@@ -150,6 +150,32 @@ describe("ImageProcessor", () => {
         expect(instance.idleWorkers).toHaveLength(0);
     });
 
+    it.each(['destroy', 'destroyAll'] as const)('settles active and queued tasks during %s', async (method) => {
+        Object.defineProperty(navigator, 'hardwareConcurrency', { value: 2, configurable: true });
+        const instance = ImageProcessor.getInstance();
+        const rejected: string[] = [];
+        const promises = [Priority.HIGH, Priority.HIGH, Priority.LOW].map((priority, index) =>
+            instance.process({ uuid: `destroy-${index}` } as Parameters<typeof instance.process>[0], priority)
+                .catch(error => { rejected.push(error.message); })
+        );
+
+        if (method === 'destroy') instance.destroy();
+        else ImageProcessor.destroyAll();
+        await Promise.resolve();
+        expect(rejected).toEqual(['Cancelled', 'Cancelled', 'Cancelled']);
+        await Promise.all(promises);
+        // @ts-expect-error: Owned lifecycle state must be empty on destruction.
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Owned lifecycle state must be empty on destruction.
+        expect(instance.allTasks).toHaveLength(0);
+        // @ts-expect-error: Owned lifecycle state must be empty on destruction.
+        expect(instance.allWorkers.size).toBe(0);
+        // @ts-expect-error: Destroyed instances cannot remain globally owned.
+        expect(ImageProcessor.instances.has(instance)).toBe(false);
+        instance.destroy();
+        expect(rejected).toHaveLength(3);
+    });
+
     it("should use hardwareConcurrency - 1 if less than cap", () => {
         Object.defineProperty(navigator, 'hardwareConcurrency', {
             value: 8,
@@ -224,7 +250,7 @@ describe("ImageProcessor", () => {
         // Fill the pool (8 workers)
         for (let i = 0; i < 8; i++) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            instance.process({ uuid: `fill-${i}` } as any);
+            instance.process({ uuid: `fill-${i}` } as any).catch(() => { });
         }
 
         // Queue a LOW priority task
@@ -254,7 +280,7 @@ describe("ImageProcessor", () => {
         // Fill the pool
         for (let i = 0; i < 8; i++) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            instance.process({ uuid: `fill-${i}` } as any);
+            instance.process({ uuid: `fill-${i}` } as any).catch(() => { });
         }
 
         // Queue a LOW priority task

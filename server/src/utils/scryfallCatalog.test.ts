@@ -82,6 +82,46 @@ describe('scryfallCatalog', () => {
     });
 
     describe('initCatalogs', () => {
+        it('serializes physical catalog fetches while retaining every catalog result', async () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date(0));
+            const started: string[] = [];
+            const pending: Array<(value: { json: () => Promise<{ data: string[] }> }) => void> = [];
+            mockFetch.mockImplementation((url: string) => new Promise((resolve) => {
+                started.push(url);
+                pending.push(resolve);
+            }));
+
+            const refresh = initCatalogs();
+
+            expect(started).toHaveLength(1);
+            for (let index = 0; index < 9; index += 1) {
+                pending.shift()?.({ json: () => Promise.resolve({ data: [`type-${index}`] }) });
+                await Promise.resolve();
+                await Promise.resolve();
+                if (index < 8) {
+                    await vi.advanceTimersByTimeAsync(100);
+                    expect(started).toHaveLength(index + 2);
+                }
+            }
+
+            await refresh;
+            expect(started).toHaveLength(9);
+            expect(isValidScryfallType('type-0')).toBe(true);
+            expect(isValidScryfallType('type-8')).toBe(true);
+            vi.useRealTimers();
+        });
+
+        it('retains successful catalogs when another endpoint fails', async () => {
+            mockFetch.mockImplementation((url: string) => {
+                if (url.endsWith('/card-types')) return Promise.reject(new Error('one endpoint offline'));
+                return Promise.resolve({ json: async () => ({ data: ['retained-mixed-catalog-type'] }) });
+            });
+            await initCatalogs();
+            expect(isValidScryfallType('retained-mixed-catalog-type')).toBe(true);
+            expect(mockFetch).toHaveBeenCalledTimes(9);
+        });
+
         it('should fetch all 9 type catalogs from Scryfall', async () => {
             mockFetch.mockResolvedValue({
                 json: () => Promise.resolve({ data: ['artifact', 'creature'] }),

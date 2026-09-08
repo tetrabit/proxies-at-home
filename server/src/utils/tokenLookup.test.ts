@@ -392,7 +392,10 @@ describe("resolveLatestTokenParts additional branches", () => {
       { name: "Clue", uri: "https://api.scryfall.com/cards/uri-token" },
     ], "en");
 
-    expect(hoisted.mockAxiosGet).toHaveBeenCalledWith("https://api.scryfall.com/cards/uri-token");
+    expect(hoisted.mockAxiosGet).toHaveBeenCalledWith(
+      "https://api.scryfall.com/cards/uri-token",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(result).toEqual([
       {
         id: "uri-token",
@@ -534,5 +537,71 @@ describe("resolveLatestTokenParts additional branches", () => {
     hoisted.mockAxiosGet.mockResolvedValueOnce({ data: { id: "plain", name: "Plain", type_line: "Token" } });
 
     await expect(resolveLatestTokenParts([{ id: "plain", name: "Plain", uri: "not a url" }], "en")).resolves.toEqual([{ id: "plain", name: "Plain", uri: "not a url", type_line: "Token" }]);
+  });
+
+  it("puts token identity recovery behind shared FIFO work with a new 100ms slot per physical request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    vi.resetModules();
+
+    const { resolveLatestTokenParts: resolveWithFreshBroker } = await import("./tokenLookup.js");
+    const { scryfallRequestBroker } = await import("./scryfallRequestBroker.js");
+    const dispatches: Array<{ request: string; at: number }> = [];
+    const signals: Array<AbortSignal | undefined> = [];
+
+    let releaseOtherRequest!: () => void;
+    const otherRequest = scryfallRequestBroker.enqueue(() => {
+      dispatches.push({ request: "other", at: Date.now() });
+      return new Promise<void>((resolve) => {
+        releaseOtherRequest = resolve;
+      });
+    });
+    hoisted.mockAxiosGet.mockImplementation((url: string, config?: { signal?: AbortSignal }) => {
+      dispatches.push({ request: url, at: Date.now() });
+      signals.push(config?.signal);
+      if (url.endsWith("stale-token")) {
+        return Promise.reject(new Error("stale identity unavailable"));
+      }
+      return Promise.resolve({
+        data: { id: "recovered-token", name: "Treasure", set: "tst", collector_number: "1" },
+      });
+    });
+
+    const result = resolveWithFreshBroker([
+      {
+        id: "stale-token",
+        name: "Treasure",
+        uri: "https://api.scryfall.com/cards/recovered-token",
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(dispatches).toEqual([{ request: "other", at: 0 }]);
+
+    releaseOtherRequest();
+    await otherRequest;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatches).toEqual([
+      { request: "other", at: 0 },
+      { request: "https://api.scryfall.com/cards/stale-token", at: 200 },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(dispatches).toEqual([
+      { request: "other", at: 0 },
+      { request: "https://api.scryfall.com/cards/stale-token", at: 200 },
+      { request: "https://api.scryfall.com/cards/recovered-token", at: 300 },
+    ]);
+    expect(signals).toEqual([expect.any(AbortSignal), expect.any(AbortSignal)]);
+    await expect(result).resolves.toEqual([
+      {
+        id: "recovered-token",
+        name: "Treasure",
+        uri: "https://api.scryfall.com/cards/tst/1",
+      },
+    ]);
+
+    vi.useRealTimers();
+    vi.resetModules();
   });
 });

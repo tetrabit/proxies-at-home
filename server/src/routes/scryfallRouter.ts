@@ -6,6 +6,7 @@ import { debugLog } from "../utils/debug.js";
 import { isValidScryfallType, isKnownToken } from "../utils/scryfallCatalog.js";
 import { getCardsWithImagesForCardInfo, type ScryfallApiCard } from "../utils/getCardImagesPaged.js";
 import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfallMicroserviceClient.js";
+import { scryfallRequestBroker } from "../utils/scryfallRequestBroker.js";
 
 const router = Router();
 
@@ -21,21 +22,15 @@ const scryfallAxios = axios.create({
     },
 });
 
-// Rate limiting: 100ms between requests (Scryfall recommends 50-100ms)
-let lastRequestTime = 0;
-const REQUEST_DELAY_MS = 100;
-
+// Each call represents exactly one physical direct-Scryfall dispatch. Retry loops
+// must call this again for every retry so the broker can schedule each attempt.
 async function rateLimitedRequest<T>(
     requestFn: () => Promise<{ data: T }>
 ): Promise<T> {
-    const now = Date.now();
-    const elapsed = now - lastRequestTime;
-    if (elapsed < REQUEST_DELAY_MS) {
-        await new Promise((r) => setTimeout(r, REQUEST_DELAY_MS - elapsed));
-    }
-    lastRequestTime = Date.now();
-    const response = await requestFn();
-    return response.data;
+    return scryfallRequestBroker.enqueue(async () => {
+        const response = await requestFn();
+        return response.data;
+    });
 }
 
 // Cache TTLs in milliseconds

@@ -82,6 +82,26 @@ describe("ScryfallRequestBroker", () => {
     ]);
   });
 
+  it("does not charge synchronous transport invocation overhead against the next spacing interval", async () => {
+    const broker = new ScryfallRequestBroker();
+    const dispatches: number[] = [];
+    const first = broker.enqueue(() => {
+      vi.setSystemTime(new Date(1));
+      dispatches.push(Date.now());
+      return 'first';
+    });
+    const second = broker.enqueue(() => {
+      dispatches.push(Date.now());
+      return 'second';
+    });
+    await settlePromises();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(dispatches).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dispatches).toEqual([1, 101]);
+    await expect(Promise.all([first, second])).resolves.toEqual(['first', 'second']);
+  });
+
   it("keeps the lease until the active physical request settles", async () => {
     const broker = new ScryfallRequestBroker();
     const first = deferred<void>();

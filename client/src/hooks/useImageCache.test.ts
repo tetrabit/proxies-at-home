@@ -3,6 +3,7 @@ import { act } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { useImageCache } from "./useImageCache";
 import type { Image } from "../db";
+import type { CardOption } from "../../../shared/types";
 
 // Mock URL.createObjectURL and revokeObjectURL
 const mockObjectUrls = new Map<Blob, string>();
@@ -34,59 +35,25 @@ describe("useImageCache", () => {
         refCount: 1,
     });
 
-    describe("stable reference behavior", () => {
-        it("should return stable reference when rerendering with same blob sizes", () => {
-            const image1 = createMockImage("img1", 100);
-            const images: Image[] = [image1];
-
+    describe("rendition freshness", () => {
+        it("replaces the URL when a same-size display blob is replaced", () => {
+            const image = createMockImage("img1", 100);
             const { result, rerender } = renderHook(
                 ({ imgs, mode }) => useImageCache(imgs, mode),
-                { initialProps: { imgs: images, mode: 'none' as const } }
+                { initialProps: { imgs: [image], mode: 'none' as const } }
             );
 
-            const firstResult = result.current.processedImageUrls;
-            expect(Object.keys(firstResult)).toHaveLength(1);
-            expect(firstResult["img1"]).toBeDefined();
-
-            // Simulate Dexie returning new array with NEW Blob instances of same size
-            const image1Refresh: Image = {
-                ...image1,
-                displayBlob: new Blob([new Array(100).fill('a').join('')]), // New instance, same size
+            const firstUrl = result.current.processedImageUrls["img1"];
+            const replacement: Image = {
+                ...image,
+                displayBlob: new Blob([new Array(100).fill('replacement').join('').slice(0, 100)]),
             };
 
-            rerender({ imgs: [image1Refresh], mode: 'none' as const });
+            rerender({ imgs: [replacement], mode: 'none' as const });
 
-            const secondResult = result.current.processedImageUrls;
-
-            // Should return same reference since blob sizes match
-            expect(secondResult).toBe(firstResult);
-            // URL should be reused, not recreated
-            expect(secondResult["img1"]).toBe(firstResult["img1"]);
-        });
-
-        it("should NOT create new URLs when blob sizes are unchanged", () => {
-            const image1 = createMockImage("img1", 100);
-            const images: Image[] = [image1];
-
-            const { rerender } = renderHook(
-                ({ imgs, mode }) => useImageCache(imgs, mode),
-                { initialProps: { imgs: images, mode: 'none' as const } }
-            );
-
-            // First render creates one URL
-            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
-
-            // Simulate multiple Dexie updates with same-size blobs
-            for (let i = 0; i < 5; i++) {
-                const refreshedImage: Image = {
-                    ...image1,
-                    displayBlob: new Blob([new Array(100).fill('x').join('')]),
-                };
-                rerender({ imgs: [refreshedImage], mode: 'none' as const });
-            }
-
-            // Should still only have the initial URL creation
-            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
+            expect(result.current.processedImageUrls["img1"]).toBe("blob:test-1");
+            expect(result.current.processedImageUrls["img1"]).not.toBe(firstUrl);
+            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(2);
         });
 
         it("should create new URL when blob size changes", () => {
@@ -117,6 +84,39 @@ describe("useImageCache", () => {
     });
 
     describe("image deduplication", () => {
+        it("keeps separate card renditions for different overrides of one image", () => {
+            const image: Image = {
+                id: "shared-image",
+                displayBlob: new Blob(["normal"]),
+                displayBlobDarkenAll: new Blob(["darkened"]),
+                refCount: 2,
+            };
+            const cards: CardOption[] = [
+                {
+                    uuid: "normal-card",
+                    name: "Shared image",
+                    order: 1,
+                    imageId: "shared-image",
+                    isUserUpload: false,
+                    overrides: { darkenMode: "none" },
+                },
+                {
+                    uuid: "darkened-card",
+                    name: "Shared image",
+                    order: 2,
+                    imageId: "shared-image",
+                    isUserUpload: false,
+                    overrides: { darkenMode: "darken-all" },
+                },
+            ];
+
+            const { result } = renderHook(() => useImageCache([image], "none", cards));
+
+            expect(result.current.processedImageUrls["normal-card"]).toBe("blob:test-0");
+            expect(result.current.processedImageUrls["darkened-card"]).toBe("blob:test-1");
+            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(2);
+        });
+
         it("should handle multiple images with same size blobs independently", () => {
             const image1 = createMockImage("img1", 100);
             const image2 = createMockImage("img2", 100);
@@ -164,22 +164,87 @@ describe("useImageCache", () => {
     });
 
     describe("cleanup", () => {
-        it("should revoke object URLs after images are removed", async () => {
+        it("revokes every owned URL when unmounted after a rendition replacement", async () => {
             const image = createMockImage("img1", 100);
-            const { rerender } = renderHook(
+            const { rerender, unmount } = renderHook(
                 ({ imgs, mode }) => useImageCache(imgs, mode),
                 { initialProps: { imgs: [image], mode: 'none' as const } }
             );
 
-            expect(global.URL.createObjectURL).toHaveBeenCalledTimes(1);
+            rerender({
+                imgs: [{
+                    ...image,
+                    displayBlob: new Blob([new Array(100).fill('replacement').join('').slice(0, 100)]),
+                }],
+                mode: 'none' as const,
+            });
+            unmount();
 
-            rerender({ imgs: [], mode: 'none' as const });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(5000);
+            });
+
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test-0");
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test-1");
+        });
+
+        it("revokes a replaced URL once when its timer fires before rerender and unmount", async () => {
+            const image = createMockImage("img1", 100);
+            const replacement: Image = {
+                ...image,
+                displayBlob: new Blob(["replacement"]),
+            };
+            const { result, rerender, unmount } = renderHook(
+                ({ imgs }) => useImageCache(imgs, "none"),
+                { initialProps: { imgs: [image] } }
+            );
+
+            rerender({ imgs: [replacement] });
+            const currentUrl = result.current.processedImageUrls["img1"];
 
             await act(async () => {
                 await vi.advanceTimersByTimeAsync(2000);
             });
-
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(1);
             expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test-0");
+            expect(result.current.processedImageUrls["img1"]).toBe(currentUrl);
+
+            rerender({ imgs: [...[replacement]] });
+            expect(result.current.processedImageUrls["img1"]).toBe(currentUrl);
+
+            unmount();
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(5000);
+            });
+
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+            expect(global.URL.revokeObjectURL).toHaveBeenNthCalledWith(1, "blob:test-0");
+            expect(global.URL.revokeObjectURL).toHaveBeenNthCalledWith(2, currentUrl);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("revokes a removed URL once when its timer fires before unmount", async () => {
+            const image = createMockImage("img1", 100);
+            const { rerender, unmount } = renderHook(
+                ({ imgs }) => useImageCache(imgs, "none"),
+                { initialProps: { imgs: [image] } }
+            );
+
+            rerender({ imgs: [] });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(2000);
+            });
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledWith("blob:test-0");
+
+            unmount();
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(5000);
+            });
+
+            expect(global.URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
         });
     });
 });

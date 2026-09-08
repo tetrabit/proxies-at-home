@@ -12,6 +12,7 @@ import {
 } from "../utils/scryfallCatalog.js";
 import type { ScryfallApiCard } from "../utils/getCardImagesPaged.js";
 import { debugLog } from "../utils/debug.js";
+import { scryfallRequestBroker } from "../utils/scryfallRequestBroker.js";
 
 // Use all-cards bulk data for broad coverage on set+number lookups.
 // Name-only queries bypass this cache and use live Scryfall API search with scoring.
@@ -27,9 +28,9 @@ interface BulkDataInfo {
  * Fetch the current bulk data download URL from Scryfall API.
  */
 export async function getBulkDataInfo(): Promise<BulkDataInfo> {
-  const response = await axios.get<BulkDataInfo>(BULK_DATA_API, {
+  const response = await scryfallRequestBroker.enqueue(() => axios.get<BulkDataInfo>(BULK_DATA_API, {
     headers: { "User-Agent": "Proxxied/1.0" },
-  });
+  }));
   return response.data;
 }
 

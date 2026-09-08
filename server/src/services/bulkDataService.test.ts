@@ -8,6 +8,7 @@ const batchInsertCards = vi.fn();
 const batchInsertCardTypes = vi.fn();
 const batchInsertTokenNames = vi.fn();
 const getCardCount = vi.fn();
+const brokerEnqueue = vi.fn(<T>(operation: () => Promise<T>) => operation());
 
 vi.mock('axios', () => ({
   default: {
@@ -35,6 +36,10 @@ vi.mock('../utils/scryfallCatalog.js', () => ({
   batchInsertTokenNames: (...args: unknown[]) => batchInsertTokenNames(...args),
 }));
 
+vi.mock('../utils/scryfallRequestBroker.js', () => ({
+  scryfallRequestBroker: { enqueue: brokerEnqueue },
+}));
+
 describe('bulk data service', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -46,6 +51,7 @@ describe('bulk data service', () => {
     batchInsertCardTypes.mockReset();
     batchInsertTokenNames.mockReset();
     getCardCount.mockReset().mockReturnValue(42);
+    brokerEnqueue.mockClear();
   });
 
   afterEach(() => {
@@ -61,6 +67,7 @@ describe('bulk data service', () => {
     expect(axios.get).toHaveBeenCalledWith('https://api.scryfall.com/bulk-data/all-cards', {
       headers: { 'User-Agent': 'Proxxied/1.0' },
     });
+    expect(brokerEnqueue).toHaveBeenCalledTimes(1);
   });
 
   it('reports last import and import staleness decisions', async () => {
@@ -122,6 +129,7 @@ describe('bulk data service', () => {
       responseType: 'stream',
       headers: { 'User-Agent': 'Proxxied/1.0' },
     });
+    expect(brokerEnqueue).toHaveBeenCalledTimes(1);
     expect(batchInsertCards).toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ id: 'c1', set: 'm20', collector_number: '34', image_uris: { png: 'https://img.test/card.png' } }),
       expect.objectContaining({ id: 't1', name: 'Soldier Token' }),

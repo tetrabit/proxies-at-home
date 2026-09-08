@@ -315,9 +315,7 @@ export class ImageProcessor {
   }
 
   destroy() {
-    this.highPriorityQueue = [];
-    this.lowPriorityQueue = [];
-    this.terminateAllWorkers();
+    this.cancelAll();
     ImageProcessor.instances.delete(this);
   }
 

@@ -9,23 +9,28 @@ const appMock = {
 const existsSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
 const spawnMock = vi.fn();
-let connectMode: "success" | "error" | "timeout" | "pending" = "success";
+const httpRequestMock = vi.fn();
+let connectMode:
+  | "success"
+  | "error"
+  | "timeout"
+  | "pending"
+  | "wrong-listener"
+  | "http-503"
+  | "hung" = "success";
 let pendingHealthCallbacks: Array<() => void> = [];
 let lastChildProcess: ReturnType<typeof createChildProcess> | null = null;
 
-class SocketMock extends EventEmitter {
-  destroy = vi.fn();
-
-  connect(_port: number, _host: string, callback: () => void) {
-    if (connectMode === "success") {
-      callback();
-    } else if (connectMode === "error") {
-      setTimeout(() => this.emit("error", new Error("connection refused")), 0);
-    } else if (connectMode === "pending") {
-      pendingHealthCallbacks.push(callback);
-    }
-    return this;
-  }
+function respondToHealthRequest(
+  callback: (response: EventEmitter & { statusCode: number }) => void,
+  statusCode: number,
+  body: unknown
+) {
+  const response = new EventEmitter() as EventEmitter & { statusCode: number };
+  response.statusCode = statusCode;
+  callback(response);
+  response.emit("data", JSON.stringify(body));
+  response.emit("end");
 }
 
 vi.mock("electron", () => ({ app: appMock }));
@@ -36,7 +41,7 @@ vi.mock("fs", () => ({
   },
 }));
 vi.mock("child_process", () => ({ spawn: spawnMock }));
-vi.mock("net", () => ({ default: { Socket: SocketMock } }));
+vi.mock("http", () => ({ default: { request: httpRequestMock } }));
 
 function createChildProcess() {
   const child = new EventEmitter() as EventEmitter & {
@@ -68,6 +73,51 @@ describe("MicroserviceManager", () => {
     pendingHealthCallbacks = [];
     lastChildProcess = null;
     spawnMock.mockImplementation(() => createChildProcess());
+    httpRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter & { statusCode: number }) => void) => {
+        const request = new EventEmitter() as EventEmitter & {
+          destroy: ReturnType<typeof vi.fn>;
+          end: ReturnType<typeof vi.fn>;
+        };
+        request.destroy = vi.fn();
+        request.end = vi.fn(() => {
+          if (connectMode === "success") {
+            respondToHealthRequest(callback, 200, {
+              service: "scryfall-cache",
+              status: "healthy",
+              version: "0.1.0",
+            });
+          } else if (connectMode === "wrong-listener") {
+            respondToHealthRequest(callback, 200, {
+              service: "another-service",
+              status: "healthy",
+              version: "0.1.0",
+            });
+          } else if (connectMode === "http-503") {
+            respondToHealthRequest(callback, 503, {
+              service: "scryfall-cache",
+              status: "healthy",
+              version: "0.1.0",
+            });
+          } else if (connectMode === "error") {
+            setTimeout(() => request.emit("error", new Error("connection refused")), 0);
+          } else if (connectMode === "pending") {
+            pendingHealthCallbacks.push(() =>
+              respondToHealthRequest(callback, 200, {
+                service: "scryfall-cache",
+                status: "healthy",
+                version: "0.1.0",
+              })
+            );
+          } else if (connectMode === "hung") {
+            const response = new EventEmitter() as EventEmitter & { statusCode: number };
+            response.statusCode = 200;
+            callback(response);
+          }
+        });
+        return request;
+      }
+    );
     appMock.isPackaged = false;
     appMock.getPath.mockReturnValue("/tmp/proxxied-user-data");
   });
@@ -294,7 +344,7 @@ describe("MicroserviceManager", () => {
     }
   });
 
-  it("reports unhealthy sockets and times out while waiting for readiness", async () => {
+  it("reports unhealthy HTTP requests and times out while waiting for readiness", async () => {
     vi.useFakeTimers();
     const { MicroserviceManager } = await import("./microservice-manager");
     const manager = new MicroserviceManager({
@@ -500,5 +550,120 @@ describe("MicroserviceManager", () => {
 
     await expect(manager.start()).rejects.toThrow("Cache binary not found at:");
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects readiness and releases process ownership when spawn emits an error", async () => {
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+    connectMode = "pending";
+
+    const start = manager.start();
+    const spawnFailure = new Error("spawn EACCES");
+
+    expect(() => lastChildProcess?.emit("error", spawnFailure)).not.toThrow();
+    await expect(start).rejects.toBe(spawnFailure);
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it("exhausts the restart budget after repeated short-lived healthy starts", async () => {
+    vi.useFakeTimers();
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 2,
+      restartDelay: 10,
+    });
+
+    await manager.start();
+    for (let restart = 0; restart < 3; restart++) {
+      lastChildProcess?.emit("exit", 1, null);
+      await vi.advanceTimersByTimeAsync(10);
+    }
+
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    await manager.stop();
+    vi.useRealTimers();
+  });
+
+  it("resets the restart budget only after a healthy stability interval", async () => {
+    vi.useFakeTimers();
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 100,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+
+    await manager.start();
+    await vi.advanceTimersByTimeAsync(99);
+    lastChildProcess?.emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(100);
+    lastChildProcess?.emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    await manager.stop();
+    vi.useRealTimers();
+  });
+
+  it("requires the Scryfall Cache HTTP health identity before reporting ready", async () => {
+    vi.useFakeTimers();
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+    const checkHealth = () =>
+      (
+        manager as unknown as { checkHealth: () => Promise<boolean> }
+      ).checkHealth();
+
+    await expect(checkHealth()).resolves.toBe(true);
+
+    connectMode = "wrong-listener";
+    await expect(checkHealth()).resolves.toBe(false);
+
+    connectMode = "http-503";
+    await expect(checkHealth()).resolves.toBe(false);
+
+    connectMode = "hung";
+    const hungCheck = checkHealth();
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(hungCheck).resolves.toBe(false);
+
+    expect(httpRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostname: "localhost",
+        method: "GET",
+        path: "/health",
+        port: 7777,
+      }),
+      expect.any(Function)
+    );
+    vi.useRealTimers();
   });
 });

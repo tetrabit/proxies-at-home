@@ -2,7 +2,7 @@ import { spawn, ChildProcess } from "child_process";
 import path from "path";
 import fs from "fs";
 import { app } from "electron";
-import net from "net";
+import http from "http";
 
 interface MicroserviceConfig {
   name: string;
@@ -20,6 +20,7 @@ export class MicroserviceManager {
   private restartCount = 0;
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
+  private healthySince: number | null = null;
   private startPromise: Promise<number> | null = null;
   private isShuttingDown = false;
 
@@ -70,24 +71,47 @@ export class MicroserviceManager {
       DATABASE_URL: this.getDatabasePath(),
     };
 
-    this.process = spawn(binaryPath, [], {
+    const childProcess = spawn(binaryPath, [], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    this.process = childProcess;
 
-    this.process.stdout?.on("data", (data) => {
+    let rejectSpawnError: (error: Error) => void = () => undefined;
+    const spawnError = new Promise<never>((_, reject) => {
+      rejectSpawnError = reject;
+    });
+
+    childProcess.on("error", (error) => {
+      if (this.process === childProcess) {
+        this.process = null;
+      }
+      rejectSpawnError(error);
+    });
+
+    childProcess.stdout?.on("data", (data) => {
       console.log(`[${this.config.name}] ${data.toString().trim()}`);
     });
 
-    this.process.stderr?.on("data", (data) => {
+    childProcess.stderr?.on("data", (data) => {
       console.error(`[${this.config.name}] ERROR: ${data.toString().trim()}`);
     });
 
-    this.process.on("exit", (code, signal) => {
+    childProcess.on("exit", (code, signal) => {
       console.log(
         `[${this.config.name}] Exited with code ${code}, signal ${signal}`
       );
+      if (this.process !== childProcess) {
+        return;
+      }
       this.process = null;
+      if (
+        this.healthySince !== null &&
+        Date.now() - this.healthySince >= this.config.healthCheckInterval
+      ) {
+        this.restartCount = 0;
+      }
+      this.healthySince = null;
 
       if (!this.isShuttingDown && this.restartCount < this.config.maxRestarts) {
         this.restartCount++;
@@ -103,9 +127,9 @@ export class MicroserviceManager {
       }
     });
 
-    await this.waitForHealthy();
+    await Promise.race([this.waitForHealthy(), spawnError]);
     this.startHealthCheck();
-    this.restartCount = 0;
+    this.healthySince = Date.now();
 
     console.log(
       `[${this.config.name}] Started successfully on port ${this.config.port}`
@@ -125,6 +149,8 @@ export class MicroserviceManager {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
     }
+
+    this.healthySince = null;
 
     if (!this.process) {
       return;
@@ -186,13 +212,23 @@ export class MicroserviceManager {
   }
 
   private async waitForHealthy(timeout = 30000): Promise<void> {
-    const startTime = Date.now();
+    const deadline = Date.now() + timeout;
 
-    while (Date.now() - startTime < timeout) {
-      if (await this.checkHealth()) {
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        break;
+      }
+
+      if (await this.checkHealth(Math.min(2000, remaining))) {
         return;
       }
-      await this.sleep(500);
+
+      const retryDelay = Math.min(500, deadline - Date.now());
+      if (retryDelay <= 0) {
+        break;
+      }
+      await this.sleep(retryDelay);
     }
 
     throw new Error(
@@ -200,24 +236,70 @@ export class MicroserviceManager {
     );
   }
 
-  private async checkHealth(): Promise<boolean> {
+  private async checkHealth(timeout = 2000): Promise<boolean> {
     return new Promise((resolve) => {
-      const socket = new net.Socket();
-      const timer = setTimeout(() => {
-        socket.destroy();
-        resolve(false);
-      }, 2000);
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      const finish = (healthy: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        resolve(healthy);
+      };
 
-      socket.connect(this.config.port, "localhost", () => {
-        clearTimeout(timer);
-        socket.destroy();
-        resolve(true);
-      });
+      const request = http.request(
+        {
+          hostname: "localhost",
+          port: this.config.port,
+          path: this.config.healthCheckPath,
+          method: "GET",
+          headers: { Accept: "application/json" },
+        },
+        (response) => {
+          let body = "";
+          response.on("data", (chunk) => {
+            body += chunk.toString();
+          });
+          response.on("end", () => {
+            if (response.statusCode !== 200) {
+              finish(false);
+              return;
+            }
 
-      socket.on("error", () => {
+            try {
+              const health = JSON.parse(body) as {
+                service?: unknown;
+                status?: unknown;
+                version?: unknown;
+              };
+              finish(
+                health.service === "scryfall-cache" &&
+                  health.status === "healthy" &&
+                  typeof health.version === "string"
+              );
+            } catch {
+              finish(false);
+            }
+          });
+        }
+      );
+
+      timer = setTimeout(() => {
+        request.destroy();
+        finish(false);
+      }, timeout);
+      if (settled && timer) {
         clearTimeout(timer);
-        resolve(false);
-      });
+        timer = null;
+      }
+
+      request.on("error", () => finish(false));
+      request.end();
     });
   }
 

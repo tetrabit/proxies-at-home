@@ -6,6 +6,7 @@ import {
   insertOrUpdateCard,
 } from "../db/proxxiedCardLookup.js";
 import { debugLog } from "./debug.js";
+import { scryfallRequestBroker } from "./scryfallRequestBroker.js";
 
 const SCRYFALL_API = "https://api.scryfall.com/cards/search";
 
@@ -14,38 +15,8 @@ const AX = axios.create({
   headers: { "User-Agent": "Proxxied/1.0 (contact: your-email@example.com)" },
 });
 
-// Simple Mutex to serialize requests
-class Mutex {
-  private mutex = Promise.resolve();
-
-  lock(): Promise<() => void> {
-    let unlock!: () => void;
-    const nextMutex = new Promise<void>((resolve) => {
-      unlock = resolve;
-    });
-    // The caller gets the unlock function when the *previous* mutex resolves
-    const willLock = this.mutex.then(() => unlock);
-    // The next caller will wait for *this* mutex (which resolves when unlock is called)
-    this.mutex = nextMutex;
-    return willLock;
-  }
-}
-
-const scryfallMutex = new Mutex();
-let lastScryfallRequest = 0;
-
-async function delayScryfallRequest() {
-  const unlock = await scryfallMutex.lock();
-  try {
-    const now = Date.now();
-    const elapsed = now - lastScryfallRequest;
-    if (elapsed < 100) {
-      await new Promise((r) => setTimeout(r, 100 - elapsed));
-    }
-    lastScryfallRequest = Date.now();
-  } finally {
-    unlock();
-  }
+function requestFromScryfall<T>(operation: () => Promise<T>): Promise<T> {
+  return scryfallRequestBroker.enqueue(() => operation());
 }
 
 // In-flight request cache to deduplicate concurrent identical requests
@@ -166,10 +137,12 @@ async function fetchAllPages<T>(
 
   try {
     while (next) {
-      await delayScryfallRequest();
+      const pageUrl = next;
       // Explicitly cast the response to avoid circular inference issues with 'next'
       const resp: AxiosResponse<ScryfallResponse> =
-        await AX.get<ScryfallResponse>(next);
+        await requestFromScryfall<AxiosResponse<ScryfallResponse>>(
+          () => AX.get<ScryfallResponse>(pageUrl)
+        );
       const { data, has_more, next_page } = resp.data;
 
       /* v8 ignore else -- Scryfall search responses include data arrays; missing data is a defensive no-op. @preserve */
@@ -336,8 +309,6 @@ export async function batchFetchCards(
 
     const fetchTokenBatch = async (batch: CardInfo[]): Promise<void> => {
       try {
-        await delayScryfallRequest();
-
         // Build OR query: (name:"Token A" OR name:"Token B") type:token include:extras
         const orClauses = batch
           .map((ci) => `name:"${ci.name.replace(/"/g, '\\"')}"`)
@@ -347,12 +318,12 @@ export async function batchFetchCards(
           `[batchFetchCards] Token batch query (${batch.length} tokens): ${q.substring(0, 100)}...`
         );
 
-        const response = await AX.get<ScryfallResponse>(
+        const response = await requestFromScryfall(() => AX.get<ScryfallResponse>(
           "https://api.scryfall.com/cards/search",
           {
             params: { q, unique: "prints" },
           }
-        );
+        ));
 
         /* v8 ignore else -- successful token search responses include a data array; empty payload is a defensive no-op. @preserve */
         if (response.data?.data) {
@@ -389,14 +360,13 @@ export async function batchFetchCards(
           );
           for (const ci of batch) {
             try {
-              await delayScryfallRequest();
               const q = `!"${ci.name}" type:token include:extras`;
-              const response = await AX.get<ScryfallResponse>(
+              const response = await requestFromScryfall(() => AX.get<ScryfallResponse>(
                 "https://api.scryfall.com/cards/search",
                 {
                   params: { q, unique: "prints" },
                 }
-              );
+              ));
               /* v8 ignore else -- individual token fallback may legitimately miss. @preserve */
               if (response.data?.data?.[0]) {
                 const card = response.data.data[0];
@@ -433,7 +403,6 @@ export async function batchFetchCards(
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
       const batch = batches[batchIdx];
-      await delayScryfallRequest();
 
         const identifiers = batch.map((ci) => {
           /* v8 ignore else -- identifier selection branches are covered by collection request assertions. @preserve */
@@ -452,10 +421,10 @@ export async function batchFetchCards(
       });
 
       try {
-        const response = await AX.post<CollectionResponse>(
+        const response = await requestFromScryfall(() => AX.post<CollectionResponse>(
           "https://api.scryfall.com/cards/collection",
           { identifiers }
-        );
+        ));
 
         /* v8 ignore else -- collection responses include data arrays; missing data is a defensive no-op. @preserve */
         if (response.data?.data) {
@@ -534,10 +503,9 @@ export async function batchFetchCards(
         continue;
       }
 
-      await delayScryfallRequest();
       try {
         const url = `https://api.scryfall.com/cards/${card.set}/${card.collector_number}/${lang}`;
-        const response = await AX.get<ScryfallApiCard>(url);
+        const response = await requestFromScryfall(() => AX.get<ScryfallApiCard>(url));
 
         /* v8 ignore else -- missing localized PNG keeps English aliases and is covered by fallback tests. @preserve */
         if (response.data && response.data.image_uris?.png) {
@@ -662,11 +630,10 @@ export async function getImagesForCardInfo(
 
   // 0) Exact Scryfall print id
   if (scryfallId) {
-    await delayScryfallRequest();
     try {
-      const byId = await AX.get<ScryfallApiCard>(
+      const byId = await requestFromScryfall(() => AX.get<ScryfallApiCard>(
         `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
-      );
+      ));
       const idCard = byId.data;
       const urls: string[] = [];
       /* v8 ignore next 9 -- print-id image extraction accepts optional Scryfall fields, then falls back to search on empty results. @preserve */
@@ -742,11 +709,10 @@ export async function getCardsWithImagesForCardInfo(
 
     // 0) Exact Scryfall print id
     if (scryfallId) {
-      await delayScryfallRequest();
       try {
-        const byId = await AX.get<ScryfallApiCard>(
+        const byId = await requestFromScryfall(() => AX.get<ScryfallApiCard>(
           `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
-        );
+        ));
         /* v8 ignore else -- axios success responses contain data; catch path covers request failure. @preserve */
         if (byId.data) return [byId.data];
       } catch {
@@ -855,11 +821,10 @@ export async function getCardDataForCardInfo(
 
   // Strategy 0: Exact Scryfall print id
   if (scryfallId) {
-    await delayScryfallRequest();
     try {
-      const byId = await AX.get<ScryfallApiCard>(
+      const byId = await requestFromScryfall(() => AX.get<ScryfallApiCard>(
         `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
-      );
+      ));
       /* v8 ignore else -- axios success responses contain data; catch path covers request failure. @preserve */
       if (byId.data) return byId.data;
     } catch {

@@ -1431,6 +1431,103 @@ describe("dbUtils", () => {
       const back = await db.cards.get(backId);
       expect(back?.usesDefaultCardback).toBe(false);
     });
+
+    it("relinking existing backs to their current shared image keeps refcounts and links unchanged", async () => {
+      const { createLinkedBackCardsBulk } = await import("./dbUtils");
+      const sharedImageId = "shared-back-image";
+      const replacementImageId = "replacement-back-image";
+
+      await db.images.bulkAdd([
+        { id: sharedImageId, refCount: 2 },
+        { id: replacementImageId, refCount: 0 },
+      ]);
+      await db.cards.bulkAdd([
+        {
+          uuid: "front-a",
+          name: "Front A",
+          order: 10,
+          isUserUpload: false,
+          linkedBackId: "back-a",
+        },
+        {
+          uuid: "back-a",
+          name: "Back A",
+          order: 10,
+          isUserUpload: false,
+          imageId: sharedImageId,
+          linkedFrontId: "front-a",
+        },
+        {
+          uuid: "front-b",
+          name: "Front B",
+          order: 20,
+          isUserUpload: false,
+          linkedBackId: "back-b",
+        },
+        {
+          uuid: "back-b",
+          name: "Back B",
+          order: 20,
+          isUserUpload: false,
+          imageId: sharedImageId,
+          linkedFrontId: "front-b",
+        },
+      ]);
+
+      const sameImageAssignments = [
+        { frontUuid: "front-a", backImageId: sharedImageId, backName: "Back A" },
+        { frontUuid: "front-b", backImageId: sharedImageId, backName: "Back B" },
+      ];
+
+      await createLinkedBackCardsBulk(sameImageAssignments);
+      await createLinkedBackCardsBulk(sameImageAssignments);
+
+      await expect(db.images.get(sharedImageId)).resolves.toMatchObject({
+        refCount: 2,
+      });
+      await expect(db.cards.bulkGet(["front-a", "back-a", "front-b", "back-b"]))
+        .resolves.toMatchObject([
+          { linkedBackId: "back-a" },
+          { imageId: sharedImageId, linkedFrontId: "front-a" },
+          { linkedBackId: "back-b" },
+          { imageId: sharedImageId, linkedFrontId: "front-b" },
+        ]);
+
+      await createLinkedBackCardsBulk([
+        {
+          frontUuid: "front-a",
+          backImageId: replacementImageId,
+          backName: "Replacement A",
+        },
+        {
+          frontUuid: "front-b",
+          backImageId: replacementImageId,
+          backName: "Replacement B",
+        },
+      ]);
+
+      await expect(db.images.get(sharedImageId)).resolves.toMatchObject({
+        refCount: 0,
+      });
+      await expect(db.images.get(replacementImageId)).resolves.toMatchObject({
+        refCount: 2,
+      });
+      await expect(db.cards.bulkGet(["front-a", "back-a", "front-b", "back-b"]))
+        .resolves.toMatchObject([
+          { linkedBackId: "back-a" },
+          {
+            imageId: replacementImageId,
+            name: "Replacement A",
+            linkedFrontId: "front-a",
+          },
+          { linkedBackId: "back-b" },
+          {
+            imageId: replacementImageId,
+            name: "Replacement B",
+            linkedFrontId: "front-b",
+          },
+        ]);
+    });
   });
 
   describe("Cardbacks vs Regular Images", () => {

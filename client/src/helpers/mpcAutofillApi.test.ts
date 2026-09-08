@@ -46,6 +46,15 @@ const createMpcCard = (
     ...overrides,
 });
 
+const createDeferred = <T>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+
+    return { promise, resolve };
+};
+
 describe("mpcAutofillApi", () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -284,6 +293,79 @@ describe("mpcAutofillApi", () => {
             );
         });
 
+        it("should forward an optional AbortSignal to the search request", async () => {
+            const controller = new AbortController();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({ cards: [] }),
+            } as Response);
+
+            await searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal);
+
+            expect(fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/mpcfill/search"),
+                expect.objectContaining({ signal: controller.signal })
+            );
+        });
+
+        it("should propagate search cancellation without caching results", async () => {
+            const controller = new AbortController();
+            const abortError = new DOMException("Request aborted", "AbortError");
+            controller.abort(abortError);
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockRejectedValue(abortError);
+
+            await expect(
+                searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal)
+            ).rejects.toBe(abortError);
+
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+        });
+
+        it("should not cache a search response when its signal aborts during body reading", async () => {
+            const controller = new AbortController();
+            const abortError = new DOMException("Request aborted", "AbortError");
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => {
+                    controller.abort(abortError);
+                    return Promise.resolve({ cards: [createMpcCard()] });
+                },
+            } as Response);
+
+            await expect(
+                searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal)
+            ).rejects.toBe(abortError);
+
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+        });
+
+        it("should reject with the abort reason after a pending cache write completes", async () => {
+            const controller = new AbortController();
+            const abortError = new DOMException("Request aborted", "AbortError");
+            const cacheWrite = createDeferred<void>();
+            const cacheWriteStarted = createDeferred<void>();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            mockCacheMpcSearch.mockImplementationOnce(() => {
+                cacheWriteStarted.resolve();
+                return cacheWrite.promise;
+            });
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard()] }),
+            } as Response);
+
+            const search = searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal);
+            await cacheWriteStarted.promise;
+            controller.abort(abortError);
+            cacheWrite.resolve();
+
+            await expect(search).rejects.toBe(abortError);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+        });
+
         it("should return an empty array and skip caching when search responds with no cards", async () => {
             mockGetCachedMpcSearch.mockResolvedValue(null);
             vi.mocked(fetch).mockResolvedValue({
@@ -319,6 +401,65 @@ describe("mpcAutofillApi", () => {
     });
 
     describe("batchSearchMpcAutofill", () => {
+        it("should forward an optional AbortSignal to the batch request", async () => {
+            const controller = new AbortController();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({ results: {} }),
+            } as Response);
+
+            await batchSearchMpcAutofill(["Sol Ring"], "CARD", controller.signal);
+
+            expect(fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/mpcfill/batch-search"),
+                expect.objectContaining({ signal: controller.signal })
+            );
+        });
+
+        it("should propagate batch cancellation without caching results", async () => {
+            const controller = new AbortController();
+            const abortError = new DOMException("Request aborted", "AbortError");
+            controller.abort(abortError);
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockRejectedValue(abortError);
+
+            await expect(
+                batchSearchMpcAutofill(["Sol Ring"], "CARD", controller.signal)
+            ).rejects.toBe(abortError);
+
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+        });
+
+        it("should stop starting cache writes after a pending write completes following abort", async () => {
+            const controller = new AbortController();
+            const abortError = new DOMException("Request aborted", "AbortError");
+            const firstCacheWrite = createDeferred<void>();
+            const firstCacheWriteStarted = createDeferred<void>();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            mockCacheMpcSearch.mockImplementationOnce(() => {
+                firstCacheWriteStarted.resolve();
+                return firstCacheWrite.promise;
+            });
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({
+                    results: {
+                        "Sol Ring": [createMpcCard()],
+                        Forest: [createMpcCard({ identifier: "forest", name: "Forest" })],
+                    },
+                }),
+            } as Response);
+
+            const search = batchSearchMpcAutofill(["Sol Ring", "Forest"], "CARD", controller.signal);
+            await firstCacheWriteStarted.promise;
+            controller.abort(abortError);
+            firstCacheWrite.resolve();
+
+            await expect(search).rejects.toBe(abortError);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+        });
+
         it("should parse card names before returning results", async () => {
             const mockResponse = {
                 results: {

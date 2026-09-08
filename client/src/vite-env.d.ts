@@ -53,8 +53,8 @@ interface Window {
     setUpdateChannel: (channel: string) => Promise<boolean>;
     getAutoUpdateEnabled: () => Promise<boolean>;
     setAutoUpdateEnabled: (enabled: boolean) => Promise<boolean>;
-    onUpdateStatus: (callback: (status: UpdateStatus, info?: UpdateEventInfo) => void) => void;
-    onShowAbout: (callback: () => void) => void;
+    onUpdateStatus: (callback: (status: UpdateStatus, info?: UpdateEventInfo) => void) => () => void;
+    onShowAbout: (callback: () => void) => () => void;
     checkForUpdates: () => Promise<void>;
     downloadUpdate: () => Promise<void>;
     installUpdate: () => Promise<void>;

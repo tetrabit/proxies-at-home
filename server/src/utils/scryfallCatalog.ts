@@ -7,6 +7,7 @@
  */
 
 import { getDatabase } from '../db/db.js';
+import { scryfallRequestBroker } from './scryfallRequestBroker.js';
 
 // In-memory cache of valid types from Scryfall catalogs
 const validTypes = new Set<string>();
@@ -34,18 +35,24 @@ export async function initCatalogs(): Promise<void> {
             'spell-types',     // Arcane, Trap
         ];
 
-        const responses = await Promise.all(
+        const responses = await Promise.allSettled(
             catalogEndpoints.map(endpoint =>
-                fetch(`https://api.scryfall.com/catalog/${endpoint}`)
-                    .then(r => r.json())
-                    .catch(() => ({ data: [] }))
+                scryfallRequestBroker.enqueue(() =>
+                    fetch(`https://api.scryfall.com/catalog/${endpoint}`)
+                        .then(r => r.json())
+                )
             )
         );
 
-        // Add all types to the set (lowercase for case-insensitive matching)
+        if (responses.every(response => response.status === 'rejected')) {
+            throw new Error('All Scryfall catalog requests failed');
+        }
+
+        // A failed endpoint must not discard successful, independently fetched catalogs.
         for (const response of responses) {
-            const catalog = response as CatalogResponse;
-            catalog.data?.forEach((t: string) => validTypes.add(t.toLowerCase()));
+            if (response.status !== 'fulfilled') continue;
+            const catalog = response.value as CatalogResponse | null;
+            catalog?.data?.forEach((t: string) => validTypes.add(t.toLowerCase()));
         }
 
         console.log(`[Catalog] Loaded ${validTypes.size} types from ${catalogEndpoints.length} Scryfall catalogs`);

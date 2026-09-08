@@ -47,7 +47,7 @@ if (process.env.SCRYFALL_CACHE_URL) {
  * If port is 0, a random available port will be used.
  * @returns Promise resolving to the actual port the server is listening on
  */
-export function startServer(port: number = 3001): Promise<number> {
+export function startServer(port: number = 3001, options: { host?: string } = {}): Promise<number> {
   const app = express();
 
   // Security headers via helmet.js
@@ -203,7 +203,7 @@ export function startServer(port: number = 3001): Promise<number> {
   app.use("/api/metrics", metricsRouter);
 
   return new Promise((resolve) => {
-    const server = app.listen(port, "0.0.0.0", () => {
+    const server = app.listen(port, options.host ?? "0.0.0.0", () => {
       const addr = server.address();
       const actualPort = typeof addr === "string" ? port : addr?.port || port;
       console.log(`Server listening on port ${actualPort}`);

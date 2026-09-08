@@ -151,6 +151,16 @@ describe('server index bootstrap and app wiring', () => {
     expect(state.cleanupExpiredShares).toHaveBeenCalledTimes(2);
   });
 
+  it('supports explicit loopback binding without changing standalone defaults', async () => {
+    const { startServer } = await import('./index.js');
+    expect(await startServer(0, { host: '127.0.0.1' })).toBe(49152);
+    expect(state.app?.listen).toHaveBeenCalledWith(0, '127.0.0.1', expect.any(Function));
+    await startServer(3001, { host: '192.0.2.5' });
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '192.0.2.5', expect.any(Function));
+    await startServer(3001);
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0', expect.any(Function));
+  });
+
   it('implements health and deep-health success/degraded branches', async () => {
     const { startServer } = await import('./index.js');
     await startServer(3001);

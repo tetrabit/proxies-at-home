@@ -521,7 +521,7 @@ app.whenReady().then(async () => {
     const startServer = serverModule.startServer;
 
     if (typeof startServer === "function") {
-      serverPort = await startServer(0); // 0 = random available port
+      serverPort = await startServer(0, { host: "127.0.0.1" }); // 0 = random available port
       console.log("[Electron] Server started on port:", serverPort);
     } else {
       console.error(

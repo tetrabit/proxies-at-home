@@ -35,6 +35,16 @@ export interface MpcSearchOptions {
     includeAllLanguages?: boolean;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+    }
+}
+
+function isAbortError(err: unknown): boolean {
+    return err instanceof Error && err.name === "AbortError";
+}
+
 /**
  * Search MPC Autofill for custom card art
  * @param query Card name to search for
@@ -46,7 +56,8 @@ export async function searchMpcAutofill(
     query: string,
     cardType: "CARD" | "CARDBACK" | "TOKEN" = "CARD",
     fuzzySearch: boolean = true,
-    options: MpcSearchOptions = {}
+    options: MpcSearchOptions = {},
+    signal?: AbortSignal
 ): Promise<MpcAutofillCard[]> {
     if (!query.trim()) {
         return [];
@@ -76,7 +87,9 @@ export async function searchMpcAutofill(
                     ? { includeAllLanguages: true }
                     : {}),
             }),
+            signal,
         });
+        throwIfAborted(signal);
 
         if (!response.ok) {
             console.error("[MPC Autofill] Search failed:", response.status);
@@ -84,6 +97,7 @@ export async function searchMpcAutofill(
         }
 
         const data: MpcSearchResponse = await response.json();
+        throwIfAborted(signal);
         // Parse card names to extract base names (strips { } and ( ) suffixes)
         const cards = (data.cards || []).map((card) => ({
             ...card,
@@ -93,11 +107,19 @@ export async function searchMpcAutofill(
 
         // Store in client cache
         if (cards.length > 0) {
+            throwIfAborted(signal);
             await cacheMpcSearch(cacheKey, cardType, cards);
+            throwIfAborted(signal);
         }
 
         return cards;
     } catch (err) {
+        if (signal?.aborted) {
+            throwIfAborted(signal);
+        }
+        if (isAbortError(err)) {
+            throw err;
+        }
         console.error("[MPC Autofill] Search error:", err);
         return [];
     }
@@ -112,7 +134,8 @@ export async function searchMpcAutofill(
  */
 export async function batchSearchMpcAutofill(
     queries: string[],
-    cardType: "CARD" | "CARDBACK" | "TOKEN" = "CARD"
+    cardType: "CARD" | "CARDBACK" | "TOKEN" = "CARD",
+    signal?: AbortSignal
 ): Promise<Record<string, MpcAutofillCard[]>> {
     if (queries.length === 0) {
         return {};
@@ -148,7 +171,9 @@ export async function batchSearchMpcAutofill(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ queries: uncachedQueries.map(q => q.trim()), cardType }),
+            signal,
         });
+        throwIfAborted(signal);
 
         if (!response.ok) {
             console.error("[MPC Autofill] Batch search failed:", response.status);
@@ -156,6 +181,7 @@ export async function batchSearchMpcAutofill(
         }
 
         const data: MpcBatchSearchResponse = await response.json();
+        throwIfAborted(signal);
 
         // Cache and merge results (batch always uses fuzzy=true)
         // Parse card names to extract base names (strips { } and ( ) suffixes)
@@ -168,12 +194,20 @@ export async function batchSearchMpcAutofill(
             results[query] = parsedCards;
             if (parsedCards.length > 0) {
                 const cacheKey = `${query.toLowerCase()}:fuzzy`;
+                throwIfAborted(signal);
                 await cacheMpcSearch(cacheKey, cardType, parsedCards);
+                throwIfAborted(signal);
             }
         }
 
         return results;
     } catch (err) {
+        if (signal?.aborted) {
+            throwIfAborted(signal);
+        }
+        if (isAbortError(err)) {
+            throw err;
+        }
         console.error("[MPC Autofill] Batch search error:", err);
         return results;
     }

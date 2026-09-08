@@ -126,7 +126,6 @@ export class ScryfallRequestBroker {
 
     request.started = true;
     this.activeRequest = request;
-    this.lastDispatchAt = now;
 
     let physicalRequest: Promise<unknown>;
     try {
@@ -134,6 +133,9 @@ export class ScryfallRequestBroker {
     } catch (error) {
       physicalRequest = Promise.reject(error);
     }
+    // Reserve from after synchronous invocation so its overhead cannot shorten
+    // the interval measured between actual transport invocations.
+    this.lastDispatchAt = Date.now();
 
     void physicalRequest
       .then(

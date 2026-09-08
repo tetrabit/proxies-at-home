@@ -364,6 +364,14 @@ describe("electron main lifecycle", () => {
     expect(ipcHandlers.get("set-auto-update-enabled")?.({}, true)).toBe(true);
   });
 
+  it("starts the desktop server with explicit loopback binding", async () => {
+    const startServer = vi.fn(async () => 4555);
+    await importAndRunReady((mainModule) => {
+      mainModule.electronMainRuntime.importServerModule = vi.fn(async () => ({ startServer }));
+    });
+    expect(startServer).toHaveBeenCalledExactlyOnceWith(0, { host: '127.0.0.1' });
+  });
+
   it("handles updater events before a window exists", async () => {
     await import("./main.ts");
 

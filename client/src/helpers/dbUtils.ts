@@ -1301,7 +1301,11 @@ export async function createLinkedBackCardsBulk(
             (imageRefDecrements.get(existingBack.imageId) || 0) + 1
           );
         }
-        if (update.newImageId && !isCardbackId(update.newImageId)) {
+        if (
+          update.newImageId &&
+          existingBack?.imageId !== update.newImageId &&
+          !isCardbackId(update.newImageId)
+        ) {
           imageRefIncrements.set(
             update.newImageId,
             (imageRefIncrements.get(update.newImageId) || 0) + 1

@@ -1,7 +1,36 @@
+import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElectronApi } from './preload-api';
 
 describe('preload', () => {
+  it.each(['update-status', 'show-about'] as const)('disposes only its own %s subscription', (channel) => {
+    const emitter = new EventEmitter();
+    const removeListener = vi.fn(emitter.removeListener.bind(emitter));
+    const api = createElectronApi({ invoke: vi.fn(), on: emitter.on.bind(emitter), removeListener });
+    const first = vi.fn();
+    const second = vi.fn();
+    const subscribe = channel === 'update-status' ? api.onUpdateStatus : api.onShowAbout;
+    const disposeFirst = subscribe(first);
+    const disposeSecond = subscribe(second);
+
+    expect(typeof disposeFirst).toBe('function');
+    expect(emitter.listenerCount(channel)).toBe(2);
+    disposeFirst();
+    disposeFirst();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    emitter.emit(channel, { privateEvent: true }, 'downloaded', { version: '1' });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+    if (channel === 'update-status') {
+      expect(second).toHaveBeenCalledWith('downloaded', { version: '1' });
+    } else {
+      expect(second).toHaveBeenCalledWith();
+    }
+    disposeSecond();
+    expect(emitter.listenerCount(channel)).toBe(0);
+    expect(api).not.toHaveProperty('ipcRenderer');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -9,7 +38,7 @@ describe('preload', () => {
   it('exposes MPC preference IPC helpers on electronAPI', async () => {
     const invoke = vi.fn();
     const on = vi.fn();
-    const exposedApi = createElectronApi({ invoke, on }) as {
+    const exposedApi = createElectronApi({ invoke, on, removeListener: vi.fn() }) as {
       loadMpcPreferences: () => Promise<unknown>;
       saveMpcPreferences: (fixture: unknown) => Promise<unknown>;
     };
@@ -25,7 +54,7 @@ describe('preload', () => {
   it('routes every exposed bridge method to the expected IPC channel', async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();
-    const api = createElectronApi({ invoke, on });
+    const api = createElectronApi({ invoke, on, removeListener: vi.fn() });
 
     await api.serverUrl();
     await api.getMicroserviceUrl();
@@ -57,7 +86,7 @@ describe('preload', () => {
   it('subscribes update and about callbacks through ipcRenderer.on', () => {
     const invoke = vi.fn();
     const on = vi.fn();
-    const api = createElectronApi({ invoke, on });
+    const api = createElectronApi({ invoke, on, removeListener: vi.fn() });
     const updateCallback = vi.fn();
     const aboutCallback = vi.fn();
 

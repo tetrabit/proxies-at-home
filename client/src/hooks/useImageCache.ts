@@ -32,106 +32,103 @@ export function useImageCache(
     darkenMode: DarkenMode,
     cards?: CardOption[]
 ) {
-    const urlCacheRef = useRef<Map<string, { blob: Blob; url: string; mode: DarkenMode }>>(new Map());
-    const revocationQueueRef = useRef<string[]>([]);
+    const urlCacheRef = useRef<Map<string, { blob: Blob; url: string }>>(new Map());
+    const revocationQueueRef = useRef<Set<string>>(new Set());
+    const pendingRevocationsRef = useRef<Set<{
+        urls: Set<string>;
+        timer: ReturnType<typeof setTimeout> | undefined;
+    }>>(new Set());
     const prevResultRef = useRef<Record<string, string>>({});
 
-    // Build a map from imageId to card for quick lookup
-    // Also create a version key from overrides to detect changes
-    const overridesVersion = useMemo(() => {
-        if (!cards) return '';
-        // Create a simple hash from all card darkenMode overrides
-        return cards.map(c => `${c.imageId}:${c.overrides?.darkenMode ?? ''}`).join('|');
-    }, [cards]);
-
+    // Build a per-image card list so duplicate card instances retain their own output keys.
     const cardsByImageId = useMemo(() => {
-        const map = new Map<string, CardOption>();
-        if (cards) {
-            cards.forEach(card => {
-                if (card.imageId) {
-                    map.set(card.imageId, card);
-                }
-            });
-        }
+        const map = new Map<string, CardOption[]>();
+        cards?.forEach(card => {
+            if (!card.imageId) return;
+            const cardsForImage = map.get(card.imageId) ?? [];
+            cardsForImage.push(card);
+            map.set(card.imageId, cardsForImage);
+        });
         return map;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cards, overridesVersion]);
+    }, [cards]);
 
     const processedImageUrls: Record<string, string> = useMemo(() => {
         const urls: Record<string, string> = {};
-        if (!images) return prevResultRef.current ?? {};
+        if (!images) return prevResultRef.current;
 
         const currentCache = urlCacheRef.current;
-        const usedIds = new Set<string>();
+        const usedRenditionKeys = new Set<string>();
         let hasChanges = false;
 
         images.forEach((img) => {
-            // Check for per-card darkenMode override
-            const card = cardsByImageId.get(img.id);
-            const effectiveDarkenMode = card?.overrides?.darkenMode ?? darkenMode;
-            const selectedBlob = selectDisplayBlob(img, effectiveDarkenMode);
+            const cardsForImage = cardsByImageId.get(img.id);
+            const renditions = cardsForImage?.length
+                ? cardsForImage.map(card => ({
+                    outputKey: card.uuid,
+                    effectiveDarkenMode: card.overrides?.darkenMode ?? darkenMode,
+                }))
+                : [{ outputKey: img.id, effectiveDarkenMode: darkenMode }];
 
-            if (selectedBlob && selectedBlob.size > 0) {
-                usedIds.add(img.id);
+            renditions.forEach(({ outputKey, effectiveDarkenMode }) => {
+                const selectedBlob = selectDisplayBlob(img, effectiveDarkenMode);
+                if (!selectedBlob || selectedBlob.size === 0) return;
 
-                const cached = currentCache.get(img.id);
-                // Compare by size AND mode since a card's override may have changed
-                if (cached && cached.blob.size === selectedBlob.size && cached.mode === effectiveDarkenMode) {
-                    // Blob size and mode unchanged, reuse existing URL
-                    urls[img.id] = cached.url;
-                } else {
-                    // New or changed blob - this is a real change
-                    if (cached) {
-                        revocationQueueRef.current.push(cached.url);
-                    }
-                    const newUrl = URL.createObjectURL(selectedBlob);
-                    urls[img.id] = newUrl;
-                    currentCache.set(img.id, { blob: selectedBlob, url: newUrl, mode: effectiveDarkenMode });
-                    hasChanges = true;
+                const renditionKey = `${img.id}:${effectiveDarkenMode}`;
+                usedRenditionKeys.add(renditionKey);
+                const cached = currentCache.get(renditionKey);
+
+                if (cached?.blob === selectedBlob) {
+                    urls[outputKey] = cached.url;
+                    return;
                 }
-            }
+
+                if (cached) {
+                    revocationQueueRef.current.add(cached.url);
+                }
+                const url = URL.createObjectURL(selectedBlob);
+                currentCache.set(renditionKey, { blob: selectedBlob, url });
+                urls[outputKey] = url;
+                hasChanges = true;
+            });
         });
 
-        // Clean up removed images
-        for (const [id, cached] of currentCache.entries()) {
-            if (!usedIds.has(id)) {
-                revocationQueueRef.current.push(cached.url);
-                currentCache.delete(id);
+        for (const [renditionKey, cached] of currentCache.entries()) {
+            if (!usedRenditionKeys.has(renditionKey)) {
+                revocationQueueRef.current.add(cached.url);
+                currentCache.delete(renditionKey);
                 hasChanges = true;
             }
         }
 
-        // Only return a new object reference if something actually changed
         const prevUrls = prevResultRef.current;
         if (!hasChanges && Object.keys(urls).length === Object.keys(prevUrls).length) {
-            let allSame = true;
-            for (const id in urls) {
-                if (urls[id] !== prevUrls[id]) {
-                    allSame = false;
-                    break;
-                }
-            }
-            if (allSame) {
-                return prevUrls;
-            }
+            const allSame = Object.keys(urls).every(key => urls[key] === prevUrls[key]);
+            if (allSame) return prevUrls;
         }
 
         prevResultRef.current = urls;
         return urls;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [images, darkenMode, cardsByImageId, overridesVersion]);
+    }, [images, darkenMode, cardsByImageId]);
 
-    // Process revocation queue after render
+    // Revoke superseded URLs only after the replacement render has committed.
     useEffect(() => {
-        const queue = revocationQueueRef.current;
-        if (queue.length > 0) {
-            const timer = setTimeout(() => {
-                queue.forEach((url) => URL.revokeObjectURL(url));
-            }, 2000);
-            revocationQueueRef.current = [];
+        const urlsToRevoke = revocationQueueRef.current;
+        if (urlsToRevoke.size === 0) return;
 
-            return () => clearTimeout(timer);
-        }
+        revocationQueueRef.current = new Set();
+        const pendingRevocations = pendingRevocationsRef.current;
+        const pending = { urls: urlsToRevoke, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+        pendingRevocations.add(pending);
+        pending.timer = setTimeout(() => {
+            if (!pendingRevocations.delete(pending)) return;
+            pending.urls.forEach((url) => URL.revokeObjectURL(url));
+        }, 2000);
+
+        return () => {
+            if (!pendingRevocations.delete(pending)) return;
+            clearTimeout(pending.timer);
+            pending.urls.forEach((url) => URL.revokeObjectURL(url));
+        };
     });
 
     // Cleanup on unmount

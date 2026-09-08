@@ -3,9 +3,19 @@ import type { MpcPreferenceFixture } from './mpc-preferences.js';
 type IpcRendererLike = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
   on(channel: string, listener: (...args: unknown[]) => void): void;
+  removeListener(channel: string, listener: (...args: unknown[]) => void): void;
 };
 
 export function createElectronApi(ipcRenderer: IpcRendererLike) {
+  const subscribe = (channel: 'update-status' | 'show-about', listener: (...args: unknown[]) => void) => {
+    ipcRenderer.on(channel, listener);
+    let disposed = false;
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      ipcRenderer.removeListener(channel, listener);
+    };
+  };
   return {
     serverUrl: () => ipcRenderer.invoke('get-server-url') as Promise<string>,
     loadMpcPreferences: () =>
@@ -28,12 +38,12 @@ export function createElectronApi(ipcRenderer: IpcRendererLike) {
     onUpdateStatus: (
       callback: (status: string, info?: unknown) => void
     ) => {
-      ipcRenderer.on('update-status', (_event, status, info) =>
+      return subscribe('update-status', (_event, status, info) =>
         callback(status as string, info)
       );
     },
     onShowAbout: (callback: () => void) => {
-      ipcRenderer.on('show-about', () => callback());
+      return subscribe('show-about', () => callback());
     },
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates') as Promise<void>,
     downloadUpdate: () => ipcRenderer.invoke('download-update') as Promise<void>,
