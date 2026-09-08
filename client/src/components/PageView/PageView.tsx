@@ -17,6 +17,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
+  type DragCancelEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -142,6 +143,19 @@ export function PageView({
   const registrationMarksPortrait = useSettingsStore(
     (s) => s.registrationMarksPortrait
   );
+  const withBleedSourceAmount = useSettingsStore(
+    (s) => s.withBleedSourceAmount
+  );
+  const withBleedTargetMode = useSettingsStore(
+    (s) => s.withBleedTargetMode
+  );
+  const withBleedTargetAmount = useSettingsStore(
+    (s) => s.withBleedTargetAmount
+  );
+  const noBleedTargetMode = useSettingsStore((s) => s.noBleedTargetMode);
+  const noBleedTargetAmount = useSettingsStore(
+    (s) => s.noBleedTargetAmount
+  );
 
   // Flipped cards for back image display
   const flippedCards = useSelectionStore((s) => s.flippedCards);
@@ -221,14 +235,21 @@ export function PageView({
   // Source settings for layout calculations
   const sourceSettings = useMemo(
     () => ({
-      withBleedSourceAmount: useSettingsStore.getState().withBleedSourceAmount,
-      withBleedTargetMode: useSettingsStore.getState().withBleedTargetMode,
-      withBleedTargetAmount: useSettingsStore.getState().withBleedTargetAmount,
-      noBleedTargetMode: useSettingsStore.getState().noBleedTargetMode,
-      noBleedTargetAmount: useSettingsStore.getState().noBleedTargetAmount,
+      withBleedSourceAmount,
+      withBleedTargetMode,
+      withBleedTargetAmount,
+      noBleedTargetMode,
+      noBleedTargetAmount,
       bleedEdgeWidth: effectiveBleedWidth,
     }),
-    [effectiveBleedWidth]
+    [
+      withBleedSourceAmount,
+      withBleedTargetMode,
+      withBleedTargetAmount,
+      noBleedTargetMode,
+      noBleedTargetAmount,
+      effectiveBleedWidth,
+    ]
   );
 
   // Dark mode detection - use matchMedia to match CSS @media (prefers-color-scheme: dark)
@@ -393,6 +414,30 @@ export function PageView({
     ghostIds: new Set(),
   });
 
+  const multiDragStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const dragOverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const unblockDbTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const clearDragTimers = useCallback(() => {
+    for (const timeoutRef of [
+      multiDragStartTimeoutRef,
+      dragOverTimeoutRef,
+      unblockDbTimeoutRef,
+    ]) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    }
+  }, []);
+
+  useEffect(() => clearDragTimers, [clearDragTimers]);
+
   // Sync localCards from visibleCards when not dragging
   useEffect(() => {
     if (blockDbUpdates) return;
@@ -431,6 +476,7 @@ export function PageView({
   // Handle card drag start - track active drag and selection context
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
+      clearDragTimers();
       const cardUuid = event.active.id as string;
       const card = localCards.find((c) => c.uuid === cardUuid);
       const selectionStore = useSelectionStore.getState();
@@ -470,7 +516,8 @@ export function PageView({
         }
 
         // Defer state update required for dnd-kit to capture nodes
-        setTimeout(() => {
+        multiDragStartTimeoutRef.current = setTimeout(() => {
+          multiDragStartTimeoutRef.current = null;
           setLocalCards(newLocalCards);
         }, 50);
       } else {
@@ -490,10 +537,8 @@ export function PageView({
       setIsOptimistic(true);
       setBlockDbUpdates(true);
     },
-    [localCards]
+    [localCards, clearDragTimers]
   );
-
-  const dragOverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Handle drag over - update localCards for canvas dynamic reordering
   const handleDragOver = useCallback((event: DragOverEvent) => {
@@ -506,6 +551,7 @@ export function PageView({
     }
 
     dragOverTimeoutRef.current = setTimeout(() => {
+      dragOverTimeoutRef.current = null;
       const currentLocalCards = localCardsRef.current;
       const activeId = active.id;
       const overId = over.id;
@@ -523,10 +569,12 @@ export function PageView({
 
   // Handle card drag end - persist the current localCards order to database
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    clearDragTimers();
     const { active, over } = event;
 
     setActiveId(null);
-    setTimeout(() => {
+    unblockDbTimeoutRef.current = setTimeout(() => {
+      unblockDbTimeoutRef.current = null;
       setBlockDbUpdates(false);
     }, 500);
 
@@ -578,19 +626,24 @@ export function PageView({
         newOrder: number;
       }[] = [];
 
+      const originalOrderByUuid = new Map(
+        multiDragState.current.originalLocalCards.map((card) => [
+          card.uuid,
+          card.order,
+        ])
+      );
+
       // Calculate adjustments for ALL cards to ensure complete state restoration
       // This allows a single Undo to revert the entire rebalance operation
       newLocalCards.forEach((card, index) => {
         const newOrder = (index + 1) * 10;
-        const original = multiDragState.current.originalLocalCards.find(
-          (c) => c.uuid === card.uuid
-        );
+        const oldOrder = originalOrderByUuid.get(card.uuid);
 
         /* v8 ignore next -- reconstructed cards are drawn exclusively from originalLocalCards, so a matching original is an invariant. @preserve */
-        if (original && original.order !== newOrder) {
+        if (oldOrder !== undefined && oldOrder !== newOrder) {
           adjustments.push({
             uuid: card.uuid,
-            oldOrder: original.order,
+            oldOrder,
             newOrder,
           });
         }
@@ -679,7 +732,29 @@ export function PageView({
       await db.cards.update(active.id as string, { order: newOrder });
     }
     dragStartOrderRef.current = null;
-  }, []);
+  }, [clearDragTimers]);
+
+  const handleDragCancel = useCallback(
+    (_event: DragCancelEvent) => {
+      clearDragTimers();
+      setActiveId(null);
+      setBlockDbUpdates(false);
+      setIsOptimistic(false);
+      dragStartOrderRef.current = null;
+
+      if (multiDragState.current.isMultiDrag) {
+        setLocalCards(multiDragState.current.originalLocalCards);
+      }
+      multiDragState.current = {
+        isMultiDrag: false,
+        draggedCards: [],
+        originalLocalCards: [],
+        activeId: null,
+        ghostIds: new Set(),
+      };
+    },
+    [clearDragTimers]
+  );
 
   // Sortable IDs for DndContext - use visibleCards (stable during drag)
   const sortableIds = useMemo(
@@ -712,34 +787,56 @@ export function PageView({
     return map;
   }, [images]);
 
-  // Create blob URLs for drag overlay (cleaned up on unmount)
-  const processedImageUrlsRef = useRef<Map<string, string>>(new Map());
-  const processedImageUrls = useMemo(() => {
-    const urls: Record<string, string> = {};
-    // Revoke old URLs that are no longer needed
-    const currentIds = new Set<string>();
+  // Drag-overlay URLs are effect-owned so rendering stays pure and each blob
+  // replacement/removal has one matching revocation.
+  const processedImageUrlsRef = useRef<
+    Map<string, { blob: Blob; url: string }>
+  >(new Map());
+  const [processedImageUrls, setProcessedImageUrls] = useState<
+    Record<string, string>
+  >({});
+
+  useEffect(() => {
+    const desiredBlobs = new Map<string, Blob>();
     for (const [id, data] of imageDataById.entries()) {
-      if (data.displayBlob) {
-        currentIds.add(id);
-        // Reuse existing URL if blob hasn't changed
-        if (!processedImageUrlsRef.current.has(id)) {
-          processedImageUrlsRef.current.set(
-            id,
-            URL.createObjectURL(data.displayBlob)
-          );
-        }
-        urls[id] = processedImageUrlsRef.current.get(id)!;
-      }
+      if (data.displayBlob) desiredBlobs.set(id, data.displayBlob);
     }
-    // Clean up old URLs
-    for (const [id, url] of processedImageUrlsRef.current.entries()) {
-      if (!currentIds.has(id)) {
-        URL.revokeObjectURL(url);
+
+    for (const [id, entry] of processedImageUrlsRef.current.entries()) {
+      if (desiredBlobs.get(id) !== entry.blob) {
+        URL.revokeObjectURL(entry.url);
         processedImageUrlsRef.current.delete(id);
       }
     }
-    return urls;
+
+    for (const [id, blob] of desiredBlobs.entries()) {
+      if (!processedImageUrlsRef.current.has(id)) {
+        processedImageUrlsRef.current.set(id, {
+          blob,
+          url: URL.createObjectURL(blob),
+        });
+      }
+    }
+
+    setProcessedImageUrls(
+      Object.fromEntries(
+        Array.from(processedImageUrlsRef.current, ([id, entry]) => [
+          id,
+          entry.url,
+        ])
+      )
+    );
   }, [imageDataById]);
+
+  useEffect(() => {
+    const ownedUrls = processedImageUrlsRef.current;
+    return () => {
+      for (const { url } of ownedUrls.values()) {
+        URL.revokeObjectURL(url);
+      }
+      ownedUrls.clear();
+    };
+  }, []);
 
   // Page count and content dimensions
   const pageCount = Math.max(1, Math.ceil(localCards.length / pageCapacity));
@@ -1051,6 +1148,7 @@ export function PageView({
                   onDragStart={handleDragStart}
                   onDragOver={handleDragOver}
                   onDragEnd={handleDragEnd}
+                  onDragCancel={handleDragCancel}
                 >
                   <SortableContext
                     items={sortableIds}

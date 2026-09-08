@@ -32,19 +32,82 @@ export class ScryfallCacheClient {
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.config.baseUrl}${path}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      },
-    });
+    const callerSignal = options.signal;
+    const controller = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.statusText}`);
+    const abort = (reason?: unknown) => {
+      if (!controller.signal.aborted) {
+        controller.abort(reason ?? new DOMException('The operation was aborted', 'AbortError'));
+      }
+    };
+    const onCallerAbort = () => abort(callerSignal?.reason);
+
+    if (callerSignal?.aborted) {
+      onCallerAbort();
+    } else {
+      callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
     }
 
-    return response.json();
+    if (!controller.signal.aborted && this.config.timeout !== undefined) {
+      timeoutId = setTimeout(() => {
+        abort(new DOMException('The request timed out', 'TimeoutError'));
+      }, this.config.timeout);
+    }
+
+    const waitForAbort = <Value>(operation: Promise<Value>): Promise<Value> => {
+      if (controller.signal.aborted) {
+        return Promise.reject(controller.signal.reason);
+      }
+
+      return new Promise<Value>((resolve, reject) => {
+        const onAbort = () => {
+          cleanup();
+          reject(controller.signal.reason);
+        };
+        const cleanup = () => controller.signal.removeEventListener('abort', onAbort);
+
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        operation.then(
+          (value) => {
+            cleanup();
+            resolve(value);
+          },
+          (error: unknown) => {
+            cleanup();
+            reject(error);
+          }
+        );
+      });
+    };
+
+    try {
+      if (controller.signal.aborted) {
+        throw controller.signal.reason;
+      }
+
+      const response = await waitForAbort(
+        fetch(url, {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options.headers,
+          },
+        })
+      );
+
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.statusText}`);
+      }
+
+      return await waitForAbort(response.json());
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    }
   }
 
   // Card endpoints

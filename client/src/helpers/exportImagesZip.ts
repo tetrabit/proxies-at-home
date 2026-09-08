@@ -47,6 +47,20 @@ type ExportResult = {
   filename: string;
 } | null;
 
+function preassignFilenamePrefixes(cards: CardOption[]): string[] {
+  const usedNames = new Map<string, number>();
+
+  return cards.map((card, index) => {
+    const baseName = sanitizeFilename(card.name || `Card ${index + 1}`);
+    const count = (usedNames.get(baseName) ?? 0) + 1;
+    usedNames.set(baseName, count);
+    const suffix = count > 1 ? ` (${count})` : "";
+    const idx = String(index + 1).padStart(3, "0");
+
+    return `${idx} - ${baseName}${suffix}`;
+  });
+}
+
 /**
  * Shared logic to process a card: resolve image, apply overrides, and generate filename.
  */
@@ -54,7 +68,8 @@ async function processCardForExport(
   c: CardOption,
   index: number,
   imagesById: Map<string, Image>,
-  usedNames: Map<string, number>
+  usedNames: Map<string, number>,
+  preassignedFilenamePrefix?: string
 ): Promise<ExportResult> {
   const image = c.imageId ? imagesById.get(c.imageId) : undefined;
   let url = image?.sourceUrl || "";
@@ -124,11 +139,14 @@ async function processCardForExport(
     }
   }
 
-  // de-dupe filenames per printed order
-  // Note: This shared mutation of `usedNames` is safe because we only access it here
-  const count = (usedNames.get(baseName) ?? 0) + 1;
-  usedNames.set(baseName, count);
-  const suffix = count > 1 ? ` (${count})` : "";
+  // De-dupe names during individual exports; ZIP prefixes are assigned before preparation starts.
+  let filenamePrefix = preassignedFilenamePrefix;
+  if (!filenamePrefix) {
+    const count = (usedNames.get(baseName) ?? 0) + 1;
+    usedNames.set(baseName, count);
+    const suffix = count > 1 ? ` (${count})` : "";
+    filenamePrefix = `${idx} - ${baseName}${suffix}`;
+  }
 
   // Try to keep the right extension if we know it; default to .png
   const ext =
@@ -138,7 +156,7 @@ async function processCardForExport(
         ? "webp"
         : "png";
 
-  const filename = `${idx} - ${baseName}${suffix}.${ext}`;
+  const filename = `${filenamePrefix}.${ext}`;
   return { blob, filename };
 }
 
@@ -167,11 +185,18 @@ export async function ExportImagesZip(opts: ExportOpts) {
 
   const zip = new JSZip();
   const usedNames = new Map<string, number>();
+  const zipFilenamePrefixes = preassignFilenamePrefixes(cards);
   const imagesById = new Map(images.map((img) => [img.id, img]));
 
   // Build a work list
   const tasks = cards.map((c, i) => async () => {
-    const result = await processCardForExport(c, i, imagesById, usedNames);
+    const result = await processCardForExport(
+      c,
+      i,
+      imagesById,
+      usedNames,
+      zipFilenamePrefixes[i]
+    );
     if (result) {
       zip.file(result.filename, result.blob);
     }

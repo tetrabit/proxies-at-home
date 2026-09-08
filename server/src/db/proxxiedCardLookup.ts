@@ -289,6 +289,8 @@ interface CardWithId extends ScryfallApiCard {
  */
 function rowToScryfallCard(row: CardRow): ScryfallApiCard {
   return {
+    id: row.id,
+    oracle_id: row.oracle_id ?? undefined,
     name: row.name,
     set: row.set_code || undefined,
     collector_number: row.collector_number || undefined,

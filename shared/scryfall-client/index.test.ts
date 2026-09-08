@@ -11,6 +11,7 @@ function mockFetch(response: Partial<Response>) {
 
 describe('ScryfallCacheClient', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -71,5 +72,135 @@ describe('ScryfallCacheClient', () => {
     await expect(client.getCard('missing')).rejects.toThrow(
       'API request failed: Bad Gateway'
     );
+  });
+
+  it('aborts a pending response when the configured timeout expires', async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, options?: RequestInit) => {
+        requestSignal = options?.signal ?? undefined;
+        return new Promise<Response>(() => {});
+      })
+    );
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+    let outcome: unknown;
+
+    void client.getStats().then(
+      () => {
+        outcome = 'fulfilled';
+      },
+      (error: unknown) => {
+        outcome = error;
+      }
+    );
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(outcome).toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('aborts a stalled response body when the configured timeout expires', async () => {
+    vi.useFakeTimers();
+    const json = vi.fn(() => new Promise<never>(() => {}));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json }) as unknown as Response)
+    );
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+    let outcome: unknown;
+
+    void client.getStats().then(
+      () => {
+        outcome = 'fulfilled';
+      },
+      (error: unknown) => {
+        outcome = error;
+      }
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(json).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(outcome).toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('uses the caller abort reason when it aborts a stalled response body first', async () => {
+    vi.useFakeTimers();
+    const json = vi.fn(() => new Promise<never>(() => {}));
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, options?: RequestInit) => {
+        requestSignal = options?.signal ?? undefined;
+        return { ok: true, json } as unknown as Response;
+      })
+    );
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+    const caller = new AbortController();
+    const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+    const callerReason = new DOMException('The caller cancelled', 'AbortError');
+    let outcome: unknown;
+
+    void client.getStats({ signal: caller.signal }).then(
+      () => {
+        outcome = 'fulfilled';
+      },
+      (error: unknown) => {
+        outcome = error;
+      }
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(json).toHaveBeenCalledOnce();
+
+    caller.abort(callerReason);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(outcome).toBe(callerReason);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('rejects without starting fetch when the caller signal is already aborted', async () => {
+    const caller = new AbortController();
+    const callerReason = new DOMException('The caller cancelled', 'AbortError');
+    caller.abort(callerReason);
+    const fetchMock = mockFetch({ ok: true, json: vi.fn(async () => jsonPayload) });
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+
+    await expect(client.getStats({ signal: caller.signal })).rejects.toBe(callerReason);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('cleans its timer and caller listener after a successful response', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+    mockFetch({ ok: true, json: vi.fn(async () => jsonPayload) });
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+
+    await expect(client.getStats({ signal: caller.signal })).resolves.toEqual(jsonPayload);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('cleans its timer and caller listener after a fetch failure', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+    const failure = new Error('Network failed');
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(failure)));
+    const client = new ScryfallCacheClient({ baseUrl: 'http://cache.test', timeout: 50 });
+
+    await expect(client.getStats({ signal: caller.signal })).rejects.toBe(failure);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 });

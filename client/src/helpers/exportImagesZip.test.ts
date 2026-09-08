@@ -159,6 +159,38 @@ describe('exportImagesZip', () => {
             expect(mocks.file).toHaveBeenCalledWith('002 - Forest (2).png', expect.any(Blob));
         });
 
+        it('preassigns duplicate ZIP filename suffixes in input order when fetches complete in reverse', async () => {
+            const resolveFetches: Array<(value: Response | PromiseLike<Response>) => void> = [];
+            global.fetch = vi.fn().mockImplementation(
+                () => new Promise<Response>((resolve) => resolveFetches.push(resolve))
+            );
+            const firstBlob = new Blob(['first'], { type: 'image/png' });
+            const secondBlob = new Blob(['second'], { type: 'image/png' });
+
+            const exportPromise = ExportImagesZip({
+                cards: [
+                    createMockCard({ name: 'Forest', imageId: 'first-image' }),
+                    createMockCard({ name: 'Forest', imageId: 'second-image' }),
+                ],
+                images: [
+                    createMockImage({ id: 'first-image', sourceUrl: 'https://example.com/first.png' }),
+                    createMockImage({ id: 'second-image', sourceUrl: 'https://example.com/second.png' }),
+                ],
+                concurrency: 2,
+            });
+
+            await vi.waitFor(() => expect(resolveFetches).toHaveLength(2));
+            resolveFetches[1]({ ok: true, blob: async () => secondBlob } as Response);
+            await vi.waitFor(() => expect(mocks.file).toHaveBeenCalledTimes(1));
+            resolveFetches[0]({ ok: true, blob: async () => firstBlob } as Response);
+            await exportPromise;
+
+            expect(mocks.file.mock.calls).toEqual([
+                ['002 - Forest (2).png', secondBlob],
+                ['001 - Forest.png', firstBlob],
+            ]);
+        });
+
         it('should use exportBlob when available', async () => {
             const exportBlob = new Blob(['processed'], { type: 'image/png' });
             const card = createMockCard({ imageId: 'img-1' });

@@ -1,5 +1,6 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderToString } from "react-dom/server";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { Image } from "@/db";
@@ -56,6 +57,7 @@ const state = vi.hoisted(() => ({
     onDragStart: (event: { active: { id: string } }) => void;
     onDragOver: (event: { active: { id: string }; over: { id: string } | null }) => void;
     onDragEnd: (event: { active: { id: string }; over: { id: string } | null }) => Promise<void>;
+    onDragCancel?: () => void;
   }>,
   undoableReorderCards: vi.fn(async (..._args: unknown[]) => undefined),
   undoableReorderMultipleCards: vi.fn(async (..._args: unknown[]) => undefined),
@@ -460,6 +462,258 @@ describe("PageView behavior", () => {
     await act(async () => {
       await state.dndProps.at(-1)!.onDragEnd({ active: { id: "card-1" }, over: null });
     });
+  });
+
+  it("records exact multi-drag undo adjustments with a single original-order lookup pass", async () => {
+    vi.useFakeTimers();
+    const cards = Array.from({ length: 64 }, (_, index) =>
+      makeCard({
+        uuid: `card-${index + 1}`,
+        order: (index + 1) * 100,
+        imageId: "img-1",
+      }),
+    );
+    let uuidReads = 0;
+    for (const card of cards) {
+      const uuid = card.uuid;
+      Object.defineProperty(card, "uuid", {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          uuidReads += 1;
+          return uuid;
+        },
+      });
+    }
+
+    state.selection.selectedCards = new Set(cards.slice(0, 32).map((card) => card.uuid));
+    renderPage(cards);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+    act(() => vi.advanceTimersByTime(50));
+    await act(async () => undefined);
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "card-1" },
+      over: { id: "card-64" },
+    }));
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => undefined);
+
+    uuidReads = 0;
+    await act(async () => {
+      await state.dndProps.at(-1)!.onDragEnd({
+        active: { id: "card-1" },
+        over: { id: "card-64" },
+      });
+    });
+
+    expect(uuidReads).toBeLessThan(cards.length * 10);
+    expect(state.undoableReorderMultipleCards).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { uuid: "card-33", oldOrder: 3300, newOrder: 10 },
+        { uuid: "card-1", oldOrder: 100, newOrder: 330 },
+      ]),
+    );
+  });
+
+  it("updates PageView and drag-overlay geometry for every source target primitive", async () => {
+    const sourceCases = [
+      {
+        name: "with-bleed target mode",
+        hasBuiltInBleed: true,
+        configure: () => {
+          state.settings.withBleedTargetMode = "none";
+          state.settings.withBleedTargetAmount = 3;
+        },
+        update: () => {
+          state.settings.withBleedTargetMode = "manual";
+        },
+        expectedInitialBleed: 0,
+        expectedBleed: 3,
+      },
+      {
+        name: "with-bleed target amount",
+        hasBuiltInBleed: true,
+        configure: () => {
+          state.settings.withBleedTargetMode = "manual";
+          state.settings.withBleedTargetAmount = 1;
+        },
+        update: () => {
+          state.settings.withBleedTargetAmount = 4;
+        },
+        expectedInitialBleed: 1,
+        expectedBleed: 4,
+      },
+      {
+        name: "no-bleed target mode",
+        hasBuiltInBleed: false,
+        configure: () => {
+          state.settings.noBleedTargetMode = "none";
+          state.settings.noBleedTargetAmount = 3;
+        },
+        update: () => {
+          state.settings.noBleedTargetMode = "manual";
+        },
+        expectedInitialBleed: 0,
+        expectedBleed: 3,
+      },
+      {
+        name: "no-bleed target amount",
+        hasBuiltInBleed: false,
+        configure: () => {
+          state.settings.noBleedTargetMode = "manual";
+          state.settings.noBleedTargetAmount = 1;
+        },
+        update: () => {
+          state.settings.noBleedTargetAmount = 4;
+        },
+        expectedInitialBleed: 1,
+        expectedBleed: 4,
+      },
+    ];
+
+    for (const sourceCase of sourceCases) {
+      cleanup();
+      state.dndProps = [];
+      state.settings.bleedEdge = false;
+      state.settings.bleedEdgeWidth = 0;
+      state.settings.withBleedSourceAmount = 0;
+      state.settings.withBleedTargetMode = "none";
+      state.settings.withBleedTargetAmount = 0;
+      state.settings.noBleedTargetMode = "none";
+      state.settings.noBleedTargetAmount = 0;
+      sourceCase.configure();
+
+      const card = makeCard({
+        uuid: `source-${sourceCase.name}`,
+        hasBuiltInBleed: sourceCase.hasBuiltInBleed,
+      });
+      const { rerender } = renderPage([card]);
+      expect(
+        (state.pixiProps.at(-1) as { cards: Array<{ bleedMm: number }> }).cards[0].bleedMm,
+      ).toBe(sourceCase.expectedInitialBleed);
+
+      sourceCase.update();
+      rerender(
+        <PageView
+          getLoadingState={() => "idle"}
+          ensureProcessed={vi.fn()}
+          cards={[card]}
+          allCards={[card]}
+          images={images}
+        />,
+      );
+
+      expect(
+        (state.pixiProps.at(-1) as { cards: Array<{ bleedMm: number; width: number }> }).cards[0],
+        sourceCase.name,
+      ).toEqual(expect.objectContaining({
+        bleedMm: sourceCase.expectedBleed,
+        width: expect.closeTo((63 + sourceCase.expectedBleed * 2) * (96 / 25.4), 5),
+      }));
+
+      act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: card.uuid } }));
+      await act(async () => undefined);
+      const overlayImage = screen.getByTestId("drag-overlay").querySelector("img")!;
+      expect(overlayImage.parentElement?.style.width, sourceCase.name).toBe(
+        `${(63 + sourceCase.expectedBleed * 2) * (96 / 25.4)}px`,
+      );
+    }
+  });
+
+  it("owns drag-overlay URLs across blob replacement, removal, and unmount", async () => {
+    const firstBlob = new Blob(["first"]);
+    const secondBlob = new Blob(["second"]);
+    const firstImage = { id: "drag-image", displayBlob: firstBlob } as Image;
+    const secondImage = { id: "drag-image", displayBlob: secondBlob } as Image;
+    const card = makeCard({ imageId: "drag-image" });
+    const createObjectURL = URL.createObjectURL as ReturnType<typeof vi.fn>;
+    const revokeObjectURL = URL.revokeObjectURL as ReturnType<typeof vi.fn>;
+    createObjectURL.mockImplementationOnce(() => "blob:first").mockImplementationOnce(() => "blob:second");
+
+    renderToString(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[card]}
+        allCards={[card]}
+        images={[firstImage]}
+      />,
+    );
+    expect(createObjectURL).not.toHaveBeenCalled();
+
+    const { rerender, unmount } = render(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[card]}
+        allCards={[card]}
+        images={[firstImage]}
+      />,
+    );
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledWith(firstBlob));
+
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[card]}
+        allCards={[card]}
+        images={[secondImage]}
+      />,
+    );
+    await waitFor(() => {
+      expect(createObjectURL).toHaveBeenLastCalledWith(secondBlob);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:first");
+    });
+
+    rerender(
+      <PageView
+        getLoadingState={() => "idle"}
+        ensureProcessed={vi.fn()}
+        cards={[card]}
+        allCards={[card]}
+        images={[]}
+      />,
+    );
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:second"));
+
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+    expect(revokeObjectURL).toHaveBeenNthCalledWith(1, "blob:first");
+    expect(revokeObjectURL).toHaveBeenNthCalledWith(2, "blob:second");
+  });
+
+  it("cancels owned delayed multi-drag timers on cancellation and unmount", async () => {
+    vi.useFakeTimers();
+    const cards = [
+      makeCard({ uuid: "timer-1", order: 10 }),
+      makeCard({ uuid: "timer-2", order: 20 }),
+      makeCard({ uuid: "timer-3", order: 30 }),
+    ];
+    state.selection.selectedCards = new Set(["timer-1", "timer-2"]);
+    const { unmount } = renderPage(cards);
+    await act(async () => undefined);
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "timer-1" } }));
+    act(() => state.dndProps.at(-1)!.onDragOver({
+      active: { id: "timer-1" },
+      over: { id: "timer-3" },
+    }));
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    act(() => state.dndProps.at(-1)!.onDragCancel!());
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => vi.advanceTimersByTime(500));
+    expect(state.undoableReorderMultipleCards).not.toHaveBeenCalled();
+
+    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "timer-1" } }));
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => vi.advanceTimersByTime(500));
+    expect(state.undoableReorderMultipleCards).not.toHaveBeenCalled();
   });
 
   it("recovers when a multi-drag leader is missing from the rendered cards", async () => {
