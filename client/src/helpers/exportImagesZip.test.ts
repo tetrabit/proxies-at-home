@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
     saveAs: vi.fn(),
     dbPut: vi.fn(),
     dbGet: vi.fn(),
+    dbOrderBy: vi.fn(),
+    dbReverse: vi.fn(),
+    dbEach: vi.fn(),
     getState: vi.fn(() => ({
         dpi: 300,
         darkenMode: 'none',
@@ -36,6 +39,7 @@ vi.mock('@/db', () => ({
     db: {
         effectCache: {
             put: mocks.dbPut,
+            orderBy: mocks.dbOrderBy,
         },
         images: {
             get: mocks.dbGet,
@@ -73,6 +77,10 @@ describe('exportImagesZip', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mocks.dbPut.mockResolvedValue(undefined);
+        mocks.dbEach.mockResolvedValue(undefined);
+        mocks.dbReverse.mockReturnValue({ each: mocks.dbEach });
+        mocks.dbOrderBy.mockReturnValue({ reverse: mocks.dbReverse });
 
         // Default mock implementations
         global.fetch = vi.fn().mockResolvedValue({
@@ -159,13 +167,17 @@ describe('exportImagesZip', () => {
             expect(mocks.file).toHaveBeenCalledWith('002 - Forest (2).png', expect.any(Blob));
         });
 
-        it('preassigns duplicate ZIP filename suffixes in input order when fetches complete in reverse', async () => {
+        it('inserts ZIP files in input order when fetches complete in reverse', async () => {
             const resolveFetches: Array<(value: Response | PromiseLike<Response>) => void> = [];
             global.fetch = vi.fn().mockImplementation(
                 () => new Promise<Response>((resolve) => resolveFetches.push(resolve))
             );
             const firstBlob = new Blob(['first'], { type: 'image/png' });
             const secondBlob = new Blob(['second'], { type: 'image/png' });
+            const secondResponse = {
+                ok: true,
+                blob: vi.fn(async () => secondBlob),
+            } as Response;
 
             const exportPromise = ExportImagesZip({
                 cards: [
@@ -180,14 +192,15 @@ describe('exportImagesZip', () => {
             });
 
             await vi.waitFor(() => expect(resolveFetches).toHaveLength(2));
-            resolveFetches[1]({ ok: true, blob: async () => secondBlob } as Response);
-            await vi.waitFor(() => expect(mocks.file).toHaveBeenCalledTimes(1));
+            resolveFetches[1](secondResponse);
+            await vi.waitFor(() => expect(secondResponse.blob).toHaveBeenCalledTimes(1));
+            expect(mocks.file).not.toHaveBeenCalled();
             resolveFetches[0]({ ok: true, blob: async () => firstBlob } as Response);
             await exportPromise;
 
             expect(mocks.file.mock.calls).toEqual([
-                ['002 - Forest (2).png', secondBlob],
                 ['001 - Forest.png', firstBlob],
+                ['002 - Forest (2).png', secondBlob],
             ]);
         });
 
@@ -215,6 +228,11 @@ describe('exportImagesZip', () => {
 
             expect(mocks.renderCardWithOverridesWorker).toHaveBeenCalled();
             expect(mocks.dbPut).toHaveBeenCalled(); // Should cache result
+            await vi.waitFor(() => {
+                expect(mocks.dbOrderBy).toHaveBeenCalledWith('cachedAt');
+                expect(mocks.dbReverse).toHaveBeenCalledTimes(1);
+                expect(mocks.dbEach).toHaveBeenCalledWith(expect.any(Function));
+            });
             expect(mocks.file).toHaveBeenCalledWith('001 - Test Card.png', renderedBlob);
         });
 

@@ -348,6 +348,85 @@ describe("projectBackup", () => {
     );
   });
 
+  it("rejects cards with malformed required fields before any database write", async () => {
+    const malformedCards = [
+      { uuid: null },
+      { name: null },
+      { order: "zero" },
+      { isUserUpload: null },
+    ];
+    const validCard = {
+      uuid: "card-1",
+      name: "Card",
+      order: 0,
+      isUserUpload: false,
+    };
+
+    for (const malformedCard of malformedCards) {
+      const backup = {
+        ...validBackup,
+        cards: [Object.assign({}, validCard, malformedCard)],
+      };
+
+      await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+        "Invalid backup: invalid card"
+      );
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      vi.clearAllMocks();
+    }
+  });
+
+  it("rejects missing and null project metadata before any database write", async () => {
+    const { project: _project, ...missingProject } = validBackup;
+
+    for (const backup of [missingProject, { ...validBackup, project: null }]) {
+      await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+        "Invalid backup: missing project metadata"
+      );
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      vi.clearAllMocks();
+    }
+  });
+
+  it("rejects invalid project settings before any database write", async () => {
+    for (const settings of [null, "not-settings", []]) {
+      const backup = {
+        ...validBackup,
+        project: { ...validBackup.project, settings },
+      };
+
+      await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+        "Invalid backup: invalid project settings"
+      );
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      vi.clearAllMocks();
+    }
+  });
+
+  it("imports supported version zero backups with omitted settings", async () => {
+    const backup = {
+      ...validBackup,
+      version: 0,
+      project: { name: "Old Project", createdAt: 100 },
+    };
+
+    await expect(importProject(backup as ProjectBackup)).resolves.toBe(
+      "project-new"
+    );
+    expect(mocks.projectsAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Old Project (Imported)", settings: {} })
+    );
+  });
+
   describe("pickBackupFile", () => {
     it("resolves parsed backups from selected JSON files", async () => {
       const input = document.createElement("input") as HTMLInputElement;

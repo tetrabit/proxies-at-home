@@ -188,21 +188,24 @@ export async function ExportImagesZip(opts: ExportOpts) {
   const zipFilenamePrefixes = preassignFilenamePrefixes(cards);
   const imagesById = new Map(images.map((img) => [img.id, img]));
 
-  // Build a work list
-  const tasks = cards.map((c, i) => async () => {
-    const result = await processCardForExport(
+  // Prepare in parallel but retain results at their source indexes so JSZip insertion is deterministic.
+  const preparationTasks = cards.map((c, i) => () =>
+    processCardForExport(
       c,
       i,
       imagesById,
       usedNames,
       zipFilenamePrefixes[i]
-    );
+    )
+  );
+  const preparedBySourceIndex = await runWithConcurrency(preparationTasks, concurrency);
+
+  // JSZip preserves file insertion order. Add successful preparations sequentially in input order.
+  for (const result of preparedBySourceIndex) {
     if (result) {
       zip.file(result.filename, result.blob);
     }
-  });
-
-  await runWithConcurrency(tasks, concurrency);
+  }
 
   const date = new Date().toISOString().slice(0, 10);
   const outName = `${fileBaseName || "card_images"}_${date}.zip`;

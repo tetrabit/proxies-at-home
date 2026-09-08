@@ -293,10 +293,17 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
     if (uuids.length === 0) return [];
 
     let newUuidsResult: string[] = [];
+    let sourceProjectId: string | undefined;
 
     await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
         const validUuids = new Set(uuids);
-        const allCards = await db.cards.orderBy("order").toArray();
+        const sourceCard = await db.cards.get(uuids[0]);
+        if (!sourceCard) return;
+
+        sourceProjectId = sourceCard.projectId;
+        const allCards = sourceProjectId
+            ? await db.cards.where("projectId").equals(sourceProjectId).sortBy("order")
+            : await db.cards.orderBy("order").toArray();
 
         // Filter to find the cards we want to duplicate, keeping the order from allCards
         const cardsToDuplicate = allCards.filter(c => validUuids.has(c.uuid));
@@ -451,7 +458,7 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
                     if (imagesToDelete.length > 0) await db.images.bulkDelete(imagesToDelete);
                 }
 
-                await rebalanceCardOrders(useProjectStore.getState().currentProjectId ?? undefined);
+                await rebalanceCardOrders(sourceProjectId);
             });
         },
         redo: async () => {
@@ -791,11 +798,22 @@ export async function undoableUpdateCardBleedSettings(
     if (scope === 'selected') {
         allAffectedCards = selectedCards;
     } else {
+        const targetProjectsByImageId = new Map<string, Set<string | undefined>>();
+        for (const selectedCard of selectedCards) {
+            if (!selectedCard.imageId) continue;
+            const projects = targetProjectsByImageId.get(selectedCard.imageId) ?? new Set<string | undefined>();
+            projects.add(selectedCard.projectId);
+            targetProjectsByImageId.set(selectedCard.imageId, projects);
+        }
+
         const cardsWithImageIds = new Map<string, CardOption>();
         for (const imageId of imageIds) {
             const cardsWithImage = await db.cards.where('imageId').equals(imageId).toArray();
+            const targetProjects = targetProjectsByImageId.get(imageId);
             for (const card of cardsWithImage) {
-                cardsWithImageIds.set(card.uuid, card);
+                if (targetProjects?.has(card.projectId)) {
+                    cardsWithImageIds.set(card.uuid, card);
+                }
             }
         }
         allAffectedCards = Array.from(cardsWithImageIds.values());

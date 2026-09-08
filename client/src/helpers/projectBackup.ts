@@ -67,8 +67,8 @@ interface BackupUserImage {
 
 /** Top-level backup envelope */
 export interface ProjectBackup {
-  /** Format version */
-  version: typeof BACKUP_VERSION;
+  /** Format version (current exports use BACKUP_VERSION; earlier supported versions are importable) */
+  version: number;
   /** ISO timestamp of export */
   exportedAt: string;
   /** Proxxied app identifier */
@@ -77,7 +77,8 @@ export interface ProjectBackup {
   project: {
     name: string;
     createdAt: number;
-    settings: Project['settings'];
+    /** Omitted by JSON serialization when an older project had no saved settings. */
+    settings?: Project['settings'];
   };
   /** All cards in display order */
   cards: BackupCard[];
@@ -242,15 +243,49 @@ export function validateBackup(data: unknown): ProjectBackup {
     );
   }
 
-  if (!obj.project || typeof obj.project !== 'object') {
+  if (!isRecord(obj.project)) {
     throw new Error('Invalid backup: missing project metadata');
+  }
+
+  if (typeof obj.project.name !== 'string') {
+    throw new Error('Invalid backup: invalid project name');
+  }
+
+  if (!Number.isFinite(obj.project.createdAt)) {
+    throw new Error('Invalid backup: invalid project creation time');
+  }
+
+  // Older exports may omit unset settings because JSON.stringify drops undefined.
+  // Persisted settings are always a record; validate only that outer shape so old
+  // setting keys and optional values remain import-compatible.
+  if (
+    obj.project.settings !== undefined &&
+    !isRecord(obj.project.settings)
+  ) {
+    throw new Error('Invalid backup: invalid project settings');
   }
 
   if (!Array.isArray(obj.cards)) {
     throw new Error('Invalid backup: missing cards array');
   }
 
+  for (const card of obj.cards) {
+    if (
+      !isRecord(card) ||
+      typeof card.uuid !== 'string' ||
+      typeof card.name !== 'string' ||
+      !Number.isFinite(card.order) ||
+      typeof card.isUserUpload !== 'boolean'
+    ) {
+      throw new Error('Invalid backup: invalid card record');
+    }
+  }
+
   return data as ProjectBackup;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -283,11 +318,12 @@ export async function importProject(
   backup: ProjectBackup,
   projectName?: string
 ): Promise<string> {
+  const validatedBackup = validateBackup(backup);
   const newProjectId = crypto.randomUUID();
-  const name = projectName || `${backup.project.name} (Imported)`;
+  const name = projectName || `${validatedBackup.project.name} (Imported)`;
 
   // 1. Restore custom images first (idempotent — content-addressed)
-  for (const img of backup.userImages) {
+  for (const img of validatedBackup.userImages) {
     const existing = await db.user_images.get(img.hash);
     if (!existing) {
       const blob = base64ToBlob(img.data, img.type);
@@ -302,12 +338,12 @@ export async function importProject(
 
   // 2. Build UUID remap table (old → new)
   const uuidMap = new Map<string, string>();
-  for (const card of backup.cards) {
+  for (const card of validatedBackup.cards) {
     uuidMap.set(card.uuid, crypto.randomUUID());
   }
 
   // 3. Create card records with new UUIDs and remapped links
-  const newCards: CardOption[] = backup.cards.map((card) => {
+  const newCards: CardOption[] = validatedBackup.cards.map((card) => {
     const newUuid = uuidMap.get(card.uuid)!;
     const newLinkedFrontId = card.linkedFrontId
       ? uuidMap.get(card.linkedFrontId)
@@ -335,7 +371,7 @@ export async function importProject(
       createdAt: Date.now(),
       lastOpenedAt: Date.now(),
       cardCount: newCards.filter((c) => !c.linkedFrontId).length,
-      settings: backup.project.settings || {},
+      settings: validatedBackup.project.settings || {},
     });
 
     await db.cards.bulkAdd(newCards);

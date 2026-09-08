@@ -442,6 +442,223 @@ describe("useCardEnrichment", () => {
     ]));
   });
 
+  it("creates a DFC back in the front card project with reciprocal links", async () => {
+    const front = {
+      uuid: "front-dfc",
+      projectId: "project-a",
+      name: "Front Face",
+      set: "SET",
+      number: "7",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    mockCardsToArray.mockResolvedValue([front]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue([{
+        name: "Front Face",
+        set: "SET",
+        number: "7",
+        layout: "transform",
+        card_faces: [
+          { name: "Front Face", type_line: "Creature — Front" },
+          { name: "Back Face", type_line: "Creature — Back" },
+        ],
+      }]),
+    } as unknown as Response);
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockCardsBulkAdd).toHaveBeenCalledWith([
+      expect.objectContaining({
+        uuid: "uuid-1",
+        projectId: "project-a",
+        linkedFrontId: "front-dfc",
+      }),
+    ]);
+    expect(mockCardsBulkUpdate).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        key: "front-dfc",
+        changes: expect.objectContaining({ linkedBackId: "uuid-1" }),
+      }),
+    ]));
+  });
+
+  it("does not persist obsolete DFC enrichment after the project switches", async () => {
+    const front = {
+      uuid: "front-switch",
+      projectId: "project-a",
+      name: "Front Face",
+      set: "SET",
+      number: "8",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    let resolveFetch: (response: Response) => void;
+    mockCardsToArray.mockResolvedValue([front]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    mockUseProjectStoreGetState.mockReturnValue({ currentProjectId: "project-b" });
+
+    await act(async () => {
+      resolveFetch!({
+        ok: true,
+        json: vi.fn().mockResolvedValue([{
+          name: "Front Face",
+          set: "SET",
+          number: "8",
+          layout: "transform",
+          card_faces: [
+            {
+              name: "Front Face",
+              image_uris: { large: "https://example.test/front-switch.png" },
+            },
+            {
+              name: "Back Face",
+              image_uris: { large: "https://example.test/back-switch.png" },
+            },
+          ],
+        }]),
+      } as unknown as Response);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockAddRemoteImage).not.toHaveBeenCalled();
+    expect(mockCardsBulkAdd).not.toHaveBeenCalled();
+    expect(mockCardsBulkUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not persist deferred enrichment after unmount", async () => {
+    const card = {
+      uuid: "card-unmount",
+      projectId: "project-a",
+      name: "Unmount Card",
+      set: "SET",
+      number: "10",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    let resolveFetch: (response: Response) => void;
+    mockCardsToArray.mockResolvedValue([card]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    const { unmount } = renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    unmount();
+
+    await act(async () => {
+      resolveFetch!({
+        ok: true,
+        json: vi.fn().mockResolvedValue([{ name: "Unmount Card", set: "SET", number: "10" }]),
+      } as unknown as Response);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockMetadataBulkPut).not.toHaveBeenCalled();
+    expect(mockCardsBulkAdd).not.toHaveBeenCalled();
+    expect(mockCardsBulkUpdate).not.toHaveBeenCalled();
+    expect(mockMarkEnrichmentComplete).not.toHaveBeenCalled();
+  });
+
+  it("does not persist deferred enrichment after cancellation", async () => {
+    const front = {
+      uuid: "front-cancel",
+      projectId: "project-a",
+      name: "Front Face",
+      set: "SET",
+      number: "9",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    const abortController = {
+      signal: { aborted: false },
+      abort: vi.fn(() => { abortController.signal.aborted = true; }),
+    };
+    let resolveFetch: (response: Response) => void;
+    mockGetAbortController.mockReturnValue(abortController);
+    mockCardsToArray.mockResolvedValue([front]);
+    mockCardsCount.mockResolvedValue(1);
+    mockFetch.mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    const { result } = renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.cancelEnrichment();
+    });
+
+    await act(async () => {
+      resolveFetch!({
+        ok: true,
+        json: vi.fn().mockResolvedValue([{ name: "Front Face", set: "SET", number: "9" }]),
+      } as unknown as Response);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockCardsBulkAdd).not.toHaveBeenCalled();
+    expect(mockCardsBulkUpdate).not.toHaveBeenCalled();
+    expect(mockAddRemoteImage).not.toHaveBeenCalled();
+  });
+
   it("marks a failed batch for retry when the server rejects the request", async () => {
     const card = {
       uuid: "card-failed",

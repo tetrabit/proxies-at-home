@@ -361,12 +361,14 @@ export class ImportOrchestrator {
                             });
                         }
                     });
+                    throw e;
                 }
             }
         };
 
-        // Fire-and-forget: update cards with images in background
-        void updateCardsWithImages();
+        // Step 2 remains asynchronous relative to placeholder creation, but terminal completion
+        // must wait until all resolution and persistence work has settled.
+        await updateCardsWithImages();
     }
 
     /**

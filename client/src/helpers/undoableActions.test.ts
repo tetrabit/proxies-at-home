@@ -44,6 +44,7 @@ vi.mock("@/db", () => ({
         equals: vi.fn(() => ({
           first: vi.fn(),
           toArray: vi.fn().mockResolvedValue([]),
+          sortBy: vi.fn().mockResolvedValue([]),
         })),
         anyOf: vi.fn(() => ({
           toArray: vi.fn().mockResolvedValue([]),
@@ -130,6 +131,7 @@ describe("undoableActions", () => {
     // intentionally leaves a queued value cannot affect the next test.
     vi.mocked(db.cards.get).mockReset();
     vi.mocked(db.cards.bulkGet).mockReset();
+    vi.mocked(db.cards.bulkUpdate).mockReset();
     vi.mocked(db.cards.orderBy).mockReset().mockImplementation(
       () => ({ toArray: vi.fn().mockResolvedValue([]) }) as never
     );
@@ -138,6 +140,7 @@ describe("undoableActions", () => {
         equals: vi.fn(() => ({
           first: vi.fn(),
           toArray: vi.fn().mockResolvedValue([]),
+          sortBy: vi.fn().mockResolvedValue([]),
         })),
         anyOf: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue([]) })),
       }) as never
@@ -823,19 +826,58 @@ describe("undoableActions", () => {
       await expect(undoableDuplicateCardsBatch([])).resolves.toEqual([]);
       expect(mockPushAction).not.toHaveBeenCalled();
 
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([]),
-      } as never);
       await expect(undoableDuplicateCardsBatch(["missing"])).resolves.toEqual(
         []
       );
+      expect(db.cards.orderBy).not.toHaveBeenCalled();
       expect(mockPushAction).not.toHaveBeenCalled();
+    });
+
+    it("does not query or mutate any project when the first duplicate source is missing", async () => {
+      const laterValid = {
+        uuid: "project-b-valid",
+        projectId: "project-b",
+        name: "Project B Card",
+        order: 90,
+        imageId: "project-b-image",
+      } as CardOption;
+      const unrelatedProjectCard = {
+        uuid: "project-a-unrelated",
+        projectId: "project-a",
+        name: "Project A Card",
+        order: 10,
+        imageId: "project-a-image",
+      } as CardOption;
+      const allCards = [unrelatedProjectCard, laterValid];
+      const before = JSON.stringify(allCards);
+
+      vi.mocked(db.cards.get).mockImplementation(((uuid: string) =>
+        uuid === laterValid.uuid ? laterValid : undefined
+      ) as never);
+      vi.mocked(db.cards.orderBy).mockReturnValue({
+        toArray: vi.fn().mockResolvedValue(allCards),
+      } as never);
+
+      await expect(
+        undoableDuplicateCardsBatch(["missing-source", laterValid.uuid])
+      ).resolves.toEqual([]);
+
+      expect(db.cards.get).toHaveBeenCalledTimes(1);
+      expect(db.cards.get).toHaveBeenCalledWith("missing-source");
+      expect(db.cards.orderBy).not.toHaveBeenCalled();
+      expect(db.cards.where).not.toHaveBeenCalled();
+      expect(db.cards.bulkPut).not.toHaveBeenCalled();
+      expect(db.images.bulkGet).not.toHaveBeenCalled();
+      expect(db.images.bulkUpdate).not.toHaveBeenCalled();
+      expect(mockPushAction).not.toHaveBeenCalled();
+      expect(JSON.stringify(allCards)).toBe(before);
     });
 
 
     it("undoes a batch duplicate by deleting images whose refcount is exhausted", async () => {
       const front = { uuid: "front-solo", name: "Front", order: 10, imageId: "img-front" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-solo" as never);
+      vi.mocked(db.cards.get).mockResolvedValueOnce(front);
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front]),
       } as never);
@@ -866,7 +908,9 @@ describe("undoableActions", () => {
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front]),
       } as never);
-      vi.mocked(db.cards.get).mockResolvedValueOnce(undefined as unknown as CardOption);
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(front)
+        .mockResolvedValueOnce(undefined as unknown as CardOption);
 
       await expect(undoableDuplicateCardsBatch(["front-missing-back"])).resolves.toEqual([
         "new-front-missing-back",
@@ -888,7 +932,9 @@ describe("undoableActions", () => {
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front, back]),
       } as never);
-      vi.mocked(db.cards.get).mockResolvedValueOnce(back);
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(front)
+        .mockResolvedValueOnce(back);
 
       await undoableDuplicateCardsBatch(["front-cardback"]);
 
@@ -906,6 +952,7 @@ describe("undoableActions", () => {
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue(cards),
       } as never);
+      vi.mocked(db.cards.get).mockResolvedValueOnce(cards[0]);
 
       await expect(undoableDuplicateCardsBatch(["a", "b"])).resolves.toEqual([
         "new-a",
@@ -925,6 +972,7 @@ describe("undoableActions", () => {
     it("skips missing images during duplicate ref increments and undo decrements", async () => {
       const front = { uuid: "front-image", name: "Front", order: 10, imageId: "img-front" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-image" as never);
+      vi.mocked(db.cards.get).mockResolvedValueOnce(front);
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front]),
       } as never);
@@ -962,7 +1010,9 @@ describe("undoableActions", () => {
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front, back]),
       } as never);
-      vi.mocked(db.cards.get).mockResolvedValueOnce(back);
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(front)
+        .mockResolvedValueOnce(back);
       vi.mocked(db.images.bulkGet)
         .mockResolvedValueOnce([
           { id: "img-back", refCount: 1 },
@@ -1003,9 +1053,89 @@ describe("undoableActions", () => {
       vi.mocked(db.cards.orderBy).mockReturnValueOnce({
         toArray: vi.fn().mockResolvedValue([front, back]),
       } as never);
-      vi.mocked(db.cards.get).mockResolvedValueOnce(back);
+      vi.mocked(db.cards.get)
+        .mockResolvedValueOnce(front)
+        .mockResolvedValueOnce(back);
       await pushedAction.redo();
       expect(db.cards.bulkPut).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps another project's shared-name image, linked cards, orders, and refs byte-identical", async () => {
+      const aFront = {
+        uuid: "a-front",
+        projectId: "project-a",
+        name: "Shared Name",
+        order: 10,
+        imageId: "shared-image",
+        linkedBackId: "a-back",
+      } as CardOption;
+      const aBack = {
+        uuid: "a-back",
+        projectId: "project-a",
+        name: "A Back",
+        order: 10,
+        imageId: "cardback_builtin",
+        linkedFrontId: "a-front",
+      } as CardOption;
+      const bFront = {
+        uuid: "b-front",
+        projectId: "project-b",
+        name: "Shared Name",
+        order: 90,
+        imageId: "shared-image",
+        linkedBackId: "b-back",
+      } as CardOption;
+      const bBack = {
+        uuid: "b-back",
+        projectId: "project-b",
+        name: "B Back",
+        order: 90,
+        imageId: "cardback_builtin",
+        linkedFrontId: "b-front",
+      } as CardOption;
+      const bBefore = JSON.stringify([bFront, bBack]);
+      const sharedImage = { id: "shared-image", refCount: 2 };
+
+      vi.spyOn(crypto, "randomUUID")
+        .mockReturnValueOnce("a-front-copy" as never)
+        .mockReturnValueOnce("a-back-copy" as never);
+      vi.mocked(db.cards.get).mockImplementation(((uuid: string) => {
+        if (uuid === "a-front") return aFront;
+        if (uuid === "a-back") return aBack;
+        return undefined as never;
+      }) as never);
+      vi.mocked(db.cards.orderBy).mockReturnValue({
+        toArray: vi.fn().mockResolvedValue([aFront, aBack, bFront, bBack]),
+      } as never);
+      vi.mocked(db.cards.where).mockImplementation(
+        ((field: string) => ({
+          equals: vi.fn((projectId: string) => ({
+            sortBy: vi.fn().mockResolvedValue(
+              field === "projectId" && projectId === "project-a" ? [aFront, aBack] : []
+            ),
+          })),
+        })) as never
+      );
+      vi.mocked(db.images.bulkGet).mockResolvedValueOnce([sharedImage] as never);
+
+      await undoableDuplicateCardsBatch(["a-front"]);
+
+      expect(db.cards.bulkPut).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ uuid: "a-front", order: 10, linkedBackId: "a-back" }),
+          expect.objectContaining({ uuid: "a-back", order: 10, linkedFrontId: "a-front" }),
+          expect.objectContaining({ uuid: "a-front-copy", order: 20, linkedBackId: "a-back-copy" }),
+          expect.objectContaining({ uuid: "a-back-copy", order: 20, linkedFrontId: "a-front-copy" }),
+        ])
+      );
+      expect(db.cards.bulkPut).not.toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ uuid: "b-front" })])
+      );
+      expect(JSON.stringify([bFront, bBack])).toBe(bBefore);
+      expect(db.images.bulkUpdate).toHaveBeenCalledWith([
+        { key: "shared-image", changes: { refCount: 3 } },
+      ]);
+      expect(sharedImage.refCount).toBe(2);
     });
   });
   describe("undoableUpdateCardBleedSettings", () => {
@@ -1188,6 +1318,75 @@ describe("undoableActions", () => {
         "img-regular",
         expect.objectContaining({ generatedBleedMode: undefined })
       );
+    });
+
+    it("keeps another project's shared-image card, links, order, and refcount byte-identical", async () => {
+      const aFront = {
+        uuid: "a-front",
+        projectId: "project-a",
+        name: "Shared Name",
+        order: 10,
+        imageId: "shared-image",
+        linkedBackId: "a-back",
+      } as CardOption;
+      const aBack = {
+        uuid: "a-back",
+        projectId: "project-a",
+        name: "A Back",
+        order: 10,
+        imageId: "cardback_builtin",
+        linkedFrontId: "a-front",
+      } as CardOption;
+      const bFront = {
+        uuid: "b-front",
+        projectId: "project-b",
+        name: "Shared Name",
+        order: 90,
+        imageId: "shared-image",
+        linkedBackId: "b-back",
+        bleedMode: "existing",
+      } as CardOption;
+      const bBack = {
+        uuid: "b-back",
+        projectId: "project-b",
+        name: "B Back",
+        order: 90,
+        imageId: "cardback_builtin",
+        linkedFrontId: "b-front",
+      } as CardOption;
+      const bBefore = JSON.stringify([bFront, bBack]);
+      const sharedImage = { id: "shared-image", refCount: 2 };
+      const cards = [aFront, aBack, bFront, bBack];
+
+      vi.mocked(db.cards.where).mockImplementation(
+        ((field: string) => ({
+          anyOf: vi.fn(() => ({
+            toArray: vi.fn().mockResolvedValue(field === "uuid" ? [aFront] : []),
+          })),
+          equals: vi.fn((imageId: string) => ({
+            first: vi.fn(),
+            toArray: vi.fn().mockResolvedValue(
+              field === "imageId" && imageId === "shared-image" ? [aFront, bFront] : []
+            ),
+          })),
+        })) as never
+      );
+      vi.mocked(db.cards.bulkUpdate).mockImplementation((async (
+        updates: Array<{ key: string; changes: Partial<CardOption> }>
+      ) => {
+        for (const { key, changes } of updates) {
+          Object.assign(cards.find((card) => card.uuid === key)!, changes);
+        }
+        return 1;
+      }) as never);
+
+      await undoableUpdateCardBleedSettings(["a-front"], { bleedMode: "none" });
+
+      expect(db.cards.bulkUpdate).toHaveBeenCalledWith([
+        { key: "a-front", changes: expect.objectContaining({ bleedMode: "none" }) },
+      ]);
+      expect(JSON.stringify([bFront, bBack])).toBe(bBefore);
+      expect(sharedImage.refCount).toBe(2);
     });
   });
 

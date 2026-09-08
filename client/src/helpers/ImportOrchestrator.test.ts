@@ -96,6 +96,7 @@ describe('ImportOrchestrator', () => {
         dbState.secondCards = [];
         // Restore default implementation cleared by resetAllMocks
         vi.mocked(dbUtilsModule.addRemoteImage).mockImplementation((urls) => Promise.resolve(urls[0] || 'mock_image_id'));
+        vi.mocked(scryfallApiModule.fetchCardsMetadataBatch).mockResolvedValue(new Map<string, ScryfallCard>());
     });
 
     afterEach(() => {
@@ -154,6 +155,7 @@ describe('ImportOrchestrator', () => {
         // Mock batchSearchMpcAutofill to avoid crash in findBestMpcMatches
         const mpcApiModule = await import('./mpcAutofillApi');
         vi.spyOn(mpcApiModule, 'batchSearchMpcAutofill').mockResolvedValue({});
+        vi.mocked(mpcImportIntegrationModule.findBestMpcMatches).mockResolvedValue([] as never);
 
         // This mock data represents a DFC that SHOULD trigger back face addition if enrichment works
         const mockMetada = new Map();
@@ -353,6 +355,95 @@ describe('ImportOrchestrator', () => {
                 options: expect.objectContaining({ hasBuiltInBleed: true, usesDefaultCardback: false }),
             }),
         ]);
+    });
+
+    it('waits for direct metadata, image updates, and linked-back persistence before completing', async () => {
+        let resolveMetadata!: (value: Map<string, ScryfallCard>) => void;
+        const metadata = new Promise<Map<string, ScryfallCard>>((resolve) => {
+            resolveMetadata = resolve;
+        });
+        let resolveLinkedBackPersistence!: (value: string[]) => void;
+        const linkedBackPersistence = new Promise<string[]>((resolve) => {
+            resolveLinkedBackPersistence = resolve;
+        });
+
+        const addSpy = vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'direct-1' } as CardOption]);
+        vi.spyOn(mpcAutofillApiModule, 'getMpcAutofillImageUrl').mockReturnValue('https://images.example/direct-front.jpg');
+        vi.mocked(scryfallApiModule.fetchCardsMetadataBatch).mockReturnValue(metadata);
+        vi.mocked(dbUtilsModule.createLinkedBackCardsBulk).mockReturnValue(linkedBackPersistence);
+        const onComplete = vi.fn();
+
+        const processing = ImportOrchestrator.process([
+            { name: 'Direct MPC', quantity: 1, isToken: false, mpcId: 'direct-mpc-id' },
+        ], { onComplete });
+
+        // Placeholders are visible before the deferred resolution begins.
+        expect(addSpy).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => {
+            expect(vi.mocked(scryfallApiModule.fetchCardsMetadataBatch)).toHaveBeenCalledWith(['Direct MPC']);
+        });
+        expect(onComplete).not.toHaveBeenCalled();
+
+        resolveMetadata(new Map([['direct mpc', {
+            name: 'Direct MPC // Direct Back',
+            colors: ['U'],
+            cmc: 2,
+            type_line: 'Creature',
+            rarity: 'rare',
+            mana_cost: '{1}{U}',
+            scryfall_id: 'scry-direct',
+            oracle_id: 'oracle-direct',
+            token_parts: [],
+            card_faces: [
+                { name: 'Direct MPC' },
+                { name: 'Direct Back', imageUrl: 'https://images.example/direct-back.jpg' },
+            ],
+        } as ScryfallCard]]));
+
+        await vi.waitFor(() => {
+            expect(dbState.update).toHaveBeenCalledWith('direct-1', expect.objectContaining({
+                imageId: 'https://images.example/direct-front.jpg',
+                scryfall_id: 'scry-direct',
+            }));
+        });
+        expect(onComplete).not.toHaveBeenCalled();
+
+        await vi.waitFor(() => {
+            expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
+                expect.objectContaining({
+                    frontUuid: 'direct-1',
+                    backName: 'Direct Back',
+                }),
+            ]);
+        });
+        expect(onComplete).not.toHaveBeenCalled();
+
+        resolveLinkedBackPersistence([]);
+        await processing;
+        expect(onComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects direct resolution errors without completing the import', async () => {
+        const resolutionError = new Error('image persistence failed');
+        vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'direct-error' } as CardOption]);
+        vi.mocked(dbUtilsModule.addRemoteImage).mockRejectedValueOnce(resolutionError);
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const onComplete = vi.fn();
+
+        await expect(ImportOrchestrator.process([
+            {
+                name: 'Direct Error',
+                quantity: 1,
+                isToken: false,
+                preloadedData: { name: 'Direct Error', imageUrls: ['https://images.example/error.jpg'] },
+            },
+        ], { onComplete })).rejects.toBe(resolutionError);
+
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(warning).toHaveBeenCalledWith(
+            '[ImportOrchestrator] Failed to resolve image for Direct Error:',
+            resolutionError,
+        );
     });
 
     it('reports progress and completion callbacks across direct and streamed work', async () => {

@@ -28,6 +28,8 @@ import { db } from '@/db';
 import { API_BASE } from '@/constants';
 import { useProjectStore } from '@/store';
 import { exportProject } from '@/helpers/projectBackup';
+import { inferImageSource } from '@/helpers/imageSourceUtils';
+import { backupContentDigest } from '@/helpers/backupContentDigest';
 import { debugLog } from '@/helpers/debug';
 
 /** Debounce delay — how long to wait after the last change before backing up */
@@ -53,6 +55,17 @@ const lastBackupTimeByProject = new Map<string, number>();
 export async function backupProject(projectId: string): Promise<boolean> {
   try {
     const backup = await exportProject(projectId);
+    return await uploadBackup(projectId, backup);
+  } catch {
+    return false;
+  }
+}
+
+async function uploadBackup(
+  projectId: string,
+  backup: Awaited<ReturnType<typeof exportProject>>
+): Promise<boolean> {
+  try {
 
     // Don't backup empty projects
     const mainCards = backup.cards.filter((c) => !c.linkedFrontId);
@@ -107,27 +120,34 @@ async function backupAllProjects(): Promise<void> {
 export function useAutoBackup(): void {
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
 
-  // Track card count + latest update timestamp as a change signal
-  const changeSignal = useLiveQuery(async () => {
+  const observationCounter = useRef(0);
+
+  // Read only this project's export inputs. Each Dexie live-query execution
+  // returns a fresh revision, so a relevant write is admitted to debounce even
+  // when stable record metadata cannot distinguish replacement Blob bytes.
+  const observedRevision = useLiveQuery(async () => {
     if (!currentProjectId) return null;
-    const count = await db.cards
+    const project = await db.projects.get(currentProjectId);
+    if (!project) return null;
+
+    const cards = await db.cards
       .where('projectId')
       .equals(currentProjectId)
-      .count();
-    // Also read project settings to detect settings changes
-    const project = await db.projects.get(currentProjectId);
-    return {
-      count,
-      settingsHash: project?.settings
-        ? JSON.stringify(project.settings).length
-        : 0,
-    };
+      .sortBy('order');
+    const customHashes = cards
+      .filter((card) => card.isUserUpload && inferImageSource(card.imageId) === 'custom')
+      .map((card) => card.imageId!);
+    await Promise.all(
+      [...new Set(customHashes)].sort().map((hash) => db.user_images.get(hash))
+    );
+
+    return ++observationCounter.current;
   }, [currentProjectId]);
 
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
   const consecutiveFailures = useRef(0);
-  const lastSignal = useRef<string | null>(null);
+  const lastBackedUpDigest = useRef<string | null>(null);
   const previousProjectId = useRef<string | null>(null);
 
   const doBackup = useCallback(async () => {
@@ -142,10 +162,18 @@ export function useAutoBackup(): void {
     inFlight.current = true;
 
     try {
-      const success = await backupProject(currentProjectId);
+      const backup = await exportProject(currentProjectId);
+      const digest = backupContentDigest(backup);
+      if (digest === lastBackedUpDigest.current) {
+        consecutiveFailures.current = 0;
+        return;
+      }
+
+      const success = await uploadBackup(currentProjectId, backup);
 
       if (success) {
         consecutiveFailures.current = 0;
+        lastBackedUpDigest.current = digest;
       } else {
         consecutiveFailures.current++;
         if (consecutiveFailures.current >= FAILURE_WARN_THRESHOLD) {
@@ -164,14 +192,10 @@ export function useAutoBackup(): void {
     }
   }, [currentProjectId]);
 
-  // React to change signals with debounce
+  // Every relevant live-query invalidation debounces an admitted export. The
+  // canonical digest after export, not record metadata, suppresses unchanged uploads.
   useEffect(() => {
-    if (!changeSignal || !currentProjectId) return;
-
-    // Build a signal fingerprint to detect actual changes
-    const fingerprint = `${changeSignal.count}:${changeSignal.settingsHash}`;
-    if (fingerprint === lastSignal.current) return;
-    lastSignal.current = fingerprint;
+    if (observedRevision === null || observedRevision === undefined || !currentProjectId) return;
 
     // Clear existing timer and set a new one
     if (debounceTimer.current) {
@@ -187,21 +211,26 @@ export function useAutoBackup(): void {
         clearTimeout(debounceTimer.current);
       }
     };
-  }, [changeSignal, currentProjectId, doBackup]);
+  }, [observedRevision, currentProjectId, doBackup]);
 
   // Backup outgoing project on switch, then schedule backup for the new one
   useEffect(() => {
     if (!currentProjectId) return;
 
     // Backup the outgoing project (fire-and-forget)
-    if (previousProjectId.current && previousProjectId.current !== currentProjectId) {
+    const isProjectSwitch = Boolean(
+      previousProjectId.current && previousProjectId.current !== currentProjectId
+    );
+    if (isProjectSwitch && previousProjectId.current) {
       void backupProject(previousProjectId.current);
     }
     previousProjectId.current = currentProjectId;
 
     // Reset state for new project
-    lastSignal.current = null;
+    lastBackedUpDigest.current = null;
     consecutiveFailures.current = 0;
+
+    if (!isProjectSwitch) return;
 
     // Schedule a backup shortly after project switch
     const timer = setTimeout(() => {

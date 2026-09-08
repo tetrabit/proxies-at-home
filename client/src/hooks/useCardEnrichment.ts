@@ -94,6 +94,7 @@ export function useCardEnrichment() {
     // Track cards that have been fully processed (success or max retries exceeded)
     // to avoid re-checking them on every enrichment cycle
     const processedCardsRef = useRef<Set<string>>(new Set());
+    const enrichmentGenerationRef = useRef(0);
 
     const enrichCards = useCallback(async () => {
         if (isEnrichingRef.current) return;
@@ -104,9 +105,19 @@ export function useCardEnrichment() {
             const currentProjectId = useProjectStore.getState().currentProjectId;
             if (!currentProjectId) return;
 
+            // A run belongs to both this controller and project. Recheck before every
+            // persistence boundary because either can change while an async step is pending.
+            const runGeneration = ++enrichmentGenerationRef.current;
+            const abortController = getEnrichmentAbortController();
+            const isRunCurrent = () =>
+                enrichmentGenerationRef.current === runGeneration &&
+                !abortController.signal.aborted &&
+                useProjectStore.getState().currentProjectId === currentProjectId;
+
             // Get cards that need enrichment and are ready for retry in the captured project.
             const now = Date.now();
             const allCards = await db.cards.where("projectId").equals(currentProjectId).toArray();
+            if (!isRunCurrent()) return;
 
             // Note: Dexie may store booleans as true/false or 1/0 depending on version
             // Use filter on all cards for reliability
@@ -133,20 +144,18 @@ export function useCardEnrichment() {
                 return;
             }
 
+            if (!isRunCurrent()) return;
             setEnrichmentProgress({ current: 0, total: unenrichedCards.length });
 
             // Show metadata toast
             useToastStore.getState().showMetadataToast();
-
-            // Get shared abort controller (can be cancelled by clearAllProcessing)
-            const abortController = getEnrichmentAbortController();
 
             // Batch enrich via server endpoint
             const batches = chunkArray(unenrichedCards, 50);
 
 
             for (const batch of batches) {
-                if (abortController.signal.aborted) break;
+                if (!isRunCurrent()) break;
 
                 try {
                     // Check cache for each card in batch first
@@ -167,6 +176,7 @@ export function useCardEnrichment() {
                                     return true;
                                 })
                                 .first();
+                            if (!isRunCurrent()) return;
 
                             if (cached) {
                                 // Validate cache version - if stale, fetch fresh data
@@ -176,16 +186,19 @@ export function useCardEnrichment() {
                                 } else {
                                     // Touch cachedAt
                                     const cachedData = cached.data as unknown as EnrichedCardData;
-                                    db.cardMetadataCache.update(cached.id, { cachedAt: Date.now() });
+                                    if (!isRunCurrent()) return;
+                                    await db.cardMetadataCache.update(cached.id, { cachedAt: Date.now() });
                                     cachedDataMap.set(card.uuid, cachedData);
                                 }
                             } else {
                                 cardsToFetch.push(card);
                             }
                         } catch {
+                            if (!isRunCurrent()) return;
                             cardsToFetch.push(card);
                         }
                     }));
+                    if (!isRunCurrent()) break;
 
                     // Fetch only missing cards.
                     let validResponses: (EnrichedCardData | null)[] = [];
@@ -203,12 +216,14 @@ export function useCardEnrichment() {
                             }),
                             signal: abortController.signal,
                         });
+                        if (!isRunCurrent()) break;
 
                         if (!response.ok) {
                             throw new Error(`HTTP ${response.status}`);
                         }
 
                         const rawResponses = await response.json();
+                        if (!isRunCurrent()) break;
                         // Validate responses but keep index alignment (map invalid to null instead of filtering)
                         validResponses = Array.isArray(rawResponses)
                             ? rawResponses.map(r => isEnrichedCardData(r) ? r : null)
@@ -239,6 +254,7 @@ export function useCardEnrichment() {
                             });
 
                             if (entriesToCache.length > 0) {
+                                if (!isRunCurrent()) break;
                                 await db.cardMetadataCache.bulkPut(entriesToCache as CachedMetadata[]);
                             }
                         } catch (e) {
@@ -249,6 +265,7 @@ export function useCardEnrichment() {
                     // Pre-fetch existing back cards to check if they need art enrichment
                     const existingBackIds = batch.map(c => c.linkedBackId).filter((id): id is string => !!id);
                     const existingBackCards = existingBackIds.length > 0 ? await db.cards.bulkGet(existingBackIds) : [];
+                    if (!isRunCurrent()) break;
                     const backCardMap = new Map(existingBackCards.filter(Boolean).map(c => [c!.uuid, c!]));
 
                     // Search for MPC matches for DFC back faces OUTSIDE the transaction
@@ -277,6 +294,7 @@ export function useCardEnrichment() {
                     };
 
                     await Promise.all(batch.map(async (card) => {
+                        if (!isRunCurrent()) return;
                         const data = responseMap.get(card.uuid);
                         if (!data) return;
 
@@ -308,6 +326,7 @@ export function useCardEnrichment() {
                                     if (preferredSource === 'mpc') {
                                         // MPC art fetching
                                         const mpcResults = await searchMpcAutofill(back.name);
+                                        if (!isRunCurrent()) return;
                                         if (mpcResults && mpcResults.length > 0) {
                                             const favSources = new Set(settingsSnapshot.favoriteMpcSources);
                                             const favTags = new Set(settingsSnapshot.favoriteMpcTags);
@@ -315,16 +334,18 @@ export function useCardEnrichment() {
 
                                             if (bestBack) {
                                                 const backUrl = getMpcAutofillImageUrl(bestBack.identifier);
+                                                if (!isRunCurrent()) return;
                                                 const imgId = await addRemoteImage([backUrl], 1);
-                                                if (imgId) backArtMap.set(card.uuid, imgId);
+                                                if (isRunCurrent() && imgId) backArtMap.set(card.uuid, imgId);
                                             }
                                         }
                                     } else {
                                         // Scryfall art: use image URL from enriched data's card_faces
                                         const backImageUrl = back.image_uris?.large || back.image_uris?.png || back.image_uris?.normal;
                                         if (backImageUrl) {
+                                            if (!isRunCurrent()) return;
                                             const imgId = await addRemoteImage([backImageUrl], 1);
-                                            if (imgId) backArtMap.set(card.uuid, imgId);
+                                            if (isRunCurrent() && imgId) backArtMap.set(card.uuid, imgId);
                                         }
                                     }
                                 } catch (e) {
@@ -338,6 +359,7 @@ export function useCardEnrichment() {
                                     if (preferredSource === 'mpc') {
                                         // MPC art fetching
                                         const mpcResults = await searchMpcAutofill(front.name);
+                                        if (!isRunCurrent()) return;
                                         if (mpcResults && mpcResults.length > 0) {
                                             const favSources = new Set(settingsSnapshot.favoriteMpcSources);
                                             const favTags = new Set(settingsSnapshot.favoriteMpcTags);
@@ -345,16 +367,18 @@ export function useCardEnrichment() {
 
                                             if (bestFront) {
                                                 const frontUrl = getMpcAutofillImageUrl(bestFront.identifier);
+                                                if (!isRunCurrent()) return;
                                                 const imgId = await addRemoteImage([frontUrl], 1);
-                                                if (imgId) frontArtMap.set(card.uuid, imgId);
+                                                if (isRunCurrent() && imgId) frontArtMap.set(card.uuid, imgId);
                                             }
                                         }
                                     } else {
                                         // Scryfall art: use image URL from enriched data's card_faces
                                         const frontImageUrl = front.image_uris?.large || front.image_uris?.png || front.image_uris?.normal;
                                         if (frontImageUrl) {
+                                            if (!isRunCurrent()) return;
                                             const imgId = await addRemoteImage([frontImageUrl], 1);
-                                            if (imgId) frontArtMap.set(card.uuid, imgId);
+                                            if (isRunCurrent() && imgId) frontArtMap.set(card.uuid, imgId);
                                         }
                                     }
                                 } catch (e) {
@@ -363,10 +387,12 @@ export function useCardEnrichment() {
                             }
                         }
                     }));
+                    if (!isRunCurrent()) break;
 
 
                     // Update each card in DB (Merging cached and fetched data) using bulk operations
                     await db.transaction("rw", db.cards, async () => {
+                        if (!isRunCurrent()) return;
                         // Prepare bulk updates
                         const successUpdates: { key: string; changes: Partial<CardOption> }[] = [];
                         const retryUpdates: { key: string; changes: Partial<CardOption> }[] = [];
@@ -468,6 +494,7 @@ export function useCardEnrichment() {
                                             oracle_id: data.oracle_id || card.oracle_id,
                                             order: card.order,
                                             isUserUpload: false,
+                                            projectId: card.projectId,
                                             linkedFrontId: card.uuid,
 
                                             imageId: newBackArtId, // Might be undefined -> placeholder
@@ -514,12 +541,15 @@ export function useCardEnrichment() {
 
                         // Write updates
                         if (newCards.length > 0) {
+                            if (!isRunCurrent()) return;
                             await db.cards.bulkAdd(newCards);
                         }
                         if (successUpdates.length > 0) {
+                            if (!isRunCurrent()) return;
                             await db.cards.bulkUpdate(successUpdates);
                         }
                         if (retryUpdates.length > 0) {
+                            if (!isRunCurrent()) return;
                             await db.cards.bulkUpdate(retryUpdates);
                         }
                     });
@@ -528,10 +558,12 @@ export function useCardEnrichment() {
                     if ((error as Error).name === "AbortError") {
                         break;
                     }
+                    if (!isRunCurrent()) break;
                     console.error("[Metadata] Batch error:", error);
 
                     // Retry logic for failed batch
                     await db.transaction("rw", db.cards, async () => {
+                        if (!isRunCurrent()) return;
                         const updates: { key: string; changes: Partial<CardOption> }[] = [];
                         for (const card of batch) {
                             const retryCount = (card.enrichmentRetryCount ?? 0) + 1;
@@ -543,11 +575,15 @@ export function useCardEnrichment() {
                                 }
                             });
                         }
-                        if (updates.length > 0) await db.cards.bulkUpdate(updates);
+                        if (updates.length > 0) {
+                            if (!isRunCurrent()) return;
+                            await db.cards.bulkUpdate(updates);
+                        }
                     });
                 }
             }
 
+            if (!isRunCurrent()) return;
             // Mark enrichment complete for MPC imports that await it
             getCurrentSession()?.markEnrichmentComplete();
 
@@ -573,6 +609,8 @@ export function useCardEnrichment() {
         const retryInterval = setInterval(checkAndEnrich, 30000);
 
         return () => {
+            // Invalidate in-flight work without changing shared cancellation ownership.
+            enrichmentGenerationRef.current += 1;
             clearTimeout(initialTimer);
             clearInterval(retryInterval);
             // Note: abort is handled by cancelAllProcessing from cancellationService
@@ -608,6 +646,7 @@ export function useCardEnrichment() {
 
     const cancelEnrichment = useCallback(() => {
         // Use the shared cancellation service to abort
+        enrichmentGenerationRef.current += 1;
         getEnrichmentAbortController().abort();
         setEnrichmentProgress(null);
     }, []);
