@@ -1,0 +1,307 @@
+{
+  "reviewed_commit": "518787ecdb74c827731724b83ba62358b26b4acb",
+  "reviewed_tree": "f458b9a73f21aa2ae40ad3cfbc80e1d4785fe1fa",
+  "method": "static review; structural documentation checks",
+  "tests_run": false,
+  "builds_run": false,
+  "runtime_benchmarks_run": false,
+  "numbered_findings": 54,
+  "severity_counts": {
+    "High": 22,
+    "Medium": 30,
+    "Low": 2
+  },
+  "source_references_checked": 147,
+  "reference_check": "Explicit path:start-end references checked for file existence and bounds; shorthand continuation ranges are not separately parsed. Not a semantic proof of findings.",
+  "errors": [],
+  "tracked_changes": [],
+  "git_status": [
+    "?? client/fix_test.js",
+    "?? client/test_debug.js",
+    "?? client/test_greedy.js",
+    "?? client/test_greedy2.js",
+    "?? client/test_pairs.js",
+    "?? docs/code-review-2026-09-08/"
+  ],
+  "document_sha256": {
+    "README.md": "0e9736882fcda58432aed1726160ed04cd563df0ca086be5969cd07d9cd1727a",
+    "calibration-deployment.md": "cf41a3fb39d038e3e044c7802212ddbec1a45868a25c51b8b679b82e850784c7",
+    "client-data.md": "6afdc51aaf7d049c6bb45bcab7286f78b7484b7261a74c7c8511c3a7be969529",
+    "electron-build.md": "db5ddb296551a44dd77310f0252896e6959f5473b0a7f4bafd2fff3d08a9619a",
+    "rendering-export.md": "39aaeb5dca9e4156f59a2df01216f9b64295921bb29215142bfcc7ab97b2e6c8",
+    "server-api.md": "a883aeb0cb59a49462264d553304ff248fafb35d00251d6be7c9a55960b2df74",
+    "ui-mpc.md": "1f85178d109f76ad936e91804878ce835f1da03c1c0d6ce8147e707d0e33e0ae"
+  },
+  "findings": [
+    {
+      "id": "P01",
+      "severity": "High",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "P02",
+      "severity": "High",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "P03",
+      "severity": "High",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "P04",
+      "severity": "Medium",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "P05",
+      "severity": "Medium",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "P06",
+      "severity": "Medium",
+      "report": "calibration-deployment.md"
+    },
+    {
+      "id": "C01",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C02",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C03",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C04",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C05",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C06",
+      "severity": "High",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C07",
+      "severity": "Medium",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C08",
+      "severity": "Medium",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C09",
+      "severity": "Medium",
+      "report": "client-data.md"
+    },
+    {
+      "id": "C10",
+      "severity": "Medium",
+      "report": "client-data.md"
+    },
+    {
+      "id": "E01",
+      "severity": "High",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E02",
+      "severity": "High",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E03",
+      "severity": "High",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E04",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E05",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E06",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E07",
+      "severity": "High",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E08",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E09",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E10",
+      "severity": "High",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E11",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "E12",
+      "severity": "Medium",
+      "report": "electron-build.md"
+    },
+    {
+      "id": "G01",
+      "severity": "High",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G02",
+      "severity": "Medium",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G03",
+      "severity": "High",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G04",
+      "severity": "High",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G05",
+      "severity": "Medium",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G06",
+      "severity": "Medium",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "G07",
+      "severity": "Medium",
+      "report": "rendering-export.md"
+    },
+    {
+      "id": "S01",
+      "severity": "High",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S02",
+      "severity": "High",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S03",
+      "severity": "High",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S04",
+      "severity": "High",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S05",
+      "severity": "Medium",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S06",
+      "severity": "Medium",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S07",
+      "severity": "Medium",
+      "report": "server-api.md"
+    },
+    {
+      "id": "S08",
+      "severity": "Medium",
+      "report": "server-api.md"
+    },
+    {
+      "id": "U01",
+      "severity": "High",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U02",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U03",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U04",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U05",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U06",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U07",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U08",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U09",
+      "severity": "Low",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U10",
+      "severity": "Low",
+      "report": "ui-mpc.md"
+    },
+    {
+      "id": "U11",
+      "severity": "Medium",
+      "report": "ui-mpc.md"
+    }
+  ]
+}

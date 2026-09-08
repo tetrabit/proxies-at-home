@@ -1,0 +1,180 @@
+key	epic	findings	title	acceptance	depends
+D01	data	C01	Bind enrichment responses to request UUID order	An out-of-order cache-probe regression proves each fetched response updates its originating UUID, including mixed hits and invalid rows.	""
+D02	data	C02	Restrict enrichment candidate reads to a captured project	Two-project fixture proves only the captured project's unenriched cards enter the batch.	""
+D03	data	C02	Assign the front project ID to synthesized DFC backs	Enriching a DFC creates a back with exactly its front projectId and valid reciprocal links.	D02
+D04	data	C02	Fence enrichment writes after a project switch	Deferred enrichment resolved after a switch performs no obsolete card or image writes.	D02
+D05	data	C04	Make same-image back relinking refcount-neutral	Repeating assignment of the existing back image leaves its refCount unchanged in a focused regression.	""
+D06	data	C04	Remove duplicate back-reference reservation from Scryfall conversion	Quantity-one and quantity-four converter fixtures have one counted reference per linked back after linking.	D05
+D07	data	C04	Remove duplicate back-reference reservation from direct DFC import	Direct MPC/Scryfall-back fallback fixtures count only actual linked backs for each imported quantity.	D05
+D08	data	C04	Remove duplicate reservation from explicit-back direct import	Explicit-back imports retain exactly one image reference per linked card with a focused test.	D05
+D09	data	C05	Scope duplicate ordering reads to the source project	Duplicating in A leaves B's order and fields byte-identical in a shared-name two-project fixture.	""
+D10	data	C05	Reject mixed-project UUID inputs to bulk duplicate	A mixed-project request fails before writes while a same-project request succeeds.	D09
+D11	data	C05	Restrict shared-image bleed mutation targets by project	A bleed edit on a shared image in A cannot change the referencing card in B.	""
+D12	data	C05	Restrict same-name bleed selection to the editor project	Apply-to-named selection supplies only same-project UUIDs for names shared across projects.	D11
+D13	data	U01	Scope editor Apply to All to the captured project	Apply to All in A writes overrides and schedules pre-renders only for A; B is unchanged.	""
+D14	data	U01	Reject cross-project selections in editor bulk apply	A selected UUID from another project is rejected before the bulk override transaction writes anything.	D13
+D15	data	C09	Add a compound project-order Dexie index	A schema-upgrade fixture retains existing cards and exposes a usable projectId plus order index.	""
+D16	data	C09	Use a project-local maximum order in addCards	Adding to A ignores B's distant order values and preserves explicit incoming order values.	D15
+D17	data	C09	Use a project-local maximum order in stream imports	Stream placeholders append within their own project without reading another project's order space.	D15
+D18	data	C09	Serialize append-order reservation with card insertion	Two concurrent same-project appends have deterministic noncolliding front order slots while linked backs retain intended order.	D16,D17
+D19	data	S05	Preserve id and oracle_id in cached-card projection	A SQL-row conversion regression retains both identity fields and existing payload fields unchanged.	""
+D20	data	S05	Verify cached token lookup preserves oracle resolution	A cache-hit fixture follows oracle identity to the intended latest token print without changing the network-path contract.	D19
+A01	operations	C03	Make direct import completion await resolution writes	A deferred direct import does not call onComplete until metadata/image/link persistence settles; placeholders remain immediate.	""
+A02	operations	C03	Pass import cancellation through direct resolver requests	The direct path receives and forwards the operation AbortSignal to cancellable resolution requests.	A01
+A03	operations	C03	Fence direct-import persistence after cancellation	Cancel or clear after placeholders prevents late card/image/refcount writes when deferred resolution returns.	A02
+A04	operations	C03	Fence direct-import persistence after project changes	A direct import started in A cannot mutate obsolete targets after the active project changes.	A03
+A05	operations	G01	Track an image processor's active task per worker	Dispatch and settle transitions maintain exactly one owned active task per busy worker with a focused worker mock.	""
+A06	operations	G01	Reject active processing promises on cancelAll	Cancelling a dispatched task rejects once, empties active ownership and returns activity count to zero.	A05
+A07	operations	G01	Settle queued and active promises on destroy	Destroy rejects all unfinished tasks exactly once and leaves no queue, active task or worker ownership.	A06
+A08	operations	G01	Verify image-processing hook cleanup after active cancellation	A hook regression reaches finally and revokes its owned URL when a dispatched worker is cancelled.	A06
+A09	operations	U02	Await the editor's single-card apply callback	A rejected single-card mutation retains the modal with an error; successful persistence closes it only afterward.	""
+A10	operations	U02	Await the editor's selected-card apply callback	Selected-card apply exposes pending/error state and does not close before its callback settles.	A09
+A11	operations	U02	Await the editor's all-card apply callback	All-card apply exposes pending/error state and closes only after successful project-scoped persistence.	A09,D13
+A12	operations	U03	Fence artwork preview search responses by operation generation	An older automatic search resolving after a newer search cannot set preview data or auto-apply its first print.	""
+A13	operations	U03	Fence Scryfall artwork selection writes by target and generation	An older Scryfall selection resolving after a newer intent/navigation cannot write artwork, links or success UI.	A12
+A14	operations	U03	Fence MPC artwork selection writes by target and generation	An older MPC selection resolving after a newer intent/navigation cannot write artwork, links or success UI.	A12
+A15	operations	U08	Accept AbortSignal in the MPC search transport	Transport forwards the supplied signal and propagates cancellation without caching a partial result.	""
+A16	operations	U08	Fence MPC hook results and loading state by request generation	Reverse-completing A/B queries leave only B's results and loading state; unmount aborts the current request.	A15
+A17	operations	U08	Coalesce identical in-flight MPC query requests	Concurrent identical misses use one transport request and fan out the same result without caching failures.	A15
+A18	operations	U08	Isolate cancellation between coalesced MPC subscribers	Cancelling one subscriber does not abort another; the transport aborts when all subscribers cancel.	A17
+A19	operations	U11	Cancel delayed multi-drag work on teardown	Unmount/cancel with pending drag timers produces no late state update and leaves zero owned timers.	""
+T01	transport	S01	Add a concurrency-one direct-Scryfall request broker	Fake-clock tests show one active request, at least 100ms dispatch spacing, and release after rejection; broker has no callers yet.	""
+T02	transport	S01	Route catalog requests through the direct-Scryfall broker	Catalog refresh no longer dispatches direct requests in parallel and retains all expected catalog results.	T01
+T03	transport	S01	Route Scryfall router fallbacks through the shared broker	All physical direct requests in scryfallRouter use the broker, including retry dispatches; microservice calls remain separate.	T01
+T04	transport	S01	Route paged-card direct requests through the shared broker	getCardImagesPaged direct fetch/retry dispatches obey the shared lease and preserve batching behavior.	T01
+T05	transport	S01	Route token direct requests through the shared broker	Token lookup direct calls use the broker and retain lookup fallback order.	T01
+T06	transport	S01	Route bulk-metadata requests through the shared broker	Bulk metadata acquisition obeys the same direct-request dispatch policy without serializing unrelated file processing.	T01
+T07	transport	S01	Verify cross-caller Scryfall rate spacing	One deterministic test mixes catalog/router/token/bulk/enrichment requests and proves one active direct request and minimum spacing.	T02,T03,T04,T05,T06
+T08	transport	S02	Define the supported image-proxy origin policy	A checked-in policy names required HTTPS providers and any intentional fixed local route; arbitrary local paths are explicitly forbidden.	""
+T09	transport	S02	Reject image-proxy URLs outside the parsed origin policy	URL-parser fixtures cover scheme, userinfo, port, host and relative-path rejection before transport invocation.	T08
+T10	transport	S02	Reject private resolved addresses at proxy connection time	Connection-policy tests reject loopback, link-local, private and mapped-address targets, including DNS changes after validation.	T09
+T11	transport	S02	Enforce image-proxy policy on every redirect hop	A redirect to a disallowed origin/address causes no forbidden connection; allowed bounded redirects still work.	T10
+T12	transport	S02	Stream proxy downloads with a per-response byte cap	An oversized upstream response aborts before full buffering and removes its partial temp file; valid images succeed.	T11
+T13	transport	S03	Bind desktop-started Express to loopback explicitly	Desktop launch binds loopback while configured server deployment retains an explicit host option; a focused bind test proves both.	""
+T14	transport	S03	Document the private-route authorization contract	An ADR specifies desktop credential bootstrap, server authentication, project ownership and public-share exclusions with a route matrix; no runtime implementation in this task.	""
+T15	transport	S03	Add a private-route authentication middleware seam	Middleware rejects absent/invalid credentials and accepts a configured valid identity in focused tests; no routes are migrated yet.	T14
+T28	transport	S03	Create a per-launch desktop API credential	Desktop startup generates an unguessable ephemeral credential and installs it in the local server verifier without logging or persisting it.	T15
+T29	transport	S03	Expose desktop API authentication through an allowlisted preload method	Only the trusted renderer bootstrap can obtain the per-launch API credential; the IPC handler rejects an unexpected sender.	T28
+T30	transport	S03	Attach configured authentication in the private client transport	Private API requests use the configured desktop/server identity and public provider requests never receive that credential.	T29
+T31	transport	S03	Wire backup calls through the authenticated private transport	Backup list/read/write/delete helpers use the private transport and preserve authorized auto-backup behavior.	T30,T17
+T32	transport	S03	Wire preference calls through the authenticated private transport	Preference helper requests use the private transport without leaking the credential to other origins.	T30,T18
+T33	transport	S03	Wire calibration calls through the authenticated private transport	Calibration helpers preserve upload/abort behavior while authenticated calls succeed and missing identity produces an explicit error.	T30,T19
+T16	transport	S03	Enforce authentication on backup routes	Unauthenticated backup list/read/write/delete calls fail before data access; authenticated calls reach the existing handlers.	T15
+T17	transport	S03	Enforce owner scope on backup record operations	An authenticated owner cannot enumerate/read/overwrite/delete another owner's backups; own backup operations succeed.	T16
+T18	transport	S03	Protect preference routes with the private-route boundary	Preference read/write requests require the configured authenticated scope and reject cross-scope access.	T15
+T19	transport	S03	Protect calibration routes with the private-route boundary	Unauthenticated requests cannot list/mutate profiles or start calibration subprocess work.	T15
+T20	transport	S03	Protect operational metrics with the private-route boundary	Private metrics reject unauthenticated requests without changing intentionally public shallow health checks.	T15
+T21	transport	S06	Bound normalized import request cardinality and fields	Oversized lists/strings and malformed fields are rejected before stream/metadata work; valid boundary-size input succeeds.	""
+T22	transport	S06	Batch deduplicated token identifier lookups	Duplicate-heavy token input uses supported collection batches and preserves input-to-result mapping before fallback.	T05
+T23	transport	S06	Cancel stream resolution when its client disconnects	A disconnected SSE request stops queued resolution work and releases its owned resources without affecting another stream.	T04
+T24	transport	S06	Enforce a bounded SSE operation deadline	A hung resolver ends with a documented timeout outcome and releases the connection; normal completion stays ordered and uncompressed.	T23
+T25	transport	S07	Implement the shared client's configured request timeout	Configured deadline aborts both response wait and body consumption; caller AbortSignal still takes precedence when earlier.	""
+T26	transport	S07	Coalesce concurrent microservice health probes	Concurrent health callers share one in-flight probe; a rejection clears the entry so the next request can recover.	T25
+T27	transport	S07	Add short-lived health-status caching with explicit expiry	A fresh result avoids repeated probes, an expired result rechecks, and a prior failure does not prevent later recovery.	T26
+R01	resources	G03	Move effect decode behind bounded queue admission	Deferred decode tests prove no bitmap/canvas/ImageData allocation occurs until a job owns an admission slot.	""
+R02	resources	G03	Coalesce queued and active equivalent effect renditions	Cards sharing image revision, DPI and canonical overrides produce one render with per-card completion delivery.	R01
+R03	resources	G03	Fence effect cache persistence against superseded generations	An obsolete render may settle but cannot replace the cache entry for a newer rendition generation.	R02
+R04	resources	G04,P03	Document an export working-set budget from a bounded measurement	A repository-local probe/report records representative page/card/PDF working-set estimates and selects conservative byte/page/concurrency limits; distinguish measured RSS from estimates.	""
+R05	resources	G04	Cap PDF worker count using the export surface budget	Given page/card dimensions, worker admission stays within the chosen conservative budget rather than hardwareConcurrency alone.	R04
+R06	resources	G04	Send page-scoped image maps to PDF workers	A page job includes only referenced front/back image IDs and produces unchanged page content in a focused payload test.	""
+R07	resources	G04	Bound worker canvasCache with byte-accounted eviction	An over-budget sequence evicts least-recently-used canvases and frees owned surfaces without evicting an active render.	R04
+R08	resources	G03	Add byte-budget admission to the effect queue	Mixed-size effects cannot exceed the configured decoded-surface budget even when worker slots remain available.	R01,R04
+R09	resources	G02	Probe shared-context export overlap in a real browser	A deterministic local browser probe alternates dimensions/colors and verifies actual output pixels; evidence states whether snapshot overlap is safe, unsafe or blocked, without assuming mock semantics.	""
+R10	resources	G02	Record the context lease decision from the overlap probe	A decision document selects existing snapshot ownership, serialization or a bounded pool from R09 evidence and names any required atomic implementation follow-ups; no speculative mutex is added.	R09
+R11	resources	G02	Reuse immutable shader pipeline resources per GL context	Two renders on one context compile/link the immutable pipeline once; context invalidation deletes exactly the resources it owns.	R10
+R12	resources	G07	Enforce bounded eviction for explicit-DPI effect writes	Explicit-DPI setter participates in byte-accounted eviction and reports quota errors without corrupting an existing entry.	""
+R13	resources	G07	Route PDF effect-cache writes through the shared cache policy	PDF writes no longer duplicate unrestricted puts; an over-budget test uses the shared enforcement behavior.	R12
+R14	resources	G07	Settle ZIP cache-write outcomes at export cleanup	Successful ZIP delivery remains successful when optional caching fails, but cache failure is surfaced and owned writes settle at cleanup.	R12
+R15	resources	S04,P03	Apply a measured per-upload calibration PDF cap	Configured boundary accepts supported PDFs and rejects oversize input before full temp allocation; chosen cap is justified by R04 rather than blindly using 10 GiB.	R04
+R16	resources	S04	Bound aggregate calibration temporary-file bytes	Concurrent uploads exceeding aggregate quota are rejected and reservations release on success/error/abort.	R15
+R17	resources	S04	Remove calibration upload files on disconnect	Interrupted multipart uploads remove their owned partial files and release resource reservations without deleting another request's files.	R16
+R18	resources	P03,S04	Bound simultaneous calibration subprocesses	A configured queue limit caps active Python processes; cancellation releases queued work and no request exceeds its deadline.	T19,R04
+R19	resources	S02	Bound aggregate proxy-download memory and temporary bytes	Concurrent image responses cannot exceed configured resource reservations; abort/error paths release them exactly once.	T12
+F01	performance	C08	Index linked-back share lookups by UUID	DFC-heavy fixtures preserve exact serialized ordering/indices while lookup operation counts grow linearly with cards.	""
+F02	performance	U11	Index original multi-drag orders by UUID	Exact undo adjustments match existing semantics and one-pass lookup counts replace nested finds.	""
+F03	performance	C10	Merge image reference deltas in a keyed map	Swap/shared/no-op fixtures produce exact refcounts and an O(images plus links) operation count without scanning a growing updates array.	D05
+F04	performance	U06	Reuse one art-crop SSIM result for recommendation layers	Counting comparator runs once per eligible candidate and all ranking layers retain expected output/fallback behavior.	""
+F05	performance	U09	Bulk-read normalized MPC cache keys	A duplicate-heavy query batch performs one bulk read and preserves original-query mapping and cache hits.	""
+F06	performance	U09	Bulk-write validated MPC batch cache results	One transaction bulk-writes successful results with existing normalization and no partial malformed entries.	F05
+F07	performance	G05	Preassign ZIP filenames in input order	Reverse-completing duplicate-name render tasks retain deterministic suffixes and existing index prefixes.	""
+F08	performance	G05	Insert prepared ZIP entries in input order	Bounded parallel preparation resolves in arbitrary order but archive insertion order equals source order.	F07
+F09	performance	U04	Subscribe PageView to source-bleed setting primitives	Changing each source-mode/amount setting at unchanged global bleed width updates layout and drag-overlay geometry.	""
+F10	performance	U05	Move drag-overlay object URLs into effect ownership	Replacing a same-ID blob refreshes its URL; removal and unmount revoke every owned URL exactly once; render remains side-effect free.	""
+F11	performance	G06	Replace Pixi blob-size freshness with rendition identity	Distinct same-size blobs for one image ID recreate the texture and revoke the prior URL at safe replacement.	""
+F12	performance	G06	Correct dormant image-cache rendition keys	A hook fixture with two cards sharing one image but different overrides retains separate renditions and detects same-size replacement; no production adoption is added.	""
+F13	performance	U10	Preserve CardGrid column width when callers pass style	cardSize plus an unrelated caller background style retains both properties in a focused component test.	""
+F14	performance	S08	Replace proxy fixed-sleep deduplication with an in-flight promise	Many concurrent identical misses perform one upstream request and all callers observe a completed file or shared failure.	T12
+F15	performance	S08	Publish proxy cache files by atomic rename	Readers never receive partial content; failed write/rename leaves no corrupt final entry or orphan owned temp file.	F14
+F16	performance	S08	Record incremental image-cache size and access metadata	Serve/write paths update a keyed metadata record with correct size/access values; startup reconciliation remains explicit.	F15
+F17	performance	S08	Evict image cache in bounded metadata-driven batches	Steady-state eviction avoids directory-wide stat/sort and removes oldest eligible entries while respecting the configured cap.	F16
+P01	persistence	C06	Replace backup length fingerprint with a canonical content digest	Reorder, override, link/artwork and equal-length settings changes each alter the digest; unchanged state does not.	""
+P02	persistence	C06	Retain dirty backup work skipped by rate or in-flight guards	A change during an active backup or minimum interval schedules one later backup of the newest state rather than disappearing.	P01
+P03	persistence	C07	Validate backup project and card records before writes	Missing/null project, malformed card fields and invalid settings fail before any database write.	""
+P04	persistence	C07	Validate backup UUID and linked-face consistency	Duplicate UUIDs and dangling or invalid reciprocal links fail before import mutation; valid links still remap correctly.	P03
+P05	persistence	C07	Validate backup image encoding and decoded-size limits	Invalid base64, missing image collection and over-budget decoded content fail before Blob allocation/persistence.	P03
+P06	persistence	C07	Include imported images in the project import transaction	A mid-import failure rolls back images, project and cards together while preserving pre-existing deduplicated images.	P04,P05
+P07	persistence	C07	Batch backup image existence reads and writes	Import uses bulk image operations instead of serialized per-image get/put without changing transaction or deduplication semantics.	P06
+P08	persistence	P02	Atomically replace Python profile TOML files	A write failure preserves the previous valid file and readers observe complete old/new TOML, never truncated output.	""
+P09	persistence	P02	Lock Python profile read-modify-write across processes	Two barrier-controlled concurrent mutations retain both changes and release the lock on exceptions.	P08
+P10	persistence	P05	Reject unsupported calibration profile metadata explicitly	Unsupported paper_size or duplex_mode is rejected before persistence; supported metadata round-trips exactly with no silent replacement.	""
+P11	persistence	P05	Reject non-finite calibration offsets at the public boundary	Library and CLI reject NaN and positive/negative infinity before storage or PDF transformation.	""
+P12	persistence	P06	Extract a Node-safe preference-fixture validator	A shared parser validates supported versions, cases and candidates without DOM dependencies and preserves existing valid fixtures.	""
+P13	persistence	P06	Validate normalized preference promotion input before replacement	Malformed versioned/unversioned inputs fail with explicit errors and leave destination bytes unchanged.	P12
+P14	persistence	P06	Publish promoted preference fixtures atomically	A simulated write/rename failure preserves the original fixture and removes only the operation's temporary file.	P13
+P15	persistence	P03	Support grouped-duplex offsets in the Python transform	A real small PDF fixture applies front offsets to the first group and back offsets to the second while preserving page order.	""
+P16	persistence	P03	Expose grouped-duplex mode in the calibration route contract	Validated front-page-count/order parameters reach the CLI; invalid ranges fail before spawning.	P15
+P17	persistence	P03	Send grouped-duplex metadata from the calibration client	Client helper forwards grouping information with existing PDF upload and preserves cancellation/error behavior.	P16
+P18	persistence	P03	Remove client interleave-regroup copies for grouped calibration	Export uses the grouped transform contract directly and a small PDF test proves order/offset equivalence with previous behavior.	P17
+M01	preferences	U07	Make preference seed harvesting abortable	Cancellation stops further seed transport admission and propagates an abort outcome without partial profile publication.	A15
+M02	preferences	U07	Bound concurrent independent MPC seed searches	Seed harvesting overlaps only up to the explicit MPC limit and returns deterministic seed order; direct Scryfall policy is untouched.	M01
+M03	preferences	U07	Bound visual-profile image decoding with cancellation	Deferred decode tests prove capped active buffers and no new admission after abort.	""
+M04	preferences	U07	Cache immutable preference contexts by complete input version	Identical dataset/source/provider/algorithm versions share one in-flight context; changed keys invalidate it and failures do not poison cache.	M02,M03
+M05	preferences	U07	Reuse the preference context in the upgrade modal	Repeated/open concurrent upgrade consumers reuse one context and closing a modal cancels only its subscription.	M04
+M06	preferences	U07	Reuse the preference context in the calibration modal	Calibration bootstrap consumes the same keyed context and close prevents stale state writes.	M04
+M07	preferences	U07	Hoist seed-profile construction out of held-out evaluation	A multi-case evaluation builds seed profiles once while each fold trains independently; predictions match a deterministic baseline.	M04
+E01	desktop	E01	Own and cancel the delayed microservice restart timer	Stop during a pending restart delay prevents a later spawn and leaves no restart timer.	""
+E02	desktop	E01	Clear the previous health interval before replacement	Repeated healthy-crash-restart cycles retain one health interval and stop clears it.	""
+E03	desktop	E01	Coalesce concurrent microservice start callers	Concurrent start calls share one readiness promise and do not report ready before the child health check succeeds.	""
+E04	desktop	E01	Handle child spawn errors as a supervised failure	Spawn error rejects readiness and cleans process ownership without an unhandled child error event.	E03
+E05	desktop	E01	Reset restart budget only after a stability interval	Repeated short-lived healthy starts exhaust the configured restart budget; a sufficiently stable run resets it in fake-clock tests.	E02
+E06	desktop	E02	Probe HTTP identity and readiness instead of TCP-open	Wrong listener, HTTP 503 and hung response fail readiness; expected healthy identity succeeds within the deadline.	E03
+E07	desktop	E02	Show a loading window before service readiness completes	A delayed service-start fixture displays the shell early and prevents dependent actions until readiness is known.	E06
+E08	desktop	E03	Block initial Electron quit until owned shutdown settles	Quit is prevented once, bounded stop settles, and guarded reentry quits; repeated quit/update paths do not recurse.	E01,E02
+E09	desktop	E04	Return disposers from allowlisted IPC subscriptions	Each subscription removes exactly its own wrapper; repeated dispose is safe and raw ipcRenderer remains private.	""
+E10	desktop	E04	Dispose renderer updater subscriptions on effect cleanup	Repeated mount/unmount and StrictMode replay retain one listener while mounted and zero afterward.	E09
+E11	desktop	E04	Dispose the App About subscription on effect cleanup	App teardown removes its IPC listener as well as the DOM listener with no duplicate delivery after remount.	E09
+E12	desktop	E05	Serialize atomic asynchronous Electron settings writes	Concurrent settings updates retain both values, failed writes preserve the last complete JSON, and IPC uses no synchronous settings I/O.	""
+E13	desktop	E06	Resolve the development binary directory from import.meta.url	An emitted-ESM path fixture resolves the intended development binary without a CommonJS global.	""
+E14	desktop	E12	Probe the built preload bridge in sandboxed Electron	A real-runtime smoke records whether the built allowlisted bridge loads and exposes expected methods; blocked runtime is reported honestly.	""
+E15	desktop	E12	Record the preload compatibility disposition	Document verified compatibility or a narrowly specified bundling fix based on E14; do not disable context isolation or enable renderer Node integration.	E14
+B01	build	E07	Build shared-client output once before parallel consumers	An aggregate-build fixture delays shared output creation and proves no client/server consumer starts until complete output exists.	""
+B02	build	E07	Remove destructive shared rebuild from aggregate server consumption	Aggregate server invocation does not delete/rebuild shared dist while client reads it; standalone server build still establishes its prerequisite.	B01
+B03	build	E07	Invalidate shared-build readiness when source changes	A changed shared source with existing dist triggers a current artifact build rather than passing an existence-only check.	B01
+B04	build	E08	Separate clean server builds from incremental builds	Normal unchanged rebuild retains tsbuildinfo; explicit clean rebuild removes stale artifacts and deleted-source output is handled.	""
+B05	build	E09	Add an explicit client TypeScript validation command	A deliberate type-error fixture fails the command even if Vite transpilation would succeed; no production source errors are repaired in this task.	""
+B06	build	E09	Run client type validation from release validation	A failing typecheck stops release validation before promotion and cannot be reported as passed or silently skipped.	B05
+B07	build	E09	Run component builds from release validation	Required client/server/Electron builds execute via the corrected dependency graph and any failure blocks release.	B02,B03
+B08	build	E09	Run required component test gates from release validation	A stub failure in each configured test gate blocks release; an explicit override is labeled skipped, not passed.	""
+B09	build	E09	Overlap independent release validation gates safely	Independent gates run with bounded concurrency while prerequisite-consuming gates remain ordered and fail closed.	B06,B07,B08
+B10	build	E10	Send release-note prompt through child stdin without a shell	Dollar/backtick/quote/newline fixtures reach a local stub stdin literally and cause no shell evaluation.	""
+B11	build	E10	Pin and configure the optional release-note executable	Release-note generation uses a declared executable/version and an offline/manual fallback instead of unpinned network installation.	B10
+B12	build	E10	Drain release-note stderr with bounded capture	A local stub producing large stderr cannot deadlock generation and retained diagnostic output respects a cap.	B10
+B13	build	E10	Terminate the release-note process tree on timeout	A stub descendant exits after timeout/cancel and the release path settles once with manual fallback available.	B10
+B14	build	E11	Emit a microservice build artifact manifest	Manifest records actual binary path/platform/profile from supported overrides and rejects missing output before success.	""
+B15	build	E11	Resolve packaged microservice inputs from the artifact manifest	Alternate target directories cannot silently package a stale sibling release binary; incompatible platform/profile is rejected.	B14
+B16	build	E11	Resolve the development microservice path from the artifact manifest	Development launch selects the manifest's existing compatible binary rather than ignoring build-directory overrides.	B14,E13
+B17	build	E11	Run independent Rust and JS builds before a packaging join	Bounded parallel prerequisites must both succeed before packaging consumes their complete artifacts.	B02,B15
+B18	build	P01	Set calibration venv runner defaults in the server image	A standalone-image configuration check resolves the venv executable and Python without Compose-only environment variables.	""
+B19	build	P04	Lock the calibration runtime Python dependency set	A committed lock/constraints artifact records reproducible versions and hashes or documented system-package pinning for all runtime dependencies.	""
+B20	build	P04	Install the locked Python runtime without uncontrolled pip upgrades	Docker build consumes the lock, uses the chosen system/venv policy and no longer upgrades pip arbitrarily.	B19
+B21	build	P04,P01	Verify calibration commands in the standalone built image	A bounded image smoke lists profiles and generates/transforms a small valid PDF without Compose; resolved package versions are recorded.	B18,B20
+V01	evidence	C08,C10,U11	Record operation-count scaling for the linear lookup fixes	Repository-local evidence compares N and scaled N for all three fixed lookup kernels with identical outputs; no invented wall-time speedup claims.	F01,F02,F03
+V02	evidence	G03,G04,P03	Record a bounded high-DPI export resource probe	A representative export records actual completion/order and peak resource observations against configured budgets; blocked browser/native paths are explicit.	R05,R07,R08,P18
+V03	evidence	E01,E03,E12	Record an Electron lifecycle smoke on built artifacts	Real startup/bridge/shutdown evidence is bound to the tested commit and verifies no retained owned child after quit, or clearly reports a blocker.	E08,E15
+V04	evidence	S01	Move live Scryfall unit-test probes into a serialized contract gate	Rarity/color unit tests no longer make ungoverned live calls; an explicit opt-in contract gate retains meaningful assertions and FIFO policy.	T07
+V05	evidence	P02,P05	Add a real small-PDF calibration package smoke	A real pypdf fixture validates page count/order and finite-offset transform through the public library instead of only mocked classes.	P10,P11
+V06	evidence	E08	Correct build-speed documentation for clean versus incremental commands	Documented commands match B04 behavior and separate cold/warm evidence without repeating obsolete incremental claims.	B04
+V07	evidence	E11	Mark historical architecture reviews as non-current guidance	Historical reviews point to current bundled/local-client/self-hosted decisions and no longer present GitHub Actions or registry migration as current instructions.	""
+V08	evidence	G02,E12	Document evidence limits for remaining runtime hypotheses	The review follow-up index links actual G02/E12 dispositions, distinguishing reproduced, disproved and blocked outcomes with any necessary new leaf tasks identified.	R10,E15
+V09	evidence	P05	Centralize repeated calibration CLI error formatting	One narrow error adapter preserves existing command messages/exit codes and does not catch KeyboardInterrupt or SystemExit.	""
+V10	evidence	S08	Consolidate duplicate bounded-limiter mechanics	Image and token callers use one tested limiter implementation with distinct explicit policies; direct Scryfall still uses concurrency one.	T05,F14
