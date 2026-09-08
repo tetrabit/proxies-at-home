@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+
 import type { RenderParams } from '../components/CardCanvas/types';
 
 // Mock dependencies
@@ -173,9 +174,7 @@ describe('effectCache', () => {
                 { card: { uuid: 'card-1', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1 } }, exportBlob: new Blob(['export']) },
             ]);
 
-            await Promise.resolve();
-            await Promise.resolve();
-            expect(processor.process).toHaveBeenCalledTimes(1);
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(1));
         });
 
         it('coalesces queued and active equivalent renditions while delivering completion to every card', async () => {
@@ -196,7 +195,7 @@ describe('effectCache', () => {
                 source
             );
 
-            expect(processor.process).toHaveBeenCalledTimes(1);
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(1));
             expect(overridesToRenderParams).toHaveBeenCalledTimes(1);
 
             resolveRender?.(rendered);
@@ -219,7 +218,7 @@ describe('effectCache', () => {
             vi.mocked(useSettingsStore.getState).mockReturnValue({ dpi: 1200 } as ReturnType<typeof useSettingsStore.getState>);
             const differentDpi = preRenderEffect({ ...card, uuid: 'card-4' }, source);
 
-            expect(processor.process).toHaveBeenCalledTimes(4);
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(4));
             resolveRenders.forEach(resolve => resolve(new Blob(['rendered'])));
             await Promise.all([first, differentOverrides, differentRevision, differentDpi]);
         });
@@ -454,6 +453,93 @@ describe('effectCache', () => {
             await expect(active).rejects.toThrow('Effect processor destroyed');
             await expect(queued).rejects.toThrow('Effect processor destroyed');
             expect(createImageBitmap).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('persisted source revision queueing', () => {
+        let liveDb: typeof import('../db').db;
+        let livePreRenderEffect: typeof preRenderEffect;
+        let liveGetEffectProcessor: typeof getEffectProcessor;
+
+        beforeAll(async () => {
+            vi.doUnmock('@/db');
+            vi.doUnmock('./cacheUtils');
+            vi.resetModules();
+
+            ({ db: liveDb } = await import('../db'));
+            ({
+                getEffectProcessor: liveGetEffectProcessor,
+                preRenderEffect: livePreRenderEffect,
+            } = await import('./effectCache'));
+        });
+
+        beforeEach(() => {
+            const processor = liveGetEffectProcessor();
+            if (vi.isMockFunction(processor.process)) {
+                processor.process.mockRestore();
+            }
+            processor.destroy();
+        });
+
+        it('coalesces independent Dexie reads of one persisted export revision', async () => {
+            const imageId = 'r02-dexie-rework-01-same-revision';
+            const source = new Blob(['same persisted bytes'], { type: 'image/png' });
+            await liveDb.images.put({ id: imageId, refCount: 1, exportBlob: source });
+
+            const firstRead = await liveDb.images.get(imageId);
+            const secondRead = await liveDb.images.get(imageId);
+            expect(firstRead?.exportBlob).toBeDefined();
+            expect(secondRead?.exportBlob).toBeDefined();
+            expect(firstRead?.exportBlob).not.toBe(secondRead?.exportBlob);
+
+            let resolveRender: ((blob: Blob) => void) | undefined;
+            const processor = liveGetEffectProcessor();
+            const render = vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRender = resolve;
+            }));
+            const card = {
+                name: 'Adjusted',
+                order: 0,
+                isUserUpload: false,
+                imageId,
+                overrides: { brightness: 1 },
+            };
+
+            const first = livePreRenderEffect({ ...card, uuid: 'r02-card-one' }, firstRead!.exportBlob!);
+            const second = livePreRenderEffect({ ...card, uuid: 'r02-card-two' }, secondRead!.exportBlob!);
+
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(1));
+            resolveRender?.(new Blob(['rendered']));
+            await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+        });
+
+        it('does not coalesce same-size replacement bytes under one persisted image key', async () => {
+            const imageId = 'r02-dexie-rework-01-same-size-replacement';
+            const firstRevision = new Blob(['0123456789abcdef'], { type: 'image/png' });
+            const replacementRevision = new Blob(['fedcba9876543210'], { type: 'image/png' });
+            expect(firstRevision.size).toBe(replacementRevision.size);
+
+            const processor = liveGetEffectProcessor();
+            const resolveRenders: Array<(blob: Blob) => void> = [];
+            const render = vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRenders.push(resolve);
+            }));
+            const card = {
+                name: 'Adjusted',
+                order: 0,
+                isUserUpload: false,
+                imageId,
+                overrides: { brightness: 1 },
+            };
+
+            const renders = Promise.all([
+                livePreRenderEffect({ ...card, uuid: 'r02-card-old' }, firstRevision),
+                livePreRenderEffect({ ...card, uuid: 'r02-card-new' }, replacementRevision),
+            ]);
+
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(2));
+            resolveRenders.forEach(resolve => resolve(new Blob(['rendered'])));
+            await expect(renders).resolves.toEqual([undefined, undefined]);
         });
     });
 
