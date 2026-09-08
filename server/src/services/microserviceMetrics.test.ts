@@ -109,14 +109,42 @@ describe('microservice metrics', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('reports microservice availability success and failure', async () => {
+  it('counts only actual health probes and reprobes after the success cache expires', async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
-    resetMicroserviceMetrics();
-    await expect(isMicroserviceAvailable()).resolves.toBe(true);
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
 
-    globalThis.fetch = vi.fn().mockRejectedValueOnce(new Error('offline'));
-    await expect(isMicroserviceAvailable()).resolves.toBe(false);
-    globalThis.fetch = originalFetch;
+    try {
+      await expect(isMicroserviceAvailable()).resolves.toBe(true);
+      expect(getMicroserviceMetrics()).toMatchObject({
+        totalRequests: 1,
+        successRate: 100,
+        errorRate: 0,
+        endpointStats: [{ endpoint: '/health', count: 1 }],
+      });
+
+      vi.setSystemTime(1_999);
+      await expect(isMicroserviceAvailable()).resolves.toBe(true);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(getMicroserviceMetrics()).toMatchObject({
+        totalRequests: 1,
+        successRate: 100,
+        errorRate: 0,
+        endpointStats: [{ endpoint: '/health', count: 1 }],
+      });
+
+      vi.setSystemTime(2_000);
+      await expect(isMicroserviceAvailable()).resolves.toBe(true);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      expect(getMicroserviceMetrics()).toMatchObject({
+        totalRequests: 2,
+        successRate: 100,
+        errorRate: 0,
+        endpointStats: [{ endpoint: '/health', count: 2 }],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

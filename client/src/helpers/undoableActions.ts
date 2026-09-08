@@ -303,6 +303,17 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
         sourceProjectId = sourceCard.projectId;
         if (!sourceProjectId?.trim()) return;
 
+        // All requested existing sources must belong to the first source's project.
+        // Missing UUIDs retain the existing skip behavior, but a found foreign or
+        // projectless card makes the entire batch fail before any mutation.
+        for (const uuid of validUuids) {
+            if (uuid === sourceCard.uuid) continue;
+            const requestedCard = await db.cards.get(uuid);
+            if (requestedCard && (!requestedCard.projectId?.trim() || requestedCard.projectId !== sourceProjectId)) {
+                return;
+            }
+        }
+
         const allCards = await db.cards.where("projectId").equals(sourceProjectId).sortBy("order");
 
         // Filter to find the cards we want to duplicate, keeping the order from allCards

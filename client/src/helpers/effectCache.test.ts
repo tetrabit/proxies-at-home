@@ -30,6 +30,7 @@ vi.mock('./cardCanvasWorker', () => ({
 
 // Import after mocks
 import { db } from '@/db';
+import { useSettingsStore } from '@/store/settings';
 import { overridesToRenderParams } from './cardCanvasWorker';
 import { enforceEffectCacheLimits } from './cacheUtils';
 import { getEffectCacheEntry, getEffectProcessor, preRenderEffect, queueBulkPreRender, setEffectCacheEntryWithDpi } from './effectCache';
@@ -37,6 +38,7 @@ import { getEffectCacheEntry, getEffectProcessor, preRenderEffect, queueBulkPreR
 describe('effectCache', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.mocked(useSettingsStore.getState).mockReturnValue({ dpi: 300 } as ReturnType<typeof useSettingsStore.getState>);
     });
 
 
@@ -127,6 +129,11 @@ describe('effectCache', () => {
     describe('pre-render queueing', () => {
         beforeEach(() => {
             vi.clearAllMocks();
+            const processor = getEffectProcessor();
+            if (vi.isMockFunction(processor.process)) {
+                (processor.process as typeof processor.process & { mockRestore: () => void }).mockRestore();
+            }
+            processor.destroy();
         });
 
         it('skips cards without image ids or active overrides', async () => {
@@ -169,6 +176,95 @@ describe('effectCache', () => {
             await Promise.resolve();
             await Promise.resolve();
             expect(processor.process).toHaveBeenCalledTimes(1);
+        });
+
+        it('coalesces queued and active equivalent renditions while delivering completion to every card', async () => {
+            const processor = getEffectProcessor();
+            let resolveRender: ((blob: Blob) => void) | undefined;
+            const rendered = new Blob(['rendered']);
+            vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRender = resolve;
+            }));
+            const source = new Blob(['export']);
+
+            const first = preRenderEffect(
+                { uuid: 'card-1', name: 'First copy', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1, contrast: 2 } },
+                source
+            );
+            const second = preRenderEffect(
+                { uuid: 'card-2', name: 'Second copy', order: 1, isUserUpload: false, imageId: 'image-1', overrides: { contrast: 2, brightness: 1, saturation: undefined } },
+                source
+            );
+
+            expect(processor.process).toHaveBeenCalledTimes(1);
+            expect(overridesToRenderParams).toHaveBeenCalledTimes(1);
+
+            resolveRender?.(rendered);
+            await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+            expect(db.effectCache.put).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not coalesce different image revisions, DPIs, or canonical overrides', async () => {
+            const processor = getEffectProcessor();
+            const resolveRenders: Array<(blob: Blob) => void> = [];
+            vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRenders.push(resolve);
+            }));
+            const card = { uuid: 'card-1', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1 } };
+            const source = new Blob(['revision-one']);
+
+            const first = preRenderEffect(card, source);
+            const differentOverrides = preRenderEffect({ ...card, uuid: 'card-2', overrides: { brightness: 2 } }, source);
+            const differentRevision = preRenderEffect({ ...card, uuid: 'card-3' }, new Blob(['revision-two']));
+            vi.mocked(useSettingsStore.getState).mockReturnValue({ dpi: 1200 } as ReturnType<typeof useSettingsStore.getState>);
+            const differentDpi = preRenderEffect({ ...card, uuid: 'card-4' }, source);
+
+            expect(processor.process).toHaveBeenCalledTimes(4);
+            resolveRenders.forEach(resolve => resolve(new Blob(['rendered'])));
+            await Promise.all([first, differentOverrides, differentRevision, differentDpi]);
+        });
+
+        it('clears a rejected shared rendition so the next request retries', async () => {
+            const processor = getEffectProcessor();
+            const render = vi.spyOn(processor, 'process')
+                .mockRejectedValueOnce(new Error('render failed'))
+                .mockResolvedValueOnce(new Blob(['retried']));
+            const source = new Blob(['export']);
+            const card = { uuid: 'card-1', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1 } };
+            const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+            await Promise.all([
+                preRenderEffect(card, source),
+                preRenderEffect({ ...card, uuid: 'card-2' }, source),
+            ]);
+            await preRenderEffect(card, source);
+
+            expect(render).toHaveBeenCalledTimes(2);
+            error.mockRestore();
+        });
+
+        it('clears a destroyed shared rendition so a later request can render', async () => {
+            const processor = getEffectProcessor();
+            const source = new Blob(['export']);
+            const card = { uuid: 'card-1', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1 } };
+            global.Worker = class {
+                postMessage = vi.fn();
+                terminate = vi.fn();
+                onmessage: ((e: MessageEvent) => void) | null = null;
+                onerror: ((e: ErrorEvent) => void) | null = null;
+            } as unknown as typeof Worker;
+            global.createImageBitmap = vi.fn().mockImplementation(() => new Promise(() => undefined));
+            const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+            const first = preRenderEffect(card, source);
+            const second = preRenderEffect({ ...card, uuid: 'card-2' }, source);
+            processor.destroy();
+            await Promise.all([first, second]);
+            const render = vi.spyOn(processor, 'process').mockResolvedValueOnce(new Blob(['after-destroy']));
+            await preRenderEffect(card, source);
+
+            expect(render).toHaveBeenCalledTimes(1);
+            error.mockRestore();
         });
     });
 

@@ -14,6 +14,10 @@ const MICROSERVICE_BASE_URL = process.env.SCRYFALL_CACHE_URL || 'http://localhos
 // Singleton client instance
 let clientInstance: ScryfallCacheClient | null = null;
 
+// Successful health results are lazily cached; no timer is needed for expiry.
+const HEALTH_CHECK_SUCCESS_TTL_MS = 1_000;
+let cachedHealthCheck: { checkedAt: number } | null = null;
+// Failures use a zero-duration cache policy, so the next caller can immediately retry.
 // The current health operation, shared by concurrent availability checks.
 let pendingHealthCheck: Promise<boolean> | null = null;
 
@@ -34,13 +38,19 @@ export function getScryfallClient(): ScryfallCacheClient {
  * Check if microservice is available
  */
 export function isMicroserviceAvailable(): Promise<boolean> {
+    if (cachedHealthCheck && Date.now() - cachedHealthCheck.checkedAt < HEALTH_CHECK_SUCCESS_TTL_MS) {
+        return Promise.resolve(true);
+    }
+
     if (!pendingHealthCheck) {
         pendingHealthCheck = (async () => {
             try {
                 const client = getScryfallClient();
                 await trackMicroserviceCall('/health', () => client.health());
+                cachedHealthCheck = { checkedAt: Date.now() };
                 return true;
             } catch {
+                cachedHealthCheck = null;
                 return false;
             }
         })().finally(() => {

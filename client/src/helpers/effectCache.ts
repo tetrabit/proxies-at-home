@@ -273,25 +273,93 @@ function hashString(str: string): string {
 }
 
 /**
+ * Canonicalize overrides before deriving cache or in-flight rendition keys.
+ * Undefined fields are intentionally omitted because they have no rendering effect.
+ */
+function canonicalizeOverrides(overrides: CardOverrides): Record<string, unknown> {
+    return Object.keys(overrides || {})
+        .sort()
+        .reduce((canonical, key) => {
+            const value = overrides[key as keyof CardOverrides];
+            if (value !== undefined) {
+                canonical[key] = value;
+            }
+            return canonical;
+        }, {} as Record<string, unknown>);
+}
+
+function canonicalOverridesSignature(overrides: CardOverrides): string {
+    return JSON.stringify(canonicalizeOverrides(overrides));
+}
+
+/**
  * Compute a stable cache key from imageId, overrides, and DPI.
  * Including DPI ensures different resolutions are cached separately and
  * switching back to a previous DPI can hit the cache (LRU eviction handles cleanup).
  */
 function computeCacheKey(imageId: string, overrides: CardOverrides, dpi: number): string {
-    const sortedOverrides = Object.keys(overrides || {})
-        .sort()
-        .reduce((acc, k) => {
-            const value = overrides[k as keyof CardOverrides];
-            if (value !== undefined) {
-                acc[k] = value;
-            }
-            return acc;
-        }, {} as Record<string, unknown>);
-    const overridesHash = hashString(JSON.stringify(sortedOverrides));
+    const overridesHash = hashString(canonicalOverridesSignature(overrides));
     return `${imageId}:${dpi}:${overridesHash}`;
 }
 
 let effectCacheLimitEnforcement: Promise<void> = Promise.resolve();
+
+// Blob identity is a cheap, in-memory image revision. A replacement image produces a
+// new Blob, while cards sharing the current image entry share its Blob identity.
+const exportBlobRevisions = new WeakMap<Blob, number>();
+let nextExportBlobRevision = 0;
+const inFlightRenditions = new Map<string, Promise<void>>();
+
+function getExportBlobRevision(exportBlob: Blob): number {
+    let revision = exportBlobRevisions.get(exportBlob);
+    if (revision === undefined) {
+        revision = ++nextExportBlobRevision;
+        exportBlobRevisions.set(exportBlob, revision);
+    }
+    return revision;
+}
+
+function computeInFlightRenditionKey(
+    imageId: string,
+    exportBlob: Blob,
+    overrides: CardOverrides,
+    dpi: number
+): string {
+    return JSON.stringify([
+        imageId,
+        getExportBlobRevision(exportBlob),
+        dpi,
+        canonicalizeOverrides(overrides),
+    ]);
+}
+
+function getOrCreatePreRender(
+    imageId: string,
+    exportBlob: Blob,
+    overrides: CardOverrides,
+    dpi: number
+): Promise<void> {
+    const key = computeInFlightRenditionKey(imageId, exportBlob, overrides, dpi);
+    const existing = inFlightRenditions.get(key);
+    if (existing) return existing;
+
+    const rendition = (async () => {
+        const params = overridesToRenderParams(overrides);
+        const renderedBlob = await EffectProcessor.getInstance().process(exportBlob, params);
+        await setEffectCacheEntry(imageId, overrides, renderedBlob, dpi);
+    })();
+
+    inFlightRenditions.set(key, rendition);
+    void rendition.then(
+        () => {
+            if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
+        },
+        () => {
+            if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
+        }
+    );
+    return rendition;
+}
 
 function enforceEffectCacheLimitsSerially(): Promise<void> {
     const enforcement = effectCacheLimitEnforcement
@@ -381,10 +449,8 @@ export async function preRenderEffect(
     }
 
     try {
-        const params = overridesToRenderParams(card.overrides);
-        const processor = EffectProcessor.getInstance();
-        const renderedBlob = await processor.process(exportBlob, params);
-        await setEffectCacheEntry(card.imageId, card.overrides, renderedBlob);
+        const dpi = useSettingsStore.getState().dpi;
+        await getOrCreatePreRender(card.imageId, exportBlob, card.overrides, dpi);
     } catch (error) {
         console.error('[effectCache] Pre-render failed:', error);
     }

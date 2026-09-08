@@ -908,6 +908,101 @@ describe("undoableActions", () => {
       expect(JSON.stringify(otherProjectCard)).toBe(otherProjectBefore);
     });
 
+    it("fails closed before writes when a requested duplicate belongs to another project", async () => {
+      const projectACard = {
+        uuid: "project-a-source",
+        projectId: "project-a",
+        name: "Shared Name",
+        order: 10,
+        imageId: "project-a-image",
+      } as CardOption;
+      const projectBCard = {
+        uuid: "project-b-requested",
+        projectId: "project-b",
+        name: "Shared Name",
+        order: 20,
+        imageId: "project-b-image",
+      } as CardOption;
+      const cards = [projectACard, projectBCard];
+      const images = [
+        { id: "project-a-image", refCount: 4 },
+        { id: "project-b-image", refCount: 7 },
+      ];
+      const cardsBefore = JSON.stringify(cards);
+      const imagesBefore = JSON.stringify(images);
+
+      vi.mocked(db.cards.get).mockImplementation(((uuid: string) =>
+        cards.find((card) => card.uuid === uuid)
+      ) as never);
+
+      await expect(
+        undoableDuplicateCardsBatch([projectACard.uuid, projectBCard.uuid])
+      ).resolves.toEqual([]);
+
+      expect(db.cards.get).toHaveBeenNthCalledWith(1, projectACard.uuid);
+      expect(db.cards.get).toHaveBeenNthCalledWith(2, projectBCard.uuid);
+      expect(db.cards.where).not.toHaveBeenCalled();
+      expect(db.cards.bulkPut).not.toHaveBeenCalled();
+      expect(db.images.bulkGet).not.toHaveBeenCalled();
+      expect(db.images.bulkUpdate).not.toHaveBeenCalled();
+      expect(mockPushAction).not.toHaveBeenCalled();
+      expect(JSON.stringify(cards)).toBe(cardsBefore);
+      expect(JSON.stringify(images)).toBe(imagesBefore);
+    });
+
+    it("duplicates requested cards when every found source belongs to the same project", async () => {
+      const firstProjectACard = {
+        uuid: "project-a-first",
+        projectId: "project-a",
+        name: "First",
+        order: 10,
+        imageId: "project-a-first-image",
+      } as CardOption;
+      const secondProjectACard = {
+        uuid: "project-a-second",
+        projectId: "project-a",
+        name: "Second",
+        order: 20,
+        imageId: "project-a-second-image",
+      } as CardOption;
+      const projectACards = [firstProjectACard, secondProjectACard];
+
+      vi.spyOn(crypto, "randomUUID")
+        .mockReturnValueOnce("project-a-first-copy" as never)
+        .mockReturnValueOnce("project-a-second-copy" as never);
+      vi.mocked(db.cards.get).mockImplementation(((uuid: string) =>
+        projectACards.find((card) => card.uuid === uuid)
+      ) as never);
+      vi.mocked(db.cards.where).mockReturnValue({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue(projectACards) })),
+      } as never);
+      vi.mocked(db.images.bulkGet).mockResolvedValueOnce([
+        { id: "project-a-first-image", refCount: 1 },
+        { id: "project-a-second-image", refCount: 2 },
+      ] as never);
+
+      await expect(
+        undoableDuplicateCardsBatch([firstProjectACard.uuid, secondProjectACard.uuid])
+      ).resolves.toEqual(["project-a-first-copy", "project-a-second-copy"]);
+
+      expect(db.cards.get).toHaveBeenNthCalledWith(1, firstProjectACard.uuid);
+      expect(db.cards.get).toHaveBeenNthCalledWith(2, secondProjectACard.uuid);
+      expect(db.cards.where).toHaveBeenCalledWith("projectId");
+      expect(db.cards.bulkPut).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ uuid: "project-a-first-copy", projectId: "project-a" }),
+          expect.objectContaining({ uuid: "project-a-second-copy", projectId: "project-a" }),
+        ])
+      );
+      expect(db.images.bulkUpdate).toHaveBeenCalledWith([
+        { key: "project-a-first-image", changes: { refCount: 2 } },
+        { key: "project-a-second-image", changes: { refCount: 3 } },
+      ]);
+      expect(mockPushAction).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "DUPLICATE_CARDS_BATCH" })
+      );
+    });
+
     it("undoes a batch duplicate by deleting images whose refcount is exhausted", async () => {
       const front = { uuid: "front-solo", projectId: "project-a", name: "Front", order: 10, imageId: "img-front" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-solo" as never);
