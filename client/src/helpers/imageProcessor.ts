@@ -85,6 +85,7 @@ export class ImageProcessor {
   private static instances: Set<ImageProcessor> = new Set();
   private allWorkers: Set<Worker> = new Set();
   private idleWorkers: IdleWorker[] = [];
+  private activeTasks: Map<Worker, Task> = new Map();
 
   // Separate queues for priorities
   private highPriorityQueue: Task[] = [];
@@ -223,17 +224,26 @@ export class ImageProcessor {
 
     if (worker) {
       const currentTask = task; // Capture for closure
+      this.activeTasks.set(worker, currentTask);
 
       // Track that a task has started processing
       this.taskStarted();
 
       worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+        if (this.activeTasks.get(worker!) !== currentTask) {
+          return;
+        }
+        this.activeTasks.delete(worker!);
         this.taskCompleted();
         this.returnWorkerToPool(worker!);
         currentTask.resolve(e.data);
       };
 
       worker.onerror = (e: ErrorEvent) => {
+        if (this.activeTasks.get(worker!) !== currentTask) {
+          return;
+        }
+        this.activeTasks.delete(worker!);
         this.taskCompleted();
         console.error("Worker error, terminating:", e);
         this.terminateWorker(worker!);

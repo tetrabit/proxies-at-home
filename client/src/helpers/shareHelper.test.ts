@@ -148,35 +148,133 @@ describe("shareHelper", () => {
       expect(overrides.sa).toBe(0.9); // saturation -> sa
     });
 
-    it("should skip linked back cards (DFC backs)", () => {
+    it("serializes linked backs after fronts with stable indices and skips only unlinked custom uploads", () => {
       const cards: CardOption[] = [
         {
-          uuid: "front",
-          name: "Delver of Secrets",
-          order: 0,
-          set: "isd",
-          number: "51",
-          imageId: "scryfall/isd/51",
+          uuid: "front-alpha",
+          name: "Alpha",
+          order: 10,
+          set: "alpha",
+          number: "1",
+          imageId: "scryfall/alpha/1",
           isUserUpload: false,
-          linkedBackId: "back",
+          category: "Main",
+          overrides: { brightness: 2 },
+          linkedBackId: "back-alpha",
         },
         {
-          uuid: "back",
-          name: "Insectile Aberration",
-          order: 1,
-          set: "isd",
-          number: "51b",
-          imageId: "scryfall/isd/51b",
+          uuid: "back-beta",
+          name: "Beta Back",
+          order: 21,
+          imageId: "cardback_default",
+          isUserUpload: true,
+          linkedFrontId: "front-beta",
+        },
+        {
+          uuid: "custom-front",
+          name: "Custom",
+          order: 12,
+          imageId: "local_custom",
+          isUserUpload: true,
+        },
+        {
+          uuid: "standalone",
+          name: "Standalone",
+          order: 15,
+          imageId: "mpc_standalone",
           isUserUpload: false,
-          linkedFrontId: "front",
+        },
+        {
+          uuid: "front-beta",
+          name: "Beta",
+          order: 20,
+          set: "beta",
+          number: "2",
+          imageId: "scryfall/beta/2",
+          isUserUpload: false,
+          linkedBackId: "back-beta",
+        },
+        {
+          uuid: "back-alpha",
+          name: "Alpha Back",
+          order: 11,
+          set: "alpha",
+          number: "1b",
+          imageId: "scryfall/alpha/1b",
+          isUserUpload: false,
+          category: "Backs",
+          overrides: { contrast: 1.5 },
+          linkedFrontId: "front-alpha",
+        },
+        {
+          uuid: "custom-back",
+          name: "Custom Back",
+          order: 13,
+          imageId: "local_custom_back",
+          isUserUpload: true,
+          linkedFrontId: "custom-front",
         },
       ];
+      const findSpy = vi.spyOn(Array.prototype, "find");
 
       const result = serializeCards(cards);
 
-      // Should serialize front and back with DFC link
-      // The back card should be added to the array for the DFC link
-      expect(result.dfc).toHaveLength(1);
+      expect(result).toEqual({
+        shareCards: [
+          ["s", "alpha/1", 10, "Main", { br: 2 }, "Alpha", "scryfall/alpha/1"],
+          ["m", "standalone", 15, null, null, "Standalone", "mpc_standalone"],
+          ["s", "beta/2", 20, null, null, "Beta", "scryfall/beta/2"],
+          ["s", "alpha/1b", 11, "Backs", { ct: 1.5 }, "Alpha Back"],
+          ["b", "cardback_default", 21, null, null, "Beta Back"],
+        ],
+        dfc: [[0, 3], [2, 4]],
+        skipped: 1,
+      });
+      expect(findSpy).not.toHaveBeenCalled();
+      findSpy.mockRestore();
+    });
+
+    it("keeps UUID lookup operations proportional for DFC-heavy shares", () => {
+      const serializeAndCountMapGets = (pairCount: number) => {
+        const fronts: CardOption[] = Array.from({ length: pairCount }, (_, index) => ({
+          uuid: `front-${index}`,
+          name: `Front ${index}`,
+          order: index,
+          set: "test",
+          number: String(index),
+          imageId: `scryfall/test/${index}`,
+          isUserUpload: false,
+          linkedBackId: `back-${index}`,
+        }));
+        const backs: CardOption[] = Array.from({ length: pairCount }, (_, index) => ({
+          uuid: `back-${index}`,
+          name: `Back ${index}`,
+          order: pairCount + index,
+          set: "test",
+          number: `${index}b`,
+          imageId: `scryfall/test/${index}b`,
+          isUserUpload: false,
+          linkedFrontId: `front-${index}`,
+        }));
+        const mapGetSpy = vi.spyOn(Map.prototype, "get");
+        const result = serializeCards([...fronts, ...backs]);
+        const mapGetCount = mapGetSpy.mock.calls.length;
+        mapGetSpy.mockRestore();
+
+        return { result, mapGetCount };
+      };
+
+      const small = serializeAndCountMapGets(16);
+      const large = serializeAndCountMapGets(64);
+
+      expect(small.result.dfc).toEqual(
+        Array.from({ length: 16 }, (_, index) => [index, index + 16])
+      );
+      expect(large.result.dfc).toEqual(
+        Array.from({ length: 64 }, (_, index) => [index, index + 64])
+      );
+      expect(small.mapGetCount).toBeGreaterThan(0);
+      expect(large.mapGetCount).toBe(small.mapGetCount * 4);
     });
   });
 

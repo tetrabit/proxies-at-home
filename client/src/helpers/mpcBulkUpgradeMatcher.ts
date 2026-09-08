@@ -836,31 +836,8 @@ export async function rankCandidates(
 
   // 3. Art Match SSIM (Art-crop only)
   let artMatch: RankedCandidate[] = [];
-  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
-  if (sourceImageUrl && artMatchCompare && getMpcImageUrl) {
-    try {
-      const artScoredCandidates = await scoreCandidatesByArtCrop(
-        candidates,
-        sourceImageUrl,
-        artMatchCompare,
-        getMpcImageUrl,
-        signal
-      );
-      artMatch = artScoredCandidates.slice(0, MAX_RECOMMENDATIONS).map(
-        (sc): RankedCandidate => ({
-          card: sc.card,
-          reason: "name_ssim",
-          score: sc.score,
-          bucket: "name",
-        })
-      );
-    } catch {
-      // SSIM failure
-    }
-  }
-
-  // 4. Full Process (Committee Ensemble)
   let artScored: ScoredCandidate[] = [];
+  const artMatchCompare = input.artMatchCompare ?? input.ssimCompare;
   if (sourceImageUrl && artMatchCompare && getMpcImageUrl) {
     try {
       artScored = await scoreCandidatesByArtCrop(
@@ -870,10 +847,20 @@ export async function rankCandidates(
         getMpcImageUrl,
         signal
       );
+      artMatch = artScored.slice(0, MAX_RECOMMENDATIONS).map(
+        (sc): RankedCandidate => ({
+          card: sc.card,
+          reason: "name_ssim",
+          score: sc.score,
+          bucket: "name",
+        })
+      );
     } catch {
-      // SSIM failed
+      // SSIM failure — both recommendation layers use the same unavailable result.
     }
   }
+
+  // 4. Full Process (Committee Ensemble)
 
   const artMatchCards = artScored.slice(0, 3).map((s) => s.card);
   const decisiveArtMatches = artScored.filter(s => s.score >= 0.95).map(s => s.card);

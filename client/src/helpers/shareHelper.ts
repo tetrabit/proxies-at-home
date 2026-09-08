@@ -281,8 +281,12 @@ export function serializeCards(cards: CardOption[]): { shareCards: ShareCard[]; 
     const dfc: [number, number][] = [];
     let skipped = 0;
 
-    // Map from original UUID to new index
+    // Maps from original UUID to the serialized index and source card.
     const uuidToIndex = new Map<string, number>();
+    const uuidToCard = new Map<string, CardOption>();
+    for (const card of cards) {
+        uuidToCard.set(card.uuid, card);
+    }
 
     // First pass: serialize shareable cards
     for (const card of cards) {
@@ -318,7 +322,7 @@ export function serializeCards(cards: CardOption[]): { shareCards: ShareCard[]; 
     for (const card of cards) {
         if (card.linkedBackId) {
             const frontIndex = uuidToIndex.get(card.uuid);
-            const backCard = cards.find(c => c.uuid === card.linkedBackId);
+            const backCard = uuidToCard.get(card.linkedBackId);
 
             if (frontIndex !== undefined && backCard) {
                 // The back card identifier

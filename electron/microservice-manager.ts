@@ -19,18 +19,42 @@ export class MicroserviceManager {
   private config: MicroserviceConfig;
   private restartCount = 0;
   private healthCheckTimer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private startPromise: Promise<number> | null = null;
   private isShuttingDown = false;
 
   constructor(config: MicroserviceConfig) {
     this.config = config;
   }
 
-  async start(): Promise<number> {
-    if (this.process) {
-      console.log(`[${this.config.name}] Already running`);
-      return this.config.port;
+  start(): Promise<number> {
+    if (this.startPromise) {
+      return this.startPromise;
     }
 
+    if (this.process) {
+      console.log(`[${this.config.name}] Already running`);
+      return Promise.resolve(this.config.port);
+    }
+
+    const startPromise = this.startInternal();
+    this.startPromise = startPromise;
+    void startPromise.then(
+      () => {
+        if (this.startPromise === startPromise) {
+          this.startPromise = null;
+        }
+      },
+      () => {
+        if (this.startPromise === startPromise) {
+          this.startPromise = null;
+        }
+      }
+    );
+    return startPromise;
+  }
+
+  private async startInternal(): Promise<number> {
     const binaryPath = this.getBinaryPath();
 
     if (!fs.existsSync(binaryPath)) {
@@ -70,7 +94,8 @@ export class MicroserviceManager {
         console.log(
           `[${this.config.name}] Attempting restart ${this.restartCount}/${this.config.maxRestarts}`
         );
-        setTimeout(() => {
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = null;
           this.start().catch((err) => {
             console.error(`[${this.config.name}] Restart failed:`, err);
           });
@@ -90,6 +115,11 @@ export class MicroserviceManager {
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
+
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
 
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
@@ -192,6 +222,10 @@ export class MicroserviceManager {
   }
 
   private startHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+    }
+
     this.healthCheckTimer = setInterval(async () => {
       if (!(await this.checkHealth())) {
         console.error(`[${this.config.name}] Health check failed`);

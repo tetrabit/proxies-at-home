@@ -353,6 +353,78 @@ describe("ImageProcessor", () => {
         expect(worker.postMessage).toHaveBeenCalledWith({ uuid: "second" });
     });
 
+    it("should own one dispatched task per busy worker and clear it once after a message", async () => {
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            value: 2,
+            configurable: true,
+        });
+        const instance = ImageProcessor.getInstance();
+        const callback = vi.fn();
+        instance.onActivityChange(callback);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const task = instance.process({ uuid: "owned-message" } as any);
+        const [worker] = workerInstances();
+        const firstMessageHandler = worker.onmessage!;
+
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.size).toBe(1);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.get(worker)?.message.uuid).toBe("owned-message");
+
+        firstMessageHandler({
+            data: { uuid: "owned-message", error: "done" },
+        } as MessageEvent);
+
+        await expect(task).resolves.toEqual({ uuid: "owned-message", error: "done" });
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTaskCount).toBe(0);
+
+        firstMessageHandler({
+            data: { uuid: "owned-message", error: "done" },
+        } as MessageEvent);
+
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTaskCount).toBe(0);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.idleWorkers).toHaveLength(1);
+        expect(callback).toHaveBeenCalledTimes(2);
+    });
+
+    it("should release worker task ownership once when a worker errors", async () => {
+        const instance = ImageProcessor.getInstance();
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const task = instance.process({ uuid: "owned-error" } as any);
+        const [worker] = workerInstances();
+        const firstErrorHandler = worker.onerror!;
+        const error = new ErrorEvent("error", { message: "worker failed" });
+
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.get(worker)?.message.uuid).toBe("owned-error");
+
+        firstErrorHandler(error);
+
+        await expect(task).rejects.toBe(error);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTaskCount).toBe(0);
+
+        firstErrorHandler(error);
+
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTasks.size).toBe(0);
+        // @ts-expect-error: Accessing private member for focused ownership assertions
+        expect(instance.activeTaskCount).toBe(0);
+        expect(worker.terminate).toHaveBeenCalledTimes(1);
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+
     it("should keep activity active until all concurrent tasks complete", async () => {
         const instance = ImageProcessor.getInstance();
         const callback = vi.fn();

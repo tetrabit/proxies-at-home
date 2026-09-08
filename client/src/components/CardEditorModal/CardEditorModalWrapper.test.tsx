@@ -29,6 +29,9 @@ vi.mock('@/db', () => ({
             toArray: vi.fn(),
             bulkPut: vi.fn(),
             where: vi.fn(() => ({
+                equals: vi.fn(() => ({
+                    toArray: vi.fn(),
+                })),
                 anyOf: vi.fn(() => ({
                     toArray: vi.fn(),
                 })),
@@ -74,7 +77,7 @@ vi.mock('@/helpers/adjustmentUtils', () => ({
 describe('CardEditorModalWrapper', () => {
     const mockStoreData = {
         open: true,
-        card: { uuid: 'test-uuid', imageId: 'test-img' },
+        card: { uuid: 'test-uuid', imageId: 'test-img', projectId: 'project-a' },
         image: { id: 'test-img' },
         backCard: { uuid: 'back-uuid', imageId: 'back-img' },
         backImage: null,
@@ -140,16 +143,20 @@ describe('CardEditorModalWrapper', () => {
 
     it('should handle apply all', async () => {
         mockLiveQuery
-            .mockReturnValueOnce({ uuid: 'test-uuid', imageId: 'test-img' })
+            .mockReturnValueOnce({ uuid: 'test-uuid', imageId: 'test-img', projectId: 'project-a' })
             .mockReturnValueOnce({ id: 'test-img' })
             .mockReturnValueOnce(undefined)
             .mockReturnValueOnce(undefined);
 
         const mockCards = [
-            { uuid: '1', imageId: 'img1' },
-            { uuid: '2', imageId: 'img2' }
+            { uuid: '1', imageId: 'img1', projectId: 'project-a' },
+            { uuid: '2', imageId: 'img2', projectId: 'project-a' }
         ];
-        (db.cards.toArray as Mock).mockResolvedValue(mockCards);
+        (db.cards.where as Mock).mockReturnValue({
+            equals: vi.fn().mockReturnValue({
+                toArray: vi.fn().mockResolvedValue(mockCards),
+            }),
+        });
         (db.images.bulkGet as Mock).mockResolvedValue([{ id: 'img1', exportBlob: {} }, { id: 'img2', exportBlob: {} }]);
 
         render(<CardEditorModalWrapper />);
@@ -160,13 +167,86 @@ describe('CardEditorModalWrapper', () => {
         });
 
         expect(db.cards.bulkPut).toHaveBeenCalledWith([
-            { uuid: '1', imageId: 'img1', overrides: { brightness: 1.5 } },
-            { uuid: '2', imageId: 'img2', overrides: { brightness: 1.5 } }
+            { uuid: '1', imageId: 'img1', projectId: 'project-a', overrides: { brightness: 1.5 } },
+            { uuid: '2', imageId: 'img2', projectId: 'project-a', overrides: { brightness: 1.5 } }
         ]);
 
         // Wait for setTimeout
         await new Promise(resolve => setTimeout(resolve, 10));
         expect(effectCache.queueBulkPreRender).toHaveBeenCalled();
+    });
+
+    it('applies all overrides and queues pre-renders only for the captured card project', async () => {
+        vi.useFakeTimers();
+        try {
+            mockLiveQuery
+                .mockReturnValueOnce({ uuid: 'a1', imageId: 'img-a1', projectId: 'project-a' })
+                .mockReturnValueOnce({ id: 'img-a1' })
+                .mockReturnValueOnce(undefined)
+                .mockReturnValueOnce(undefined);
+
+            const projectACards = [
+                { uuid: 'a1', imageId: 'img-a1', projectId: 'project-a' },
+                { uuid: 'a2', imageId: 'img-a2', projectId: 'project-a' },
+            ];
+            const projectBCard = {
+                uuid: 'b1',
+                imageId: 'img-b1',
+                projectId: 'project-b',
+                overrides: { brightness: 0.25 },
+            };
+            let persistedCards = [...projectACards, projectBCard];
+            const capturedProjectCards = vi.fn().mockResolvedValue(projectACards);
+            const equalsCapturedProject = vi.fn().mockReturnValue({
+                toArray: capturedProjectCards,
+            });
+
+            (db.cards.where as Mock).mockReturnValue({
+                equals: equalsCapturedProject,
+            });
+            (db.cards.bulkPut as Mock).mockImplementation(async (updates) => {
+                persistedCards = persistedCards.map(card =>
+                    updates.find((update: { uuid: string }) => update.uuid === card.uuid) ?? card
+                );
+            });
+            (db.images.bulkGet as Mock).mockResolvedValue([
+                { id: 'img-a1', exportBlob: 'export-a1' },
+                { id: 'img-a2', exportBlob: 'export-a2' },
+            ]);
+
+            render(<CardEditorModalWrapper />);
+
+            await act(async () => {
+                screen.getByText('Apply All').click();
+                await Promise.resolve();
+            });
+
+            expect(db.cards.where).toHaveBeenCalledWith('projectId');
+            expect(equalsCapturedProject).toHaveBeenCalledWith('project-a');
+            expect(capturedProjectCards).toHaveBeenCalledTimes(1);
+            expect(db.cards.bulkPut).toHaveBeenCalledWith([
+                { uuid: 'a1', imageId: 'img-a1', projectId: 'project-a', overrides: { brightness: 1.5 } },
+                { uuid: 'a2', imageId: 'img-a2', projectId: 'project-a', overrides: { brightness: 1.5 } },
+            ]);
+            expect(persistedCards.find(card => card.uuid === 'b1')).toEqual(projectBCard);
+
+            await act(async () => {
+                await vi.runAllTimersAsync();
+            });
+
+            expect(effectCache.queueBulkPreRender).toHaveBeenCalledWith([
+                {
+                    card: { uuid: 'a1', imageId: 'img-a1', projectId: 'project-a', overrides: { brightness: 1.5 } },
+                    exportBlob: 'export-a1',
+                },
+                {
+                    card: { uuid: 'a2', imageId: 'img-a2', projectId: 'project-a', overrides: { brightness: 1.5 } },
+                    exportBlob: 'export-a2',
+                },
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('should handle apply selected', async () => {

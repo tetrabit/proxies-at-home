@@ -1,3 +1,5 @@
+import os
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Union
@@ -25,8 +27,27 @@ def _load(path: Path) -> dict:
 
 def _save(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
-        tomli_w.dump(data, f)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            tomli_w.dump(data, temporary_file)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def set_profile(

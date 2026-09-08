@@ -19,6 +19,7 @@ const mockUseSettingsGetState = vi.hoisted(() => vi.fn(() => ({
   favoriteMpcSources: [],
   favoriteMpcTags: [],
 })));
+const mockUseProjectStoreGetState = vi.hoisted(() => vi.fn(() => ({ currentProjectId: "project-a" })));
 
 const mockCardsToArray = vi.hoisted(() => vi.fn());
 const mockCardsCount = vi.hoisted(() => vi.fn());
@@ -26,6 +27,7 @@ const mockCardsBulkUpdate = vi.hoisted(() => vi.fn().mockResolvedValue(undefined
 const mockCardsBulkAdd = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockCardsBulkGet = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const mockCardsWhere = vi.hoisted(() => vi.fn());
+const mockProjectCardsToArray = vi.hoisted(() => vi.fn());
 const mockCardsHook = vi.hoisted(() => vi.fn());
 const mockMetadataWhere = vi.hoisted(() => vi.fn());
 const mockMetadataUpdate = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -80,6 +82,7 @@ vi.mock("../helpers/mpcImportIntegration", () => ({
 
 vi.mock("../store", () => ({
   useSettingsStore: { getState: mockUseSettingsGetState },
+  useProjectStore: { getState: mockUseProjectStoreGetState },
 }));
 
 vi.mock("../store/toast", () => ({
@@ -107,12 +110,14 @@ describe("useCardEnrichment", () => {
       abort: vi.fn(),
     });
     mockCardsToArray.mockResolvedValue([]);
+    mockProjectCardsToArray.mockImplementation(() => mockCardsToArray());
+    mockUseProjectStoreGetState.mockReturnValue({ currentProjectId: "project-a" });
     mockCardsCount.mockResolvedValue(0);
-    mockCardsWhere.mockReturnValue({
-      equals: () => ({
-        count: mockCardsCount,
-      }),
-    });
+    mockCardsWhere.mockImplementation((index: string) => ({
+      equals: () => index === "needsEnrichment"
+        ? { count: mockCardsCount }
+        : { toArray: mockProjectCardsToArray },
+    }));
     mockMetadataWhere.mockReturnValue({
       equals: () => ({
         and: () => ({
@@ -297,6 +302,144 @@ describe("useCardEnrichment", () => {
     expect(mockHideMetadataToast).toHaveBeenCalled();
     expect(mockShowMetadataToast).toHaveBeenCalled();
     expect(result.current.enrichmentProgress).toBeNull();
+  });
+
+  it("binds fetched rows to the UUID request order after reverse cache probe completion", async () => {
+    const cards = [
+      { uuid: "front-a", name: "A", set: "SET", number: "1", order: 1, needsEnrichment: 1, linkedFrontId: null, linkedBackId: null, imageId: null, isUserUpload: false, enrichmentRetryCount: 0 },
+      { uuid: "cached-b", name: "B", set: "SET", number: "2", order: 2, needsEnrichment: 1, linkedFrontId: null, linkedBackId: null, imageId: null, isUserUpload: false, enrichmentRetryCount: 0 },
+      { uuid: "front-c", name: "C", set: "SET", number: "3", order: 3, needsEnrichment: 1, linkedFrontId: null, linkedBackId: null, imageId: null, isUserUpload: false, enrichmentRetryCount: 0 },
+      { uuid: "invalid-d", name: "D", set: "SET", number: "4", order: 4, needsEnrichment: 1, linkedFrontId: null, linkedBackId: null, imageId: null, isUserUpload: false, enrichmentRetryCount: 0 },
+    ];
+    mockCardsToArray.mockResolvedValue(cards);
+    mockCardsCount.mockResolvedValue(cards.length);
+    mockMetadataWhere.mockReturnValue({
+      equals: (name: string) => ({
+        and: () => ({
+          first: async () => {
+            if (name === "A") {
+              await Promise.resolve();
+              await Promise.resolve();
+              return null;
+            }
+            if (name === "B") {
+              return {
+                id: "cache-b",
+                cacheVersion: 1,
+                data: { name: "B cached", set: "SET", number: "2" },
+              };
+            }
+            if (name === "D") {
+              await Promise.resolve();
+            }
+            return null;
+          },
+        }),
+      }),
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue([
+        {
+          name: "C Front",
+          set: "SET",
+          number: "3",
+          layout: "transform",
+          card_faces: [
+            { name: "C Front" },
+            { name: "C Back" },
+          ],
+        },
+        { malformed: true },
+        {
+          name: "A Front",
+          set: "SET",
+          number: "1",
+          layout: "transform",
+          card_faces: [
+            { name: "A Front" },
+            { name: "A Back" },
+          ],
+        },
+      ]),
+    } as unknown as Response);
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).cards.map((card: { name: string }) => card.name))
+      .toEqual(["C", "D", "A"]);
+
+    const updates = mockCardsBulkUpdate.mock.calls.flatMap(([batch]) => batch);
+    expect(updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "front-a", changes: expect.objectContaining({ name: "A Front" }) }),
+      expect.objectContaining({ key: "cached-b", changes: expect.objectContaining({ name: "B cached" }) }),
+      expect.objectContaining({ key: "front-c", changes: expect.objectContaining({ name: "C Front" }) }),
+      expect.objectContaining({ key: "invalid-d", changes: expect.objectContaining({ enrichmentRetryCount: 1 }) }),
+    ]));
+    expect(mockCardsBulkAdd).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ name: "A Back", linkedFrontId: "front-a" }),
+      expect.objectContaining({ name: "C Back", linkedFrontId: "front-c" }),
+    ]));
+  });
+
+  it("only batches unenriched cards from the captured current project", async () => {
+    const projectACard = {
+      uuid: "project-a-card",
+      projectId: "project-a",
+      name: "Project A Card",
+      set: "SET",
+      number: "1",
+      order: 1,
+      needsEnrichment: 1,
+      linkedFrontId: null,
+      linkedBackId: null,
+      imageId: null,
+      isUserUpload: false,
+      enrichmentRetryCount: 0,
+    };
+    const projectBCard = {
+      ...projectACard,
+      uuid: "project-b-card",
+      projectId: "project-b",
+      name: "Project B Card",
+      number: "2",
+    };
+    mockCardsToArray.mockResolvedValue([projectACard, projectBCard]);
+    mockProjectCardsToArray.mockResolvedValue([projectACard]);
+    mockCardsCount.mockResolvedValue(2);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue([{ name: "Project A Card", set: "SET", number: "1" }]),
+    } as unknown as Response);
+
+    renderHook(() => useCardEnrichment());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockCardsWhere).toHaveBeenCalledWith("projectId");
+    expect(mockProjectCardsToArray).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).cards).toEqual([
+      { name: "Project A Card", set: "SET", number: "1" },
+    ]);
+    const updates = mockCardsBulkUpdate.mock.calls.flatMap(([batch]) => batch);
+    expect(updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "project-a-card" }),
+    ]));
+    expect(updates).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "project-b-card" }),
+    ]));
   });
 
   it("marks a failed batch for retry when the server rejects the request", async () => {

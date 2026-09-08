@@ -9,7 +9,8 @@ const appMock = {
 const existsSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
 const spawnMock = vi.fn();
-let connectMode: "success" | "error" | "timeout" = "success";
+let connectMode: "success" | "error" | "timeout" | "pending" = "success";
+let pendingHealthCallbacks: Array<() => void> = [];
 let lastChildProcess: ReturnType<typeof createChildProcess> | null = null;
 
 class SocketMock extends EventEmitter {
@@ -20,6 +21,8 @@ class SocketMock extends EventEmitter {
       callback();
     } else if (connectMode === "error") {
       setTimeout(() => this.emit("error", new Error("connection refused")), 0);
+    } else if (connectMode === "pending") {
+      pendingHealthCallbacks.push(callback);
     }
     return this;
   }
@@ -62,6 +65,7 @@ describe("MicroserviceManager", () => {
     );
     mkdirSyncMock.mockReturnValue(undefined);
     connectMode = "success";
+    pendingHealthCallbacks = [];
     lastChildProcess = null;
     spawnMock.mockImplementation(() => createChildProcess());
     appMock.isPackaged = false;
@@ -367,6 +371,87 @@ describe("MicroserviceManager", () => {
     });
 
     await expect(manager.stop()).resolves.toBeUndefined();
+  });
+
+  it("cancels a pending restart when stopped during its delay", async () => {
+    vi.useFakeTimers();
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+
+    await manager.start();
+    lastChildProcess?.emit("exit", 1, null);
+    await manager.stop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("keeps one health interval through repeated healthy crash restarts", async () => {
+    vi.useFakeTimers();
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 3,
+      restartDelay: 10,
+    });
+
+    await manager.start();
+    for (let restart = 0; restart < 2; restart++) {
+      lastChildProcess?.emit("exit", 1, null);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(vi.getTimerCount()).toBe(1);
+    }
+
+    await manager.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("shares readiness between concurrent starts until health succeeds", async () => {
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+    connectMode = "pending";
+
+    const firstStart = manager.start();
+    const secondStart = manager.start();
+    const sharesReadinessPromise = firstStart === secondStart;
+    let secondStartReportedReady = false;
+    void secondStart.then(() => {
+      secondStartReportedReady = true;
+    });
+    await Promise.resolve();
+    const reportedReadyBeforeHealth = secondStartReportedReady;
+
+    expect(pendingHealthCallbacks).toHaveLength(1);
+    pendingHealthCallbacks.shift()?.();
+    await Promise.all([firstStart, secondStart]);
+    await manager.stop();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(sharesReadinessPromise).toBe(true);
+    expect(reportedReadyBeforeHealth).toBe(false);
   });
 
   it("logs restart failures after an unexpected child exit", async () => {

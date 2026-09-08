@@ -10,7 +10,7 @@ import { isCardbackId } from "../helpers/cardbackLibrary";
 import { searchMpcAutofill, getMpcAutofillImageUrl } from "../helpers/mpcAutofillApi";
 import { addRemoteImage } from "../helpers/dbUtils";
 import { pickBestMpcCard } from "../helpers/mpcImportIntegration";
-import { useSettingsStore } from "../store";
+import { useSettingsStore, useProjectStore } from "../store";
 
 // Retry configuration with exponential backoff
 const ENRICHMENT_RETRY_CONFIG = {
@@ -100,9 +100,13 @@ export function useCardEnrichment() {
         isEnrichingRef.current = true;
 
         try {
-            // Get all cards that need enrichment and are ready for retry
+            // Capture the active project once so this enrichment run only considers its cards.
+            const currentProjectId = useProjectStore.getState().currentProjectId;
+            if (!currentProjectId) return;
+
+            // Get cards that need enrichment and are ready for retry in the captured project.
             const now = Date.now();
-            const allCards = await db.cards.toArray();
+            const allCards = await db.cards.where("projectId").equals(currentProjectId).toArray();
 
             // Note: Dexie may store booleans as true/false or 1/0 depending on version
             // Use filter on all cards for reliability
@@ -255,18 +259,12 @@ export function useCardEnrichment() {
                     // Map of FrontUUID -> FrontImageId (for fixing back-face imports)
                     const frontArtMap = new Map<string, string>();
 
-                    // RE-Map validResponses to specific cards to avoid index confusion
-                    const responseMap = new Map<string, EnrichedCardData>();
-                    let responseIndex = 0;
-                    batch.forEach(card => {
-                        if (cachedDataMap.has(card.uuid)) {
-                            responseMap.set(card.uuid, cachedDataMap.get(card.uuid)!);
-                        } else {
-                            // If it was fetched
-                            const res = validResponses[responseIndex];
-                            if (res) responseMap.set(card.uuid, res);
-                            responseIndex++; // Only increment if we tried to fetch this card
-                        }
+                    // Bind fetched response positions to the exact request order, which can differ
+                    // from batch order when concurrent cache probes complete out of order.
+                    const responseMap = new Map<string, EnrichedCardData>(cachedDataMap);
+                    cardsToFetch.forEach((card, responseIndex) => {
+                        const response = validResponses[responseIndex];
+                        if (response) responseMap.set(card.uuid, response);
                     });
 
                     // Perform DFC art lookups (respecting preferred source)

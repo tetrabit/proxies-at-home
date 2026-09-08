@@ -1476,6 +1476,65 @@ describe("mpcBulkUpgradeMatcher", () => {
         ).toEqual(["matching", "borderless", "unrelated"]);
       });
 
+      it("reuses one art-crop scoring pass across recommendation layers", async () => {
+        const exact = makeCard({
+          identifier: "exact",
+          rawName: "Sol Ring [C21] {267}",
+          dpi: 300,
+        });
+        const artFavorite = makeCard({
+          identifier: "art-favorite",
+          rawName: "Sol Ring (Alt Art)",
+          dpi: 600,
+        });
+        const unavailable = makeCard({ identifier: "unavailable", dpi: 900 });
+        const artMatchCompare: SsimCompareFn = vi.fn(async (_src, candidateUrl) => {
+          if (candidateUrl.includes("art-favorite")) return 0.98;
+          if (candidateUrl.includes("exact")) return 0.82;
+          return null;
+        });
+
+        const result = await rankCandidates({
+          candidates: [exact, artFavorite, unavailable],
+          set: "C21",
+          collectorNumber: "267",
+          sourceImageUrl: scryfallSourceUrl,
+          artMatchCompare,
+          getMpcImageUrl: defaultGetUrl,
+        });
+
+        expect(artMatchCompare).toHaveBeenCalledTimes(3);
+        expect(result.artMatch.map((candidate) => candidate.card.identifier)).toEqual([
+          "art-favorite",
+          "exact",
+        ]);
+        expect(result.exactPrinting).toEqual([
+          expect.objectContaining({
+            card: exact,
+            reason: "set_collector_only",
+            bucket: "set_collector",
+          }),
+        ]);
+        expect(result.fullProcess[0]).toMatchObject({
+          card: artFavorite,
+          reason: "name_ssim",
+          bucket: "name",
+          score: 0.98,
+        });
+        expect(result.fullCard).toEqual([
+          expect.objectContaining({
+            card: exact,
+            reason: "set_collector_only",
+            bucket: "set_collector",
+          }),
+        ]);
+        expect(result.allMatches.map((candidate) => candidate.card.identifier)).toEqual([
+          "art-favorite",
+          "exact",
+          "unavailable",
+        ]);
+      });
+
       it("is empty when SSIM infrastructure is not provided", async () => {
         const card = makeCard({ identifier: "a", dpi: 300 });
 

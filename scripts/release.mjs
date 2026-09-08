@@ -14,9 +14,10 @@
  *   npm run release -- --skip-validation  # Skip build/lint validation
  */
 
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 import { createInterface } from 'readline';
+import { startReleaseNotesGeneration } from './release-notes.mjs';
 
 // Colors
 const RED = '\x1b[31m';
@@ -224,57 +225,6 @@ const analyzeCommits = (commits) => {
 
     return { suggested, reason, counts };
 };
-// Start release notes generation in background (returns a promise)
-// Uses npx to run gemini-cli since the 'gemini' alias isn't available in spawned shells
-const startReleaseNotesGeneration = (commits, version) => {
-    const promptText = `Generate release notes for version ${version}. Output ONLY the formatted notes - no introduction, no "Here are the notes", just the categorized bullet points. Use markdown headers (###) for categories like Features, Fixes, etc. Be concise.\n\nCommits:\n${commits}`;
-    const escapedPrompt = promptText.replace(/"/g, '\\"');
-
-    return new Promise((resolve) => {
-        let output = '';
-        let resolved = false;
-
-        // Use npx to run gemini-cli directly (alias won't work in spawned shell)
-        const child = spawn('sh', ['-c', `echo "${escapedPrompt}" | npx --yes https://github.com/google-gemini/gemini-cli`], {
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        // 2 minute timeout
-        const timeout = setTimeout(() => {
-            if (!resolved) {
-                resolved = true;
-                child.kill('SIGTERM');
-                warn('Gemini CLI timed out after 2 minutes');
-                resolve(null);
-            }
-        }, 120000);
-
-        child.stdout.on('data', (data) => {
-            output += data.toString();
-        });
-
-        child.on('close', (code) => {
-            if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                if (code === 0 && output.trim()) {
-                    resolve(output.trim());
-                } else {
-                    resolve(null);
-                }
-            }
-        });
-
-        child.on('error', () => {
-            if (!resolved) {
-                resolved = true;
-                clearTimeout(timeout);
-                resolve(null);
-            }
-        });
-    });
-};
-
 // Interactive changelog prompt (accepts optional pre-started gemini promise)
 const getInteractiveChangelog = async (newVersion, geminiPromise = null) => {
     const { lastTag, commits } = getCommitsSinceLastTag();

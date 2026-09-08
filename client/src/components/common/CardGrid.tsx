@@ -19,7 +19,7 @@ interface CardGridProps extends HTMLAttributes<HTMLDivElement> {
  * - Mobile: gap-2
  * - Desktop: gap-4
  */
-export const CardGrid = forwardRef<HTMLDivElement, CardGridProps>(({ children, className = '', cardSize = 1.0, ...props }, ref) => {
+export const CardGrid = forwardRef<HTMLDivElement, CardGridProps>(({ children, className = '', cardSize = 1.0, style, ...props }, ref) => {
     const desktopColumnWidth = useMemo(() => Math.round(275 * cardSize), [cardSize]);
 
     // Use CSS custom property to set grid column width dynamically on desktop
@@ -31,7 +31,7 @@ export const CardGrid = forwardRef<HTMLDivElement, CardGridProps>(({ children, c
         <div
             ref={ref}
             className={`grid grid-cols-2 max-lg:landscape:grid-cols-[repeat(auto-fill,100px)] lg:grid-cols-[repeat(auto-fill,var(--card-grid-col-width,250px))] gap-2 lg:gap-4 justify-center ${className}`}
-            style={{ ...gridStyle, ...props.style }}
+            style={{ ...gridStyle, ...style }}
             {...props}
         >
             {children}

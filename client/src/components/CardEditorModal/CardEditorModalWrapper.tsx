@@ -115,10 +115,14 @@ export function CardEditorModalWrapper() {
         }
     }, []);
 
+    const editorProjectId = card?.projectId;
+
     const handleApplyToAll = useCallback(async (overrides: CardOverrides | undefined) => {
-        // Apply to all cards in a single transaction to avoid cascading re-renders
+        if (!editorProjectId) return;
+
+        // Apply to this editor card's project in a single transaction to avoid cascading re-renders.
         const allCards = await db.transaction('rw', db.cards, async () => {
-            const cards = await db.cards.toArray();
+            const cards = await db.cards.where('projectId').equals(editorProjectId).toArray();
             await db.cards.bulkPut(cards.map(c => ({ ...c, overrides })));
             return cards;
         });
@@ -140,7 +144,7 @@ export function CardEditorModalWrapper() {
                 queueBulkPreRender(tasks);
             }, 0);
         }
-    }, []);
+    }, [editorProjectId]);
 
     const handleApplyToSelected = useCallback(async (uuids: string[], overrides: CardOverrides | undefined) => {
         // Apply to selected cards in a single transaction to avoid cascading re-renders
