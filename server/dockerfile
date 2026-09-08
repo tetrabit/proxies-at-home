@@ -51,6 +51,9 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app/server
 ENV NODE_ENV=production
+# Standalone image defaults; deployment adapters may override either runner.
+ENV PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration
+    PRINTER_CALIBRATION_PYTHON=/opt/printer-calibration-venv/bin/python
 
 COPY server/vendor/printer-calibration/pyproject.toml /opt/printer-calibration-src/pyproject.toml
 COPY server/vendor/printer-calibration/src /opt/printer-calibration-src/src

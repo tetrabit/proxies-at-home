@@ -14,6 +14,9 @@ const MICROSERVICE_BASE_URL = process.env.SCRYFALL_CACHE_URL || 'http://localhos
 // Singleton client instance
 let clientInstance: ScryfallCacheClient | null = null;
 
+// The current health operation, shared by concurrent availability checks.
+let pendingHealthCheck: Promise<boolean> | null = null;
+
 /**
  * Get or create the microservice client instance
  */
@@ -30,14 +33,22 @@ export function getScryfallClient(): ScryfallCacheClient {
 /**
  * Check if microservice is available
  */
-export async function isMicroserviceAvailable(): Promise<boolean> {
-    try {
-        const client = getScryfallClient();
-        await trackMicroserviceCall('/health', () => client.health());
-        return true;
-    } catch {
-        return false;
+export function isMicroserviceAvailable(): Promise<boolean> {
+    if (!pendingHealthCheck) {
+        pendingHealthCheck = (async () => {
+            try {
+                const client = getScryfallClient();
+                await trackMicroserviceCall('/health', () => client.health());
+                return true;
+            } catch {
+                return false;
+            }
+        })().finally(() => {
+            pendingHealthCheck = null;
+        });
     }
+
+    return pendingHealthCheck;
 }
 
 /**
