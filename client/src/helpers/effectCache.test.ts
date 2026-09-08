@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import type { RenderParams } from '../components/CardCanvas/types';
 
 // Mock dependencies
@@ -73,7 +73,7 @@ describe('effectCache', () => {
             );
         });
 
-        it('stores worker cache entries with stable keys and without enforcing limits', async () => {
+        it('stores explicit-DPI cache entries with stable keys and enforces limits', async () => {
             const blob = new Blob(['rendered']);
 
             await setEffectCacheEntryWithDpi(
@@ -91,6 +91,35 @@ describe('effectCache', () => {
                     cachedAt: expect.any(Number),
                 })
             );
+            expect(enforceEffectCacheLimits).toHaveBeenCalledTimes(1);
+        });
+
+        it('serializes explicit-DPI cache enforcement across concurrent writes', async () => {
+            let releaseFirstEnforcement: (() => void) | undefined;
+            vi.mocked(enforceEffectCacheLimits).mockImplementationOnce(() => new Promise(resolve => {
+                releaseFirstEnforcement = () => resolve(0);
+            }));
+
+            const first = setEffectCacheEntryWithDpi('image-1', { brightness: 1 }, new Blob(['first']), 600);
+            const second = setEffectCacheEntryWithDpi('image-2', { brightness: 1 }, new Blob(['second']), 600);
+
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(enforceEffectCacheLimits).toHaveBeenCalledTimes(1);
+
+            releaseFirstEnforcement?.();
+            await expect(first).resolves.toBeUndefined();
+            expect(enforceEffectCacheLimits).toHaveBeenCalledTimes(2);
+            await expect(second).resolves.toBeUndefined();
+        });
+
+        it('reports explicit-DPI quota write failures without attempting eviction', async () => {
+            vi.mocked(db.effectCache.put).mockRejectedValueOnce(new Error('QuotaExceededError'));
+
+            await expect(
+                setEffectCacheEntryWithDpi('image-1', { brightness: 1 }, new Blob(['rendered']), 600)
+            ).rejects.toThrow('QuotaExceededError');
+
             expect(enforceEffectCacheLimits).not.toHaveBeenCalled();
         });
     });
@@ -257,6 +286,136 @@ describe('effectCache', () => {
 
             vi.advanceTimersByTime(100);
             await expect(p).rejects.toThrow("Worker crashed: Crash!");
+        });
+
+        it('defers bitmap decode until a worker admission slot is available', async () => {
+            const processor = getEffectProcessor();
+            const workers: Array<{
+                postMessage: ReturnType<typeof vi.fn>;
+                terminate: ReturnType<typeof vi.fn>;
+                onmessage: ((e: MessageEvent) => void) | null;
+                onerror: ((e: ErrorEvent) => void) | null;
+            }> = [];
+
+            global.Worker = class {
+                postMessage = vi.fn();
+                terminate = vi.fn();
+                onmessage: ((e: MessageEvent) => void) | null = null;
+                onerror: ((e: ErrorEvent) => void) | null = null;
+
+                constructor() {
+                    workers.push(this);
+                }
+            } as unknown as typeof Worker;
+            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
+
+            const first = processor.process(new Blob(['first']), {} as RenderParams);
+            const second = processor.process(new Blob(['second']), {} as RenderParams);
+
+            expect(createImageBitmap).toHaveBeenCalledTimes(1);
+
+            await Promise.resolve();
+            const firstTaskId = workers[0].postMessage.mock.calls[0][0].taskId as string;
+            workers[0].onmessage?.({ data: { taskId: firstTaskId, blob: new Blob(['first']) } } as MessageEvent);
+
+            await expect(first).resolves.toBeInstanceOf(Blob);
+            await Promise.resolve();
+            expect(createImageBitmap).toHaveBeenCalledTimes(2);
+
+            const secondTaskId = workers[0].postMessage.mock.calls[1][0].taskId as string;
+            workers[0].onmessage?.({ data: { taskId: secondTaskId, blob: new Blob(['second']) } } as MessageEvent);
+            await expect(second).resolves.toBeInstanceOf(Blob);
+        });
+
+        it('releases a worker admission slot after a decode failure', async () => {
+            const processor = getEffectProcessor();
+            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
+            global.createImageBitmap = vi.fn()
+                .mockRejectedValueOnce(new Error('decode failed'))
+                .mockResolvedValue({ width: 100, height: 100, close: vi.fn() });
+
+            const first = processor.process(new Blob(['first']), {} as RenderParams);
+            const second = processor.process(new Blob(['second']), {} as RenderParams);
+
+            await expect(first).rejects.toThrow('decode failed');
+            await expect(second).resolves.toBeInstanceOf(Blob);
+            expect(createImageBitmap).toHaveBeenCalledTimes(2);
+        });
+
+        it('cancels queued descriptors without decoding them', async () => {
+            const processor = getEffectProcessor();
+            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
+            let resolveDecode: ((bitmap: ImageBitmap) => void) | undefined;
+            global.createImageBitmap = vi.fn().mockImplementation(() => new Promise(resolve => {
+                resolveDecode = resolve;
+            }));
+
+            const active = processor.process(new Blob(['active']), {} as RenderParams);
+            const queued = processor.process(new Blob(['queued']), {} as RenderParams);
+            processor.destroy();
+            resolveDecode?.({ width: 100, height: 100, close: vi.fn() } as ImageBitmap);
+
+            await expect(active).rejects.toThrow('Effect processor destroyed');
+            await expect(queued).rejects.toThrow('Effect processor destroyed');
+            expect(createImageBitmap).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('explicit-DPI persistence', () => {
+        let liveDb: typeof import('../db').db;
+        let liveGetEffectCacheEntry: typeof getEffectCacheEntry;
+        let liveSetEffectCacheEntryWithDpi: typeof setEffectCacheEntryWithDpi;
+
+        beforeAll(async () => {
+            vi.doUnmock('@/db');
+            vi.doUnmock('./cacheUtils');
+            vi.resetModules();
+
+            ({ db: liveDb } = await import('../db'));
+            ({
+                getEffectCacheEntry: liveGetEffectCacheEntry,
+                setEffectCacheEntryWithDpi: liveSetEffectCacheEntryWithDpi,
+            } = await import('./effectCache'));
+        });
+
+        it('evicts the older explicit-DPI entry using its stored byte count', async () => {
+            const threeGiB = 3 * 1024 * 1024 * 1024;
+            const olderBlob = new Blob(['older']);
+            const newerBlob = new Blob(['newer']);
+            Object.defineProperty(olderBlob, 'size', { value: threeGiB });
+            Object.defineProperty(newerBlob, 'size', { value: threeGiB });
+            const now = vi.spyOn(Date, 'now')
+                .mockReturnValueOnce(1)
+                .mockReturnValueOnce(2);
+
+            await liveSetEffectCacheEntryWithDpi('effect-cache-byte-accounting', { brightness: 1 }, olderBlob, 600);
+            await liveSetEffectCacheEntryWithDpi('effect-cache-byte-accounting', { brightness: 1 }, newerBlob, 1200);
+
+            now.mockRestore();
+            await expect(liveGetEffectCacheEntry('effect-cache-byte-accounting', { brightness: 1 }, 600)).resolves.toBeUndefined();
+            await expect(liveGetEffectCacheEntry('effect-cache-byte-accounting', { brightness: 1 }, 1200)).resolves.toBeDefined();
+            await expect(liveDb.effectCache.filter(entry => entry.key.startsWith('effect-cache-byte-accounting:1200:')).first())
+                .resolves.toMatchObject({ size: threeGiB });
+        });
+
+        it('preserves a same-key entry when an explicit-DPI write is rejected for quota', async () => {
+            const imageId = 'effect-cache-quota-preserves-prior-entry';
+            const overrides = { brightness: 1 };
+            const dpi = 600;
+            const priorBlob = new Blob(['prior']);
+
+            await liveSetEffectCacheEntryWithDpi(imageId, overrides, priorBlob, dpi);
+
+            const quotaError = new DOMException('Storage quota exceeded', 'QuotaExceededError');
+            const put = vi.spyOn(liveDb.effectCache, 'put').mockRejectedValueOnce(quotaError);
+            await expect(
+                liveSetEffectCacheEntryWithDpi(imageId, overrides, new Blob(['replacement']), dpi)
+            ).rejects.toBe(quotaError);
+            put.mockRestore();
+
+            await expect(liveGetEffectCacheEntry(imageId, overrides, dpi)).resolves.toBeDefined();
+            await expect(liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:${dpi}:`)).first())
+                .resolves.toMatchObject({ size: priorBlob.size });
         });
     });
 });

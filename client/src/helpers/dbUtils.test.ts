@@ -571,6 +571,72 @@ describe("dbUtils", () => {
       expect(normal?.needsEnrichment).toBe(false);
     });
 
+    it("creates a missing DFC back in the current front project with reciprocal links", async () => {
+      const activeProjectId = "active-project";
+      const frontProjectId = "front-project-after-fetch";
+      const backImageUrl = "https://cards.scryfall.io/png/back-created.png";
+
+      await db.cards.add({
+        uuid: "dfc-front-created",
+        name: "Delver of Secrets",
+        order: 10,
+        isUserUpload: false,
+        projectId: activeProjectId,
+        set: "isd",
+        number: "51",
+        needsEnrichment: false,
+      });
+
+      global.fetch = vi.fn(async () => {
+        // The project can change while the asynchronous enrichment request is in flight.
+        // The newly created back must follow the re-read current front, not the request project.
+        await db.cards.update("dfc-front-created", { projectId: frontProjectId });
+        return {
+          ok: true,
+          json: async () => [
+            {
+              name: "Delver of Secrets // Insectile Aberration",
+              set: "isd",
+              number: "51",
+              layout: "transform",
+              card_faces: [
+                { name: "Delver of Secrets", image_uris: { png: "front.png" } },
+                {
+                  name: "Insectile Aberration",
+                  image_uris: { png: backImageUrl },
+                },
+              ],
+            },
+          ],
+        };
+      }) as unknown as typeof fetch;
+
+      const result = await checkMultiFaceCardsHaveCorrectBack(activeProjectId);
+      expect(result).toMatchObject({
+        checked: 1,
+        multiFace: 1,
+        broken: 1,
+        fixed: 1,
+        skipped: 0,
+        errors: 0,
+      });
+
+      const front = await db.cards.get("dfc-front-created");
+      const cards = await db.cards.toArray();
+      const back = cards.find((card) => card.linkedFrontId === front?.uuid);
+      expect(back).toMatchObject({
+        projectId: frontProjectId,
+        linkedFrontId: front?.uuid,
+        imageId: backImageUrl,
+      });
+      expect(front?.projectId).toBe(frontProjectId);
+      expect(front?.linkedBackId).toBe(back?.uuid);
+      expect(back?.linkedFrontId).toBe(front?.uuid);
+      await expect(db.images.get(backImageUrl)).resolves.toMatchObject({
+        refCount: 1,
+      });
+    });
+
     it("should not queue when back already has a non-cardback image", async () => {
       const testProjectId = "test-project-dfc-back-ok";
 

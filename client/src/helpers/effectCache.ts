@@ -24,8 +24,11 @@ interface IdleWorker {
 // --- Worker Pool for Effect Processing ---
 interface EffectTask {
     taskId: string;
+    exportBlob: Blob;
+    params: RenderParams;
     resolve: (blob: Blob) => void;
     reject: (error: Error) => void;
+    active: boolean;
 }
 
 export type ActivityCallback = (isActive: boolean) => void;
@@ -35,13 +38,7 @@ class EffectProcessor {
     private workers: Worker[] = [];
     private idleWorkers: IdleWorker[] = [];
     private pendingTasks: Map<string, EffectTask> = new Map();
-    private taskQueue: Array<{
-        imageData: ArrayBuffer;
-        imageWidth: number;
-        imageHeight: number;
-        params: RenderParams;
-        taskId: string;
-    }> = [];
+    private taskQueue: EffectTask[] = [];
     private taskIdCounter = 0;
     private readonly maxWorkers: number;
     // Track which task is assigned to which worker for error handling
@@ -101,34 +98,8 @@ class EffectProcessor {
 
         worker.onmessage = (event) => {
             const { taskId, blob, error } = event.data;
-            const task = this.pendingTasks.get(taskId);
-            if (task) {
-                this.pendingTasks.delete(taskId);
-                this.taskCompleted();
-                if (error) {
-                    task.reject(new Error(error));
-                } else {
-                    task.resolve(blob);
-                }
-            }
-
-            // Return worker to idle pool and process next task
-            // Return worker to idle pool and process next task
-            this.workerToTaskId.delete(worker);
-
-            // Set idle timeout
-            const timeoutId = setTimeout(() => {
-                const idx = this.idleWorkers.findIndex(w => w.worker === worker);
-                if (idx > -1) {
-                    this.idleWorkers.splice(idx, 1);
-                    const workerIdx = this.workers.indexOf(worker);
-                    if (workerIdx > -1) this.workers.splice(workerIdx, 1);
-                    worker.terminate();
-                }
-            }, IMAGE_PROCESSING.WORKER_IDLE_TIMEOUT_MS);
-
-            this.idleWorkers.push({ worker, timeoutId });
-            this.processNextTask();
+            this.settleTask(taskId, error ? new Error(error) : undefined, blob);
+            this.returnWorkerToIdle(worker);
         };
 
         worker.onerror = (event) => {
@@ -136,14 +107,9 @@ class EffectProcessor {
             // Reject the pending task for this worker so it doesn't hang forever
             const taskId = this.workerToTaskId.get(worker);
             if (taskId) {
-                const task = this.pendingTasks.get(taskId);
-                if (task) {
-                    task.reject(new Error('Worker crashed: ' + (event.message || 'Unknown error')));
-                    this.pendingTasks.delete(taskId);
-                }
+                this.settleTask(taskId, new Error('Worker crashed: ' + (event.message || 'Unknown error')));
                 this.workerToTaskId.delete(worker);
             }
-            this.taskCompleted();
             // Remove from workers list and create a new one if needed
             const idx = this.workers.indexOf(worker);
             if (idx > -1) this.workers.splice(idx, 1);
@@ -170,16 +136,77 @@ class EffectProcessor {
 
         if (worker) {
             const task = this.taskQueue.shift()!;
+            task.active = true;
             this.taskStarted();
             // Track which task this worker is processing
             this.workerToTaskId.set(worker, task.taskId);
+            void this.decodeAndDispatch(worker, task);
+        }
+    }
+
+    private settleTask(taskId: string, error?: Error, blob?: Blob): void {
+        const task = this.pendingTasks.get(taskId);
+        if (!task) return;
+
+        this.pendingTasks.delete(taskId);
+        if (task.active) this.taskCompleted();
+        if (error) {
+            task.reject(error);
+        } else if (blob) {
+            task.resolve(blob);
+        } else {
+            task.reject(new Error('Effect task completed without a rendered blob'));
+        }
+    }
+
+    private returnWorkerToIdle(worker: Worker): void {
+        this.workerToTaskId.delete(worker);
+        if (!this.workers.includes(worker)) return;
+
+        const timeoutId = setTimeout(() => {
+            const idx = this.idleWorkers.findIndex(w => w.worker === worker);
+            if (idx > -1) {
+                this.idleWorkers.splice(idx, 1);
+                const workerIdx = this.workers.indexOf(worker);
+                if (workerIdx > -1) this.workers.splice(workerIdx, 1);
+                worker.terminate();
+            }
+        }, IMAGE_PROCESSING.WORKER_IDLE_TIMEOUT_MS);
+
+        this.idleWorkers.push({ worker, timeoutId });
+        this.processNextTask();
+    }
+
+    private async decodeAndDispatch(worker: Worker, task: EffectTask): Promise<void> {
+        let bitmap: ImageBitmap | undefined;
+
+        try {
+            bitmap = await createImageBitmap(task.exportBlob);
+            if (!this.pendingTasks.has(task.taskId)) return;
+
+            const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Failed to get 2d context for effect processing');
+            }
+            ctx.drawImage(bitmap, 0, 0);
+            const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+            if (!this.pendingTasks.has(task.taskId)) return;
+
             worker.postMessage({
                 taskId: task.taskId,
-                imageData: task.imageData,
-                imageWidth: task.imageWidth,
-                imageHeight: task.imageHeight,
+                imageData: imageData.data.buffer,
+                imageWidth: imageData.width,
+                imageHeight: imageData.height,
                 params: task.params,
-            }, [task.imageData]); // Transfer the ArrayBuffer
+            }, [imageData.data.buffer]);
+        } catch (error) {
+            if (this.pendingTasks.has(task.taskId)) {
+                this.settleTask(task.taskId, error instanceof Error ? error : new Error(String(error)));
+                this.returnWorkerToIdle(worker);
+            }
+        } finally {
+            bitmap?.close();
         }
     }
 
@@ -190,32 +217,12 @@ class EffectProcessor {
         exportBlob: Blob,
         params: RenderParams
     ): Promise<Blob> {
-        // Convert Blob to ImageData via canvas
-        const bitmap = await createImageBitmap(exportBlob);
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-            bitmap.close();
-            throw new Error('Failed to get 2d context for effect processing');
-        }
-        ctx.drawImage(bitmap, 0, 0);
-        const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-        bitmap.close();
-
         const taskId = `task-${++this.taskIdCounter}`;
 
         return new Promise<Blob>((resolve, reject) => {
-            const task: EffectTask = { taskId, resolve, reject };
+            const task: EffectTask = { taskId, exportBlob, params, resolve, reject, active: false };
             this.pendingTasks.set(taskId, task);
-
-            this.taskQueue.push({
-                taskId,
-                imageData: imageData.data.buffer,
-                imageWidth: imageData.width,
-                imageHeight: imageData.height,
-                params,
-            });
-
+            this.taskQueue.push(task);
             this.processNextTask();
         });
     }
@@ -224,14 +231,18 @@ class EffectProcessor {
      * Terminate all workers and clear queues.
      */
     destroy() {
-        this.workers.forEach(w => w.terminate());
-        this.workers = [];
         this.idleWorkers.forEach(w => {
             if (w.timeoutId) clearTimeout(w.timeoutId);
-            w.worker.terminate();
         });
+        this.workers.forEach(w => w.terminate());
+        this.workers = [];
         this.idleWorkers = [];
         this.taskQueue = [];
+        const destructionError = new Error('Effect processor destroyed');
+        this.pendingTasks.forEach(task => {
+            if (task.active) this.taskCompleted();
+            task.reject(destructionError);
+        });
         this.pendingTasks.clear();
         if (this.activeTaskCount > 0) {
             this.activeTaskCount = 0;
@@ -280,6 +291,16 @@ function computeCacheKey(imageId: string, overrides: CardOverrides, dpi: number)
     return `${imageId}:${dpi}:${overridesHash}`;
 }
 
+let effectCacheLimitEnforcement: Promise<void> = Promise.resolve();
+
+function enforceEffectCacheLimitsSerially(): Promise<void> {
+    const enforcement = effectCacheLimitEnforcement
+        .then(() => enforceEffectCacheLimits())
+        .then(() => undefined);
+    effectCacheLimitEnforcement = enforcement.catch(() => undefined);
+    return enforcement;
+}
+
 // --- Public Cache API ---
 
 /**
@@ -321,7 +342,7 @@ async function setEffectCacheEntry(
         cachedAt: Date.now(),
     };
     await db.effectCache.put(entry);
-    await enforceEffectCacheLimits();
+    await enforceEffectCacheLimitsSerially();
 }
 
 /**
@@ -342,7 +363,7 @@ export async function setEffectCacheEntryWithDpi(
         cachedAt: Date.now(),
     };
     await db.effectCache.put(entry);
-    // Note: skip enforceEffectCacheLimits in worker to avoid perf hit during export
+    await enforceEffectCacheLimitsSerially();
 }
 
 
