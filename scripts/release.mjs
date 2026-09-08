@@ -17,7 +17,7 @@
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 import { createInterface } from 'readline';
-import { startReleaseNotesGeneration } from './release-notes.mjs';
+import { isReleaseNotesProviderConfigured, startReleaseNotesGeneration } from './release-notes.mjs';
 
 // Colors
 const RED = '\x1b[31m';
@@ -241,9 +241,9 @@ const getInteractiveChangelog = async (newVersion, geminiPromise = null) => {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
 
-    // Try to get AI-generated notes (if commits exist)
-    if (commits) {
-        info('Generating release notes with Gemini CLI...');
+    // Optional configured provider; manual entry remains available when absent or failed.
+    if (commits && (geminiPromise || isReleaseNotesProviderConfigured())) {
+        info('Generating release notes with the configured provider...');
 
         // Use pre-started promise or start fresh
         const notesPromise = geminiPromise || startReleaseNotesGeneration(commits, newVersion);
@@ -271,7 +271,7 @@ const getInteractiveChangelog = async (newVersion, geminiPromise = null) => {
             // Any other input skips notes
             return '';
         } else {
-            info('Gemini CLI not available or failed - falling back to manual');
+            info('Configured release-notes provider failed - falling back to manual');
         }
     }
 
@@ -521,11 +521,11 @@ async function main() {
         error(`Tag v${newVersion} already exists (${existingTag}). Use --revert first or choose a different version.`);
     }
 
-    // Start AI release notes generation early (runs in background during validation)
+    // Start configured optional release-notes generation during validation.
     const { commits: changelogCommits } = getCommitsSinceLastTag();
     let geminiPromise = null;
-    if (changelogCommits) {
-        info('Starting AI release notes generation in background...');
+    if (changelogCommits && isReleaseNotesProviderConfigured()) {
+        info('Starting configured release-notes provider in background...');
         geminiPromise = startReleaseNotesGeneration(changelogCommits, newVersion);
     }
 
