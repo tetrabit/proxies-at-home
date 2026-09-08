@@ -335,7 +335,7 @@ export function useCardEnrichment() {
                                             if (bestBack) {
                                                 const backUrl = getMpcAutofillImageUrl(bestBack.identifier);
                                                 if (!isRunCurrent()) return;
-                                                const imgId = await addRemoteImage([backUrl], 1);
+                                                const imgId = await addRemoteImage([backUrl], 1, undefined, isRunCurrent);
                                                 if (isRunCurrent() && imgId) backArtMap.set(card.uuid, imgId);
                                             }
                                         }
@@ -344,7 +344,7 @@ export function useCardEnrichment() {
                                         const backImageUrl = back.image_uris?.large || back.image_uris?.png || back.image_uris?.normal;
                                         if (backImageUrl) {
                                             if (!isRunCurrent()) return;
-                                            const imgId = await addRemoteImage([backImageUrl], 1);
+                                            const imgId = await addRemoteImage([backImageUrl], 1, undefined, isRunCurrent);
                                             if (isRunCurrent() && imgId) backArtMap.set(card.uuid, imgId);
                                         }
                                     }
@@ -368,7 +368,7 @@ export function useCardEnrichment() {
                                             if (bestFront) {
                                                 const frontUrl = getMpcAutofillImageUrl(bestFront.identifier);
                                                 if (!isRunCurrent()) return;
-                                                const imgId = await addRemoteImage([frontUrl], 1);
+                                                const imgId = await addRemoteImage([frontUrl], 1, undefined, isRunCurrent);
                                                 if (isRunCurrent() && imgId) frontArtMap.set(card.uuid, imgId);
                                             }
                                         }
@@ -377,7 +377,7 @@ export function useCardEnrichment() {
                                         const frontImageUrl = front.image_uris?.large || front.image_uris?.png || front.image_uris?.normal;
                                         if (frontImageUrl) {
                                             if (!isRunCurrent()) return;
-                                            const imgId = await addRemoteImage([frontImageUrl], 1);
+                                            const imgId = await addRemoteImage([frontImageUrl], 1, undefined, isRunCurrent);
                                             if (isRunCurrent() && imgId) frontArtMap.set(card.uuid, imgId);
                                         }
                                     }

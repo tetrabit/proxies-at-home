@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { writeFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { buildReleaseNotesPrompt, generateReleaseNotes } from './release-notes.mjs';
 
@@ -66,6 +67,69 @@ if (process.argv.includes(stubFlag)) {
     }
   }
 } else {
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const fixtureParent = join(repositoryRoot, '.review-artifacts', 'release-notes-test-fixtures');
+
+  const isStrictlyContainedBy = (ancestor, path) => {
+    const pathFromAncestor = relative(ancestor, path);
+    return pathFromAncestor !== ''
+      && pathFromAncestor !== '..'
+      && !pathFromAncestor.startsWith(`..${sep}`)
+      && !isAbsolute(pathFromAncestor);
+  };
+
+  const assertNoSymlinkAncestors = async (ancestor, path) => {
+    assert.ok(isStrictlyContainedBy(ancestor, path), `${path} must be contained by ${ancestor}`);
+    let currentPath = ancestor;
+    for (const segment of relative(ancestor, path).split(sep)) {
+      currentPath = join(currentPath, segment);
+      try {
+        const entry = await lstat(currentPath);
+        assert.equal(entry.isSymbolicLink(), false, `fixture ancestor must not be a symlink: ${currentPath}`);
+      } catch (error) {
+        if (error.code === 'ENOENT') return;
+        throw error;
+      }
+    }
+  };
+
+  const assertRepoLocalFixture = async (fixtureDirectory) => {
+    assert.ok(isStrictlyContainedBy(repositoryRoot, fixtureDirectory), 'fixture must stay within the repository derived from import.meta.url');
+    assert.ok(isStrictlyContainedBy(fixtureParent, fixtureDirectory), 'fixture must stay beneath the dedicated repository-local fixture root');
+    assert.equal(await realpath(repositoryRoot), repositoryRoot, 'repository root derived from import.meta.url must not resolve through a symlink');
+    await assertNoSymlinkAncestors(repositoryRoot, fixtureDirectory);
+    const fixtureEntry = await lstat(fixtureDirectory);
+    assert.equal(fixtureEntry.isDirectory(), true, 'fixture must be a directory');
+    assert.equal(fixtureEntry.isSymbolicLink(), false, 'fixture must not be a symlink');
+    assert.equal(await realpath(fixtureDirectory), fixtureDirectory, 'fixture must not resolve outside its lexical repository path');
+  };
+
+  const createRepoLocalFixture = async (prefix, nextId = randomUUID) => {
+    assert.match(prefix, /^[a-z0-9-]+$/i, 'fixture prefix must be path-safe');
+    assert.ok(isStrictlyContainedBy(repositoryRoot, fixtureParent), 'fixture parent must be contained by the repository');
+    assert.equal(await realpath(repositoryRoot), repositoryRoot, 'repository root derived from import.meta.url must not resolve through a symlink');
+    await assertNoSymlinkAncestors(repositoryRoot, fixtureParent);
+    await mkdir(fixtureParent, { recursive: true });
+    await assertNoSymlinkAncestors(repositoryRoot, fixtureParent);
+    assert.equal(await realpath(fixtureParent), fixtureParent, 'fixture parent must not resolve outside the repository');
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const uniqueId = nextId();
+      assert.match(uniqueId, /^[a-z0-9-]+$/i, 'fixture ID must be path-safe');
+      const fixtureDirectory = join(fixtureParent, `${prefix}-${uniqueId}`);
+      assert.ok(isStrictlyContainedBy(fixtureParent, fixtureDirectory), 'fixture ID must not escape the fixture parent');
+      try {
+        await mkdir(fixtureDirectory);
+        await assertRepoLocalFixture(fixtureDirectory);
+        return fixtureDirectory;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+    }
+
+    throw new Error(`could not create a unique fixture directory beneath ${fixtureParent}`);
+  };
+
   test('missing provider configuration disables optional generation without spawning', async () => {
     let spawnCount = 0;
 
@@ -200,7 +264,7 @@ if (process.argv.includes(stubFlag)) {
   };
 
   test('timeout SIGKILLs the owned Unix process group after its SIGTERM-exiting parent closes', { skip: process.platform === 'win32' }, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'release-notes-sigkill-'));
+    const directory = await createRepoLocalFixture('release-notes-sigkill');
     const parentPidFile = join(directory, 'parent.pid');
     const descendantPidFile = join(directory, 'descendant.pid');
     let parentPid;
@@ -233,12 +297,18 @@ if (process.argv.includes(stubFlag)) {
       await waitForProcessExit(descendantPid);
     } finally {
       await stopOwnedProcessGroupIfRunning(parentPid, descendantPid);
-      await rm(directory, { recursive: true, force: true });
     }
   });
 
-  test('timeout terminates the owned Unix descendant process group', { skip: process.platform === 'win32' }, async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'release-notes-timeout-'));
+  test('repo-local fixture contract holds before timeout terminates the owned Unix descendant process group', { skip: process.platform === 'win32' }, async () => {
+    const fixturePrefix = 'release-notes-timeout';
+    const collisionId = randomUUID();
+    const collisionDirectory = await createRepoLocalFixture(fixturePrefix, () => collisionId);
+    const replacementId = randomUUID();
+    const fixtureIds = [collisionId, replacementId];
+    const directory = await createRepoLocalFixture(fixturePrefix, () => fixtureIds.shift());
+    assert.notEqual(directory, collisionDirectory, 'exclusive fixture creation must retry with a new unique ID after a collision');
+    await assertRepoLocalFixture(directory);
     const pidFile = join(directory, 'descendant.pid');
     let descendantPid;
     try {
@@ -246,7 +316,7 @@ if (process.argv.includes(stubFlag)) {
         command: process.execPath,
         args: [import.meta.filename, stubFlag, '--stub-version=provider-v1', `--stub-descendant-pid-file=${pidFile}`, '--stub-self-exit-after-ms=300'],
         expectedVersion: 'provider-v1',
-        timeoutMs: 75,
+        timeoutMs: 250,
       });
       descendantPid = await waitForFile(pidFile);
 
@@ -254,12 +324,11 @@ if (process.argv.includes(stubFlag)) {
       await waitForProcessExit(descendantPid);
     } finally {
       stopProcessIfRunning(descendantPid);
-      await rm(directory, { recursive: true, force: true });
     }
   });
 
   test('abort signal terminates the owned Unix descendant process group', { skip: process.platform === 'win32' }, async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'release-notes-abort-'));
+    const directory = await createRepoLocalFixture('release-notes-abort');
     const pidFile = join(directory, 'descendant.pid');
     let descendantPid;
     try {
@@ -278,7 +347,6 @@ if (process.argv.includes(stubFlag)) {
       await waitForProcessExit(descendantPid);
     } finally {
       stopProcessIfRunning(descendantPid);
-      await rm(directory, { recursive: true, force: true });
     }
   });
 

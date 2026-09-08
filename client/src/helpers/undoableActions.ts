@@ -301,9 +301,9 @@ export async function undoableDuplicateCardsBatch(uuids: string[]): Promise<stri
         if (!sourceCard) return;
 
         sourceProjectId = sourceCard.projectId;
-        const allCards = sourceProjectId
-            ? await db.cards.where("projectId").equals(sourceProjectId).sortBy("order")
-            : await db.cards.orderBy("order").toArray();
+        if (!sourceProjectId?.trim()) return;
+
+        const allCards = await db.cards.where("projectId").equals(sourceProjectId).sortBy("order");
 
         // Filter to find the cards we want to duplicate, keeping the order from allCards
         const cardsToDuplicate = allCards.filter(c => validUuids.has(c.uuid));

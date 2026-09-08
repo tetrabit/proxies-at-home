@@ -874,12 +874,46 @@ describe("undoableActions", () => {
     });
 
 
+    it("does not query or mutate any project when the first duplicate source has no project", async () => {
+      const legacySource = {
+        uuid: "legacy-no-project",
+        name: "Legacy Source",
+        order: 10,
+        imageId: "legacy-image",
+      } as CardOption;
+      const otherProjectCard = {
+        uuid: "project-b-card",
+        projectId: "project-b",
+        name: "Project B Card",
+        order: 90,
+        imageId: "project-b-image",
+      } as CardOption;
+      const otherProjectBefore = JSON.stringify(otherProjectCard);
+
+      vi.mocked(db.cards.get).mockResolvedValueOnce(legacySource);
+      vi.mocked(db.cards.orderBy).mockReturnValue({
+        toArray: vi.fn().mockResolvedValue([legacySource, otherProjectCard]),
+      } as never);
+
+      await expect(undoableDuplicateCardsBatch([legacySource.uuid])).resolves.toEqual([]);
+
+      expect(db.cards.get).toHaveBeenCalledTimes(1);
+      expect(db.cards.get).toHaveBeenCalledWith(legacySource.uuid);
+      expect(db.cards.orderBy).not.toHaveBeenCalled();
+      expect(db.cards.where).not.toHaveBeenCalled();
+      expect(db.cards.bulkPut).not.toHaveBeenCalled();
+      expect(db.images.bulkGet).not.toHaveBeenCalled();
+      expect(db.images.bulkUpdate).not.toHaveBeenCalled();
+      expect(mockPushAction).not.toHaveBeenCalled();
+      expect(JSON.stringify(otherProjectCard)).toBe(otherProjectBefore);
+    });
+
     it("undoes a batch duplicate by deleting images whose refcount is exhausted", async () => {
-      const front = { uuid: "front-solo", name: "Front", order: 10, imageId: "img-front" } as CardOption;
+      const front = { uuid: "front-solo", projectId: "project-a", name: "Front", order: 10, imageId: "img-front" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-solo" as never);
       vi.mocked(db.cards.get).mockResolvedValueOnce(front);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front]) })),
       } as never);
       vi.mocked(db.images.bulkGet).mockResolvedValueOnce([
         { id: "img-front", refCount: 1 },
@@ -903,10 +937,10 @@ describe("undoableActions", () => {
     });
 
     it("duplicates cards without image refs or available linked backs", async () => {
-      const front = { uuid: "front-missing-back", name: "Front", order: 10, linkedBackId: "missing-back" } as CardOption;
+      const front = { uuid: "front-missing-back", projectId: "project-a", name: "Front", order: 10, linkedBackId: "missing-back" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-missing-back" as never);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front]) })),
       } as never);
       vi.mocked(db.cards.get)
         .mockResolvedValueOnce(front)
@@ -924,13 +958,13 @@ describe("undoableActions", () => {
     });
 
     it("duplicates linked backs without refcounting cardback images", async () => {
-      const front = { uuid: "front-cardback", name: "Front", order: 10, linkedBackId: "back-cardback" } as CardOption;
-      const back = { uuid: "back-cardback", name: "Back", order: 10, linkedFrontId: "front-cardback", imageId: "cardback_builtin" } as CardOption;
+      const front = { uuid: "front-cardback", projectId: "project-a", name: "Front", order: 10, linkedBackId: "back-cardback" } as CardOption;
+      const back = { uuid: "back-cardback", projectId: "project-a", name: "Back", order: 10, linkedFrontId: "front-cardback", imageId: "cardback_builtin" } as CardOption;
       vi.spyOn(crypto, "randomUUID")
         .mockReturnValueOnce("new-front-cardback" as never)
         .mockReturnValueOnce("new-back-cardback" as never);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front, back]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front, back]) })),
       } as never);
       vi.mocked(db.cards.get)
         .mockResolvedValueOnce(front)
@@ -943,14 +977,14 @@ describe("undoableActions", () => {
 
     it("duplicates multiple cardback-only cards without image ref updates", async () => {
       const cards = [
-        { uuid: "a", name: "A", order: 10, imageId: "cardback_a" },
-        { uuid: "b", name: "B", order: 20, imageId: "cardback_b" },
+        { uuid: "a", projectId: "project-a", name: "A", order: 10, imageId: "cardback_a" },
+        { uuid: "b", projectId: "project-a", name: "B", order: 20, imageId: "cardback_b" },
       ] as CardOption[];
       vi.spyOn(crypto, "randomUUID")
         .mockReturnValueOnce("new-a" as never)
         .mockReturnValueOnce("new-b" as never);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue(cards),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue(cards) })),
       } as never);
       vi.mocked(db.cards.get).mockResolvedValueOnce(cards[0]);
 
@@ -970,11 +1004,11 @@ describe("undoableActions", () => {
     });
 
     it("skips missing images during duplicate ref increments and undo decrements", async () => {
-      const front = { uuid: "front-image", name: "Front", order: 10, imageId: "img-front" } as CardOption;
+      const front = { uuid: "front-image", projectId: "project-a", name: "Front", order: 10, imageId: "img-front" } as CardOption;
       vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("new-front-image" as never);
       vi.mocked(db.cards.get).mockResolvedValueOnce(front);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front]) })),
       } as never);
       vi.mocked(db.images.bulkGet).mockResolvedValueOnce([undefined] as never);
 
@@ -992,6 +1026,7 @@ describe("undoableActions", () => {
     it("undoes and redoes a batch duplicate with linked backs and image refs", async () => {
       const front = {
         uuid: "front-1",
+        projectId: "project-a",
         name: "Front",
         order: 10,
         imageId: "img-front",
@@ -999,6 +1034,7 @@ describe("undoableActions", () => {
       } as CardOption;
       const back = {
         uuid: "back-1",
+        projectId: "project-a",
         name: "Back",
         order: 10,
         imageId: "img-back",
@@ -1007,8 +1043,8 @@ describe("undoableActions", () => {
       vi.spyOn(crypto, "randomUUID")
         .mockReturnValueOnce("new-front" as never)
         .mockReturnValueOnce("new-back" as never);
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front, back]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front, back]) })),
       } as never);
       vi.mocked(db.cards.get)
         .mockResolvedValueOnce(front)
@@ -1048,10 +1084,10 @@ describe("undoableActions", () => {
       await pushedAction.undo();
 
       expect(db.cards.bulkDelete).toHaveBeenCalledWith(["new-front", "new-back"]);
-      expect(rebalanceCardOrders).toHaveBeenCalled();
+      expect(rebalanceCardOrders).toHaveBeenCalledWith("project-a");
 
-      vi.mocked(db.cards.orderBy).mockReturnValueOnce({
-        toArray: vi.fn().mockResolvedValue([front, back]),
+      vi.mocked(db.cards.where).mockReturnValueOnce({
+        equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([front, back]) })),
       } as never);
       vi.mocked(db.cards.get)
         .mockResolvedValueOnce(front)

@@ -782,8 +782,20 @@ describe("useCardEnrichment", () => {
     });
 
     expect(mockCardsBulkGet).toHaveBeenCalledWith(["back-1"]);
-    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(1, ["https://example.test/back-large.png"], 1);
-    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(2, ["https://example.test/front-large.png"], 1);
+    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(
+      1,
+      ["https://example.test/back-large.png"],
+      1,
+      undefined,
+      expect.any(Function)
+    );
+    expect(mockAddRemoteImage).toHaveBeenNthCalledWith(
+      2,
+      ["https://example.test/front-large.png"],
+      1,
+      undefined,
+      expect.any(Function)
+    );
     expect(mockCardsBulkAdd).not.toHaveBeenCalled();
     expect(mockCardsBulkUpdate).toHaveBeenCalled();
     expect(mockHideMetadataToast).toHaveBeenCalled();

@@ -87,35 +87,49 @@ export async function addCustomImage(
 export async function addRemoteImage(
   imageUrls: string[],
   count: number = 1,
-  prints?: PrintInfo[]
+  prints?: PrintInfo[],
+  isWriteOwned?: () => boolean
 ): Promise<string | undefined> {
   if (!imageUrls || imageUrls.length === 0) return undefined;
+  if (isWriteOwned && !isWriteOwned()) return undefined;
 
   const imageId = parseImageIdFromUrl(imageUrls[0]);
+  const ownershipInvalidated = new Error("Remote image write ownership invalidated");
+  const assertWriteOwned = () => {
+    if (isWriteOwned && !isWriteOwned()) throw ownershipInvalidated;
+  };
 
-  await db.transaction("rw", db.images, async () => {
-    const existingImage = await db.images.get(imageId);
+  try {
+    await db.transaction("rw", db.images, async () => {
+      assertWriteOwned();
+      const existingImage = await db.images.get(imageId);
+      assertWriteOwned();
 
-    if (existingImage) {
-      // Update refCount, and update prints if not already set
-      const updates: Partial<import("../db").Image> = {
-        refCount: existingImage.refCount + count,
-      };
-      if (prints && !existingImage.prints) {
-        updates.prints = prints;
+      if (existingImage) {
+        // Update refCount, and update prints if not already set
+        const updates: Partial<import("../db").Image> = {
+          refCount: existingImage.refCount + count,
+        };
+        if (prints && !existingImage.prints) {
+          updates.prints = prints;
+        }
+        await db.images.update(imageId, updates);
+      } else {
+        await db.images.add({
+          id: imageId,
+          sourceUrl: imageUrls[0],
+          imageUrls: imageUrls,
+          prints: prints,
+          refCount: count,
+          source: inferSourceFromUrl(imageUrls[0]) ?? undefined,
+        });
       }
-      await db.images.update(imageId, updates);
-    } else {
-      await db.images.add({
-        id: imageId,
-        sourceUrl: imageUrls[0],
-        imageUrls: imageUrls,
-        prints: prints,
-        refCount: count,
-        source: inferSourceFromUrl(imageUrls[0]) ?? undefined,
-      });
-    }
-  });
+      assertWriteOwned();
+    });
+  } catch (error) {
+    if (error === ownershipInvalidated) return undefined;
+    throw error;
+  }
 
   return imageId;
 }

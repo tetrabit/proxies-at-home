@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { db } from "@/db";
 import {
@@ -963,6 +964,43 @@ describe("dbUtils", () => {
       const img = await db.images.get(id);
       expect(img).toBeDefined();
       expect(img?.refCount).toBe(3);
+    });
+
+    it("rolls back an obsolete refcount increment when the project switches during a deferred transaction write", async () => {
+      const url = "https://cards.scryfall.io/large/front/1/2/project-switch.jpg";
+      const imageId = "https://cards.scryfall.io/large/front/1/2/project-switch.jpg";
+      let currentProjectId = "project-a";
+      let resolveDeferredUpdate!: () => void;
+      let notifyUpdateStarted!: () => void;
+      const deferredUpdate = new Promise<void>((resolve) => {
+        resolveDeferredUpdate = resolve;
+      });
+      const updateStarted = new Promise<void>((resolve) => {
+        notifyUpdateStarted = resolve;
+      });
+      await db.images.add({ id: imageId, refCount: 1, source: "scryfall" });
+
+      const originalUpdate = db.images.update.bind(db.images);
+      vi.spyOn(db.images, "update").mockImplementationOnce(async (id, changes) => {
+        const result = await originalUpdate(id, changes);
+        notifyUpdateStarted();
+        await Dexie.waitFor(deferredUpdate);
+        return result;
+      });
+
+      const { addRemoteImage } = await import("./dbUtils");
+      const write = addRemoteImage(
+        [url],
+        1,
+        undefined,
+        () => currentProjectId === "project-a"
+      );
+      await updateStarted;
+      currentProjectId = "project-b";
+      resolveDeferredUpdate();
+
+      await expect(write).resolves.toBeUndefined();
+      await expect(db.images.get(imageId)).resolves.toMatchObject({ refCount: 1 });
     });
 
     it("addCustomImage should create distinct IDs with different suffixes", async () => {
