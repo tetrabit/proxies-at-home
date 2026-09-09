@@ -150,7 +150,7 @@ const checkGhAuth = () => {
     return { available: true, authenticated };
 };
 
-// Run pre-release validation (build + typecheck + lint)
+// Run pre-release validation (build + typecheck + lint + component tests)
 const runValidation = () => {
     info('Running pre-release validation...');
     console.log('');
@@ -166,6 +166,18 @@ const runValidation = () => {
     info('Linting client...');
     run('npm run lint --prefix client', { throwOnError: true });
     success('Lint passed!');
+
+    info('Testing client...');
+    run('npm run test --prefix client', { throwOnError: true });
+    success('Client tests passed!');
+
+    info('Testing server...');
+    run('npm run test --prefix server', { throwOnError: true });
+    success('Server tests passed!');
+
+    info('Testing Electron...');
+    run('npx --no-install vitest --config electron/vitest.config.ts run', { throwOnError: true });
+    success('Electron tests passed!');
 
     console.log('');
     success('Pre-release validation complete!');
