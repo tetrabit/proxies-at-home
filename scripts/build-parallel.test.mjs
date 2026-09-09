@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const fixtureRoot = path.join(repoRoot, ".review-artifacts", "shared-build-order-01", "fixture");
 const helperPath = path.join(repoRoot, "scripts", "build-parallel.mjs");
+const fixtureInvocationRoot = path.join(
+  repoRoot,
+  ".review-artifacts",
+  `build-parallel-${randomUUID()}`,
+);
+fs.mkdirSync(fixtureInvocationRoot);
 
 function writeFixtureFile(filePath, content) {
   if (fs.existsSync(filePath)) {
@@ -19,9 +25,9 @@ function writeFixtureFile(filePath, content) {
 }
 
 function createFixture() {
+  const fixtureRoot = path.join(fixtureInvocationRoot, `shared-build-order-${randomUUID()}`);
+  fs.mkdirSync(fixtureRoot);
   const directories = [
-    path.join(repoRoot, ".review-artifacts", "shared-build-order-01"),
-    fixtureRoot,
     path.join(fixtureRoot, "shared"),
     path.join(fixtureRoot, "shared", "scryfall-client"),
     path.join(fixtureRoot, "client"),
@@ -30,9 +36,7 @@ function createFixture() {
   ];
 
   for (const directory of directories) {
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory);
-    }
+    fs.mkdirSync(directory, { recursive: true });
   }
 
   writeFixtureFile(
@@ -136,12 +140,14 @@ const outputDir = process.env.BUILD_ORDER_OUTPUT_DIR;
 fs.appendFileSync(path.join(outputDir, "events.log"), "electron:start\\nelectron:finished\\n");
 `,
   );
+
+  return fixtureRoot;
 }
 
 test("builds the shared client once before launching parallel consumers", () => {
-  createFixture();
+  const fixtureRoot = createFixture();
 
-  const outputDir = path.join(fixtureRoot, "output", `run-${process.pid}-${Date.now()}`);
+  const outputDir = path.join(fixtureRoot, "output", `run-${randomUUID()}`);
   fs.mkdirSync(outputDir);
   const result = spawnSync(process.execPath, [helperPath], {
     cwd: fixtureRoot,
@@ -171,12 +177,6 @@ test("builds the shared client once before launching parallel consumers", () => 
   assert.ok(events.includes("electron:finished"));
 });
 
-const prerequisiteFixtureRoot = path.join(
-  repoRoot,
-  ".review-artifacts",
-  "server-build-prerequisite-01",
-  "fixture",
-);
 const productionRootPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 const productionServerPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"));
 
@@ -192,8 +192,12 @@ test("production manifests preserve aggregate and standalone server build contra
 });
 
 function createPrerequisiteFixture() {
+  const prerequisiteFixtureRoot = path.join(
+    fixtureInvocationRoot,
+    `server-build-prerequisite-${randomUUID()}`,
+  );
+  fs.mkdirSync(prerequisiteFixtureRoot);
   for (const directory of [
-    prerequisiteFixtureRoot,
     path.join(prerequisiteFixtureRoot, "shared", "scryfall-client"),
     path.join(prerequisiteFixtureRoot, "client"),
     path.join(prerequisiteFixtureRoot, "server"),
@@ -293,10 +297,12 @@ import path from "node:path";
 fs.appendFileSync(path.join(process.env.BUILD_ORDER_OUTPUT_DIR, "events.log"), "electron:finished\\n");
 `,
   );
+
+  return prerequisiteFixtureRoot;
 }
 
-function runPrerequisiteFixture(command, args, runName) {
-  const outputDir = path.join(prerequisiteFixtureRoot, "output", `${runName}-${process.pid}-${Date.now()}`);
+function runPrerequisiteFixture(prerequisiteFixtureRoot, command, args, runName) {
+  const outputDir = path.join(prerequisiteFixtureRoot, "output", `${runName}-${randomUUID()}`);
   fs.mkdirSync(outputDir, { recursive: true });
   const result = spawnSync(command, args, {
     cwd: prerequisiteFixtureRoot,
@@ -310,8 +316,9 @@ function runPrerequisiteFixture(command, args, runName) {
 }
 
 test("standalone server build establishes its shared-client prerequisite through nested npm", () => {
-  createPrerequisiteFixture();
+  const prerequisiteFixtureRoot = createPrerequisiteFixture();
   const { result, events } = runPrerequisiteFixture(
+    prerequisiteFixtureRoot,
     process.platform === "win32" ? "npm.cmd" : "npm",
     ["run", "build", "--prefix", "server"],
     "standalone",
@@ -325,8 +332,9 @@ test("standalone server build establishes its shared-client prerequisite through
 });
 
 test("aggregate build does not let the server rebuild the shared client while the client reads it", () => {
-  createPrerequisiteFixture();
+  const prerequisiteFixtureRoot = createPrerequisiteFixture();
   const { result, events } = runPrerequisiteFixture(
+    prerequisiteFixtureRoot,
     process.execPath,
     [helperPath],
     "aggregate",
