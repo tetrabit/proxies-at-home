@@ -147,8 +147,9 @@ function probeWebpDimensions(bytes: Uint8Array): ImageDimensions | undefined {
 
 function probeImageDimensions(bytes: Uint8Array): ImageDimensions | undefined {
     if (
-        bytes.length >= 24
+        bytes.length >= 33
         && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+        && bytes[8] === 0x00 && bytes[9] === 0x00 && bytes[10] === 0x00 && bytes[11] === 0x0d
         && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52
     ) {
         const width = (bytes[16] * 0x1000000) + (bytes[17] << 16) + (bytes[18] << 8) + bytes[19];
@@ -166,10 +167,13 @@ function probeImageDimensions(bytes: Uint8Array): ImageDimensions | undefined {
         return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width, height);
     }
 
-    if (bytes.length >= 26 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    if (bytes.length >= 54 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+        const dibHeaderSize = readUint32LE(bytes, 14);
+        if (dibHeaderSize === undefined || dibHeaderSize < 40 || 14 + dibHeaderSize > bytes.length) return undefined;
         const width = readInt32LE(bytes, 18);
         const height = readInt32LE(bytes, 22);
-        return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(Math.abs(width), Math.abs(height));
+        if (width === undefined || height === undefined || width <= 0 || height === 0 || height === -0x80000000) return undefined;
+        return dimensionsOrUndefined(width, Math.abs(height));
     }
 
     return probeJpegDimensions(bytes) ?? probeWebpDimensions(bytes);
@@ -199,6 +203,7 @@ interface EffectTask {
     taskId: string;
     exportBlob: Blob;
     params: RenderParams;
+    dimensions: ImageDimensions;
     decodedBytes: number;
     resolve: (blob: Blob) => void;
     reject: (error: Error) => void;
@@ -392,7 +397,19 @@ class EffectProcessor {
         let bitmap: ImageBitmap | undefined;
 
         try {
-            bitmap = await createImageBitmap(task.exportBlob);
+            bitmap = await createImageBitmap(task.exportBlob, { imageOrientation: 'none' });
+            const decodedDimensions = dimensionsOrUndefined(bitmap.width, bitmap.height);
+            if (!decodedDimensions) {
+                throw new Error('Decoded image dimensions are invalid for decoded-surface accounting');
+            }
+            const actualDecodedBytes = decodedReservationBytes(decodedDimensions);
+            if (
+                decodedDimensions.width !== task.dimensions.width
+                || decodedDimensions.height !== task.dimensions.height
+                || actualDecodedBytes !== task.decodedBytes
+            ) {
+                throw new Error('Decoded image dimensions do not match admitted header dimensions');
+            }
             if (!this.pendingTasks.has(task.taskId)) return;
 
             const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -441,6 +458,7 @@ class EffectProcessor {
                 taskId,
                 exportBlob,
                 params,
+                dimensions,
                 decodedBytes,
                 resolve,
                 reject,

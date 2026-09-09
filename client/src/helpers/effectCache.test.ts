@@ -43,8 +43,41 @@ describe('effectCache', () => {
             0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
             width >>> 24, width >>> 16, width >>> 8, width,
             height >>> 24, height >>> 16, height >>> 8, height,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         return new Blob([header], { type: 'image/png' });
+    }
+
+    function jpegBlob(width: number, height: number): Blob {
+        return new Blob([new Uint8Array([
+            0xff, 0xd8, 0xff, 0xc0, 0x00, 0x07, 0x08,
+            height >>> 8, height, width >>> 8, width,
+        ])], { type: 'image/jpeg' });
+    }
+
+    function webpBlob(width: number, height: number): Blob {
+        return new Blob([new Uint8Array([
+            0x52, 0x49, 0x46, 0x46, 0x16, 0x00, 0x00, 0x00,
+            0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58,
+            0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            (width - 1) & 0xff, (width - 1) >>> 8, (width - 1) >>> 16,
+            (height - 1) & 0xff, (height - 1) >>> 8, (height - 1) >>> 16,
+        ])], { type: 'image/webp' });
+    }
+
+    function gifBlob(width: number, height: number): Blob {
+        return new Blob([new Uint8Array([
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+            width & 0xff, width >>> 8, height & 0xff, height >>> 8,
+        ])], { type: 'image/gif' });
+    }
+
+    function bmpBlob(width: number, height: number): Blob {
+        const header = new Uint8Array(54);
+        header.set([0x42, 0x4d, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00]);
+        new DataView(header.buffer).setInt32(18, width, true);
+        new DataView(header.buffer).setInt32(22, height, true);
+        return new Blob([header], { type: 'image/bmp' });
     }
 
     beforeEach(() => {
@@ -416,8 +449,8 @@ describe('effectCache', () => {
 
             // Mock Browser APIs
             global.createImageBitmap = vi.fn().mockResolvedValue({
-                width: 100,
-                height: 100,
+                width: 1,
+                height: 1,
                 close: vi.fn(),
             });
 
@@ -553,6 +586,10 @@ describe('effectCache', () => {
                 }
             } as unknown as typeof Worker;
             Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 4 });
+            global.createImageBitmap = vi.fn()
+                .mockResolvedValueOnce({ width: 4000, height: 4000, close: vi.fn() })
+                .mockResolvedValueOnce({ width: 2000, height: 2000, close: vi.fn() })
+                .mockResolvedValueOnce({ width: 2000, height: 2000, close: vi.fn() });
 
             const large = processor.process(pngBlob(4000, 4000), {} as RenderParams);
             const firstSmall = processor.process(pngBlob(2000, 2000), {} as RenderParams);
@@ -574,6 +611,69 @@ describe('effectCache', () => {
             await expect(Promise.all([firstSmall, deferredSmall])).resolves.toEqual([expect.any(Blob), expect.any(Blob)]);
         });
 
+        it('uses raw-orientation decoding after admitting PNG, JPEG, WebP, GIF, and BMP headers', async () => {
+            const processor = getEffectProcessor();
+            const sources = [
+                pngBlob(100, 101),
+                jpegBlob(102, 103),
+                webpBlob(104, 105),
+                gifBlob(106, 107),
+                bmpBlob(108, 109),
+            ];
+
+            for (const source of sources) {
+                const dimensions = source === sources[0] ? [100, 101]
+                    : source === sources[1] ? [102, 103]
+                        : source === sources[2] ? [104, 105]
+                            : source === sources[3] ? [106, 107]
+                                : [108, 109];
+                global.createImageBitmap = vi.fn().mockResolvedValue({
+                    width: dimensions[0],
+                    height: dimensions[1],
+                    close: vi.fn(),
+                });
+
+                const rendered = processor.process(source, {} as RenderParams);
+                await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source, { imageOrientation: 'none' }));
+                await expect(rendered).resolves.toBeInstanceOf(Blob);
+            }
+        });
+
+        it.each([
+            ['PNG IHDR with an invalid length', new Blob([new Uint8Array([
+                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+                0x00, 0x00, 0x00, 0x0c, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            ])])],
+            ['truncated JPEG start-of-frame', new Blob([new Uint8Array([
+                0xff, 0xd8, 0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01,
+            ])])],
+            ['WebP chunk length overflow', new Blob([new Uint8Array([
+                0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00,
+                0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58,
+                0xff, 0xff, 0xff, 0xff,
+            ])])],
+            ['truncated GIF logical screen', new Blob([new Uint8Array([
+                0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01,
+            ])])],
+            ['BMP without a complete BITMAPINFOHEADER', new Blob([new Uint8Array([
+                0x42, 0x4d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            ])])],
+        ])('rejects %s before bitmap decode', async (_description, source) => {
+            const processor = getEffectProcessor();
+            const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
         it('uses dimensions from a bounded header probe rather than encoded Blob size', async () => {
             const processor = getEffectProcessor();
             const source = pngBlob(1, 1);
@@ -581,7 +681,7 @@ describe('effectCache', () => {
             const slice = vi.spyOn(source, 'slice');
 
             const rendition = processor.process(source, {} as RenderParams);
-            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source));
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source, { imageOrientation: 'none' }));
             expect(slice).toHaveBeenCalledWith(0, 512 * 1024);
             await vi.waitFor(() => expect(rendition).resolves.toBeInstanceOf(Blob));
         });
@@ -603,6 +703,7 @@ describe('effectCache', () => {
                     workers.push(this);
                 }
             } as unknown as typeof Worker;
+            global.createImageBitmap = vi.fn().mockResolvedValue({ width: 1000, height: 1000, close: vi.fn() });
 
             const oversized = processor.process(pngBlob(5000, 5000), {} as RenderParams);
             const oversizedError = oversized.then(() => undefined, error => error);
@@ -626,7 +727,7 @@ describe('effectCache', () => {
                 .mockImplementationOnce(() => new Promise<never>((_resolve, reject) => {
                     rejectDecode = reject;
                 }))
-                .mockResolvedValue({ width: 100, height: 100, close: vi.fn() });
+                .mockResolvedValue({ width: 3400, height: 3400, close: vi.fn() });
 
             const first = processor.process(pngBlob(3400, 3400), {} as RenderParams);
             const firstError = first.then(() => undefined, error => error);
@@ -639,6 +740,66 @@ describe('effectCache', () => {
             await expect(second).resolves.toBeInstanceOf(Blob);
         });
 
+        it.each([
+            [101, 100],
+            [99, 100],
+        ])('rejects decoded %ix%i dimensions before canvas allocation and releases the worker for later work', async (width, height) => {
+            const processor = getEffectProcessor();
+            const workers: Array<{
+                postMessage: ReturnType<typeof vi.fn>;
+                terminate: ReturnType<typeof vi.fn>;
+                onmessage: ((e: MessageEvent) => void) | null;
+                onerror: ((e: ErrorEvent) => void) | null;
+            }> = [];
+            global.Worker = class {
+                postMessage = vi.fn();
+                terminate = vi.fn();
+                onmessage: ((e: MessageEvent) => void) | null = null;
+                onerror: ((e: ErrorEvent) => void) | null = null;
+                constructor() {
+                    workers.push(this);
+                }
+            } as unknown as typeof Worker;
+            const bitmapClose = vi.fn();
+            const canvasConstructed = vi.fn();
+            global.OffscreenCanvas = class {
+                constructor() {
+                    canvasConstructed();
+                }
+                getContext() {
+                    return {
+                        drawImage: vi.fn(),
+                        getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 })),
+                    };
+                }
+            } as unknown as typeof OffscreenCanvas;
+            global.createImageBitmap = vi.fn()
+                .mockResolvedValueOnce({ width, height, close: bitmapClose })
+                .mockResolvedValueOnce({ width: 100, height: 100, close: vi.fn() });
+
+            const rejected = processor.process(pngBlob(100, 100), {} as RenderParams);
+            const rejectedError = rejected.then(() => undefined, error => error);
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(1));
+            await expect(rejectedError).resolves.toMatchObject({
+                message: 'Decoded image dimensions do not match admitted header dimensions',
+            });
+
+            expect(canvasConstructed).not.toHaveBeenCalled();
+            expect(workers[0].postMessage).not.toHaveBeenCalled();
+            expect(bitmapClose).toHaveBeenCalledTimes(1);
+            // @ts-expect-error: verifies the physical reservation is released before reuse.
+            expect(processor.decodedBytesInFlight).toBe(0);
+
+            const later = processor.process(pngBlob(100, 100), {} as RenderParams);
+            const laterError = later.then(() => undefined, error => error);
+            await vi.waitFor(() => expect(workers[0].postMessage).toHaveBeenCalledTimes(1));
+            processor.destroy();
+            await expect(laterError).resolves.toMatchObject({ message: 'Effect processor destroyed' });
+            // @ts-expect-error: verifies destroy also clears the second task's reservation.
+            expect(processor.decodedBytesInFlight).toBe(0);
+            expect(createImageBitmap).toHaveBeenCalledTimes(2);
+        });
+
         it('cancels queued descriptors without decoding them', async () => {
             const processor = getEffectProcessor();
             Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
@@ -647,7 +808,7 @@ describe('effectCache', () => {
                 .mockImplementationOnce(() => new Promise(resolve => {
                     resolveDecode = resolve;
                 }))
-                .mockResolvedValue({ width: 100, height: 100, close: vi.fn() });
+                .mockResolvedValue({ width: 1, height: 1, close: vi.fn() });
 
             const active = processor.process(pngBlob(1, 1), {} as RenderParams);
             const activeError = active.then(() => undefined, error => error);
