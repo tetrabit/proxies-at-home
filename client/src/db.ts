@@ -352,7 +352,7 @@ export async function clearTokenCardDependenciesUpgrade(
     });
 }
 
-class ProxxiedDexie extends Dexie {
+export class ProxxiedDexie extends Dexie {
   // 'cards' is the name of the table
   // '&uuid' makes 'uuid' a unique index and primary key
   // 'name, set, number' creates indexes for efficient lookup
@@ -389,8 +389,8 @@ class ProxxiedDexie extends Dexie {
   // Persistent custom image storage (content-addressed)
   user_images!: Table<UserImage, string>;
 
-  constructor() {
-    super("ProxxiedDB");
+  constructor(databaseName = "ProxxiedDB") {
+    super(databaseName);
     this.version(1).stores({
       cards: "&uuid, imageId, order, name",
       images:
@@ -660,6 +660,28 @@ class ProxxiedDexie extends Dexie {
     this.version(21).stores({
       cards:
         "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id",
+      images:
+        "&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth",
+      cardbacks: "&id",
+      settings: "&id",
+      imageCache: "&url, cachedAt",
+      cardMetadataCache:
+        "id, name, set, number, oracle_id, scryfall_id, cachedAt",
+      effectCache: "&key, cachedAt",
+      mpcSearchCache: "&[query+cardType], cachedAt",
+      projects: "&id, shareId, lastOpenedAt",
+      userPreferences: "&id",
+      user_images: "&hash",
+      mpcCalibrationDatasets: "&id, updatedAt",
+      mpcCalibrationCases: "&id, datasetId, updatedAt",
+      mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
+      mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId",
+      fsAccessHandles: "&id, updatedAt",
+    });
+    // Version 22: Add a compound project-order index for scoped ordered card reads.
+    this.version(22).stores({
+      cards:
+        "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id, [projectId+order]",
       images:
         "&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth",
       cardbacks: "&id",

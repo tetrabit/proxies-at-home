@@ -45,6 +45,122 @@ function isAbortError(err: unknown): boolean {
     return err instanceof Error && err.name === "AbortError";
 }
 
+interface InFlightMpcSearch {
+    promise: Promise<MpcAutofillCard[]>;
+    activeSubscribers: Set<symbol>;
+}
+
+const inFlightMpcSearches = new Map<string, InFlightMpcSearch>();
+
+function getMpcSearchKeys(
+    query: string,
+    cardType: "CARD" | "CARDBACK" | "TOKEN",
+    fuzzySearch: boolean,
+    options: MpcSearchOptions
+): { cacheKey: string; requestKey: string } {
+    const normalizedQuery = query.trim().toLowerCase();
+    const includeAllLanguages = Boolean(options.includeAllLanguages);
+    const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}${
+        includeAllLanguages ? ':all-languages' : ''
+    }`;
+
+    // The transport key deliberately includes every value that can alter the MPC response.
+    const requestKey = JSON.stringify({
+        url: `${API_BASE}/api/mpcfill/search`,
+        query: normalizedQuery,
+        cardType,
+        fuzzySearch,
+        includeAllLanguages,
+    });
+
+    return { cacheKey, requestKey };
+}
+
+function subscribeToMpcSearch(
+    inFlight: InFlightMpcSearch,
+    signal?: AbortSignal
+): Promise<MpcAutofillCard[]> {
+    throwIfAborted(signal);
+
+    const subscriber = Symbol("mpc-search-subscriber");
+    inFlight.activeSubscribers.add(subscriber);
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+            inFlight.activeSubscribers.delete(subscriber);
+            signal?.removeEventListener("abort", onAbort);
+        };
+        const settle = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            callback();
+        };
+        const onAbort = () => settle(() => reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError")));
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+        inFlight.promise.then(
+            (cards) => settle(() => resolve(cards)),
+            (err) => settle(() => reject(err))
+        );
+    });
+}
+
+async function performMpcSearch(
+    query: string,
+    cardType: "CARD" | "CARDBACK" | "TOKEN",
+    fuzzySearch: boolean,
+    options: MpcSearchOptions,
+    cacheKey: string,
+    activeSubscribers: Set<symbol>
+): Promise<MpcAutofillCard[]> {
+    const { cacheMpcSearch } = await import('./mpcSearchCache');
+
+    try {
+        // A transport-owned signal prevents one subscriber's cancellation from aborting peers.
+        const response = await fetch(`${API_BASE}/api/mpcfill/search`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                query: query.trim(),
+                cardType,
+                fuzzySearch,
+                ...(options.includeAllLanguages
+                    ? { includeAllLanguages: true }
+                    : {}),
+            }),
+            signal: new AbortController().signal,
+        });
+
+        if (!response.ok) {
+            console.error("[MPC Autofill] Search failed:", response.status);
+            return [];
+        }
+
+        const data: MpcSearchResponse = await response.json();
+        // Parse card names to extract base names (strips { } and ( ) suffixes)
+        const cards = (data.cards || []).map((card) => ({
+            ...card,
+            rawName: card.name,
+            name: parseMpcCardName(card.name, card.name),
+        }));
+
+        // Do not populate the cache when every subscriber abandoned this request.
+        if (cards.length > 0 && activeSubscribers.size > 0) {
+            await cacheMpcSearch(cacheKey, cardType, cards);
+        }
+
+        return cards;
+    } catch (err) {
+        if (isAbortError(err)) {
+            throw err;
+        }
+        console.error("[MPC Autofill] Search error:", err);
+        return [];
+    }
+}
+
 /**
  * Search MPC Autofill for custom card art
  * @param query Card name to search for
@@ -62,67 +178,35 @@ export async function searchMpcAutofill(
     if (!query.trim()) {
         return [];
     }
+    throwIfAborted(signal);
 
-    const normalizedQuery = query.trim().toLowerCase();
-
-    // Check client cache first (cache key includes fuzzy setting)
-    const { getCachedMpcSearch, cacheMpcSearch } = await import('./mpcSearchCache');
-    const cacheKey = `${normalizedQuery}:${fuzzySearch ? 'fuzzy' : 'exact'}${
-        options.includeAllLanguages ? ':all-languages' : ''
-    }`;
+    const { getCachedMpcSearch } = await import('./mpcSearchCache');
+    const { cacheKey, requestKey } = getMpcSearchKeys(query, cardType, fuzzySearch, options);
     const cached = await getCachedMpcSearch(cacheKey, cardType);
+    throwIfAborted(signal);
     if (cached) {
         return cached;
     }
 
-    try {
-        const response = await fetch(`${API_BASE}/api/mpcfill/search`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                query: query.trim(),
-                cardType,
-                fuzzySearch,
-                ...(options.includeAllLanguages
-                    ? { includeAllLanguages: true }
-                    : {}),
-            }),
-            signal,
-        });
-        throwIfAborted(signal);
-
-        if (!response.ok) {
-            console.error("[MPC Autofill] Search failed:", response.status);
-            return [];
-        }
-
-        const data: MpcSearchResponse = await response.json();
-        throwIfAborted(signal);
-        // Parse card names to extract base names (strips { } and ( ) suffixes)
-        const cards = (data.cards || []).map((card) => ({
-            ...card,
-            rawName: card.name,
-            name: parseMpcCardName(card.name, card.name),
-        }));
-
-        // Store in client cache
-        if (cards.length > 0) {
-            throwIfAborted(signal);
-            await cacheMpcSearch(cacheKey, cardType, cards);
-            throwIfAborted(signal);
-        }
-
-        return cards;
-    } catch (err) {
-        if (signal?.aborted) {
-            throwIfAborted(signal);
-        }
-        if (isAbortError(err)) {
-            throw err;
-        }
-        console.error("[MPC Autofill] Search error:", err);
-        return [];
+    let inFlight = inFlightMpcSearches.get(requestKey);
+    if (!inFlight) {
+        const activeSubscribers = new Set<symbol>();
+        const promise = performMpcSearch(
+            query,
+            cardType,
+            fuzzySearch,
+            options,
+            cacheKey,
+            activeSubscribers
+        );
+        inFlight = { promise, activeSubscribers };
+        inFlightMpcSearches.set(requestKey, inFlight);
+        void promise.finally(() => {
+            inFlightMpcSearches.delete(requestKey);
+        }).catch(() => undefined);
     }
+
+    return subscribeToMpcSearch(inFlight, signal);
 }
 
 /**

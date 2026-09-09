@@ -63,7 +63,7 @@ interface Props {
     backImage?: Image | null;
     /** Which face to show initially */
     initialFace?: 'front' | 'back';
-    onApply: (cardUuid: string, overrides: CardOption['overrides'], customBlob?: Blob) => void;
+    onApply: (cardUuid: string, overrides: CardOption['overrides'], customBlob?: Blob) => Promise<void>;
     onApplyToAll: (overrides: CardOption['overrides']) => void;
     /** Apply overrides to all selected cards (for multi-select edit mode) */
     onApplyToSelected?: (selectedUuids: string[], overrides: CardOption['overrides']) => Promise<void>;
@@ -375,12 +375,12 @@ export function CardEditorModal({
                 await onApplyToSelected(selectedCardUuids, frontOverrides);
             } else {
                 // Apply front overrides to front card
-                onApply(card.uuid, frontOverrides);
+                await onApply(card.uuid, frontOverrides);
 
                 // Apply back overrides to back card (if exists)
                 if (backCard) {
                     const backOverrides = paramsToOverrides(backParams);
-                    onApply(backCard.uuid, backOverrides);
+                    await onApply(backCard.uuid, backOverrides);
                 }
             }
 
@@ -415,9 +415,9 @@ export function CardEditorModal({
             } else {
                 // Single card mode
                 if (showBack && backCard) {
-                    onApply(backCard.uuid, overrides);
+                    await onApply(backCard.uuid, overrides);
                 } else {
-                    onApply(card.uuid, overrides);
+                    await onApply(card.uuid, overrides);
                 }
             }
             setParams(defaultParams);

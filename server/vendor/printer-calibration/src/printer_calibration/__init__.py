@@ -20,7 +20,11 @@ from printer_calibration.constants import (
     LETTER_WIDTH_PT,
     MM_TO_PT,
 )
-from printer_calibration.validation import validate_finite_offsets, validate_finite_value
+from printer_calibration.validation import (
+    validate_finite_offsets,
+    validate_finite_value,
+    validate_profile_metadata,
+)
 
 __version__ = "0.1.0"
 
@@ -44,4 +48,5 @@ __all__ = [
     "MM_TO_PT",
     "validate_finite_offsets",
     "validate_finite_value",
+    "validate_profile_metadata",
 ]

@@ -1,249 +1,103 @@
-import { describe, expect, it, vi } from "vitest";
+import "fake-indexeddb/auto";
+import Dexie from "dexie";
+import { describe, expect, it } from "vitest";
+import { ProxxiedDexie } from "./db";
+import type { CardOption } from "@/types";
 
-import {
-  cleanSelfReferentialTokensUpgrade,
-  clearCardMetadataCacheUpgrade,
-  clearTokenCardDependenciesUpgrade,
-  createDefaultProjectUpgrade,
-  db,
-  METADATA_CACHE_VERSION,
-} from "./db";
+const cardsV21Schema =
+  "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id";
 
-describe("db schema", () => {
-  it("configures the expected IndexedDB name, metadata cache version, and current tables", () => {
-    expect(db.name).toBe("ProxxiedDB");
-    expect(METADATA_CACHE_VERSION).toBe(2);
+function createCard(
+  uuid: string,
+  projectId: string,
+  order: number
+): CardOption & { migrationMarker: { source: string; values: number[] } } {
+  return {
+    uuid,
+    projectId,
+    order,
+    name: `Card ${uuid}`,
+    imageId: `image-${uuid}`,
+    isUserUpload: true,
+    hasBuiltInBleed: true,
+    bleedMode: "existing",
+    existingBleedMm: 3,
+    generateBleedMm: 2,
+    set: "TST",
+    number: "123",
+    scryfall_id: `scryfall-${uuid}`,
+    oracle_id: `oracle-${uuid}`,
+    lang: "en",
+    colors: ["U", "R"],
+    mana_cost: "{1}{U}{R}",
+    cmc: 3,
+    type_line: "Creature — Wizard",
+    rarity: "rare",
+    category: "Mainboard",
+    needsEnrichment: false,
+    enrichmentRetryCount: 2,
+    enrichmentNextRetryAt: 123456,
+    lookupError: "prior lookup",
+    linkedFrontId: `front-${uuid}`,
+    linkedBackId: `back-${uuid}`,
+    usesDefaultCardback: false,
+    isFlipped: true,
+    overrides: { brightness: 0.1, contrast: 0.2 },
+    token_parts: [{ id: `token-${uuid}`, name: "Treasure", type_line: "Token Artifact" }],
+    needs_token: true,
+    isToken: false,
+    tokenAddedFrom: ["Source Card"],
+    migrationMarker: { source: "v21", values: [1, 2, 3] },
+  };
+}
 
-    expect(db.tables.map((table) => table.name).sort()).toEqual([
-      "cardMetadataCache",
-      "cardbacks",
-      "cards",
-      "effectCache",
-      "fsAccessHandles",
-      "imageCache",
-      "images",
-      "mpcCalibrationAssets",
-      "mpcCalibrationCases",
-      "mpcCalibrationDatasets",
-      "mpcCalibrationRuns",
-      "mpcSearchCache",
-      "projects",
-      "settings",
-      "userPreferences",
-      "user_images",
-    ]);
+describe("ProxxiedDexie project order index upgrade", () => {
+  it("retains v21 cards and queries duplicate per-project order values through the compound index", async () => {
+    const databaseName = `project-order-index-${crypto.randomUUID()}`;
+    const v21 = new Dexie(databaseName);
 
-    expect(db.cards.schema.primKey.keyPath).toBe("uuid");
-    expect(db.projects.schema.primKey.keyPath).toBe("id");
-    expect(db.mpcSearchCache.schema.primKey.keyPath).toEqual([
-      "query",
-      "cardType",
-    ]);
-  });
-
-  it("runs schema upgrade helpers for metadata reset and default project creation", async () => {
-    const clear = vi.fn().mockResolvedValue(undefined);
-    const count = vi.fn().mockResolvedValue(3);
-    const get = vi.fn().mockResolvedValue({ value: { paper: "a4" } });
-    const addProject = vi.fn().mockResolvedValue(undefined);
-    const addPrefs = vi.fn().mockResolvedValue(undefined);
-    const tables = {
-      cardMetadataCache: { clear },
-      cards: { count },
-      settings: { get },
-      projects: { add: addProject },
-      userPreferences: { add: addPrefs },
-    } as const;
-    const tx = { table: vi.fn((name: keyof typeof tables) => tables[name]) };
-
-    await clearCardMetadataCacheUpgrade(tx);
-    await createDefaultProjectUpgrade(tx, {
-      randomUUID: () => "project-id",
-      now: () => 1234,
+    v21.version(21).stores({
+      cards: cardsV21Schema,
+      images:
+        "&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth",
+      cardbacks: "&id",
+      settings: "&id",
+      imageCache: "&url, cachedAt",
+      cardMetadataCache:
+        "id, name, set, number, oracle_id, scryfall_id, cachedAt",
+      effectCache: "&key, cachedAt",
+      mpcSearchCache: "&[query+cardType], cachedAt",
+      projects: "&id, shareId, lastOpenedAt",
+      userPreferences: "&id",
+      user_images: "&hash",
+      mpcCalibrationDatasets: "&id, updatedAt",
+      mpcCalibrationCases: "&id, datasetId, updatedAt",
+      mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
+      mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId",
+      fsAccessHandles: "&id, updatedAt",
     });
 
-    expect(clear).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledWith("proxxied:layout-settings:v1");
-    expect(addProject).toHaveBeenCalledWith({
-      id: "project-id",
-      name: "My Project",
-      createdAt: 1234,
-      lastOpenedAt: 1234,
-      cardCount: 3,
-      settings: { paper: "a4" },
-    });
-    expect(addPrefs).toHaveBeenCalledWith({
-      id: "default",
-      settings: { paper: "a4" },
-      favoriteCardbacks: [],
-      lastProjectId: "project-id",
-    });
-  });
-
-  it("falls back to empty settings and zero cards in project upgrade", async () => {
-    const addProject = vi.fn();
-    const addPrefs = vi.fn();
-    const tx = {
-      table: vi.fn(
-        (name: string) =>
-          ({
-            cards: {},
-            settings: { get: vi.fn().mockResolvedValue(undefined) },
-            projects: { add: addProject },
-            userPreferences: { add: addPrefs },
-          })[name]
-      ),
-    };
-
-    await createDefaultProjectUpgrade(tx, {
-      randomUUID: () => "empty-project",
-      now: () => 5,
-    });
-
-    expect(addProject).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "empty-project",
-        cardCount: 0,
-        settings: {},
-      })
-    );
-    expect(addPrefs).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "default",
-        settings: {},
-        lastProjectId: "empty-project",
-      })
-    );
-  });
-
-  it("uses runtime uuid and clock defaults for project upgrade", async () => {
-    const uuidSpy = vi.spyOn(crypto, "randomUUID").mockReturnValue("runtime-id");
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(9876);
-    const addProject = vi.fn();
-    const addPrefs = vi.fn();
-    const tx = {
-      table: vi.fn(
-        (name: string) =>
-          ({
-            cards: { count: vi.fn().mockResolvedValue(1) },
-            settings: { get: vi.fn().mockResolvedValue({ value: { theme: "dark" } }) },
-            projects: { add: addProject },
-            userPreferences: { add: addPrefs },
-          })[name]
-      ),
-    };
-
-    await createDefaultProjectUpgrade(tx);
-
-    expect(addProject).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "runtime-id",
-        createdAt: 9876,
-        lastOpenedAt: 9876,
-        cardCount: 1,
-        settings: { theme: "dark" },
-      })
-    );
-    expect(addPrefs).toHaveBeenCalledWith(
-      expect.objectContaining({ lastProjectId: "runtime-id" })
-    );
-    uuidSpy.mockRestore();
-    nowSpy.mockRestore();
-  });
-
-  it("cleans self-referential token parts during card upgrade", async () => {
-    const cards = [
-      {
-        name: "Treasure",
-        needs_token: true,
-        token_parts: [{ name: "TREASURE" }, { name: "Clue" }, {}],
-      },
-      {
-        name: "Copy",
-        needs_token: true,
-        token_parts: [{ name: "Copy" }],
-      },
-      {
-        name: "Helper",
-        needs_token: true,
-        token_parts: [{ name: "Clue" }],
-      },
-      { name: "Missing parts", needs_token: true },
-      { name: "Ignored", needs_token: false, token_parts: [{ name: "Ignored" }] },
+    const seededCards = [
+      createCard("project-a-first", "project-a", 7),
+      createCard("project-a-second", "project-a", 7),
+      createCard("project-b-first", "project-b", 7),
     ];
-    const tx = {
-      table: vi.fn(() => ({
-        filter: (predicate: (card: (typeof cards)[number]) => boolean) => ({
-          modify: async (mutator: (card: (typeof cards)[number]) => void) => {
-            cards.filter(predicate).forEach(mutator);
-          },
-        }),
-      })),
-    };
 
-    await cleanSelfReferentialTokensUpgrade(tx);
+    await v21.open();
+    await v21.table("cards").bulkAdd(seededCards);
+    v21.close();
 
-    expect(cards[0]).toMatchObject({
-      token_parts: [{ name: "Clue" }, {}],
-      needs_token: true,
-    });
-    expect(cards[1]).toMatchObject({ token_parts: [], needs_token: false });
-    expect(cards[2]).toMatchObject({
-      token_parts: [{ name: "Clue" }],
-      needs_token: true,
-    });
-    expect(cards[3]).toMatchObject({ needs_token: true });
-    expect(cards[4]).toMatchObject({
-      token_parts: [{ name: "Ignored" }],
-      needs_token: false,
-    });
-  });
+    const upgraded = new ProxxiedDexie(databaseName);
+    await upgraded.open();
 
-  it("clears token dependencies from token cards during card upgrade", async () => {
-    const cards = [
-      {
-        name: "Goblin",
-        type_line: "Token Creature — Goblin",
-        needs_token: true,
-        token_parts: [{ name: "Goblin" }],
-      },
-      {
-        name: "Spell",
-        type_line: "Sorcery",
-        needs_token: true,
-        token_parts: [{ name: "Treasure" }],
-      },
-      { name: "No type", needs_token: true, token_parts: [{ name: "Clue" }] },
-    ];
-    const tx = {
-      table: vi.fn(() => ({
-        filter: (predicate: (card: (typeof cards)[number]) => boolean) => ({
-          modify: async (mutator: (card: (typeof cards)[number]) => void) => {
-            cards.filter(predicate).forEach(mutator);
-          },
-        }),
-      })),
-    };
+    expect(await upgraded.cards.toArray()).toEqual(seededCards);
+    await expect(
+      upgraded.cards.where("[projectId+order]").equals(["project-a", 7]).toArray()
+    ).resolves.toEqual([seededCards[0], seededCards[1]]);
+    await expect(
+      upgraded.cards.where("[projectId+order]").equals(["project-b", 7]).toArray()
+    ).resolves.toEqual([seededCards[2]]);
 
-    await clearTokenCardDependenciesUpgrade(tx);
-
-    expect(cards[0]).toMatchObject({ token_parts: [], needs_token: false });
-    expect(cards[1]).toMatchObject({
-      token_parts: [{ name: "Treasure" }],
-      needs_token: true,
-    });
-    expect(cards[2]).toMatchObject({
-      token_parts: [{ name: "Clue" }],
-      needs_token: true,
-    });
-  });
-
-  it("tolerates upgrade transaction shims without optional filter support", async () => {
-    const tx = { table: vi.fn(() => ({})) };
-
-    await cleanSelfReferentialTokensUpgrade(tx);
-    await clearTokenCardDependenciesUpgrade(tx);
-
-    expect(tx.table).toHaveBeenCalledWith("cards");
+    upgraded.close();
   });
 });

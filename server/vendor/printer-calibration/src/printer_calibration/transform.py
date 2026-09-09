@@ -8,7 +8,7 @@ import pypdf
 from pypdf import PdfReader, PdfWriter, Transformation
 
 from printer_calibration.constants import MM_TO_PT
-from printer_calibration.validation import validate_finite_offsets
+from printer_calibration.validation import validate_finite_offsets, validate_profile_metadata
 
 
 def apply_profile(
@@ -47,6 +47,7 @@ def apply_profile(
         raise ValueError("page_mode must be 'duplex' or 'back-only'")
 
     offsets = validate_finite_offsets(profile)
+    validate_profile_metadata(profile)
 
     # --- open & validate -------------------------------------------------------
     try:

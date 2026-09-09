@@ -48,11 +48,13 @@ const createMpcCard = (
 
 const createDeferred = <T>() => {
     let resolve!: (value: T | PromiseLike<T>) => void;
-    const promise = new Promise<T>((resolvePromise) => {
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
         resolve = resolvePromise;
+        reject = rejectPromise;
     });
 
-    return { promise, resolve };
+    return { promise, resolve, reject };
 };
 
 describe("mpcAutofillApi", () => {
@@ -191,6 +193,115 @@ describe("mpcAutofillApi", () => {
     });
 
     describe("searchMpcAutofill", () => {
+        it("coalesces concurrent identical cache misses into one transport and cache write", async () => {
+            const response = createDeferred<Response>();
+            const cards = [createMpcCard()];
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockReturnValue(response.promise);
+
+            const first = searchMpcAutofill("Sol Ring");
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+
+            const second = searchMpcAutofill("  sol ring  ");
+            await vi.waitFor(() => expect(mockGetCachedMpcSearch).toHaveBeenCalledTimes(2));
+            expect(fetch).toHaveBeenCalledTimes(1);
+            response.resolve({
+                ok: true,
+                json: () => Promise.resolve({ cards }),
+            } as Response);
+
+            const [firstResults, secondResults] = await Promise.all([first, second]);
+            expect(firstResults).toBe(secondResults);
+            expect(firstResults).toEqual([
+                expect.objectContaining({ identifier: "id1", name: "Sol Ring" }),
+            ]);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+        });
+
+        it("keeps distinct MPC query response filters out of the shared transport", async () => {
+            const response = createDeferred<Response>();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockReturnValue(response.promise);
+
+            const searches = [
+                searchMpcAutofill("Sol Ring", "CARD", true),
+                searchMpcAutofill("Sol Ring", "CARD", false),
+                searchMpcAutofill("Sol Ring", "TOKEN", true),
+                searchMpcAutofill("Sol Ring", "CARD", true, { includeAllLanguages: true }),
+                searchMpcAutofill("Forest", "CARD", true),
+            ];
+
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(5));
+            response.resolve({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard()] }),
+            } as Response);
+
+            await expect(Promise.all(searches)).resolves.toHaveLength(5);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(5);
+            expect(vi.mocked(fetch).mock.calls.map(([, request]) => (request as RequestInit).body)).toEqual([
+                JSON.stringify({ query: "Sol Ring", cardType: "CARD", fuzzySearch: true }),
+                JSON.stringify({ query: "Sol Ring", cardType: "CARD", fuzzySearch: false }),
+                JSON.stringify({ query: "Sol Ring", cardType: "TOKEN", fuzzySearch: true }),
+                JSON.stringify({ query: "Sol Ring", cardType: "CARD", fuzzySearch: true, includeAllLanguages: true }),
+                JSON.stringify({ query: "Forest", cardType: "CARD", fuzzySearch: true }),
+            ]);
+        });
+
+        it("does not cache a shared transport failure and retries after its registry entry clears", async () => {
+            const failure = new Error("network down");
+            const failedResponse = createDeferred<Response>();
+            const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockReturnValueOnce(failedResponse.promise);
+
+            const first = searchMpcAutofill("Sol Ring");
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+            const second = searchMpcAutofill("  sol ring  ");
+            await vi.waitFor(() => expect(mockGetCachedMpcSearch).toHaveBeenCalledTimes(2));
+            expect(fetch).toHaveBeenCalledTimes(1);
+            failedResponse.reject(failure);
+
+            await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+
+            vi.mocked(fetch).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard()] }),
+            } as Response);
+            await expect(searchMpcAutofill("Sol Ring")).resolves.toEqual([
+                expect.objectContaining({ identifier: "id1" }),
+            ]);
+            expect(fetch).toHaveBeenCalledTimes(2);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+            expect(consoleErrorSpy).toHaveBeenCalledWith("[MPC Autofill] Search error:", failure);
+        });
+
+        it("rejects only an aborted subscriber while another shared-search subscriber completes", async () => {
+            const response = createDeferred<Response>();
+            const firstController = new AbortController();
+            const secondController = new AbortController();
+            const abortReason = new DOMException("First subscriber stopped", "AbortError");
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockReturnValue(response.promise);
+
+            const first = searchMpcAutofill("Sol Ring", "CARD", true, {}, firstController.signal);
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+            const second = searchMpcAutofill("Sol Ring", "CARD", true, {}, secondController.signal);
+            await vi.waitFor(() => expect(mockGetCachedMpcSearch).toHaveBeenCalledTimes(2));
+            firstController.abort(abortReason);
+            response.resolve({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard()] }),
+            } as Response);
+
+            await expect(first).rejects.toBe(abortReason);
+            await expect(second).resolves.toEqual([
+                expect.objectContaining({ identifier: "id1" }),
+            ]);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+        });
+
         it("should parse card names before returning results", async () => {
             // Setup: API returns unparsed names
             const mockResponse = {
@@ -293,7 +404,7 @@ describe("mpcAutofillApi", () => {
             );
         });
 
-        it("should forward an optional AbortSignal to the search request", async () => {
+        it("should use a transport signal that is isolated from an optional subscriber AbortSignal", async () => {
             const controller = new AbortController();
             mockGetCachedMpcSearch.mockResolvedValue(null);
             vi.mocked(fetch).mockResolvedValue({
@@ -303,10 +414,9 @@ describe("mpcAutofillApi", () => {
 
             await searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal);
 
-            expect(fetch).toHaveBeenCalledWith(
-                expect.stringContaining("/api/mpcfill/search"),
-                expect.objectContaining({ signal: controller.signal })
-            );
+            const [, request] = vi.mocked(fetch).mock.calls[0];
+            expect(request).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+            expect((request as RequestInit).signal).not.toBe(controller.signal);
         });
 
         it("should propagate search cancellation without caching results", async () => {

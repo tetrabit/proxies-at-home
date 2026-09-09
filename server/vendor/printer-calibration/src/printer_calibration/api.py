@@ -20,12 +20,11 @@ from printer_calibration.profile import (
 )
 from printer_calibration.sheet import generate_sheet
 from printer_calibration.transform import apply_profile
-from printer_calibration.validation import validate_finite_offsets, validate_finite_value
-
-
-def _as_str(data: Mapping[str, object], key: str, default: str) -> str:
-    value = data.get(key, default)
-    return str(value)
+from printer_calibration.validation import (
+    validate_finite_offsets,
+    validate_finite_value,
+    validate_profile_metadata,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +49,10 @@ class CalibrationProfile:
         )
         for field, value in offsets.items():
             object.__setattr__(self, field, value)
+        for field, value in validate_profile_metadata(
+            {"paper_size": self.paper_size, "duplex_mode": self.duplex_mode}
+        ).items():
+            object.__setattr__(self, field, value)
 
     def to_dict(self) -> dict[str, float | str]:
         """Return the profile in the TOML-compatible shape used internally."""
@@ -66,13 +69,14 @@ class CalibrationProfile:
     def from_dict(cls, data: Mapping[str, object]) -> "CalibrationProfile":
         """Build a typed profile from a mapping-like object."""
         offsets = validate_finite_offsets(data)
+        metadata = validate_profile_metadata(data)
         return cls(
             front_x_mm=offsets["front_x_mm"],
             front_y_mm=offsets["front_y_mm"],
             back_x_mm=offsets["back_x_mm"],
             back_y_mm=offsets["back_y_mm"],
-            paper_size=_as_str(data, "paper_size", "letter"),
-            duplex_mode=_as_str(data, "duplex_mode", "long-edge"),
+            paper_size=metadata["paper_size"],
+            duplex_mode=metadata["duplex_mode"],
         )
 
 
@@ -131,6 +135,8 @@ def save_profile(
         back_x_mm=typed.back_x_mm,
         back_y_mm=typed.back_y_mm,
         profile_file=profile_file,
+        paper_size=typed.paper_size,
+        duplex_mode=typed.duplex_mode,
     )
     return typed
 

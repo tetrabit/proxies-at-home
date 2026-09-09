@@ -7,7 +7,7 @@ from typing import BinaryIO, Iterator, Union
 
 import tomli_w
 
-from printer_calibration.validation import validate_finite_offsets
+from printer_calibration.validation import validate_finite_offsets, validate_profile_metadata
 
 if os.name == "nt":
     import msvcrt
@@ -98,6 +98,8 @@ def set_profile(
     back_x_mm: float,
     back_y_mm: float,
     profile_file: Union[Path, str, None] = None,
+    paper_size: str = "letter",
+    duplex_mode: str = "long-edge",
 ) -> None:
     offsets = validate_finite_offsets(
         {
@@ -107,12 +109,14 @@ def set_profile(
             "back_y_mm": back_y_mm,
         }
     )
+    metadata = validate_profile_metadata(
+        {"paper_size": paper_size, "duplex_mode": duplex_mode}
+    )
     path = _resolve_path(profile_file)
     with _profile_lock(path):
         data = _load(path)
         data["profiles"][name] = {
-            "paper_size": "letter",
-            "duplex_mode": "long-edge",
+            **metadata,
             **offsets,
         }
         _save(path, data)
@@ -143,4 +147,7 @@ def get_profile(name: str, profile_file: Union[Path, str, None] = None) -> dict:
     data = _load(path)
     if name not in data["profiles"]:
         raise ValueError(f"Profile '{name}' not found")
-    return dict(data["profiles"][name])
+    stored_profile = data["profiles"][name]
+    offsets = validate_finite_offsets(stored_profile)
+    metadata = validate_profile_metadata(stored_profile)
+    return {**metadata, **offsets}

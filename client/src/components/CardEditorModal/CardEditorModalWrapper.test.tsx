@@ -11,7 +11,7 @@ import * as effectCache from '@/helpers/effectCache';
 import type { CardOption } from '../../../../shared/types';
 
 type MockModalProps = {
-    onApply: (uuid: string, overrides: unknown) => void;
+    onApply: (uuid: string, overrides: unknown) => Promise<void>;
     onApplyToAll: (overrides: unknown) => void;
     onApplyToSelected: (uuids: string[], overrides: unknown) => Promise<void>;
     onClose: () => void;
@@ -65,7 +65,7 @@ vi.mock('./CardEditorModal', () => ({
         latestModalProps = props;
         return (
             <div data-testid="card-editor-modal">
-                <button onClick={() => props.onApply(props.card.uuid, { brightness: 1.5 })}>Apply</button>
+                <button onClick={() => void props.onApply(props.card.uuid, { brightness: 1.5 })}>Apply</button>
                 <button onClick={() => props.onApplyToAll({ brightness: 1.5 })}>Apply All</button>
                 <button onClick={() => void props.onApplyToSelected(['uuid1', 'uuid2'], { brightness: 1.5 })}>Apply Selected</button>
                 <button onClick={props.onClose}>Close</button>

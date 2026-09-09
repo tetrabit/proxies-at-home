@@ -319,6 +319,92 @@ describe('CardEditorModal', () => {
             expect(mockOnApplyToSelected).toHaveBeenCalledWith(['1', '2'], expect.any(Object));
         });
 
+        it('closes only after a single-card apply persists', async () => {
+            let resolvePersistence: (() => void) | undefined;
+            const pendingApply = vi.fn(() => new Promise<void>((resolve) => {
+                resolvePersistence = resolve;
+            }));
+            render(<CardEditorModal {...defaultProps} onApply={pendingApply} />);
+
+            await act(async () => {
+                fireEvent.click(screen.getByText('Apply & Close'));
+                await Promise.resolve();
+            });
+
+            expect(pendingApply).toHaveBeenCalledWith('test-front-uuid', expect.any(Object));
+            expect(mockOnClose).not.toHaveBeenCalled();
+            expect(screen.getByText('Applying...')).toBeInTheDocument();
+
+            await act(async () => {
+                resolvePersistence?.();
+                await Promise.resolve();
+            });
+
+            expect(mockOnClose).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps the actual modal open and shows an error when a single-card apply rejects', async () => {
+            const expectedApplicationError = new Error('Card persistence failed');
+            const rejectedApply = vi.fn().mockRejectedValue(expectedApplicationError);
+            const errorSpy = vi.spyOn(console, 'error');
+            try {
+                render(<CardEditorModal {...defaultProps} onApply={rejectedApply} />);
+
+                await act(async () => {
+                    fireEvent.click(screen.getByText('Apply & Close'));
+                    await Promise.resolve();
+                });
+
+                expect(rejectedApply).toHaveBeenCalledWith('test-front-uuid', expect.any(Object));
+                expect(mockOnClose).not.toHaveBeenCalled();
+                expect(await screen.findByRole('alert')).toHaveTextContent('Card persistence failed');
+                expect(screen.getByText('Apply & Close')).toBeInTheDocument();
+                // This expected application rejection diagnostic must remain visible; the exact
+                // one-call assertion also fails on unexpected diagnostics, including act warnings.
+                expect(errorSpy).toHaveBeenCalledTimes(1);
+                expect(errorSpy.mock.calls).toEqual([[
+                    '[CardEditorModal] Apply failed:',
+                    expectedApplicationError,
+                ]]);
+            } finally {
+                errorSpy.mockRestore();
+            }
+        });
+
+        it('keeps the actual modal open and shows an error when a single-card reset rejects', async () => {
+            const expectedApplicationError = new Error('Card reset persistence failed');
+            const rejectedApply = vi.fn().mockRejectedValue(expectedApplicationError);
+            const errorSpy = vi.spyOn(console, 'error');
+            try {
+                render(
+                    <CardEditorModal
+                        {...defaultProps}
+                        card={createMockCard({ overrides: { brightness: 1.5 } })}
+                        onApply={rejectedApply}
+                    />
+                );
+
+                await act(async () => {
+                    fireEvent.click(screen.getByTitle('Reset to global defaults'));
+                    await Promise.resolve();
+                });
+
+                expect(rejectedApply).toHaveBeenCalledWith('test-front-uuid', {});
+                expect(mockOnClose).not.toHaveBeenCalled();
+                expect(await screen.findByRole('alert')).toHaveTextContent('Card reset persistence failed');
+                expect(screen.getByTitle('Reset to global defaults')).toBeInTheDocument();
+                // This expected application rejection diagnostic must remain visible; the exact
+                // one-call assertion also fails on unexpected diagnostics, including act warnings.
+                expect(errorSpy).toHaveBeenCalledTimes(1);
+                expect(errorSpy.mock.calls).toEqual([[
+                    '[CardEditorModal] Reset failed:',
+                    expectedApplicationError,
+                ]]);
+            } finally {
+                errorSpy.mockRestore();
+            }
+        });
+
         it('keeps the actual modal open and shows an error when selected apply rejects', async () => {
             const expectedApplicationError = new Error('Selection is no longer valid');
             const rejectedApply = vi.fn().mockRejectedValue(expectedApplicationError);
