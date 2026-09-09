@@ -29,6 +29,7 @@ import {
 import type { CardOption } from '../../../../shared/types';
 import type { DarkenMode } from '../../store/settings';
 import { useSettingsStore } from '../../store/settings';
+import { createRenditionIdentityAdmission } from './renditionIdentity';
 
 // --- Types ---
 
@@ -102,6 +103,22 @@ const PRE_INIT_COUNT = 36;
 // Blank cardback ID - cards with this back should show white when flipped
 const BLANK_CARDBACK_ID = 'cardback_builtin_blank';
 
+interface LoadedTexture {
+    texture: Texture;
+    objectUrl: string;
+}
+
+function destroyLoadedTexture(loaded: LoadedTexture | undefined): void {
+    if (!loaded) return;
+    try { loaded.texture.destroy(); } catch { /* ignore */ }
+    try { URL.revokeObjectURL(loaded.objectUrl); } catch { /* ignore */ }
+}
+
+function destroySpriteRendition(data: SpriteData): void {
+    destroySpriteData(data);
+    try { if (data.frontObjectUrl) URL.revokeObjectURL(data.frontObjectUrl); } catch { /* ignore */ }
+    try { if (data.backObjectUrl) URL.revokeObjectURL(data.backObjectUrl); } catch { /* ignore */ }
+}
 
 function PixiVirtualCanvasInner({
     cards,
@@ -145,6 +162,7 @@ function PixiVirtualCanvasInner({
     const spritesRef = useRef<Map<string, SpriteData>>(new Map());
     const pageGraphicsRef = useRef<Map<number, Graphics>>(new Map());
     const updateCounterRef = useRef(0); // Track update calls to prevent race conditions
+    const renditionIdentityAdmissionRef = useRef(createRenditionIdentityAdmission());
     const [isReady, setIsReady] = useState(false);
 
     // Store dimensions in ref for init effect to access
@@ -255,6 +273,7 @@ function PixiVirtualCanvasInner({
 
         const canvas = canvasRef.current;
         const sprites = spritesRef.current;
+        const renditionIdentityAdmission = renditionIdentityAdmissionRef.current;
 
         // If singleton already initialized and valid, just reuse it
         if (pixiSingleton.app && pixiSingleton.app.stage) {
@@ -380,19 +399,20 @@ function PixiVirtualCanvasInner({
 
         // Capture refs for cleanup (must be done before return per React lint)
         const pageGraphics = pageGraphicsRef.current;
-        const blobUrls = blobUrlsRef.current;
 
         // Cleanup only clears component-local resources, not the singleton
         return () => {
+            updateCounterRef.current += 1;
             setIsReady(false);
 
             // Clean up card sprites (component-local)
             try {
-                sprites.forEach((data) => destroySpriteData(data));
+                sprites.forEach((data) => destroySpriteRendition(data));
                 sprites.clear();
             } catch {
                 // Ignore
             }
+            renditionIdentityAdmission.dispose();
 
             // Clean up page graphics
             try {
@@ -400,17 +420,6 @@ function PixiVirtualCanvasInner({
                     try { g?.destroy(); } catch { /* ignore */ }
                 });
                 pageGraphics.clear();
-            } catch {
-                // Ignore
-            }
-
-
-            // Clean up blob URLs
-            try {
-                blobUrls.forEach((url) => {
-                    try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-                });
-                blobUrls.clear();
             } catch {
                 // Ignore
             }
@@ -469,43 +478,22 @@ function PixiVirtualCanvasInner({
         }
     }, [scrollContainerRef, scrollTop, zoom]);
 
-    // Track blob URLs for cleanup
-    const blobUrlsRef = useRef<Map<string, string>>(new Map());
-    useEffect(() => {
-        const urls = blobUrlsRef.current;
-        return () => {
-            urls.forEach((url) => URL.revokeObjectURL(url));
-            urls.clear();
-        };
-    }, []);
-
-    // Create texture from blob - uses Image element for reliable loading
-    const createTexture = useCallback(async (blob: Blob, cacheKey: string): Promise<Texture | null> => {
-        const existingUrl = blobUrlsRef.current.get(cacheKey);
-        let url: string;
-
-        if (existingUrl) {
-            url = existingUrl;
-        } else {
-            url = URL.createObjectURL(blob);
-            blobUrlsRef.current.set(cacheKey, url);
-        }
+    // Create a texture from a Blob. The URL remains owned by SpriteData until
+    // a replacement texture is completely ready or the sprite is removed.
+    const createTexture = useCallback(async (blob: Blob): Promise<LoadedTexture | null> => {
+        const url = URL.createObjectURL(blob);
 
         try {
-            // Create an Image element to load the blob
             const img = new Image();
             await new Promise<void>((resolve, reject) => {
                 img.onload = () => resolve();
                 img.onerror = () => reject(new Error('Image load failed'));
                 img.src = url;
             });
-
-            // Create texture from the loaded image
-            return Texture.from(img);
+            return { texture: Texture.from(img), objectUrl: url };
         } catch (e) {
             console.warn('[PixiVirtualCanvas] Failed to create texture:', e);
             URL.revokeObjectURL(url);
-            blobUrlsRef.current.delete(cacheKey);
             return null;
         }
     }, []);
@@ -613,7 +601,7 @@ function PixiVirtualCanvasInner({
 
             const currentCardIds = new Set(cards.map(c => c.card.uuid));
 
-            // Helper to clean up sprite and revoke blob URLs
+            // Helper to clean up sprite resources only after a replacement has been admitted.
             const cleanupSprite = (uuid: string) => {
                 const data = sprites.get(uuid);
                 /* v8 ignore next -- callers reach cleanupSprite only from an existing map entry or a truthy spriteData record. @preserve */
@@ -621,25 +609,11 @@ function PixiVirtualCanvasInner({
 
                 try {
                     container.removeChild(data.sprite);
-                    destroySpriteData(data);
                 } catch (e) {
                     console.warn('[PixiVirtualCanvas] Error removing sprite:', e);
                 }
 
-                // Revoke blob URLs to free memory (fix for ERR_BLOB_OUT_OF_MEMORY)
-                const frontKey = `front-${uuid}`;
-                const backKey = `back-${uuid}`;
-                const oldFrontUrl = blobUrlsRef.current.get(frontKey);
-                const oldBackUrl = blobUrlsRef.current.get(backKey);
-
-                if (oldFrontUrl) {
-                    URL.revokeObjectURL(oldFrontUrl);
-                    blobUrlsRef.current.delete(frontKey);
-                }
-                if (oldBackUrl) {
-                    URL.revokeObjectURL(oldBackUrl);
-                    blobUrlsRef.current.delete(backKey);
-                }
+                destroySpriteRendition(data);
                 sprites.delete(uuid);
             };
 
@@ -688,58 +662,67 @@ function PixiVirtualCanvasInner({
                     continue;
                 }
 
-                // Get or create sprite
                 let spriteData = sprites.get(uuid);
                 const isFlipped = flippedCards.has(uuid);
 
-                // Check if artwork has changed (imageId changed = different artwork selected)
-                const frontBlobSize = imageBlob?.size ?? 0;
-                const backBlobSize = backBlob?.size;
-                const artworkChanged = spriteData && (
-                    spriteData.frontImageId !== frontImageId ||
-                    spriteData.backImageId !== backImageId ||
-                    spriteData.frontBlobSize !== frontBlobSize ||
-                    spriteData.backBlobSize !== backBlobSize
-                );
-
-                // If artwork changed, destroy old sprite data and recreate
-                if (artworkChanged && spriteData) {
-                    cleanupSprite(uuid);
-                    spriteData = undefined;
+                // A Blob object can be newly deserialized without its pixels changing, and
+                // same-size blobs can contain different generated artwork. Admit bounded
+                // content reads before comparing face renditions at the texture boundary.
+                let frontRenditionIdentity: string;
+                let backRenditionIdentity: string | undefined;
+                try {
+                    frontRenditionIdentity = imageBlob
+                        ? await renditionIdentityAdmissionRef.current.identify(imageBlob)
+                        : 'placeholder';
+                    if (isStale()) return;
+                    backRenditionIdentity = backBlob
+                        ? await renditionIdentityAdmissionRef.current.identify(backBlob)
+                        : undefined;
+                    if (isStale()) return;
+                } catch (e) {
+                    console.warn('[PixiVirtualCanvas] Failed to identify rendition:', e);
+                    continue;
                 }
 
-                if (!spriteData) {
-                    let frontTexture: Texture | null = null;
-                    let isPlaceholder = false;
+                const artworkChanged = spriteData && (
+                    spriteData.frontImageId !== frontImageId
+                    || spriteData.backImageId !== backImageId
+                    || spriteData.frontRenditionIdentity !== frontRenditionIdentity
+                    || spriteData.backRenditionIdentity !== backRenditionIdentity
+                );
 
-                    if (!imageBlob) {
-                        // Create placeholder texture (black)
-                        frontTexture = Texture.WHITE;
-                        isPlaceholder = true;
-                    } else {
-                        // Check staleness again before async operations
-                        /* v8 ignore next -- the loop-level stale guard runs immediately before this synchronous branch; post-await staleness is tested below. @preserve */
-                        if (isStale()) return;
+                // Load every replacement face before touching the live sprite. This keeps
+                // its old URL/texture usable until the new texture is ready.
+                if (!spriteData || artworkChanged) {
+                    let frontLoaded: LoadedTexture | undefined;
+                    let backLoaded: LoadedTexture | undefined;
+                    const isPlaceholder = !imageBlob;
 
-                        frontTexture = await createTexture(imageBlob, `front-${uuid}`);
-
-                        // Check staleness after async
+                    if (imageBlob) {
+                        frontLoaded = await createTexture(imageBlob) ?? undefined;
                         if (isStale()) {
-                            // If texture creation failed or stale, cleanup handled by next pass or cache eviction
-                            continue;
+                            destroyLoadedTexture(frontLoaded);
+                            return;
+                        }
+                        if (!frontLoaded) continue;
+                    }
+
+                    if (backBlob) {
+                        backLoaded = await createTexture(backBlob) ?? undefined;
+                        if (isStale()) {
+                            destroyLoadedTexture(frontLoaded);
+                            destroyLoadedTexture(backLoaded);
+                            return;
                         }
                     }
 
-                    if (!frontTexture) continue;
-
-                    let backTexture: Texture | undefined;
-                    if (backBlob) {
-                        backTexture = (await createTexture(backBlob, `back-${uuid}`)) ?? undefined;
-                        if (isStale()) return;
-                    }
-
-                    // Determine initial texture
+                    const frontTexture = frontLoaded?.texture ?? Texture.WHITE;
+                    const backTexture = backLoaded?.texture;
                     const initialTexture = isFlipped && backTexture ? backTexture : frontTexture;
+
+                    if (artworkChanged) {
+                        cleanupSprite(uuid);
+                    }
 
                     const sprite = new PixiSprite(initialTexture);
 
@@ -757,13 +740,15 @@ function PixiVirtualCanvasInner({
                         sprite,
                         darkenFilter,
                         adjustFilter,
-                        frontTexture: frontTexture!, // Store placeholder texture (Texture.WHITE) so sprite remains valid
+                        frontTexture,
                         backTexture,
-                        frontBlobSize,
-                        backBlobSize,
+                        frontRenditionIdentity,
+                        backRenditionIdentity,
+                        frontObjectUrl: frontLoaded?.objectUrl,
+                        backObjectUrl: backLoaded?.objectUrl,
                         frontImageId,
                         backImageId,
-                        isPlaceholder, // Flag to indicate this is a placeholder
+                        isPlaceholder,
                     };
                     sprites.set(uuid, spriteData);
                 }

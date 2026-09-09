@@ -178,6 +178,7 @@ vi.doMock("../../store/settings", () => {
 
 const { default: PixiVirtualCanvas } = await import("./PixiVirtualCanvas");
 const { pixiSingleton, resetPixiSingleton, setPixiApp, getPixiApp } = await import("./pixiSingleton");
+const { RENDITION_IDENTITY_CHUNK_BYTES } = await import("./renditionIdentity");
 
 class MockImage {
   onload: (() => void) | null = null;
@@ -297,7 +298,7 @@ describe("PixiVirtualCanvas", () => {
     vi.unstubAllGlobals();
   });
 
-  it("drops stale asynchronous texture passes and reuses cached blob URLs", async () => {
+  it("drops stale asynchronous texture passes and releases their blob URLs", async () => {
     const pendingImages: Array<{
       onload: (() => void) | null;
       onerror: (() => void) | null;
@@ -321,7 +322,7 @@ describe("PixiVirtualCanvas", () => {
       backImageId: "back-2",
     });
     const { rerender } = renderCanvas({ cards: [stable, second] });
-    await waitFor(() => expect(pendingImages.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(0));
     const initialCount = pendingImages.length;
 
     rerender(canvasElement({ cards: [{ ...stable, globalX: 13 }, second] }));
@@ -338,7 +339,78 @@ describe("PixiVirtualCanvas", () => {
     await waitFor(() => expect(pendingImages.length).toBeGreaterThan(staleBackIndex + 1));
     await act(async () => pendingImages[staleBackIndex].onload?.());
 
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps equivalent re-deserialized blobs, but safely replaces same-size changed content", async () => {
+    const pendingImages: Array<{
+      onload: (() => void) | null;
+      onerror: (() => void) | null;
+    }> = [];
+    class ControlledImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        pendingImages.push(this);
+      }
+    }
+    vi.stubGlobal("Image", ControlledImage);
+    let urlIndex = 0;
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => `blob:rendition-${urlIndex++}`),
+      revokeObjectURL: vi.fn(),
+    });
+    const edge = new Uint8Array(RENDITION_IDENTITY_CHUNK_BYTES).fill(7);
+    const fullContentBlob = (middleByte: number) => new Blob([
+      edge,
+      new Uint8Array(RENDITION_IDENTITY_CHUNK_BYTES).fill(middleByte),
+      edge,
+    ]);
+    const initial = card({
+      imageBlob: fullContentBlob(11),
+      backBlob: new Blob(["back-a"]),
+      card: {
+        ...card().card,
+        overrides: { holoEffect: "none" },
+      },
+    });
+    const { rerender } = renderCanvas({ cards: [initial] });
+
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(0));
+    const initialFrontCount = pendingImages.length;
+    for (let index = 0; index < initialFrontCount; index += 1) {
+      await act(async () => pendingImages[index].onload?.());
+    }
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(initialFrontCount));
+    await act(async () => pendingImages.at(-1)?.onload?.());
+    await waitFor(() => expect(pixiState().textures).toHaveLength(2));
+    const oldFrontTexture = pixiState().textures[0];
+    const oldFrontUrl = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results[initialFrontCount - 1].value;
+    const oldBackUrl = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results.at(-1)!.value;
+
+    rerender(canvasElement({
+      cards: [{ ...initial, imageBlob: fullContentBlob(11), backBlob: new Blob(["back-a"]) }],
+    }));
+    await act(async () => undefined);
+    expect(pixiState().textures).toHaveLength(2);
+
+    const changedStart = pendingImages.length;
+    rerender(canvasElement({
+      cards: [{ ...initial, imageBlob: fullContentBlob(12), backBlob: new Blob(["back-a"]) }],
+    }));
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(changedStart));
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(oldFrontUrl);
+    expect(oldFrontTexture.destroy).not.toHaveBeenCalled();
+
+    await act(async () => pendingImages[changedStart].onload?.());
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(changedStart + 1));
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(oldFrontUrl);
+
+    await act(async () => pendingImages.at(-1)?.onload?.());
+    await waitFor(() => expect(pixiState().textures).toHaveLength(4));
+    expect(oldFrontTexture.destroy).toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(oldFrontUrl);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(oldBackUrl);
   });
 
   it("bounds offscreen sprite allocation and evicts existing offscreen cards", async () => {
@@ -468,7 +540,6 @@ describe("PixiVirtualCanvas", () => {
   });
 
   it("animates holographic cards with default motion settings", async () => {
-    vi.useFakeTimers();
     const animated = card();
     animated.card = {
       ...animated.card,
@@ -479,15 +550,8 @@ describe("PixiVirtualCanvas", () => {
     };
     renderCanvas({ cards: [animated] });
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    act(() => vi.advanceTimersByTime(50));
-    await act(async () => undefined);
-
+    await waitFor(() => expect(filterState().adjustment[0]).toBeDefined());
     expect(pixiState().apps[0]?.render).toHaveBeenCalled();
-    expect(filterState().adjustment[0]).toBeDefined();
   });
 
   it("ticks holographic cards that have no automatic animation", async () => {
@@ -636,7 +700,7 @@ describe("PixiVirtualCanvas", () => {
       onRenderedCardsChange,
     });
 
-    await waitFor(() => expect(pendingImages.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(pendingImages.length).toBeGreaterThan(0));
     const currentFrontIndex = pendingImages.length - 1;
     for (let index = 0; index < currentFrontIndex; index += 1) {
       await act(async () => pendingImages[index].onload?.());

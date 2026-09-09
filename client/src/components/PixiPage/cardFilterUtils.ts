@@ -18,8 +18,10 @@ export interface SpriteData {
     adjustFilter: AdjustmentFilter;
     frontTexture: Texture;
     backTexture?: Texture;
-    frontBlobSize: number;
-    backBlobSize?: number;
+    frontRenditionIdentity: string;
+    backRenditionIdentity?: string;
+    frontObjectUrl?: string;
+    backObjectUrl?: string;
     frontImageId?: string;
     backImageId?: string;
     isPlaceholder?: boolean;

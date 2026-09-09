@@ -20,7 +20,7 @@ describe('cardFilterUtils', () => {
                 adjustFilter: { destroy: vi.fn() },
                 frontTexture: { destroy: vi.fn() },
                 backTexture: { destroy: vi.fn() },
-                frontBlobSize: 1000,
+                frontRenditionIdentity: "front",
             } as unknown as SpriteData;
 
             destroySpriteData(mockSpriteData);
@@ -39,7 +39,7 @@ describe('cardFilterUtils', () => {
                 adjustFilter: undefined,
                 frontTexture: undefined,
                 backTexture: undefined,
-                frontBlobSize: 0,
+                frontRenditionIdentity: "placeholder",
             } as unknown as SpriteData;
 
             expect(() => destroySpriteData(mockSpriteData)).not.toThrow();
@@ -51,7 +51,7 @@ describe('cardFilterUtils', () => {
                 darkenFilter: { destroy: vi.fn() },
                 adjustFilter: { destroy: vi.fn() },
                 frontTexture: { destroy: vi.fn() },
-                frontBlobSize: 0,
+                frontRenditionIdentity: "placeholder",
             } as unknown as SpriteData;
 
             expect(() => destroySpriteData(mockSpriteData)).not.toThrow();
