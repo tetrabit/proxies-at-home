@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { streamCards } from "./streamCards";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
@@ -149,6 +151,69 @@ describe("streamCards", () => {
 
     expect(addRemoteImage).not.toHaveBeenCalled();
     expect(result).toEqual({ addedCardUuids: [], totalCardsAdded: 0 });
+  });
+
+  it("keeps MPC placeholder order project-local for an empty project and later append", async () => {
+    const mockedCards = db.cards;
+    const realDb = new Dexie(`stream-project-order-${crypto.randomUUID()}`);
+    realDb.version(1).stores({ cards: "&uuid, order, projectId, [projectId+order]" });
+    await realDb.open();
+
+    try {
+      const cards = realDb.table("cards");
+      await cards.add({
+        uuid: "project-b-distant",
+        name: "Existing B",
+        order: 100_000,
+        projectId: "project-b",
+      });
+      (db as any).cards = cards;
+      let placeholderIndex = 0;
+      (undoableAddCards as any).mockImplementation(async (cardsToAdd: any[]) => {
+        const added = cardsToAdd.map((card, index) => ({
+          ...card,
+          uuid: `stream-placeholder-${placeholderIndex + index}`,
+        }));
+        placeholderIndex += added.length;
+        await cards.bulkAdd(added);
+        return added;
+      });
+      (fetchEventSource as any).mockImplementation(
+        async (_url: string, options: any) => options.onmessage({ event: "done", data: "" })
+      );
+
+      await streamCards({
+        cardInfos: [{ name: "Placeholder A" }],
+        language: "en",
+        importType: "mpc",
+        signal: new AbortController().signal,
+        artSource: "mpc",
+        projectId: "project-a",
+      });
+
+      await expect(cards.get("stream-placeholder-0")).resolves.toMatchObject({
+        projectId: "project-a",
+        order: 10,
+      });
+
+      await streamCards({
+        cardInfos: [{ name: "Later Placeholder A" }],
+        language: "en",
+        importType: "mpc",
+        signal: new AbortController().signal,
+        artSource: "mpc",
+        projectId: "project-a",
+      });
+
+      await expect(cards.get("stream-placeholder-1")).resolves.toMatchObject({
+        projectId: "project-a",
+        order: 20,
+      });
+    } finally {
+      (db as any).cards = mockedCards;
+      realDb.close();
+      await realDb.delete();
+    }
   });
 
   it("should reject when the SSE connection opens with an error response", async () => {

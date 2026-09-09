@@ -1,4 +1,5 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
+import Dexie from "dexie";
 import { undoableAddCards } from "./undoableActions";
 import { addCards, addRemoteImage, createLinkedBackCardsBulk } from "./dbUtils";
 import { createImportSession, getCurrentSession, type ImportType } from "./importSession";
@@ -115,8 +116,18 @@ const cardKey = (info: CardInfo) =>
 export async function streamCards(options: StreamCardsOptions): Promise<StreamCardsResult> {
     const { cardInfos, language, importType, signal, artSource, onProgress, onFirstCard, onComplete, projectId } = options;
 
-    // Get initial max order to compute starting positions for all cards
-    const initialMaxOrder = (await db.cards.orderBy("order").last())?.order ?? 0;
+    // Capture the import scope before the first await so later work cannot borrow
+    // another project's order space. Legacy cards without a project retain global ordering.
+    const streamProjectId = projectId;
+    const initialMaxOrder = streamProjectId === undefined
+        ? (await db.cards.orderBy("order").last())?.order ?? 0
+        : (await db.cards
+            .where("[projectId+order]")
+            .between(
+                [streamProjectId, Dexie.minKey],
+                [streamProjectId, Dexie.maxKey]
+            )
+            .last())?.order ?? 0;
     let currentOrderBase = initialMaxOrder + 10;
 
     // Build quantity map for deduplication AND track original order positions
