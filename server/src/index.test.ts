@@ -22,8 +22,9 @@ const state = vi.hoisted(() => ({
   closeDatabase: vi.fn(),
   isMicroserviceAvailable: vi.fn(),
   logMicroserviceMetrics: vi.fn(),
-  createPreferencesRouter: vi.fn(() => ({ route: 'preferences' })),
-  createPrinterCalibrationRouter: vi.fn(() => ({ route: 'printer' })),
+  createBackupRouter: vi.fn<(options: { privateRouteAuth: object }) => { route: string }>(() => ({ route: 'backup' })),
+  createPreferencesRouter: vi.fn<(options: { privateRouteAuth: object }) => { route: string }>(() => ({ route: 'preferences' })),
+  createPrinterCalibrationRouter: vi.fn<(options: { privateRouteAuth: object }) => { route: string }>(() => ({ route: 'printer' })),
   listenAddress: undefined as undefined | string | { port?: number },
 }));
 
@@ -86,7 +87,7 @@ vi.mock('./routes/imageRouter.js', () => ({ imageRouter: { route: 'image' } }));
 vi.mock('./routes/streamRouter.js', () => ({ streamRouter: { route: 'stream' } }));
 vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: { route: 'mpc' } }));
 vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: { route: 'scryfall' } }));
-vi.mock('./routes/backupRouter.js', () => ({ backupRouter: { route: 'backup' } }));
+vi.mock('./routes/backupRouter.js', () => ({ createBackupRouter: state.createBackupRouter }));
 vi.mock('./routes/printerCalibrationRouter.js', () => ({ createPrinterCalibrationRouter: state.createPrinterCalibrationRouter }));
 vi.mock('./routes/preferencesRouter.js', () => ({ createPreferencesRouter: state.createPreferencesRouter }));
 vi.mock('./routes/metricsRouter.js', () => ({ createMetricsRouter: vi.fn(() => ({ route: 'metrics' })) }));
@@ -125,6 +126,7 @@ describe('server index bootstrap and app wiring', () => {
     state.closeDatabase.mockClear();
     state.isMicroserviceAvailable.mockReset().mockResolvedValue(true);
     state.logMicroserviceMetrics.mockClear();
+    state.createBackupRouter.mockClear();
     state.createPreferencesRouter.mockClear();
     state.createPrinterCalibrationRouter.mockClear();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -148,11 +150,18 @@ describe('server index bootstrap and app wiring', () => {
     const port = await startServer(0);
     expect(port).toBe(49152);
     expect(state.app?.use).toHaveBeenCalledWith('/api/scryfall', { route: 'scryfall' });
+    expect(state.createBackupRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
+    expect(state.app?.use).toHaveBeenCalledWith('/api/backup', { route: 'backup' });
     expect(state.createPrinterCalibrationRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
     expect(state.app?.use).toHaveBeenCalledWith('/api/printer-calibration', { route: 'printer' });
     expect(state.createPreferencesRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
     expect(state.app?.use).toHaveBeenCalledWith('/api/preferences', { route: 'preferences' });
     expect(state.app?.use).toHaveBeenCalledWith('/api/metrics', { route: 'metrics' });
+    const backupOptions = state.createBackupRouter.mock.calls[0]?.[0];
+    const printerOptions = state.createPrinterCalibrationRouter.mock.calls[0]?.[0];
+    const preferencesOptions = state.createPreferencesRouter.mock.calls[0]?.[0];
+    expect(backupOptions?.privateRouteAuth).toBe(printerOptions?.privateRouteAuth);
+    expect(backupOptions?.privateRouteAuth).toBe(preferencesOptions?.privateRouteAuth);
     expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0', expect.any(Function));
 
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000);

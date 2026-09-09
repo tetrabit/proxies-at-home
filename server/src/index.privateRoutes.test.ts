@@ -25,7 +25,6 @@ vi.mock('./routes/imageRouter.js', () => ({ imageRouter: express.Router() }));
 vi.mock('./routes/streamRouter.js', () => ({ streamRouter: express.Router() }));
 vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: express.Router() }));
 vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: express.Router() }));
-vi.mock('./routes/backupRouter.js', () => ({ backupRouter: express.Router() }));
 vi.mock('./routes/printerCalibrationRouter.js', () => ({ createPrinterCalibrationRouter: () => express.Router() }));
 vi.mock('./routes/preferencesRouter.js', () => ({ createPreferencesRouter: () => express.Router() }));
 vi.mock('./services/scryfallMicroserviceClient.js', () => ({
@@ -43,6 +42,11 @@ const readIdentity: PrivateIdentity = {
 const writeIdentity: PrivateIdentity = {
   ownerId: 'server-owned-owner',
   capabilities: new Set(['metrics:write']),
+  transport: 'server',
+};
+const backupReadIdentity: PrivateIdentity = {
+  ownerId: 'server-owned-owner',
+  capabilities: new Set(['backup:read']),
   transport: 'server',
 };
 
@@ -72,6 +76,36 @@ describe('private metrics route registration', () => {
     expect(health.body).toEqual({ error: 'unauthorized' });
     expect(health.text).not.toContain('averageResponseTime');
     expect(state.getMicroserviceMetrics).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for every backup operation before database access', async () => {
+    const { createApp } = await import('./index.js');
+    const app = createApp();
+
+    const list = await request(app).get('/api/backup');
+    const read = await request(app).get('/api/backup/project123');
+    const write = await request(app).put('/api/backup/project123').send({ data: { cards: [] } });
+    const remove = await request(app).delete('/api/backup/project123');
+
+    for (const response of [list, read, write, remove]) {
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: 'unauthorized' });
+    }
+    expect(state.getDatabase).not.toHaveBeenCalled();
+  });
+
+  it('registers backup read capability ahead of its handler', async () => {
+    state.getDatabase.mockReturnValue({
+      prepare: vi.fn(() => ({ all: vi.fn(() => []) })),
+    });
+    const { createApp } = await import('./index.js');
+
+    const response = await request(createApp({ privateCredentialVerifier: verifierFor(backupReadIdentity) }))
+      .get('/api/backup')
+      .set('Authorization', 'Bearer valid-bearer');
+
+    expect(response.status).toBe(200);
+    expect(state.getDatabase).toHaveBeenCalledOnce();
   });
 
   it('rejects an authenticated identity without metrics read capability before metrics data is read', async () => {

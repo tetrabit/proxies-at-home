@@ -1,153 +1,227 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import express from 'express';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import express, { type Express } from 'express';
 import request from 'supertest';
-import { gunzipSync, gzipSync } from 'zlib';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { gzipSync } from 'zlib';
 
-const prepare = vi.fn();
-const db = { prepare };
-vi.mock('../db/db.js', () => ({ getDatabase: vi.fn(() => db) }));
+import {
+  createPrivateRouteAuth,
+  type PrivateCredentialVerifier,
+  type PrivateIdentity,
+} from '../auth/privateRouteAuth.js';
 
-const { backupRouter } = await import('./backupRouter.js');
+const fixtureRoot = path.join(
+  fileURLToPath(new URL('../../../', import.meta.url)),
+  '.review-artifacts',
+  'backup-auth-fixture-rework-01',
+);
 
-const app = express();
-app.use(express.json());
-app.use('/api/backup', backupRouter);
+function createExclusiveArtifactDirectory(): string {
+  fs.mkdirSync(fixtureRoot, { recursive: true });
 
-describe('backupRouter', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT project_id')) return { get: vi.fn(() => undefined) };
-      if (sql.startsWith('INSERT INTO backups')) return { run: vi.fn() };
-      if (sql.startsWith('UPDATE backups')) return { run: vi.fn() };
-      if (sql.startsWith('SELECT data')) return { get: vi.fn(() => undefined) };
-      if (sql.startsWith('SELECT project_id, project_name')) return { all: vi.fn(() => []) };
-      if (sql.startsWith('DELETE FROM backups')) return { run: vi.fn(() => ({ changes: 1 })) };
-      return { get: vi.fn(), all: vi.fn(), run: vi.fn() };
-    });
+  while (true) {
+    const artifactDirectory = path.join(fixtureRoot, randomUUID());
+    try {
+      fs.mkdirSync(artifactDirectory);
+      return artifactDirectory;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+}
+
+const reader: PrivateIdentity = {
+  ownerId: 'backup-test-owner',
+  capabilities: new Set(['backup:read']),
+  transport: 'server',
+};
+const writer: PrivateIdentity = {
+  ownerId: 'backup-test-owner',
+  capabilities: new Set(['backup:write']),
+  transport: 'server',
+};
+const readerWriter: PrivateIdentity = {
+  ownerId: 'backup-test-owner',
+  capabilities: new Set(['backup:read', 'backup:write']),
+  transport: 'server',
+};
+
+const identities = new Map<string, PrivateIdentity>([
+  ['reader', reader],
+  ['writer', writer],
+  ['reader-writer', readerWriter],
+]);
+const verifier: PrivateCredentialVerifier = {
+  verifyBearer: (bearer) => identities.get(bearer) ?? null,
+};
+
+type DbModule = typeof import('../db/db.js');
+
+let artifactDirectory: string;
+let originalServerDataDir: string | undefined;
+let dbModule: DbModule | undefined;
+let database: ReturnType<DbModule['initDatabase']>;
+let createBackupRouter: typeof import('./backupRouter.js')['createBackupRouter'];
+let backupRouter: typeof import('./backupRouter.js')['backupRouter'];
+
+function authorized(requestBuilder: request.Test, bearer: string): request.Test {
+  return requestBuilder.set('Authorization', `Bearer ${bearer}`);
+}
+
+function createApp(router = createBackupRouter({ privateRouteAuth: createPrivateRouteAuth(verifier) })): Express {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/backup', router);
+  return app;
+}
+
+describe('backupRouter private route authorization', () => {
+  beforeAll(async () => {
+    originalServerDataDir = process.env.SERVER_DATA_DIR;
+    artifactDirectory = createExclusiveArtifactDirectory();
+    process.env.SERVER_DATA_DIR = artifactDirectory;
+    vi.resetModules();
+    dbModule = await import('../db/db.js');
+    database = dbModule.initDatabase();
+    ({ createBackupRouter, backupRouter } = await import('./backupRouter.js'));
   });
 
-  it('rejects invalid project IDs and invalid backup data', async () => {
-    expect((await request(app).put('/api/backup/short').send({ data: {} })).status).toBe(400);
-    const invalidData = await request(app).put('/api/backup/project123').send({ data: null });
-    expect(invalidData.status).toBe(400);
-    expect(invalidData.body.error).toBe('Missing or invalid backup data');
+  afterAll(() => {
+    try {
+      dbModule?.closeDatabase();
+    } finally {
+      if (originalServerDataDir === undefined) {
+        delete process.env.SERVER_DATA_DIR;
+      } else {
+        process.env.SERVER_DATA_DIR = originalServerDataDir;
+      }
+    }
   });
 
-  it('creates a compressed backup with fallback name and card count', async () => {
-    let inserted: unknown[] = [];
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT project_id')) return { get: vi.fn(() => undefined) };
-      if (sql.startsWith('INSERT INTO backups')) return { run: vi.fn((...args: unknown[]) => { inserted = args; }) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
-
-    const response = await request(app)
-      .put('/api/backup/project123')
-      .send({ data: { project: { name: 'From Data' }, cards: [1] } });
-
-    expect(response.status).toBe(200);
-    expect(response.body.projectName).toBe('From Data');
-    expect(response.body.cardCount).toBe(0);
-    expect(gunzipSync(inserted[2] as Buffer).toString('utf-8')).toBe(JSON.stringify({ project: { name: 'From Data' }, cards: [1] }));
+  it('uses a retained, run-exclusive database fixture', () => {
+    expect(path.dirname(artifactDirectory)).toBe(fixtureRoot);
+    expect(path.basename(artifactDirectory)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(fs.existsSync(artifactDirectory)).toBe(true);
   });
 
-  it('updates an existing backup with explicit metadata', async () => {
-    const updateRun = vi.fn();
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT project_id')) return { get: vi.fn(() => ({ project_id: 'project123' })) };
-      if (sql.startsWith('UPDATE backups')) return { run: updateRun };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
+  it('fails closed for the legacy exported router', async () => {
+    const app = createApp(backupRouter);
 
-    const response = await request(app)
-      .put('/api/backup/project123')
-      .send({ data: { project: { name: 'Ignored' } }, projectName: 'Explicit', cardCount: 7 });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ projectId: 'project123', projectName: 'Explicit', cardCount: 7 });
-    expect(updateRun).toHaveBeenCalled();
-  });
-
-  it('returns 500 when saving a backup throws', async () => {
-    prepare.mockImplementation(() => { throw new Error('db down'); });
-    const response = await request(app).put('/api/backup/project123').send({ data: {} });
-    expect(response.status).toBe(500);
-    expect(response.body.error).toBe('Failed to save backup');
-  });
-
-  it('retrieves, validates, and handles missing backups', async () => {
-    expect((await request(app).get('/api/backup/short')).status).toBe(400);
-
-    const missing = await request(app).get('/api/backup/project123');
-    expect(missing.status).toBe(404);
-
-    const stored = { cards: ['Sol Ring'] };
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT data')) return { get: vi.fn(() => ({
-        data: gzipSync(Buffer.from(JSON.stringify(stored), 'utf-8')),
-        project_name: 'Deck',
-        card_count: 1,
-        updated_at: 2,
-        created_at: 1,
-      })) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
-
-    const response = await request(app).get('/api/backup/project123');
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ data: stored, projectName: 'Deck', cardCount: 1, updatedAt: 2, createdAt: 1 });
-  });
-
-  it('returns 500 when retrieving backup data fails', async () => {
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT data')) return { get: vi.fn(() => ({ data: Buffer.from('not gzip') })) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
-    const response = await request(app).get('/api/backup/project123');
-    expect(response.status).toBe(500);
-    expect(response.body.error).toBe('Failed to retrieve backup');
-  });
-
-  it('lists backup metadata and reports list failures', async () => {
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('SELECT project_id, project_name')) return { all: vi.fn(() => [{
-        project_id: 'project123', project_name: 'Deck', card_count: 2, updated_at: 4, created_at: 3, size_bytes: 99,
-      }]) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
     const response = await request(app).get('/api/backup');
-    expect(response.status).toBe(200);
-    expect(response.body.backups[0]).toEqual({ projectId: 'project123', projectName: 'Deck', cardCount: 2, updatedAt: 4, createdAt: 3, sizeBytes: 99 });
 
-    prepare.mockImplementation(() => { throw new Error('db'); });
-    const failed = await request(app).get('/api/backup');
-    expect(failed.status).toBe(500);
-    expect(failed.body.error).toBe('Failed to list backups');
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: 'unauthorized' });
   });
 
-  it('deletes backups with validation, not-found, and failure handling', async () => {
-    expect((await request(app).delete('/api/backup/short')).status).toBe(400);
+  it('denies anonymous list, read, write, and delete before changing stored data', async () => {
+    const projectId = `anonymous-project-${randomUUID()}`;
+    const storedData = gzipSync(Buffer.from(JSON.stringify({ preserved: true }), 'utf-8'));
+    database
+      .prepare('INSERT INTO backups (project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(projectId, 'Preserved backup', storedData, 3, 10, 9);
+    const app = createApp();
 
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('DELETE FROM backups')) return { run: vi.fn(() => ({ changes: 0 })) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
-    });
-    expect((await request(app).delete('/api/backup/project123')).status).toBe(404);
+    const list = await request(app).get('/api/backup');
+    const read = await request(app).get(`/api/backup/${projectId}`);
+    const write = await request(app)
+      .put(`/api/backup/${projectId}`)
+      .send({ data: { replaced: true }, projectName: 'Replacement', cardCount: 99 });
+    const remove = await request(app).delete(`/api/backup/${projectId}`);
+    const stored = database
+      .prepare('SELECT project_name, data, card_count, updated_at, created_at FROM backups WHERE project_id = ?')
+      .get(projectId) as { project_name: string; data: Buffer; card_count: number; updated_at: number; created_at: number };
 
-    prepare.mockImplementation((sql: string) => {
-      if (sql.startsWith('DELETE FROM backups')) return { run: vi.fn(() => ({ changes: 1 })) };
-      return { run: vi.fn(), get: vi.fn(), all: vi.fn() };
+    for (const response of [list, read, write, remove]) {
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: 'unauthorized' });
+    }
+    expect(stored).toEqual({
+      project_name: 'Preserved backup',
+      data: storedData,
+      card_count: 3,
+      updated_at: 10,
+      created_at: 9,
     });
-    const deleted = await request(app).delete('/api/backup/project123');
+  });
+
+  it('returns 401 for malformed and unknown credentials before handlers run', async () => {
+    const app = createApp();
+
+    const malformed = await request(app)
+      .get('/api/backup')
+      .set('Authorization', 'Basic reader');
+    const unknown = await authorized(request(app).get('/api/backup'), 'unknown').expect(401);
+
+    expect(malformed.status).toBe(401);
+    expect(malformed.body).toEqual({ error: 'unauthorized' });
+    expect(unknown.body).toEqual({ error: 'unauthorized' });
+  });
+
+  it('returns 403 for the wrong backup capability before handler effects', async () => {
+    const projectId = 'capability-project-001';
+    const app = createApp();
+
+    const readCannotWrite = await authorized(request(app).put(`/api/backup/${projectId}`), 'reader')
+      .send({ data: { denied: true } });
+    const readCannotDelete = await authorized(request(app).delete(`/api/backup/${projectId}`), 'reader');
+    const writeCannotList = await authorized(request(app).get('/api/backup'), 'writer');
+    const writeCannotRead = await authorized(request(app).get(`/api/backup/${projectId}`), 'writer');
+
+    for (const response of [readCannotWrite, readCannotDelete, writeCannotList, writeCannotRead]) {
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'forbidden' });
+    }
+    expect(database.prepare('SELECT project_id FROM backups WHERE project_id = ?').get(projectId)).toBeUndefined();
+  });
+
+  it('allows authenticated backup readers and writers to preserve current handler semantics', async () => {
+    const projectId = 'authorized-project-001';
+    const app = createApp();
+
+    const created = await authorized(request(app).put(`/api/backup/${projectId}`), 'writer')
+      .send({ data: { project: { name: 'From data' }, cards: ['Sol Ring'] } });
+    const listed = await authorized(request(app).get('/api/backup'), 'reader');
+    const retrieved = await authorized(request(app).get(`/api/backup/${projectId}`), 'reader');
+    const updated = await authorized(request(app).put(`/api/backup/${projectId}`), 'writer')
+      .send({ data: { cards: ['Mana Crypt'] }, projectName: 'Explicit backup', cardCount: 1 });
+    const deleted = await authorized(request(app).delete(`/api/backup/${projectId}`), 'writer');
+
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({ projectId, projectName: 'From data', cardCount: 0 });
+    expect(listed.status).toBe(200);
+    expect(listed.body.backups).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectId, projectName: 'From data', cardCount: 0 }),
+    ]));
+    expect(retrieved.status).toBe(200);
+    expect(retrieved.body).toMatchObject({
+      data: { project: { name: 'From data' }, cards: ['Sol Ring'] },
+      projectName: 'From data',
+      cardCount: 0,
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({ projectId, projectName: 'Explicit backup', cardCount: 1 });
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual({ deleted: true });
+  });
 
-    prepare.mockImplementation(() => { throw new Error('db'); });
-    const failed = await request(app).delete('/api/backup/project123');
-    expect(failed.status).toBe(500);
-    expect(failed.body.error).toBe('Failed to delete backup');
+  it('retains expected handler error logging for an authorized invalid gzip record', async () => {
+    const projectId = `invalid-gzip-project-${randomUUID()}`;
+    database
+      .prepare('INSERT INTO backups (project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(projectId, 'Broken backup', Buffer.from('not gzip'), 1, 12, 11);
+    const errorSpy = vi.spyOn(console, 'error');
+
+    const response = await authorized(request(createApp()).get(`/api/backup/${projectId}`), 'reader');
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ error: 'Failed to retrieve backup' });
+    expect(errorSpy).toHaveBeenCalledWith('[Backup] Error retrieving backup:', expect.any(Error));
+    errorSpy.mockRestore();
   });
 });
