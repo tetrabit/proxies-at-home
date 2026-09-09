@@ -112,6 +112,16 @@ async function enrichMpcCardsWithTokens(
 const cardKey = (info: CardInfo) =>
     `${normalizeDfcName(info.name).toLowerCase()}|${info.set?.toLowerCase() ?? ""}|${info.number ?? ""}`;
 
+// /api/stream/cards uses the same bounded import request contract as metadata.
+const importRequestCardLimit = 100;
+
+function throwIfAborted(signal: AbortSignal): void {
+    if (!signal.aborted) return;
+    throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted.', 'AbortError');
+}
+
 export async function streamCards(options: StreamCardsOptions): Promise<StreamCardsResult> {
     const { cardInfos, language, importType, signal, artSource, onProgress, onFirstCard, onComplete, projectId } = options;
 
@@ -368,13 +378,20 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         return { addedCardUuids, totalCardsAdded: cardsAdded };
     }
 
+    const streamChunks: CardInfo[][] = [];
+    for (let start = 0; start < uniqueInfos.length; start += importRequestCardLimit) {
+        streamChunks.push(uniqueInfos.slice(start, start + importRequestCardLimit));
+    }
+
     let pendingOperations = 0;
-    let doneEventReceived = false;
+    let completedStreamChunks = 0;
+    let completionSettled = false;
     let resolvePromise: () => void;
     const completionPromise = new Promise<void>(resolve => { resolvePromise = resolve; });
 
     const checkComplete = () => {
-        if (doneEventReceived && pendingOperations === 0) {
+        if (!completionSettled && completedStreamChunks === streamChunks.length && pendingOperations === 0) {
+            completionSettled = true;
             if (addedCardUuids.length > 0) {
                 createImportSession({
                     totalCards: addedCardUuids.length,
@@ -389,21 +406,30 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         }
     };
 
-    await fetchEventSource(`${API_BASE}/api/stream/cards`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cardQueries: uniqueInfos, language }),
-        signal,
-        onopen: async (res) => {
-            if (!res.ok) {
-                const errorText = await res.text();
-                throw new Error(`Failed to fetch cards: ${res.status} ${res.statusText} - ${errorText}`);
-            }
-        },
-        onmessage: async (ev) => {
+    for (let chunkIndex = 0; chunkIndex < streamChunks.length; chunkIndex++) {
+        throwIfAborted(signal);
+        const chunk = streamChunks[chunkIndex];
+        const progressOffset = chunkIndex * importRequestCardLimit;
+        let chunkDone = false;
+
+        await fetchEventSource(`${API_BASE}/api/stream/cards`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cardQueries: chunk, language }),
+            signal,
+            onopen: async (res) => {
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(`Failed to fetch cards: ${res.status} ${res.statusText} - ${errorText}`);
+                }
+            },
+            onmessage: async (ev) => {
             if (ev.event === "progress") {
                 const progress = JSON.parse(ev.data);
-                onProgress?.(progress.processed, progress.total);
+                onProgress?.(
+                    progressOffset + progress.processed,
+                    streamChunks.length === 1 ? progress.total : uniqueInfos.length,
+                );
             } else if (ev.event === "card-error") {
                 pendingOperations++;
                 const { query, error } = JSON.parse(ev.data) as { query: CardInfo; error?: string };
@@ -678,13 +704,15 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 }
                 pendingOperations--;
                 checkComplete();
-            /* v8 ignore next -- non-card/progress/done SSE events are ignored by design. @preserve */
-            } else if (ev.event === "done") {
-                doneEventReceived = true;
-                checkComplete();
+                /* v8 ignore next -- non-card/progress/done SSE events are ignored by design. @preserve */
+                } else if (ev.event === "done" && !chunkDone) {
+                    chunkDone = true;
+                    completedStreamChunks++;
+                    checkComplete();
+                }
             }
-        },
-    });
+        });
+    }
 
     await completionPromise;
     return { addedCardUuids, totalCardsAdded: cardsAdded };

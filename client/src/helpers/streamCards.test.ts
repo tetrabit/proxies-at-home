@@ -1287,8 +1287,8 @@ describe("streamCards", () => {
 
       await streamCards(options);
 
-      // First call: back face art for linked back card
-      expect(addRemoteImage).toHaveBeenNthCalledWith(1, ["http://back-img"], 1);
+      // Cache back-face art without reserving a reference; linked-back creation owns it.
+      expect(addRemoteImage).toHaveBeenNthCalledWith(1, ["http://back-img"], 0);
       // Second call: front face art for the main card (since back face name was imported)
       expect(addRemoteImage).toHaveBeenNthCalledWith(
         2,
@@ -1296,6 +1296,13 @@ describe("streamCards", () => {
         1,
         undefined
       );
+      expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+        {
+          frontUuid: "uuid-1",
+          backImageId: "back-img-id",
+          backName: "Insectile Aberration",
+        },
+      ]);
       // Should have passed isFlipped: true
       expect(undoableAddCards).toHaveBeenCalledWith(
         expect.arrayContaining([
@@ -1494,5 +1501,81 @@ describe("streamCards", () => {
       // Should wrap in MPC proxy URL
       expect(addRemoteImage).toHaveBeenCalledWith(["http://mpc/mpc-id-123"], 1);
     });
+  });
+
+  it("serially chunks more than 100 unique cards, preserving input order and total progress", async () => {
+    const requests: Array<{ cardQueries: Array<{ name: string }>; language: string }> = [];
+    let releaseFirstRequest!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+    const onProgress = vi.fn();
+    const onComplete = vi.fn();
+
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      const request = JSON.parse(opts.body);
+      requests.push(request);
+      if (requests.length === 1) {
+        await firstRequestStarted;
+      }
+      await opts.onmessage({
+        event: "progress",
+        data: JSON.stringify({ processed: request.cardQueries.length, total: request.cardQueries.length }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    const processing = streamCards({
+      cardInfos: Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` })),
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      onProgress,
+      onComplete,
+    });
+
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0].cardQueries).toEqual(
+      Array.from({ length: 100 }, (_, index) => ({ name: `Card ${index}` }))
+    );
+    releaseFirstRequest();
+    await processing;
+
+    expect(requests).toEqual([
+      { cardQueries: Array.from({ length: 100 }, (_, index) => ({ name: `Card ${index}` })), language: "en" },
+      { cardQueries: [{ name: "Card 100" }], language: "en" },
+    ]);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 100, 101);
+    expect(onProgress).toHaveBeenNthCalledWith(2, 101, 101);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops before starting another stream chunk when cancellation follows a completed chunk", async () => {
+    let releaseFirstRequest!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+    const controller = new AbortController();
+
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      if ((fetchEventSource as any).mock.calls.length === 1) {
+        await firstRequestStarted;
+      }
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    const processing = streamCards({
+      cardInfos: Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` })),
+      language: "en",
+      importType: "scryfall",
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(fetchEventSource).toHaveBeenCalledTimes(1));
+    controller.abort();
+    releaseFirstRequest();
+
+    await expect(processing).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchEventSource).toHaveBeenCalledTimes(1);
   });
 });

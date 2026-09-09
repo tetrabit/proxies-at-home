@@ -684,5 +684,43 @@ describe('scryfallApi', () => {
             expect(consoleSpy).toHaveBeenCalled();
             consoleSpy.mockRestore();
         });
+
+        it('serially chunks more than 100 metadata queries and combines every chunk result', async () => {
+            const queries = Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` }));
+            const requests: Array<Array<{ name: string }>> = [];
+            let releaseFirstRequest!: () => void;
+            const firstRequestStarted = new Promise<void>((resolve) => {
+                releaseFirstRequest = resolve;
+            });
+            (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (_url: string, init: RequestInit) => {
+                const cardQueries = JSON.parse(String(init.body)).cardQueries as Array<{ name: string }>;
+                requests.push(cardQueries);
+                if (requests.length === 1) {
+                    await firstRequestStarted;
+                }
+                return {
+                    ok: true,
+                    json: async () => ({
+                        results: cardQueries.map((query) => ({
+                            query,
+                            card: { name: query.name },
+                        })),
+                    }),
+                };
+            });
+
+            const processing = fetchCardsMetadataBatch(queries);
+            await vi.waitFor(() => expect(requests).toHaveLength(1));
+            expect(requests[0]).toEqual(queries.slice(0, 100));
+            releaseFirstRequest();
+            const result = await processing;
+
+            expect(requests).toEqual([
+                queries.slice(0, 100),
+                queries.slice(100),
+            ]);
+            expect(result.get('card 0')).toMatchObject({ name: 'Card 0' });
+            expect(result.get('card 100')).toMatchObject({ name: 'Card 100' });
+        });
     });
 });

@@ -366,7 +366,7 @@ describe("Stream Router", () => {
 
     it("sends keep-alive comments while card streaming is still pending", async () => {
         vi.useFakeTimers();
-        let resolveBatch!: (value: Map<string, unknown>) => void;
+        let resolveBatch!: (value: Awaited<ReturnType<typeof getCardImagesPaged.batchFetchCards>>) => void;
         vi.mocked(getCardImagesPaged.batchFetchCards).mockReturnValueOnce(
             new Promise((resolve) => {
                 resolveBatch = resolve;
