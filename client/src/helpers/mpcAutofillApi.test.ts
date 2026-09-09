@@ -302,6 +302,84 @@ describe("mpcAutofillApi", () => {
             expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
         });
 
+        it("aborts the physical transport after every shared-search subscriber cancels and admits a retry", async () => {
+            const firstController = new AbortController();
+            const secondController = new AbortController();
+            const firstReason = new DOMException("First subscriber stopped", "AbortError");
+            const secondReason = new DOMException("Second subscriber stopped", "AbortError");
+            const abortedTransport = createDeferred<Response>();
+            let transportSignal: AbortSignal | undefined;
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch).mockImplementation((_, request) => {
+                transportSignal = (request as RequestInit).signal as AbortSignal;
+                transportSignal.addEventListener("abort", () => {
+                    abortedTransport.reject(transportSignal?.reason);
+                }, { once: true });
+                return abortedTransport.promise;
+            });
+
+            const first = searchMpcAutofill("Sol Ring", "CARD", true, {}, firstController.signal);
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+            const second = searchMpcAutofill("Sol Ring", "CARD", true, {}, secondController.signal);
+            await vi.waitFor(() => expect(mockGetCachedMpcSearch).toHaveBeenCalledTimes(2));
+            firstController.abort(firstReason);
+            expect(transportSignal?.aborted).toBe(false);
+            secondController.abort(secondReason);
+
+            await expect(first).rejects.toBe(firstReason);
+            await expect(second).rejects.toBe(secondReason);
+            expect(transportSignal?.aborted).toBe(true);
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+
+            vi.mocked(fetch).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard()] }),
+            } as Response);
+            await expect(searchMpcAutofill("Sol Ring")).resolves.toEqual([
+                expect.objectContaining({ identifier: "id1" }),
+            ]);
+            expect(fetch).toHaveBeenCalledTimes(2);
+        });
+
+        it("keeps a retry registry entry when an abandoned transport settles after it", async () => {
+            const controller = new AbortController();
+            const abortReason = new DOMException("Subscriber stopped", "AbortError");
+            const oldTransport = createDeferred<Response>();
+            const retryTransport = createDeferred<Response>();
+            mockGetCachedMpcSearch.mockResolvedValue(null);
+            vi.mocked(fetch)
+                .mockImplementationOnce(() => oldTransport.promise)
+                .mockImplementationOnce(() => retryTransport.promise);
+
+            const abandoned = searchMpcAutofill("Sol Ring", "CARD", true, {}, controller.signal);
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+            controller.abort(abortReason);
+            await expect(abandoned).rejects.toBe(abortReason);
+
+            const retry = searchMpcAutofill("Sol Ring");
+            await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+            oldTransport.resolve({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard({ identifier: "old" })] }),
+            } as Response);
+            await Promise.resolve();
+            await Promise.resolve();
+
+            const lateJoiner = searchMpcAutofill("  sol ring  ");
+            await vi.waitFor(() => expect(mockGetCachedMpcSearch).toHaveBeenCalledTimes(3));
+            expect(fetch).toHaveBeenCalledTimes(2);
+            retryTransport.resolve({
+                ok: true,
+                json: () => Promise.resolve({ cards: [createMpcCard({ identifier: "retry" })] }),
+            } as Response);
+
+            await expect(Promise.all([retry, lateJoiner])).resolves.toEqual([
+                [expect.objectContaining({ identifier: "retry" })],
+                [expect.objectContaining({ identifier: "retry" })],
+            ]);
+            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+        });
+
         it("should parse card names before returning results", async () => {
             // Setup: API returns unparsed names
             const mockResponse = {

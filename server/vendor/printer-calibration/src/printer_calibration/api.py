@@ -116,9 +116,20 @@ def apply_calibration(
     output_path: str | Path,
     profile: CalibrationProfile | Mapping[str, object],
     page_mode: str = "duplex",
+    front_page_count: int | None = None,
 ) -> None:
-    """Apply a profile to a PDF using the library-friendly profile type."""
-    apply_profile(input_path, output_path, _coerce_profile(profile), page_mode=page_mode)
+    """Apply a profile, with optional explicit front-group ordering.
+
+    ``front_page_count`` is used only by ``grouped-duplex`` page mode. It is
+    page-order metadata, not a replacement for a profile's ``duplex_mode``.
+    """
+    apply_profile(
+        input_path,
+        output_path,
+        _coerce_profile(profile),
+        page_mode=page_mode,
+        front_page_count=front_page_count,
+    )
 
 
 def save_profile(

@@ -1264,96 +1264,38 @@ export async function createLinkedBackCardsBulk(
       const backUuids = existingBackIdsToUpdate.map((u) => u.backUuid);
       const existingBacks = await db.cards.bulkGet(backUuids);
 
-      // Collect old image IDs to decrement and new image IDs to increment
-      // Only for non-cardback images (cardbacks don't need ref counting)
-      const oldImageIds = new Set<string>();
-      const newImageIds = new Set<string>();
+      // Collect every non-cardback image's net ref-count change keyed by ID.
+      // A replacement can also be another back's old image, so values must be
+      // aggregated before constructing update records.
+      const imageRefDeltas = new Map<string, number>();
+      const addImageRefDelta = (imageId: string, delta: number) => {
+        imageRefDeltas.set(imageId, (imageRefDeltas.get(imageId) || 0) + delta);
+      };
 
       for (let i = 0; i < existingBackIdsToUpdate.length; i++) {
         const update = existingBackIdsToUpdate[i];
         const existingBack = existingBacks[i];
-        // Only track non-cardback images
-        if (
-          existingBack?.imageId &&
-          existingBack.imageId !== update.newImageId &&
-          !isCardbackId(existingBack.imageId)
-        ) {
-          oldImageIds.add(existingBack.imageId);
+        if (!existingBack || existingBack.imageId === update.newImageId) continue;
+
+        if (existingBack.imageId && !isCardbackId(existingBack.imageId)) {
+          addImageRefDelta(existingBack.imageId, -1);
         }
         if (update.newImageId && !isCardbackId(update.newImageId)) {
-          newImageIds.add(update.newImageId);
+          addImageRefDelta(update.newImageId, 1);
         }
       }
 
-      // Get all images at once
-      const allImageIds = [
-        ...Array.from(oldImageIds),
-        ...Array.from(newImageIds),
-      ];
-      const allImages = await db.images.bulkGet(allImageIds);
-      const imageMap = new Map<string, (typeof allImages)[0]>();
-      for (let i = 0; i < allImageIds.length; i++) {
-        if (allImages[i]) {
-          imageMap.set(allImageIds[i], allImages[i]);
-        }
-      }
-
-      // Calculate ref count changes
-      const imageRefDecrements = new Map<string, number>();
-      const imageRefIncrements = new Map<string, number>();
-
-      for (let i = 0; i < existingBackIdsToUpdate.length; i++) {
-        const update = existingBackIdsToUpdate[i];
-        const existingBack = existingBacks[i];
-        if (
-          existingBack?.imageId &&
-          existingBack.imageId !== update.newImageId &&
-          !isCardbackId(existingBack.imageId)
-        ) {
-          imageRefDecrements.set(
-            existingBack.imageId,
-            (imageRefDecrements.get(existingBack.imageId) || 0) + 1
-          );
-        }
-        if (
-          update.newImageId &&
-          existingBack?.imageId !== update.newImageId &&
-          !isCardbackId(update.newImageId)
-        ) {
-          imageRefIncrements.set(
-            update.newImageId,
-            (imageRefIncrements.get(update.newImageId) || 0) + 1
-          );
-        }
-      }
-
-      // Prepare image updates
+      const imageIds = Array.from(imageRefDeltas.keys());
+      const images = await db.images.bulkGet(imageIds);
       const imageUpdates: { key: string; changes: { refCount: number } }[] = [];
-
-      for (const [imageId, decrement] of imageRefDecrements.entries()) {
-        const image = imageMap.get(imageId);
-        if (image) {
-          const newRefCount = Math.max(0, image.refCount - decrement);
+      for (let i = 0; i < imageIds.length; i++) {
+        const image = images[i];
+        const delta = imageRefDeltas.get(imageIds[i]) || 0;
+        if (image && delta !== 0) {
           imageUpdates.push({
-            key: imageId,
-            changes: { refCount: newRefCount },
+            key: imageIds[i],
+            changes: { refCount: Math.max(0, image.refCount + delta) },
           });
-        }
-      }
-
-      for (const [imageId, increment] of imageRefIncrements.entries()) {
-        const image = imageMap.get(imageId);
-        if (image) {
-          // Check if already in updates (from decrement)
-          const existing = imageUpdates.find((u) => u.key === imageId);
-          if (existing) {
-            existing.changes.refCount += increment;
-          } else {
-            imageUpdates.push({
-              key: imageId,
-              changes: { refCount: image.refCount + increment },
-            });
-          }
         }
       }
 

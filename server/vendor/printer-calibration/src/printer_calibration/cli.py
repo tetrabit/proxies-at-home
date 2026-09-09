@@ -139,9 +139,19 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     apply_p.add_argument(
         "--page-mode",
         dest="page_mode",
-        choices=["duplex", "back-only"],
+        choices=["duplex", "back-only", "grouped-duplex"],
         default="duplex",
-        help="Interpret input pages as alternating duplex pages or as back-only pages",
+        help="Interpret pages as alternating duplex, back-only, or grouped front/back pages",
+    )
+    apply_p.add_argument(
+        "--front-page-count",
+        type=int,
+        default=None,
+        metavar="COUNT",
+        help=(
+            "Required for grouped-duplex: number of leading front pages. "
+            "This page ordering does not change the profile's long-edge setting."
+        ),
     )
     _add_profile_file_arg(apply_p)
 
@@ -250,6 +260,7 @@ def _handle_apply(args: argparse.Namespace) -> None:
             str(output_path),
             profile,
             page_mode=args.page_mode,
+            front_page_count=args.front_page_count,
         )
         print(f"Calibrated PDF written to {output_path}")
     except ValueError as exc:

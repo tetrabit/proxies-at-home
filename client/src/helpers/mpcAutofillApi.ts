@@ -48,9 +48,17 @@ function isAbortError(err: unknown): boolean {
 interface InFlightMpcSearch {
     promise: Promise<MpcAutofillCard[]>;
     activeSubscribers: Set<symbol>;
+    controller: AbortController;
 }
 
 const inFlightMpcSearches = new Map<string, InFlightMpcSearch>();
+
+function removeInFlightMpcSearch(requestKey: string, inFlight: InFlightMpcSearch): void {
+    // An earlier transport must never delete a replacement retry entry.
+    if (inFlightMpcSearches.get(requestKey) === inFlight) {
+        inFlightMpcSearches.delete(requestKey);
+    }
+}
 
 function getMpcSearchKeys(
     query: string,
@@ -77,6 +85,7 @@ function getMpcSearchKeys(
 }
 
 function subscribeToMpcSearch(
+    requestKey: string,
     inFlight: InFlightMpcSearch,
     signal?: AbortSignal
 ): Promise<MpcAutofillCard[]> {
@@ -90,6 +99,10 @@ function subscribeToMpcSearch(
         const cleanup = () => {
             inFlight.activeSubscribers.delete(subscriber);
             signal?.removeEventListener("abort", onAbort);
+            if (inFlight.activeSubscribers.size === 0 && !inFlight.controller.signal.aborted) {
+                inFlight.controller.abort(new DOMException("All subscribers aborted", "AbortError"));
+                removeInFlightMpcSearch(requestKey, inFlight);
+            }
         };
         const settle = (callback: () => void) => {
             if (settled) return;
@@ -113,12 +126,13 @@ async function performMpcSearch(
     fuzzySearch: boolean,
     options: MpcSearchOptions,
     cacheKey: string,
-    activeSubscribers: Set<symbol>
+    activeSubscribers: Set<symbol>,
+    transportSignal: AbortSignal
 ): Promise<MpcAutofillCard[]> {
     const { cacheMpcSearch } = await import('./mpcSearchCache');
 
     try {
-        // A transport-owned signal prevents one subscriber's cancellation from aborting peers.
+        throwIfAborted(transportSignal);
         const response = await fetch(`${API_BASE}/api/mpcfill/search`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -130,15 +144,17 @@ async function performMpcSearch(
                     ? { includeAllLanguages: true }
                     : {}),
             }),
-            signal: new AbortController().signal,
+            signal: transportSignal,
         });
 
+        throwIfAborted(transportSignal);
         if (!response.ok) {
             console.error("[MPC Autofill] Search failed:", response.status);
             return [];
         }
 
         const data: MpcSearchResponse = await response.json();
+        throwIfAborted(transportSignal);
         // Parse card names to extract base names (strips { } and ( ) suffixes)
         const cards = (data.cards || []).map((card) => ({
             ...card,
@@ -149,10 +165,14 @@ async function performMpcSearch(
         // Do not populate the cache when every subscriber abandoned this request.
         if (cards.length > 0 && activeSubscribers.size > 0) {
             await cacheMpcSearch(cacheKey, cardType, cards);
+            throwIfAborted(transportSignal);
         }
 
         return cards;
     } catch (err) {
+        if (transportSignal.aborted) {
+            throwIfAborted(transportSignal);
+        }
         if (isAbortError(err)) {
             throw err;
         }
@@ -190,23 +210,30 @@ export async function searchMpcAutofill(
 
     let inFlight = inFlightMpcSearches.get(requestKey);
     if (!inFlight) {
+        const controller = new AbortController();
         const activeSubscribers = new Set<symbol>();
-        const promise = performMpcSearch(
+        const entry: InFlightMpcSearch = {
+            promise: Promise.resolve([]),
+            activeSubscribers,
+            controller,
+        };
+        entry.promise = performMpcSearch(
             query,
             cardType,
             fuzzySearch,
             options,
             cacheKey,
-            activeSubscribers
+            activeSubscribers,
+            controller.signal
         );
-        inFlight = { promise, activeSubscribers };
-        inFlightMpcSearches.set(requestKey, inFlight);
-        void promise.finally(() => {
-            inFlightMpcSearches.delete(requestKey);
+        inFlight = entry;
+        inFlightMpcSearches.set(requestKey, entry);
+        void entry.promise.finally(() => {
+            removeInFlightMpcSearch(requestKey, entry);
         }).catch(() => undefined);
     }
 
-    return subscribeToMpcSearch(inFlight, signal);
+    return subscribeToMpcSearch(requestKey, inFlight, signal);
 }
 
 /**
