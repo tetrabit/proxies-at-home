@@ -14,10 +14,7 @@ import { useFilteredAndSortedCards } from "@/hooks/useFilteredAndSortedCards";
 import { AutoTooltip, NumberInput, SplitButton } from "../common";
 import { extractMpcIdentifierFromImageId } from "@/helpers/mpcAutofillApi";
 import { inferImageSource } from "@/helpers/imageSourceUtils";
-import {
-  buildCollatedDuplexPageOrder,
-  splitInterleavedDuplexPageIndices,
-} from "@/helpers/duplexCollation";
+import { buildCollatedDuplexPageOrder } from "@/helpers/duplexCollation";
 import { applyCalibration } from "@/helpers/printerCalibrationApi";
 import { applyInheritedCardbackTargetBleed, normalizeSharedCardbackTargetBleed } from "@/helpers/backBleedSettings";
 import {
@@ -74,11 +71,6 @@ async function savePdfBlob(blob: Blob, filename: string) {
   document.body.removeChild(link);
   /* v8 ignore next -- delayed object-URL revocation is a browser download lifecycle seam; save behavior is covered by PDF export tests. @preserve */
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-async function savePdfBytes(pdfBytes: Uint8Array, filename: string) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await savePdfBlob(new Blob([pdfBytes as any], { type: "application/pdf" }), filename);
 }
 
 export function ExportActions({ cards }: Props) {
@@ -421,70 +413,48 @@ export function ExportActions({ cards }: Props) {
           const frontPages = frontsPdf ? frontsPdf.getPageIndices() : [];
           const backPages = backsPdf ? backsPdf.getPageIndices() : [];
 
-          let finalPdfBytes: Uint8Array;
+          setProgress(92);
+          const groupedPdf = await PDFDocument.create();
+
+          if (frontsPdf) {
+            const groupedFrontPages = await groupedPdf.copyPages(frontsPdf, frontPages);
+            groupedFrontPages.forEach((page) => groupedPdf.addPage(page));
+          }
+
+          if (backsPdf) {
+            const groupedBackPages = await groupedPdf.copyPages(backsPdf, backPages);
+            groupedBackPages.forEach((page) => groupedPdf.addPage(page));
+          }
+
+          let finalPdfBlob: Blob;
           if (printerCalibrationEnabled && printerCalibrationProfileId && (frontPages.length > 0 || backPages.length > 0)) {
             setLoadingTask("Generating PDF");
             setLoadingMessage("Applying Printer Calibration");
-            const interleavedPdf = await PDFDocument.create();
-            const calibrationOrder = buildCollatedDuplexPageOrder(frontPages.length, backPages.length);
-
-            for (const step of calibrationOrder) {
-              if (step.src === 'front' && frontsPdf) {
-                const [page] = await interleavedPdf.copyPages(frontsPdf, [step.index]);
-                interleavedPdf.addPage(page);
-              }
-              if (step.src === 'back' && backsPdf) {
-                const [page] = await interleavedPdf.copyPages(backsPdf, [step.index]);
-                interleavedPdf.addPage(page);
-              }
-            }
-
-            const interleavedBytes = await interleavedPdf.save();
-            const calibratedBlob = await applyCalibration(
+            const groupedBytes = await groupedPdf.save();
+            const groupedBlob = new Blob([
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              new Blob([interleavedBytes as any], { type: "application/pdf" }),
+              groupedBytes as any,
+            ], { type: "application/pdf" });
+            finalPdfBlob = await applyCalibration(
+              groupedBlob,
               printerCalibrationProfileId,
-              { pageMode: 'duplex' }
+              frontPages.length > 0
+                ? { pageMode: 'grouped-duplex', frontPageCount: frontPages.length }
+                : { pageMode: 'back-only' }
             );
-            const calibratedBytes = new Uint8Array(await calibratedBlob.arrayBuffer());
-            const calibratedPdf = await PDFDocument.load(calibratedBytes);
-            const regroupedPdf = await PDFDocument.create();
-            const { frontPageIndices, backPageIndices } = splitInterleavedDuplexPageIndices(frontPages.length, backPages.length);
-
-            if (frontPageIndices.length > 0) {
-              const regroupedFrontPages = await regroupedPdf.copyPages(calibratedPdf, frontPageIndices);
-              regroupedFrontPages.forEach((page) => regroupedPdf.addPage(page));
-            }
-            if (backPageIndices.length > 0) {
-              const regroupedBackPages = await regroupedPdf.copyPages(calibratedPdf, backPageIndices);
-              regroupedBackPages.forEach((page) => regroupedPdf.addPage(page));
-            }
-
-            finalPdfBytes = await regroupedPdf.save();
             setLoadingTask("Generating PDF");
             setLoadingMessage(null);
           } else {
-            // Merge fronts and backs into single grouped PDF with no calibration
-            setProgress(92);
-            const mergedPdf = await PDFDocument.create();
-
-            if (frontsPdf) {
-              const groupedFrontPages = await mergedPdf.copyPages(frontsPdf, frontPages);
-              groupedFrontPages.forEach(page => mergedPdf.addPage(page));
-            }
-
-            if (backsPdf) {
-              const groupedBackPages = await mergedPdf.copyPages(backsPdf, backPages);
-              groupedBackPages.forEach(page => mergedPdf.addPage(page));
-            }
-
-            finalPdfBytes = await mergedPdf.save();
+            finalPdfBlob = new Blob([
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await groupedPdf.save() as any,
+            ], { type: "application/pdf" });
           }
 
           const date = new Date().toISOString().slice(0, 10);
           const filename = `proxxies_${date}_duplex.pdf`;
           setProgress(95);
-          await savePdfBytes(finalPdfBytes, filename);
+          await savePdfBlob(finalPdfBlob, filename);
 
           setProgress(100);
           return; // Skip the normal export path below

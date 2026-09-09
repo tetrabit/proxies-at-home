@@ -1,0 +1,155 @@
+// @vitest-environment node
+
+import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(scriptDirectory, "../..");
+const promotionScript = path.join(scriptDirectory, "promote-preferences.mjs");
+const artifactRoot = path.join(repositoryRoot, ".review-artifacts");
+
+let artifactDirectory: string;
+
+async function createExclusiveArtifactDirectory(): Promise<string> {
+  await mkdir(artifactRoot, { recursive: true });
+
+  for (let id = 1; ; id += 1) {
+    const candidate = path.join(
+      artifactRoot,
+      `preference-promotion-validation-${String(id).padStart(2, "0")}`
+    );
+
+    try {
+      await mkdir(candidate);
+      return candidate;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function runPromotion(sourcePath: string, destinationPath: string) {
+  return new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [promotionScript, sourcePath, "--destination", destinationPath],
+      { cwd: repositoryRoot, stdio: ["ignore", "ignore", "pipe"] }
+    );
+    let stderr = "";
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stderr }));
+  });
+}
+
+function validCandidate() {
+  return {
+    identifier: "abc123",
+    name: "Thalia, Guardian of Thraben",
+    rawName: "Thalia, Guardian of Thraben",
+    smallThumbnailUrl: "https://example.test/small.jpg",
+    mediumThumbnailUrl: "https://example.test/medium.jpg",
+    dpi: 300,
+    tags: ["human"],
+    sourceName: "MakePlayingCards",
+    source: "mpc",
+    extension: "jpg",
+    size: 12345,
+  };
+}
+
+beforeAll(async () => {
+  artifactDirectory = await createExclusiveArtifactDirectory();
+});
+
+afterAll(() => {
+  // Evidence is intentionally retained under .review-artifacts.
+});
+
+describe("preference promotion CLI", { retry: 0 }, () => {
+  it.each([
+    [
+      "versioned",
+      {
+        version: "1",
+        exportedAt: "2026-09-09T00:00:00.000Z",
+        cases: [],
+      },
+      "Invalid preference fixture: missing version",
+    ],
+    [
+      "unversioned",
+      {
+        cases: [{ name: "Thalia, Guardian of Thraben", candidates: {} }],
+      },
+      "Invalid preference fixture: candidates must be an array",
+    ],
+  ])(
+    "reports an explicit error for malformed %s input without changing the destination",
+    async (_kind, malformedPayload, expectedError) => {
+      const sourcePath = path.join(artifactDirectory, `${_kind}-malformed.json`);
+      const destinationPath = path.join(artifactDirectory, `${_kind}-destination.json`);
+      const priorBytes = `prior-${_kind}-destination-bytes\n`;
+      await writeFile(sourcePath, JSON.stringify(malformedPayload), "utf8");
+      await writeFile(destinationPath, priorBytes, "utf8");
+
+      const result = await runPromotion(sourcePath, destinationPath);
+
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(expectedError);
+      await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+    }
+  );
+
+  it("validates and normalizes a versioned fixture before atomically promoting it", async () => {
+    const sourcePath = path.join(artifactDirectory, "valid-versioned.json");
+    const destinationPath = path.join(artifactDirectory, "valid-destination.json");
+    await writeFile(
+      sourcePath,
+      JSON.stringify({
+        version: 1,
+        exportedAt: "2026-09-09T00:00:00.000Z",
+        cases: [
+          {
+            source: {
+              name: "Thalia, Guardian of Thraben",
+              set: "DKA",
+              collectorNumber: "24",
+            },
+            expectedIdentifier: "abc123",
+            candidates: [validCandidate()],
+          },
+        ],
+      }),
+      "utf8"
+    );
+
+    const result = await runPromotion(sourcePath, destinationPath);
+
+    expect(result.code).toBe(0);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(
+      `${JSON.stringify(
+        {
+          cases: [
+            {
+              name: "Thalia, Guardian of Thraben",
+              expectedIdentifier: "abc123",
+              candidates: [validCandidate()],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+  });
+});

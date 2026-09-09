@@ -147,12 +147,16 @@ vi.mock('@/helpers/printerCalibrationApi', () => ({
   applyCalibration: (...args: unknown[]) => mocks.applyCalibration(...args),
 }));
 
-vi.mock('pdf-lib', () => ({
-  PDFDocument: {
-    load: (...args: unknown[]) => mocks.pdfLoad(...args),
-    create: (...args: unknown[]) => mocks.pdfCreate(...args),
-  },
-}));
+vi.mock('pdf-lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('pdf-lib')>();
+  return {
+    PDFDocument: {
+      ...actual.PDFDocument,
+      load: (...args: unknown[]) => mocks.pdfLoad(...args),
+      create: (...args: unknown[]) => mocks.pdfCreate(...args),
+    },
+  };
+});
 
 vi.mock('../common', () => ({
   AutoTooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -485,7 +489,10 @@ describe('ExportActions', () => {
     renderExport();
     fireEvent.click(screen.getAllByText('Export to PDF').at(-1)!);
     await waitFor(() => expect(mocks.exportProxyPagesToPdf).toHaveBeenCalledTimes(4));
-    expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-1', { pageMode: 'duplex' });
+    expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-1', {
+      pageMode: 'grouped-duplex',
+      frontPageCount: 2,
+    });
 
     mocks.exportMode = 'duplex-collated';
     renderExport();
@@ -500,6 +507,80 @@ describe('ExportActions', () => {
     mocks.settingsState.useCustomBackOffset = false;
     mocks.settingsState.printerCalibrationEnabled = false;
     mocks.settingsState.printerCalibrationProfileId = undefined;
+  });
+
+  it('sends a real grouped duplex PDF directly to calibration while preserving page order and back offset boxes', async () => {
+    const { PDFDocument } = await vi.importActual<typeof import('pdf-lib')>('pdf-lib');
+    const buildPdf = async (pages: Array<{ width: number; height: number; cropX?: number; cropY?: number }>) => {
+      const pdf = await PDFDocument.create();
+      pages.forEach(({ width, height, cropX, cropY }, index) => {
+        const page = pdf.addPage([width, height]);
+        if (cropX !== undefined && cropY !== undefined) {
+          page.setCropBox(cropX, cropY, width - cropX, height - cropY);
+        }
+        page.drawText(`page-${index}`, { x: 5, y: 5 });
+      });
+      return pdf.save();
+    };
+    const frontBytes = await buildPdf([
+      { width: 101, height: 151 },
+      { width: 102, height: 152 },
+    ]);
+    const backBytes = await buildPdf([
+      { width: 201, height: 251, cropX: 6, cropY: 7 },
+      { width: 202, height: 252, cropX: 6, cropY: 7 },
+    ]);
+    let calibrationInput: Blob | undefined;
+    let downloadedPdf: Blob | undefined;
+
+    mocks.exportMode = 'duplex';
+    mocks.settingsState.useCustomBackOffset = true;
+    mocks.settingsState.cardBackPositionX = 6;
+    mocks.settingsState.cardBackPositionY = 7;
+    mocks.settingsState.printerCalibrationEnabled = true;
+    mocks.settingsState.printerCalibrationProfileId = 'profile-grouped';
+    mocks.exportProxyPagesToPdf
+      .mockResolvedValueOnce(frontBytes)
+      .mockResolvedValueOnce(backBytes);
+    mocks.pdfLoad.mockImplementation((bytes: Uint8Array) => PDFDocument.load(bytes));
+    mocks.pdfCreate.mockImplementation(() => PDFDocument.create());
+    mocks.applyCalibration.mockImplementation(async (blob: Blob) => {
+      calibrationInput = blob;
+      return blob;
+    });
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      downloadedPdf = blob;
+      return 'blob:grouped-pdf';
+    });
+    renderExport();
+
+    fireEvent.click(screen.getByText('Export to PDF'));
+    await waitFor(() => expect(mocks.applyCalibration).toHaveBeenCalledTimes(1));
+
+    expect(mocks.applyCalibration).toHaveBeenCalledWith(expect.any(Blob), 'profile-grouped', {
+      pageMode: 'grouped-duplex',
+      frontPageCount: 2,
+    });
+    expect(mocks.exportProxyPagesToPdf.mock.calls[1][0].pdfSettings).toMatchObject({
+      rightAlignRows: true,
+      cardPositionX: 6,
+      cardPositionY: 7,
+    });
+
+    const calibrationPdf = await PDFDocument.load(await calibrationInput!.arrayBuffer());
+    expect(calibrationPdf.getPages().map((page) => page.getMediaBox())).toEqual([
+      { x: 0, y: 0, width: 101, height: 151 },
+      { x: 0, y: 0, width: 102, height: 152 },
+      { x: 0, y: 0, width: 201, height: 251 },
+      { x: 0, y: 0, width: 202, height: 252 },
+    ]);
+
+    const downloaded = await PDFDocument.load(await downloadedPdf!.arrayBuffer());
+    expect(downloaded.getPageCount()).toBe(4);
+    expect(downloaded.getPages().slice(2).map((page) => page.getCropBox())).toEqual([
+      { x: 6, y: 7, width: 195, height: 244 },
+      { x: 6, y: 7, width: 196, height: 245 },
+    ]);
   });
 
   it('calibrates duplex exports when only one side has pages', async () => {
