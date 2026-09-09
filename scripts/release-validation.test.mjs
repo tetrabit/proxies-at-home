@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const releaseScript = path.join(repositoryRoot, 'scripts', 'release.mjs');
-const fixtureRoot = process.env.RELEASE_VALIDATION_FIXTURE_ROOT
-  ? path.resolve(process.env.RELEASE_VALIDATION_FIXTURE_ROOT)
-  : path.join(repositoryRoot, '.review-artifacts', 'release-validation-test-fixtures');
+const releaseValidationTestScript = fileURLToPath(import.meta.url);
+const fixtureRoot = path.join(
+  repositoryRoot,
+  '.review-artifacts',
+  `release-validation-test-fixtures-${randomUUID()}`,
+);
 
 const componentBuildCommand = 'npm:run build:parallel';
 const validationCommandEvents = [
@@ -114,6 +117,43 @@ function assertCommandOccurredBefore(events, earlierCommand, laterCommand) {
 function assertNoReleaseMutation(events) {
   assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
 }
+
+test('fixture creation ignores an externally supplied root', () => {
+  assert.match(fixtureRoot, new RegExp(`^${repositoryRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.review-artifacts/`));
+
+  const fixture = createFixture();
+  assert.equal(path.dirname(fixture.fixtureDirectory), fixtureRoot);
+});
+
+test('an external fixture-root environment value cannot redirect fixture writes', () => {
+  const externalFixtureRoot = path.join(repositoryRoot, `release-validation-unsafe-target-${randomUUID()}`);
+  const environment = {
+    ...process.env,
+    RELEASE_VALIDATION_FIXTURE_ROOT: externalFixtureRoot,
+  };
+  delete environment.NODE_TEST_CONTEXT;
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--test',
+      '--test-name-pattern',
+      '^fixture creation ignores an externally supplied root$',
+      releaseValidationTestScript,
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: environment,
+    },
+  );
+
+  const output = `${result.stdout}\n${result.stderr}`;
+
+  assert.equal(result.status, 0, output);
+  assert.match(output, /fixture creation ignores an externally supplied root/);
+  assert.match(output, /pass 1/);
+  assert.equal(existsSync(externalFixtureRoot), false, `fixture writer created ${externalFixtureRoot}`);
+});
 
 test('a failing aggregate component build aborts release validation before downstream gates', () => {
   const fixture = createFixture({ failingNpmCommand: 'run build:parallel' });
