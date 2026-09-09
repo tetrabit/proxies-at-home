@@ -11,7 +11,7 @@ export const UpdateNotification: React.FC = () => {
     useEffect(() => {
         if (!window.electronAPI) return;
 
-        window.electronAPI.onUpdateStatus((newStatus: UpdateStatus, newInfo?: UpdateEventInfo) => {
+        return window.electronAPI.onUpdateStatus((newStatus: UpdateStatus, newInfo?: UpdateEventInfo) => {
             debugLog('Update Status:', newStatus, newInfo);
             setStatus(newStatus);
             setInfo(newInfo ?? null);

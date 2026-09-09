@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import '@testing-library/jest-dom';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
@@ -7,6 +8,7 @@ import { useSettingsStore } from '@/store/settings';
 import { db } from '@/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import * as effectCache from '@/helpers/effectCache';
+import type { CardOption } from '../../../../shared/types';
 
 type MockModalProps = {
     onApply: (uuid: string, overrides: unknown) => void;
@@ -104,6 +106,29 @@ describe('CardEditorModalWrapper', () => {
         mockModalStore.mockImplementation((selector: (state: typeof mockStoreData) => unknown) => selector(mockStoreData));
         mockSettingsStore.mockImplementation((selector: (state: { dpi: number }) => unknown) => selector({ dpi: 300 }));
     });
+
+    const renderWithActualDexie = (actualDb: typeof db) => {
+        const mockCards = db.cards;
+        const mockTransaction = db.transaction;
+        db.cards = actualDb.cards;
+        db.transaction = actualDb.transaction.bind(actualDb) as typeof db.transaction;
+        mockLiveQuery
+            .mockReturnValueOnce({ uuid: 'editor-card', imageId: 'editor-image', projectId: 'project-a' })
+            .mockReturnValueOnce(undefined)
+            .mockReturnValueOnce(undefined)
+            .mockReturnValueOnce(undefined);
+        render(<CardEditorModalWrapper />);
+        const applySelected = latestModalProps?.onApplyToSelected;
+        if (!applySelected) throw new Error('Expected selected-apply callback');
+
+        return {
+            applySelected,
+            restore: () => {
+                db.cards = mockCards;
+                db.transaction = mockTransaction;
+            },
+        };
+    };
 
     it('should render nothing if card is missing (loading state)', () => {
         // Ensure store has no card so fallback doesn't happen
@@ -290,6 +315,155 @@ describe('CardEditorModalWrapper', () => {
 
         await new Promise(resolve => setTimeout(resolve, 10));
         expect(effectCache.queueBulkPreRender).toHaveBeenCalled();
+    });
+
+    it('rejects foreign selected cards before bulk writes in a real Dexie transaction', async () => {
+        const { db: actualDb } = await vi.importActual<typeof import('@/db')>('@/db');
+        const testId = crypto.randomUUID();
+        const projectCard: CardOption = {
+            uuid: `${testId}-project`,
+            name: 'Project card',
+            order: 0,
+            isUserUpload: false,
+            projectId: 'project-a',
+        };
+        const foreignCard: CardOption = {
+            uuid: `${testId}-foreign`,
+            name: 'Foreign card',
+            order: 1,
+            isUserUpload: false,
+            projectId: 'project-b',
+        };
+        await actualDb.cards.bulkAdd([projectCard, foreignCard]);
+        const bulkPut = vi.spyOn(actualDb.cards, 'bulkPut');
+        const { applySelected, restore } = renderWithActualDexie(actualDb);
+
+        try {
+            await expect(applySelected(
+                [projectCard.uuid, foreignCard.uuid],
+                { brightness: 1.5 },
+            )).rejects.toThrow('Cannot apply overrides to cards outside the editor project');
+
+            expect(bulkPut).not.toHaveBeenCalled();
+            expect((await actualDb.cards.get(projectCard.uuid))?.overrides).toBeUndefined();
+            expect((await actualDb.cards.get(foreignCard.uuid))?.overrides).toBeUndefined();
+        } finally {
+            restore();
+            bulkPut.mockRestore();
+        }
+    });
+
+    it('rejects a missing selected card before bulk writes in a real Dexie transaction', async () => {
+        const { db: actualDb } = await vi.importActual<typeof import('@/db')>('@/db');
+        const testId = crypto.randomUUID();
+        const projectCard: CardOption = {
+            uuid: `${testId}-project`,
+            name: 'Project card',
+            order: 0,
+            isUserUpload: false,
+            projectId: 'project-a',
+        };
+        await actualDb.cards.add(projectCard);
+        const bulkPut = vi.spyOn(actualDb.cards, 'bulkPut');
+        const { applySelected, restore } = renderWithActualDexie(actualDb);
+
+        try {
+            await expect(applySelected(
+                [projectCard.uuid, `${testId}-missing`],
+                { brightness: 1.5 },
+            )).rejects.toThrow('Cannot apply overrides to cards outside the editor project');
+
+            expect(bulkPut).not.toHaveBeenCalled();
+            expect((await actualDb.cards.get(projectCard.uuid))?.overrides).toBeUndefined();
+        } finally {
+            restore();
+            bulkPut.mockRestore();
+        }
+    });
+
+    it('rejects a projectless selected card before bulk writes in a real Dexie transaction', async () => {
+        const { db: actualDb } = await vi.importActual<typeof import('@/db')>('@/db');
+        const testId = crypto.randomUUID();
+        const projectlessCard: CardOption = {
+            uuid: `${testId}-projectless`,
+            name: 'Projectless card',
+            order: 0,
+            isUserUpload: false,
+        };
+        await actualDb.cards.add(projectlessCard);
+        const bulkPut = vi.spyOn(actualDb.cards, 'bulkPut');
+        const { applySelected, restore } = renderWithActualDexie(actualDb);
+
+        try {
+            await expect(applySelected(
+                [projectlessCard.uuid],
+                { brightness: 1.5 },
+            )).rejects.toThrow('Cannot apply overrides to cards outside the editor project');
+
+            expect(bulkPut).not.toHaveBeenCalled();
+            expect((await actualDb.cards.get(projectlessCard.uuid))?.overrides).toBeUndefined();
+        } finally {
+            restore();
+            bulkPut.mockRestore();
+        }
+    });
+
+    it('rejects an empty selected-card list before a real Dexie transaction writes', async () => {
+        const { db: actualDb } = await vi.importActual<typeof import('@/db')>('@/db');
+        const bulkPut = vi.spyOn(actualDb.cards, 'bulkPut');
+        const { applySelected, restore } = renderWithActualDexie(actualDb);
+
+        try {
+            await expect(applySelected(
+                [],
+                { brightness: 1.5 },
+            )).rejects.toThrow('Cannot apply overrides without selected cards');
+
+            expect(bulkPut).not.toHaveBeenCalled();
+        } finally {
+            restore();
+            bulkPut.mockRestore();
+        }
+    });
+
+    it('updates same-project selected cards in a real Dexie transaction', async () => {
+        const { db: actualDb } = await vi.importActual<typeof import('@/db')>('@/db');
+        const testId = crypto.randomUUID();
+        const selectedCards: CardOption[] = [
+            {
+                uuid: `${testId}-one`,
+                name: 'First project card',
+                order: 0,
+                isUserUpload: false,
+                projectId: 'project-a',
+            },
+            {
+                uuid: `${testId}-two`,
+                name: 'Second project card',
+                order: 1,
+                isUserUpload: false,
+                projectId: 'project-a',
+            },
+        ];
+        await actualDb.cards.bulkAdd(selectedCards);
+        const bulkPut = vi.spyOn(actualDb.cards, 'bulkPut');
+        const { applySelected, restore } = renderWithActualDexie(actualDb);
+
+        try {
+            await expect(applySelected(
+                selectedCards.map(card => card.uuid),
+                { brightness: 1.5 },
+            )).resolves.toBeUndefined();
+
+            expect(bulkPut).toHaveBeenCalledTimes(1);
+            await expect(actualDb.cards.bulkGet(selectedCards.map(card => card.uuid))).resolves.toEqual([
+                expect.objectContaining({ uuid: selectedCards[0].uuid, overrides: { brightness: 1.5 } }),
+                expect.objectContaining({ uuid: selectedCards[1].uuid, overrides: { brightness: 1.5 } }),
+            ]);
+        } finally {
+            restore();
+            bulkPut.mockRestore();
+        }
     });
 
     it('rejects a mixed-project selection before bulk writes and keeps the modal open', async () => {

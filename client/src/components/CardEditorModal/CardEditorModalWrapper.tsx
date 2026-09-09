@@ -11,9 +11,40 @@ import { CardEditorModal } from './CardEditorModal';
 import { useCardEditorModalStore } from '@/store';
 import { useSettingsStore } from '@/store/settings';
 import { db, type Image } from '@/db';
-import type { CardOverrides } from '../../../../shared/types';
+import type { CardOption, CardOverrides } from '../../../../shared/types';
 import { preRenderEffect, queueBulkPreRender } from '@/helpers/effectCache';
 import { hasActiveAdjustments } from '@/helpers/adjustmentUtils';
+
+async function applyOverridesToSelectedInProject(
+    database: typeof db,
+    editorProjectId: string | undefined,
+    uuids: string[],
+    overrides: CardOverrides | undefined,
+): Promise<CardOption[]> {
+    // Reject an unscoped editor or an empty selection before starting a write transaction.
+    if (!editorProjectId?.trim()) {
+        throw new Error('Cannot apply overrides without an editor project');
+    }
+
+    const requestedUuids = new Set(uuids);
+    if (requestedUuids.size === 0) {
+        throw new Error('Cannot apply overrides without selected cards');
+    }
+
+    // Validate project membership and write in the same transaction.
+    return database.transaction('rw', database.cards, async () => {
+        const cards = await database.cards.where('uuid').anyOf(uuids).toArray();
+        if (
+            cards.length !== requestedUuids.size ||
+            cards.some(card => !card.projectId?.trim() || card.projectId !== editorProjectId)
+        ) {
+            throw new Error('Cannot apply overrides to cards outside the editor project');
+        }
+
+        await database.cards.bulkPut(cards.map(card => ({ ...card, overrides })));
+        return cards;
+    });
+}
 
 export function CardEditorModalWrapper() {
     const open = useCardEditorModalStore((state) => state.open);
@@ -147,29 +178,12 @@ export function CardEditorModalWrapper() {
     }, [editorProjectId]);
 
     const handleApplyToSelected = useCallback(async (uuids: string[], overrides: CardOverrides | undefined) => {
-        // Reject an unscoped editor or any missing, projectless, or foreign selection before writing.
-        if (!editorProjectId?.trim()) {
-            throw new Error('Cannot apply overrides without an editor project');
-        }
-
-        const requestedUuids = new Set(uuids);
-        if (requestedUuids.size === 0) {
-            throw new Error('Cannot apply overrides without selected cards');
-        }
-
-        // Validate the complete selection inside the write transaction before bulkPut.
-        const selectedCards = await db.transaction('rw', db.cards, async () => {
-            const cards = await db.cards.where('uuid').anyOf(uuids).toArray();
-            if (
-                cards.length !== requestedUuids.size ||
-                cards.some(card => !card.projectId?.trim() || card.projectId !== editorProjectId)
-            ) {
-                throw new Error('Cannot apply overrides to cards outside the editor project');
-            }
-
-            await db.cards.bulkPut(cards.map(c => ({ ...c, overrides })));
-            return cards;
-        });
+        const selectedCards = await applyOverridesToSelectedInProject(
+            db,
+            editorProjectId,
+            uuids,
+            overrides,
+        );
 
         // Queue pre-rendering in background using requestIdleCallback (non-blocking)
         if (overrides && hasActiveAdjustments(overrides)) {

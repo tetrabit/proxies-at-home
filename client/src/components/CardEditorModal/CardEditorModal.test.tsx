@@ -80,6 +80,12 @@ const createMockImage = (): Image => ({
     exportBlob: new Blob(['test'], { type: 'image/png' }),
 });
 
+const settleImageAnalysis = async () => {
+    await act(async () => {
+        await Promise.resolve();
+    });
+};
+
 describe('CardEditorModal', () => {
     const mockOnClose = vi.fn();
     const mockOnApply = vi.fn();
@@ -102,7 +108,8 @@ describe('CardEditorModal', () => {
         });
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        await settleImageAnalysis();
         vi.clearAllMocks();
     });
 
@@ -209,6 +216,8 @@ describe('CardEditorModal', () => {
                 />
             );
 
+            await settleImageAnalysis();
+
             // Should still show Back
             expect(screen.getByText('Back')).toBeInTheDocument();
         });
@@ -291,7 +300,7 @@ describe('CardEditorModal', () => {
         });
 
         it('should call onApplyToSelected when applying in multi-select mode', async () => {
-            const mockOnApplyToSelected = vi.fn();
+            const mockOnApplyToSelected = vi.fn().mockResolvedValue(undefined);
             render(
                 <CardEditorModal
                     {...defaultProps}
@@ -308,6 +317,69 @@ describe('CardEditorModal', () => {
             });
 
             expect(mockOnApplyToSelected).toHaveBeenCalledWith(['1', '2'], expect.any(Object));
+        });
+
+        it('keeps the actual modal open and shows an error when selected apply rejects', async () => {
+            const rejectedApply = vi.fn().mockRejectedValue(new Error('Selection is no longer valid'));
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            try {
+                render(
+                    <CardEditorModal
+                        {...defaultProps}
+                        selectedCardUuids={['1', '2']}
+                        selectedCount={2}
+                        onApplyToSelected={rejectedApply}
+                    />
+                );
+
+                await act(async () => {
+                    fireEvent.click(screen.getByText('Apply to 2 & Close'));
+                    await Promise.resolve();
+                });
+
+                expect(rejectedApply).toHaveBeenCalledWith(['1', '2'], expect.any(Object));
+                expect(mockOnClose).not.toHaveBeenCalled();
+                expect(await screen.findByRole('alert')).toHaveTextContent('Selection is no longer valid');
+                expect(screen.getByText('Apply to 2 & Close')).toBeInTheDocument();
+                expect(errorSpy).toHaveBeenCalledWith(
+                    '[CardEditorModal] Apply failed:',
+                    expect.any(Error),
+                );
+            } finally {
+                errorSpy.mockRestore();
+            }
+        });
+
+        it('retains actual modal state and shows an error when selected reset rejects', async () => {
+            const rejectedReset = vi.fn().mockRejectedValue(new Error('Selection reset failed'));
+            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            try {
+                render(
+                    <CardEditorModal
+                        {...defaultProps}
+                        card={createMockCard({ overrides: { brightness: 1.5 } })}
+                        selectedCardUuids={['1', '2']}
+                        selectedCount={2}
+                        onApplyToSelected={rejectedReset}
+                    />
+                );
+
+                await act(async () => {
+                    fireEvent.click(screen.getByTitle('Reset to global defaults'));
+                    await Promise.resolve();
+                });
+
+                expect(rejectedReset).toHaveBeenCalledWith(['1', '2'], {});
+                expect(mockOnClose).not.toHaveBeenCalled();
+                expect(await screen.findByRole('alert')).toHaveTextContent('Selection reset failed');
+                expect(screen.getByTitle('Reset to global defaults')).toBeInTheDocument();
+                expect(errorSpy).toHaveBeenCalledWith(
+                    '[CardEditorModal] Reset failed:',
+                    expect.any(Error),
+                );
+            } finally {
+                errorSpy.mockRestore();
+            }
         });
 
         it('should call onApply with default params (empty overrides) when reset is clicked', async () => {
@@ -328,42 +400,50 @@ describe('CardEditorModal', () => {
     });
 
     describe('preview controls', () => {
-        it('should toggle DPI settings', () => {
+        it('should toggle DPI settings', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
             const dpiBtn = screen.getByTitle(/Click to switch to/);
             expect(dpiBtn).toHaveTextContent('display');
 
             fireEvent.click(dpiBtn);
+            await settleImageAnalysis();
 
             expect(dpiBtn).toHaveTextContent('export');
         });
 
-        it('should toggle Show Original', () => {
+        it('should toggle Show Original', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
             const originalBtn = screen.getByTitle('Show original (no effects)');
 
             fireEvent.click(originalBtn);
+            await settleImageAnalysis();
             expect(originalBtn).toHaveTextContent('Original');
 
             fireEvent.click(originalBtn);
+            await settleImageAnalysis();
             expect(originalBtn).toHaveTextContent('Adjusted');
         });
 
-        it('should handle zoom via wheel', () => {
+        it('should handle zoom via wheel', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
             const previewWrapper = screen.getByTestId('pixi-preview').parentElement;
             const container = previewWrapper?.parentElement;
 
             if (container) {
                 fireEvent.wheel(container, { deltaY: -100 });
+                await settleImageAnalysis();
                 // Zoom handler executes. We verify no crash.
                 // Detailed state verification would require mocking ZoomControls to render props or store inspection.
                 expect(true).toBe(true);
             }
         });
 
-        it('should handle pan interaction', () => {
+        it('should handle pan interaction', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
             const previewWrapper = screen.getByTestId('pixi-preview').parentElement;
             const container = previewWrapper?.parentElement;
 
@@ -371,11 +451,13 @@ describe('CardEditorModal', () => {
                 // Must ensure correct sequence
                 fireEvent.mouseDown(container, { clientX: 100, clientY: 100 });
                 fireEvent.mouseMove(container, { clientX: 150, clientY: 150 });
+                await settleImageAnalysis();
 
                 // transform should have changed
                 expect(previewWrapper.style.transform).toContain('50px');
 
                 fireEvent.mouseUp(container);
+                await settleImageAnalysis();
             }
         });
     });
@@ -461,8 +543,9 @@ describe('CardEditorModal', () => {
     });
 
     describe('logic coverage', () => {
-        it('should handle window resize for mobile detection', () => {
+        it('should handle window resize for mobile detection', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
 
             // Trigger resize
             act(() => {
@@ -474,6 +557,7 @@ describe('CardEditorModal', () => {
                 global.innerWidth = 1024;
                 global.dispatchEvent(new Event('resize'));
             });
+            await settleImageAnalysis();
         });
         it('should update params when updateParam is called from a section', async () => {
             // Mock one of the sections to capture props and trigger update
@@ -676,8 +760,9 @@ describe('CardEditorModal', () => {
     });
 
     describe('Double-click to reset pan', () => {
-        it('should reset pan position on double-click', () => {
+        it('should reset pan position on double-click', async () => {
             render(<CardEditorModal {...defaultProps} />);
+            await settleImageAnalysis();
 
             const previewWrapper = screen.getByTestId('pixi-preview').parentElement;
             const container = previewWrapper?.parentElement;
@@ -687,12 +772,14 @@ describe('CardEditorModal', () => {
                 fireEvent.mouseDown(container, { clientX: 100, clientY: 100 });
                 fireEvent.mouseMove(container, { clientX: 150, clientY: 150 });
                 fireEvent.mouseUp(container);
+                await settleImageAnalysis();
 
                 // Verify pan was applied
                 expect(previewWrapper?.style.transform).toContain('50px');
 
                 // Double-click to reset
                 fireEvent.doubleClick(container);
+                await settleImageAnalysis();
 
                 // Pan should be reset to 0,0
                 expect(previewWrapper?.style.transform).toContain('0px');

@@ -2,13 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import React from 'react';
 
+type UpdateStatusListener = Parameters<
+    NonNullable<Window['electronAPI']>['onUpdateStatus']
+>[0];
+
 // Store the callback for testing
-let updateStatusCallback: ((status: string, info?: unknown) => void) | null = null;
+let updateStatusCallback: UpdateStatusListener | null = null;
+const activeUpdateListeners = new Set<UpdateStatusListener>();
 
 // Mock window.electronAPI
 const mockElectronAPI = {
-    onUpdateStatus: vi.fn((callback) => {
+    onUpdateStatus: vi.fn((callback: UpdateStatusListener) => {
         updateStatusCallback = callback;
+        activeUpdateListeners.add(callback);
+        return () => activeUpdateListeners.delete(callback);
     }),
     installUpdate: vi.fn(),
 };
@@ -33,6 +40,7 @@ describe('UpdateNotification', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         updateStatusCallback = null;
+        activeUpdateListeners.clear();
         // @ts-expect-error - mocking window.electronAPI
         window.electronAPI = mockElectronAPI;
     });
@@ -45,6 +53,8 @@ describe('UpdateNotification', () => {
         it('should return null', () => {
             delete window.electronAPI;
             const { container } = render(<UpdateNotification />);
+            expect(mockElectronAPI.onUpdateStatus).not.toHaveBeenCalled();
+            expect(activeUpdateListeners.size).toBe(0);
             expect(container.innerHTML).toBe('');
         });
     });
@@ -53,6 +63,28 @@ describe('UpdateNotification', () => {
         it('should register update status listener on mount', () => {
             render(<UpdateNotification />);
             expect(mockElectronAPI.onUpdateStatus).toHaveBeenCalled();
+        });
+
+        it('keeps one updater listener through Strict Mode rerenders and none after unmount', () => {
+            const view = render(
+                <React.StrictMode>
+                    <UpdateNotification />
+                </React.StrictMode>
+            );
+
+            expect(mockElectronAPI.onUpdateStatus).toHaveBeenCalledTimes(2);
+            expect(activeUpdateListeners.size).toBe(1);
+
+            view.rerender(
+                <React.StrictMode>
+                    <UpdateNotification />
+                </React.StrictMode>
+            );
+            expect(mockElectronAPI.onUpdateStatus).toHaveBeenCalledTimes(2);
+            expect(activeUpdateListeners.size).toBe(1);
+
+            view.unmount();
+            expect(activeUpdateListeners.size).toBe(0);
         });
 
         it('should not show anything initially', () => {
@@ -106,7 +138,7 @@ describe('UpdateNotification', () => {
         it('should show unknown error when info is not a string', () => {
             render(<UpdateNotification />);
             act(() => {
-                updateStatusCallback?.('error', { code: 500 });
+                updateStatusCallback?.('error', null);
             });
             expect(screen.getByText('Update failed: Unknown error')).toBeDefined();
         });

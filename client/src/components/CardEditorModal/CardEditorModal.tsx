@@ -66,7 +66,7 @@ interface Props {
     onApply: (cardUuid: string, overrides: CardOption['overrides'], customBlob?: Blob) => void;
     onApplyToAll: (overrides: CardOption['overrides']) => void;
     /** Apply overrides to all selected cards (for multi-select edit mode) */
-    onApplyToSelected?: (selectedUuids: string[], overrides: CardOption['overrides']) => void;
+    onApplyToSelected?: (selectedUuids: string[], overrides: CardOption['overrides']) => Promise<void>;
     /** List of selected card UUIDs (for multi-select edit mode) */
     selectedCardUuids?: string[];
     /** Number of selected cards (for multi-select edit mode) */
@@ -203,6 +203,7 @@ export function CardEditorModal({
     }, [isOpen, card.uuid, backCard?.uuid]);
 
     const [isApplying, setIsApplying] = useState(false);
+    const [applyError, setApplyError] = useState<string | null>(null);
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isPanning, setIsPanning] = useState(false);
@@ -365,12 +366,13 @@ export function CardEditorModal({
 
     const handleApply = useCallback(async (shouldClose = false) => {
         setIsApplying(true);
+        setApplyError(null);
         try {
             const frontOverrides = paramsToOverrides(frontParams);
 
             // In multi-select mode, apply to all selected cards
             if (selectedCardUuids && selectedCardUuids.length > 1 && onApplyToSelected) {
-                onApplyToSelected(selectedCardUuids, frontOverrides);
+                await onApplyToSelected(selectedCardUuids, frontOverrides);
             } else {
                 // Apply front overrides to front card
                 onApply(card.uuid, frontOverrides);
@@ -387,6 +389,7 @@ export function CardEditorModal({
             }
         } catch (err) {
             console.error('[CardEditorModal] Apply failed:', err);
+            setApplyError(err instanceof Error ? err.message : 'Unable to apply card overrides');
         } finally {
             setIsApplying(false);
         }
@@ -399,21 +402,30 @@ export function CardEditorModal({
         onClose();
     }, [params, onApplyToAll, onClose]);
 
-    const handleReset = useCallback(() => {
-        // Reset current face to global defaults
-        setParams(defaultParams);
-        const overrides = paramsToOverrides(defaultParams);
+    const handleReset = useCallback(async () => {
+        setIsApplying(true);
+        setApplyError(null);
+        try {
+            // Reset current face to global defaults
+            const overrides = paramsToOverrides(defaultParams);
 
-        // In multi-select mode, reset all selected cards
-        if (selectedCardUuids && selectedCardUuids.length > 1 && onApplyToSelected) {
-            onApplyToSelected(selectedCardUuids, overrides);
-        } else {
-            // Single card mode
-            if (showBack && backCard) {
-                onApply(backCard.uuid, overrides);
+            // In multi-select mode, reset all selected cards
+            if (selectedCardUuids && selectedCardUuids.length > 1 && onApplyToSelected) {
+                await onApplyToSelected(selectedCardUuids, overrides);
             } else {
-                onApply(card.uuid, overrides);
+                // Single card mode
+                if (showBack && backCard) {
+                    onApply(backCard.uuid, overrides);
+                } else {
+                    onApply(card.uuid, overrides);
+                }
             }
+            setParams(defaultParams);
+        } catch (err) {
+            console.error('[CardEditorModal] Reset failed:', err);
+            setApplyError(err instanceof Error ? err.message : 'Unable to reset card overrides');
+        } finally {
+            setIsApplying(false);
         }
     }, [card.uuid, backCard, showBack, defaultParams, setParams, onApply, onApplyToSelected, selectedCardUuids]);
     const toggleSection = useCallback((id: string) => {
@@ -739,6 +751,11 @@ export function CardEditorModal({
 
             <ModalFooter>
                 <div className="card-editor-footer">
+                    {applyError && (
+                        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                            {applyError}
+                        </p>
+                    )}
                     <Button color="gray" onClick={onClose}>
                         {selectedCount ? 'Close' : 'Cancel'}
                     </Button>

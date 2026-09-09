@@ -124,11 +124,9 @@ function App() {
   // Listen for Electron "About" menu click and settings button click
   useEffect(() => {
     // Electron menu handler
-    if (window.electronAPI?.onShowAbout) {
-      window.electronAPI.onShowAbout(() => {
-        setShowAbout(true);
-      });
-    }
+    const disposeAboutListener = window.electronAPI?.onShowAbout?.(() => {
+      setShowAbout(true);
+    });
 
     // Settings button handler (works in web and Electron)
     const handleOpenAbout = () => setShowAbout(true);
@@ -137,8 +135,10 @@ function App() {
     // Pre-warm workers
     ImageProcessor.getInstance().prewarm();
 
-    return () =>
+    return () => {
+      disposeAboutListener?.();
       window.removeEventListener("open-about-modal", handleOpenAbout);
+    };
   }, []);
 
   return (

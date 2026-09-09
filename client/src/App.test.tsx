@@ -1,6 +1,36 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Suspense } from "react";
+
+type AboutListener = Parameters<
+  NonNullable<Window["electronAPI"]>["onShowAbout"]
+>[0];
+
+const appFixture = vi.hoisted(() => {
+  const imageProcessor = {
+    prewarm: vi.fn<(count?: number) => void>(),
+    cancelAll: vi.fn<() => void>(),
+  };
+
+  return {
+    imageProcessor,
+    projectState: {
+      currentProjectId: "app-test-project",
+      projects: [],
+      loadProjects: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+      createProject: vi
+        .fn<(name: string) => Promise<string>>()
+        .mockResolvedValue("app-test-project"),
+      switchProject: vi.fn<(projectId: string) => Promise<void>>().mockResolvedValue(undefined),
+    },
+    loadPreferences: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    getPreferences: vi.fn<() => Promise<undefined>>().mockResolvedValue(undefined),
+    addPreferences: vi.fn<() => Promise<string>>().mockResolvedValue("default"),
+    autoRestore: vi.fn<() => Promise<null>>().mockResolvedValue(null),
+    showInfoToast: vi.fn<(message: string) => void>(),
+    useShareUrl: vi.fn<() => void>(),
+  };
+});
 
 // Mock the lazy-loaded module before importing App
 vi.mock("@/pages/ProxyBuilderPage", () => ({
@@ -26,13 +56,44 @@ vi.mock("@/components/common", () => ({
   ),
 }));
 
-// Mock ImageProcessor to avoid Worker errors in jsdom
+// Keep this presentation fixture independent of project bootstrap, IndexedDB,
+// server restoration, and worker startup. App.lifecycle.test.tsx covers those paths.
 vi.mock("@/helpers/imageProcessor", () => ({
   ImageProcessor: {
-    getInstance: () => ({
-      prewarm: vi.fn(),
-    }),
+    getInstance: () => appFixture.imageProcessor,
   },
+}));
+
+vi.mock("@/hooks/useShareUrl", () => ({
+  useShareUrl: appFixture.useShareUrl,
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    userPreferences: {
+      get: appFixture.getPreferences,
+      add: appFixture.addPreferences,
+    },
+  },
+}));
+
+vi.mock("@/store", () => ({
+  useProjectStore: {
+    getState: () => appFixture.projectState,
+  },
+  useUserPreferencesStore: {
+    getState: () => ({ load: appFixture.loadPreferences }),
+  },
+}));
+
+vi.mock("@/store/toast", () => ({
+  useToastStore: {
+    getState: () => ({ showInfoToast: appFixture.showInfoToast }),
+  },
+}));
+
+vi.mock("@/helpers/autoRestore", () => ({
+  autoRestore: appFixture.autoRestore,
 }));
 
 import App from "./App";
@@ -91,10 +152,11 @@ describe("App", () => {
   });
 
   it("opens and closes AboutModal from the app event bridge", async () => {
-    let electronAboutHandler: (() => void) | undefined;
+    let electronAboutHandler: AboutListener | undefined;
     vi.stubGlobal("electronAPI", {
-      onShowAbout: vi.fn((handler: () => void) => {
+      onShowAbout: vi.fn((handler: AboutListener) => {
         electronAboutHandler = handler;
+        return vi.fn();
       }),
     });
 
@@ -113,7 +175,9 @@ describe("App", () => {
       expect(screen.getByTestId("about-modal").dataset.open).toBe("false")
     );
 
-    electronAboutHandler?.();
+    act(() => {
+      electronAboutHandler?.();
+    });
     await waitFor(() =>
       expect(screen.getByTestId("about-modal").dataset.open).toBe("true")
     );
@@ -123,5 +187,61 @@ describe("App", () => {
     unmount();
     fireEvent(window, new Event("open-about-modal"));
     expect(screen.queryByTestId("about-modal")).toBeNull();
+  });
+
+  it("removes About bridge listeners on teardown without duplicating them across rerenders and remounts", async () => {
+    const subscribedHandlers = new Set<AboutListener>();
+    const disposeAboutListener = vi.fn();
+    const onShowAbout = vi.fn((handler: AboutListener) => {
+      subscribedHandlers.add(handler);
+      return () => {
+        subscribedHandlers.delete(handler);
+        disposeAboutListener();
+      };
+    });
+    vi.stubGlobal("electronAPI", { onShowAbout });
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+
+    const initial = renderApp();
+    await screen.findByTestId("about-modal");
+    initial.rerender(
+      <Suspense fallback={<div>Loading...</div>}>
+        <App />
+      </Suspense>
+    );
+
+    const firstAboutHandler = addEventListener.mock.calls.find(
+      ([eventName]) => String(eventName) === "open-about-modal"
+    )?.[1];
+    expect(onShowAbout).toHaveBeenCalledTimes(1);
+    expect(addEventListener).toHaveBeenCalledTimes(1);
+    expect(subscribedHandlers.size).toBe(1);
+
+    fireEvent(window, new Event("open-about-modal"));
+    await waitFor(() =>
+      expect(screen.getByTestId("about-modal").dataset.open).toBe("true")
+    );
+
+    initial.unmount();
+    expect(disposeAboutListener).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "open-about-modal",
+      firstAboutHandler
+    );
+    expect(subscribedHandlers.size).toBe(0);
+
+    const remounted = renderApp();
+    await screen.findByTestId("about-modal");
+    expect(onShowAbout).toHaveBeenCalledTimes(2);
+    expect(addEventListener).toHaveBeenCalledTimes(2);
+    expect(subscribedHandlers.size).toBe(1);
+
+    remounted.unmount();
+    expect(disposeAboutListener).toHaveBeenCalledTimes(2);
+    expect(removeEventListener).toHaveBeenCalledTimes(2);
+    expect(subscribedHandlers.size).toBe(0);
+    addEventListener.mockRestore();
+    removeEventListener.mockRestore();
   });
 });
