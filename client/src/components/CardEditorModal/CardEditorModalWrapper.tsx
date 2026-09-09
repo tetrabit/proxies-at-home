@@ -147,9 +147,26 @@ export function CardEditorModalWrapper() {
     }, [editorProjectId]);
 
     const handleApplyToSelected = useCallback(async (uuids: string[], overrides: CardOverrides | undefined) => {
-        // Apply to selected cards in a single transaction to avoid cascading re-renders
+        // Reject an unscoped editor or any missing, projectless, or foreign selection before writing.
+        if (!editorProjectId?.trim()) {
+            throw new Error('Cannot apply overrides without an editor project');
+        }
+
+        const requestedUuids = new Set(uuids);
+        if (requestedUuids.size === 0) {
+            throw new Error('Cannot apply overrides without selected cards');
+        }
+
+        // Validate the complete selection inside the write transaction before bulkPut.
         const selectedCards = await db.transaction('rw', db.cards, async () => {
             const cards = await db.cards.where('uuid').anyOf(uuids).toArray();
+            if (
+                cards.length !== requestedUuids.size ||
+                cards.some(card => !card.projectId?.trim() || card.projectId !== editorProjectId)
+            ) {
+                throw new Error('Cannot apply overrides to cards outside the editor project');
+            }
+
             await db.cards.bulkPut(cards.map(c => ({ ...c, overrides })));
             return cards;
         });
@@ -171,7 +188,7 @@ export function CardEditorModalWrapper() {
                 queueBulkPreRender(tasks);
             }, 0);
         }
-    }, []);
+    }, [editorProjectId]);
 
     if (!card) return null;
 

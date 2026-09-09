@@ -8,6 +8,16 @@ import { db } from '@/db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import * as effectCache from '@/helpers/effectCache';
 
+type MockModalProps = {
+    onApply: (uuid: string, overrides: unknown) => void;
+    onApplyToAll: (overrides: unknown) => void;
+    onApplyToSelected: (uuids: string[], overrides: unknown) => Promise<void>;
+    onClose: () => void;
+    card: { uuid: string };
+};
+
+let latestModalProps: MockModalProps | undefined;
+
 // Mocks
 vi.mock('@/store', () => ({
     useCardEditorModalStore: vi.fn(),
@@ -49,20 +59,17 @@ vi.mock('@/db', () => ({
 }));
 
 vi.mock('./CardEditorModal', () => ({
-    CardEditorModal: (props: {
-        onApply: (uuid: string, overrides: unknown) => void;
-        onApplyToAll: (overrides: unknown) => void;
-        onApplyToSelected: (uuids: string[], overrides: unknown) => void;
-        onClose: () => void;
-        card: { uuid: string };
-    }) => (
-        <div data-testid="card-editor-modal">
-            <button onClick={() => props.onApply(props.card.uuid, { brightness: 1.5 })}>Apply</button>
-            <button onClick={() => props.onApplyToAll({ brightness: 1.5 })}>Apply All</button>
-            <button onClick={() => props.onApplyToSelected(['uuid1', 'uuid2'], { brightness: 1.5 })}>Apply Selected</button>
-            <button onClick={props.onClose}>Close</button>
-        </div>
-    ),
+    CardEditorModal: (props: MockModalProps) => {
+        latestModalProps = props;
+        return (
+            <div data-testid="card-editor-modal">
+                <button onClick={() => props.onApply(props.card.uuid, { brightness: 1.5 })}>Apply</button>
+                <button onClick={() => props.onApplyToAll({ brightness: 1.5 })}>Apply All</button>
+                <button onClick={() => void props.onApplyToSelected(['uuid1', 'uuid2'], { brightness: 1.5 })}>Apply Selected</button>
+                <button onClick={props.onClose}>Close</button>
+            </div>
+        );
+    },
 }));
 
 vi.mock('@/helpers/effectCache', () => ({
@@ -93,6 +100,7 @@ describe('CardEditorModalWrapper', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        latestModalProps = undefined;
         mockModalStore.mockImplementation((selector: (state: typeof mockStoreData) => unknown) => selector(mockStoreData));
         mockSettingsStore.mockImplementation((selector: (state: { dpi: number }) => unknown) => selector({ dpi: 300 }));
     });
@@ -251,14 +259,14 @@ describe('CardEditorModalWrapper', () => {
 
     it('should handle apply selected', async () => {
         mockLiveQuery
-            .mockReturnValueOnce({ uuid: 'test-uuid', imageId: 'test-img' })
+            .mockReturnValueOnce({ uuid: 'test-uuid', imageId: 'test-img', projectId: 'project-a' })
             .mockReturnValueOnce({ id: 'test-img' })
             .mockReturnValueOnce(undefined)
             .mockReturnValueOnce(undefined);
 
         const mockCards = [
-            { uuid: 'uuid1', imageId: 'img1' },
-            { uuid: 'uuid2', imageId: 'img2' }
+            { uuid: 'uuid1', imageId: 'img1', projectId: 'project-a' },
+            { uuid: 'uuid2', imageId: 'img2', projectId: 'project-a' }
         ];
         // Mock where().anyOf().toArray() chain
         (db.cards.where as Mock).mockReturnValue({
@@ -276,12 +284,42 @@ describe('CardEditorModalWrapper', () => {
         });
 
         expect(db.cards.bulkPut).toHaveBeenCalledWith([
-            { uuid: 'uuid1', imageId: 'img1', overrides: { brightness: 1.5 } },
-            { uuid: 'uuid2', imageId: 'img2', overrides: { brightness: 1.5 } }
+            { uuid: 'uuid1', imageId: 'img1', projectId: 'project-a', overrides: { brightness: 1.5 } },
+            { uuid: 'uuid2', imageId: 'img2', projectId: 'project-a', overrides: { brightness: 1.5 } }
         ]);
 
         await new Promise(resolve => setTimeout(resolve, 10));
         expect(effectCache.queueBulkPreRender).toHaveBeenCalled();
+    });
+
+    it('rejects a mixed-project selection before bulk writes and keeps the modal open', async () => {
+        mockLiveQuery
+            .mockReturnValueOnce({ uuid: 'a1', imageId: 'img-a1', projectId: 'project-a' })
+            .mockReturnValueOnce({ id: 'img-a1' })
+            .mockReturnValueOnce(undefined)
+            .mockReturnValueOnce(undefined);
+
+        (db.cards.where as Mock).mockReturnValue({
+            anyOf: vi.fn().mockReturnValue({
+                toArray: vi.fn().mockResolvedValue([
+                    { uuid: 'a1', imageId: 'img-a1', projectId: 'project-a' },
+                    { uuid: 'b1', imageId: 'img-b1', projectId: 'project-b' },
+                ]),
+            }),
+        });
+
+        render(<CardEditorModalWrapper />);
+
+        const applyToSelected = latestModalProps?.onApplyToSelected;
+        if (!applyToSelected) throw new Error('Expected selected-apply callback');
+
+        await expect(applyToSelected(['a1', 'b1'], { brightness: 1.5 }))
+            .rejects.toThrow('Cannot apply overrides to cards outside the editor project');
+
+        expect(db.cards.bulkPut).not.toHaveBeenCalled();
+        expect(effectCache.queueBulkPreRender).not.toHaveBeenCalled();
+        expect(screen.getByTestId('card-editor-modal')).toBeInTheDocument();
+        expect(mockStoreData.closeModal).not.toHaveBeenCalled();
     });
 
     describe('Back Image Logic', () => {
