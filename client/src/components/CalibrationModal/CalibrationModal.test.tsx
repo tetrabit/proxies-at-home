@@ -23,9 +23,12 @@ const {
   mockValidateFixture,
   mockDbImagesGet,
   mockTrainMpcPreferenceModel,
+  mockBuildMpcPreferenceScoreMap,
   mockHarvestSourcePreferenceCandidates,
   mockBuildMpcSourceVisualProfiles,
   mockBuildMpcVisualPreferenceScoreMap,
+  mockRankCandidates,
+  mockGetSharedMpcPreferenceContext,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
     open: true,
@@ -61,9 +64,22 @@ const {
   mockValidateFixture: vi.fn(),
   mockDbImagesGet: vi.fn(),
   mockTrainMpcPreferenceModel: vi.fn(() => null),
+  mockBuildMpcPreferenceScoreMap: vi.fn(() => ({})),
   mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
   mockBuildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
   mockBuildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
+  mockRankCandidates: vi.fn().mockResolvedValue({
+    fullProcess: [],
+    exactPrinting: [],
+    artMatch: [],
+    fullCard: [],
+    allMatches: [],
+  }),
+  mockGetSharedMpcPreferenceContext: vi.fn().mockResolvedValue({
+    calibrationCases: [],
+    model: null,
+    profiles: {},
+  }),
 }));
 
 vi.mock("@/store", () => ({
@@ -88,7 +104,7 @@ vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
   createSsimCompare: vi.fn(() => vi.fn()),
   FULL_CARD_NORMALIZED_SIZE: 1024,
   filterByExactName: mockFilterByExactName,
-  rankCandidates: vi.fn(),
+  rankCandidates: mockRankCandidates,
   scoreCandidateEnsemble: vi.fn(() => ({
     total: 0,
     metadata: 0,
@@ -99,7 +115,7 @@ vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
 }));
 
 vi.mock("@/helpers/mpcPreferenceModel", () => ({
-  buildMpcPreferenceScoreMap: vi.fn(() => ({})),
+  buildMpcPreferenceScoreMap: mockBuildMpcPreferenceScoreMap,
   trainMpcPreferenceModel: mockTrainMpcPreferenceModel,
 }));
 
@@ -129,6 +145,11 @@ vi.mock("@/helpers/mpcCalibrationStorage", () => ({
   saveMpcCalibrationAssets: mockSaveAssets,
   saveMpcCalibrationRun: mockSaveRun,
   MPC_CALIBRATION_TARGET_CASE_COUNT: 9,
+  MPC_CALIBRATION_DATASET_VERSION: 1,
+}));
+
+vi.mock("@/helpers/mpcPreferenceContextBuilder", () => ({
+  getSharedMpcPreferenceContext: mockGetSharedMpcPreferenceContext,
 }));
 
 vi.mock("@/helpers/mpcCalibrationRunner", () => ({
@@ -460,59 +481,85 @@ describe("CalibrationModal", () => {
     expect(mockCalibrationState.closeModal).toHaveBeenCalled();
   });
 
-  it("passes its effect signal into visual profile decoding", async () => {
-    mockTrainMpcPreferenceModel.mockReturnValue({} as never);
+  it("uses the upgrade-equivalent complete descriptor with the shared preference context", async () => {
+    mockGetSharedMpcPreferenceContext.mockResolvedValue({
+      calibrationCases: [],
+      model: { sourceStats: {} },
+      profiles: {},
+    });
 
     render(<CalibrationModal />);
 
     await waitFor(() => {
-      expect(mockBuildMpcSourceVisualProfiles).toHaveBeenCalledWith(
-        [],
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledWith(
+        {
+          dataset: {
+            calibrationCases: [],
+            version: 1,
+            content: {
+              datasetName: "MPC Calibration Harness",
+              selection: "default-calibration-datasets",
+            },
+          },
+          source: {
+            version: "bootstrap-preference-seeds-v1",
+            content: {
+              seedCardNames: [],
+              targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+            },
+            loadExamples: expect.any(Function),
+          },
+          provider: {
+            version: "mpc-autofill-card-exact-v1",
+            content: { cardType: "CARD", exactName: true },
+          },
+          algorithm: {
+            version: "mpc-preference-model-visual-profile-v1",
+            content: {
+              metadataScore: "buildMpcPreferenceScoreMap",
+              visualProfile: "buildMpcSourceVisualProfiles",
+              visualScore: "buildMpcVisualPreferenceScoreMap",
+            },
+            trainingOptions: {
+              emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+            },
+          },
+        },
         expect.any(AbortSignal)
       );
     });
   });
 
-  it("aborts queued seed transport during harvest without publishing profiles", async () => {
-    mockTrainMpcPreferenceModel.mockReturnValue({} as never);
-    let releaseHarvest!: () => void;
-    const deferredHarvest = new Promise<void>((resolve) => {
-      releaseHarvest = resolve;
-    });
-    mockHarvestSourcePreferenceCandidates.mockImplementation(
-      async (_seedNames, search, _targetSources, signal) => {
-        await search("Seed card", signal);
-        await deferredHarvest;
-        return [];
-      }
+  it("aborts only its shared-context subscription on close and never ranks stale results", async () => {
+    let resolveContext!: (value: {
+      calibrationCases: [];
+      model: { sourceStats: Record<string, never> };
+      profiles: Record<string, never>;
+    }) => void;
+    mockGetSharedMpcPreferenceContext.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveContext = resolve;
+        })
     );
-    mockSearchMpcAutofill
-      .mockResolvedValueOnce(mockFilterByExactName())
-      .mockResolvedValueOnce([]);
 
     const view = render(<CalibrationModal />);
 
     await waitFor(() => {
-      expect(mockSearchMpcAutofill).toHaveBeenLastCalledWith(
-        "Seed card",
-        "CARD",
-        true,
-        {},
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledWith(
+        expect.any(Object),
         expect.any(AbortSignal)
       );
     });
+    const signal = mockGetSharedMpcPreferenceContext.mock.calls[0]?.[1] as AbortSignal;
 
     mockCalibrationState.open = false;
     view.rerender(<CalibrationModal />);
+    expect(signal.aborted).toBe(true);
 
-    await waitFor(() => {
-      const seedSignal = mockSearchMpcAutofill.mock.calls[1]?.[4] as AbortSignal;
-      expect(seedSignal.aborted).toBe(true);
-    });
-    releaseHarvest();
+    resolveContext({ calibrationCases: [], model: { sourceStats: {} }, profiles: {} });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(mockBuildMpcSourceVisualProfiles).not.toHaveBeenCalled();
-    expect(mockBuildMpcVisualPreferenceScoreMap).not.toHaveBeenCalled();
+    expect(mockRankCandidates).not.toHaveBeenCalled();
   });
 });

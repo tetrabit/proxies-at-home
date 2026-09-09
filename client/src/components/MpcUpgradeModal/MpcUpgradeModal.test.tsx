@@ -29,6 +29,7 @@ const {
   mockHarvestSourcePreferenceCandidates,
   mockBuildSourceVisualProfiles,
   mockBuildVisualPreferenceScoreMap,
+  mockGetSharedMpcPreferenceContext,
 } = vi.hoisted(() => {
   return {
     mockCloseModal: vi.fn(),
@@ -91,6 +92,11 @@ const {
     mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
     mockBuildSourceVisualProfiles: vi.fn().mockResolvedValue({}),
     mockBuildVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
+    mockGetSharedMpcPreferenceContext: vi.fn().mockResolvedValue({
+      calibrationCases: [],
+      model: null,
+      profiles: {},
+    }),
   };
 });
 
@@ -204,6 +210,7 @@ vi.mock("@/helpers/mpcCalibrationStorage", () => ({
   getMpcCalibrationPreferredIdentifier: mockGetCalibrationPreferredIdentifier,
   getMpcCalibrationPreferenceProfile: mockGetCalibrationPreferenceProfile,
   listDefaultMpcCalibrationCases: mockListDefaultCalibrationCases,
+  MPC_CALIBRATION_DATASET_VERSION: 1,
 }));
 
 vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
@@ -216,6 +223,10 @@ vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
 vi.mock("@/helpers/mpcVisualPreference", () => ({
   buildMpcSourceVisualProfiles: mockBuildSourceVisualProfiles,
   buildMpcVisualPreferenceScoreMap: mockBuildVisualPreferenceScoreMap,
+}));
+
+vi.mock("@/helpers/mpcPreferenceContextBuilder", () => ({
+  getSharedMpcPreferenceContext: mockGetSharedMpcPreferenceContext,
 }));
 
 vi.mock("@/helpers/ImportOrchestrator", () => ({
@@ -457,6 +468,122 @@ describe("MpcUpgradeModal", () => {
     await waitFor(() => {
       expect(screen.getByText(/No MPC matches found/)).toBeTruthy();
     });
+  });
+
+  it("uses the shared complete preference context for unseen matches", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+    const candidate = makeMpcCard();
+    mockSearchMpcAutofill.mockResolvedValueOnce([candidate]);
+    mockFilterByExactName.mockReturnValueOnce([candidate]);
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledTimes(1);
+    });
+
+    const [contextInput, signal] = mockGetSharedMpcPreferenceContext.mock.calls[0]!;
+    expect(contextInput).toMatchObject({
+      dataset: { version: 1 },
+      source: {
+        content: expect.objectContaining({
+          seedCardNames: expect.any(Array),
+          targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+        }),
+      },
+      provider: { content: { cardType: "CARD", exactName: true } },
+      algorithm: {
+        trainingOptions: {
+          emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+        },
+      },
+    });
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("aborts a replaced card pipeline so its late preference context cannot rank or replace the new card results", async () => {
+    const replacementCard = {
+      ...TEST_CARD,
+      uuid: "card-uuid-2",
+      name: "Counterspell",
+      imageId: "img-2",
+    };
+    const firstCandidate = makeMpcCard({
+      identifier: "stale-card-a",
+      name: TEST_CARD.name,
+      rawName: "Stale Card A",
+    });
+    const replacementCandidate = makeMpcCard({
+      identifier: "current-card-b",
+      name: replacementCard.name,
+      rawName: "Current Card B",
+    });
+    const replacementRanked = makeRankedCandidate(replacementCandidate);
+    let releaseFirstPreferenceContext!: () => void;
+    const firstPreferenceContext = new Promise<{
+      calibrationCases: [];
+      model: null;
+      profiles: Record<string, never>;
+    }>((resolve) => {
+      releaseFirstPreferenceContext = () =>
+        resolve({ calibrationCases: [], model: null, profiles: {} });
+    });
+
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+    mockSearchMpcAutofill
+      .mockResolvedValueOnce([firstCandidate])
+      .mockResolvedValueOnce([replacementCandidate]);
+    mockFilterByExactName.mockImplementation((results) => results);
+    mockGetSharedMpcPreferenceContext.mockImplementationOnce(
+      () => firstPreferenceContext
+    );
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [replacementRanked],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [replacementCandidate],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({
+        fullProcess: [replacementRanked],
+        allMatches: [replacementRanked],
+      })
+    );
+
+    const view = render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledTimes(1);
+    });
+
+    const firstSearchSignal = mockSearchMpcAutofill.mock.calls[0]?.[4] as AbortSignal;
+    const firstPreferenceSignal =
+      mockGetSharedMpcPreferenceContext.mock.calls[0]?.[1] as AbortSignal;
+
+    mockModalState.card = replacementCard;
+    mockModalState.cardUuid = replacementCard.uuid;
+    view.rerender(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(firstSearchSignal.aborted).toBe(true);
+      expect(firstPreferenceSignal.aborted).toBe(true);
+      expect(screen.getByTestId("mpc-upgrade-candidate-id-current-card-b")).toBeTruthy();
+    });
+
+    releaseFirstPreferenceContext();
+
+    await waitFor(() => {
+      expect(mockRankCandidates).toHaveBeenCalledTimes(1);
+      expect(mockRankCandidates).toHaveBeenCalledWith(
+        expect.objectContaining({ candidates: [replacementCandidate] })
+      );
+    });
+    expect(screen.queryByTestId("mpc-upgrade-candidate-id-stale-card-a")).toBeNull();
   });
 
   /* ======================== LAYER TABS ======================== */
@@ -772,7 +899,9 @@ describe("MpcUpgradeModal", () => {
       expect(mockSearchMpcAutofill).toHaveBeenCalledWith(
         "Lightning Bolt",
         "CARD",
-        false
+        false,
+        {},
+        expect.any(AbortSignal)
       );
     });
   });
@@ -897,6 +1026,22 @@ describe("MpcUpgradeModal", () => {
     mockBuildVisualPreferenceScoreMap.mockResolvedValue({
       "visual-pick": 4.2,
     });
+    mockGetSharedMpcPreferenceContext.mockResolvedValueOnce({
+      calibrationCases: [],
+      model: {
+        bias: 1,
+        sourceWeights: { Hathwellcrisping: 1 },
+        tagWeights: {},
+        formatWeights: {
+          hasBracketSet: 0,
+          hasParenText: 0,
+          plainName: 0,
+          dpi: 0,
+        },
+        trainingCaseCount: 3,
+      },
+      profiles: {},
+    });
     mockRankCandidates.mockResolvedValue({
       fullProcess: [],
       exactPrinting: [],
@@ -917,16 +1062,12 @@ describe("MpcUpgradeModal", () => {
         })
       );
     });
-    expect(mockBuildSourceVisualProfiles).toHaveBeenCalledWith(
-      [],
-      expect.any(AbortSignal)
-    );
     const unseenPreferenceScores =
       mockRankCandidates.mock.calls[0]?.[0].unseenPreferenceScores;
     expect(unseenPreferenceScores?.["visual-pick"]).toBeGreaterThan(4.2);
   });
 
-  it("aborts queued seed transport during deferred harvest without publishing profiles", async () => {
+  it("closes a modal without cancelling its shared preference source build", async () => {
     mockModalState.open = true;
     mockModalState.card = TEST_CARD;
     mockModalState.cardUuid = TEST_CARD.uuid;
@@ -990,6 +1131,25 @@ describe("MpcUpgradeModal", () => {
         return [];
       }
     );
+    mockGetSharedMpcPreferenceContext.mockImplementation(async (input) => {
+      await input.source.loadExamples();
+      return {
+        calibrationCases: [],
+        model: {
+          bias: 0,
+          sourceWeights: {},
+          tagWeights: {},
+          formatWeights: {
+            hasBracketSet: 0,
+            hasParenText: 0,
+            plainName: 0,
+            dpi: 0,
+          },
+          trainingCaseCount: 3,
+        },
+        profiles: {},
+      };
+    });
 
     const view = render(<MpcUpgradeModal />);
 
@@ -998,8 +1158,7 @@ describe("MpcUpgradeModal", () => {
         "Seed card",
         "CARD",
         true,
-        {},
-        expect.any(AbortSignal)
+        {}
       );
     });
 
@@ -1007,8 +1166,8 @@ describe("MpcUpgradeModal", () => {
     view.rerender(<MpcUpgradeModal />);
 
     await waitFor(() => {
-      const seedSignal = mockSearchMpcAutofill.mock.calls[1]?.[4] as AbortSignal;
-      expect(seedSignal.aborted).toBe(true);
+      const modalSignal = mockGetSharedMpcPreferenceContext.mock.calls[0]?.[1] as AbortSignal;
+      expect(modalSignal.aborted).toBe(true);
     });
     releaseHarvest();
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -22,7 +22,6 @@ import {
 } from "@/helpers/mpcBulkUpgradeMatcher";
 import {
   buildMpcPreferenceScoreMap,
-  trainMpcPreferenceModel,
   type MpcPreferenceModel,
 } from "@/helpers/mpcPreferenceModel";
 import {
@@ -31,10 +30,9 @@ import {
   hydrateMpcPreferences,
 } from "@/helpers/mpcPreferenceBootstrap";
 import {
-  buildMpcSourceVisualProfiles,
   buildMpcVisualPreferenceScoreMap,
 } from "@/helpers/mpcVisualPreference";
-import { listDefaultMpcCalibrationCases } from "@/helpers/mpcCalibrationStorage";
+import { getSharedMpcPreferenceContext } from "@/helpers/mpcPreferenceContextBuilder";
 import { captureMpcCalibrationCase } from "@/helpers/mpcCalibrationCapture";
 import {
   buildMpcCalibrationFixture,
@@ -57,6 +55,8 @@ import {
   listMpcCalibrationCases,
   listMpcCalibrationDatasets,
   listMpcCalibrationRuns,
+  listDefaultMpcCalibrationCases,
+  MPC_CALIBRATION_DATASET_VERSION,
   MPC_CALIBRATION_TARGET_CASE_COUNT,
   saveMpcCalibrationAssets,
   saveMpcCalibrationCase,
@@ -231,7 +231,50 @@ export function CalibrationModal() {
         if (signal.aborted) return;
 
         const calibrationCases = await listDefaultMpcCalibrationCases();
-        const model = trainMpcPreferenceModel(calibrationCases);
+        const preferenceContext = await getSharedMpcPreferenceContext(
+          {
+            dataset: {
+              calibrationCases,
+              version: MPC_CALIBRATION_DATASET_VERSION,
+              content: {
+                datasetName: "MPC Calibration Harness",
+                selection: "default-calibration-datasets",
+              },
+            },
+            source: {
+              version: "bootstrap-preference-seeds-v1",
+              content: {
+                seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+              },
+              loadExamples: () =>
+                harvestSourcePreferenceCandidates(
+                  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                  async (name) => searchMpcAutofill(name, "CARD", true, {}),
+                  ["Hathwellcrisping", "Chilli_Axe"]
+                ),
+            },
+            provider: {
+              version: "mpc-autofill-card-exact-v1",
+              content: { cardType: "CARD", exactName: true },
+            },
+            algorithm: {
+              version: "mpc-preference-model-visual-profile-v1",
+              content: {
+                metadataScore: "buildMpcPreferenceScoreMap",
+                visualProfile: "buildMpcSourceVisualProfiles",
+                visualScore: "buildMpcVisualPreferenceScoreMap",
+              },
+              trainingOptions: {
+                emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+              },
+            },
+          },
+          signal
+        );
+        if (signal.aborted) return;
+
+        const model = preferenceContext.model;
         setPrefModel(model);
 
         if (card?.imageId) {
@@ -253,21 +296,9 @@ export function CalibrationModal() {
           if (model && filtered.length > 0) {
             const metadataScores = buildMpcPreferenceScoreMap(model, filtered);
 
-            const harvested = await harvestSourcePreferenceCandidates(
-              BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-              async (name, operationAbortSignal) =>
-                searchMpcAutofill(name, "CARD", true, {}, operationAbortSignal),
-              undefined,
-              signal
-            );
-            if (signal.aborted) return;
-
-            const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
-            if (signal.aborted) return;
-
             const visualScores = await buildMpcVisualPreferenceScoreMap(
               filtered,
-              profiles,
+              preferenceContext.profiles,
               model,
               signal
             );

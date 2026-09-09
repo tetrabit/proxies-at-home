@@ -82,6 +82,10 @@ export async function evaluateHeldOutCalibrationDataset(
   options: MpcPreferenceTrainingOptions = {}
 ): Promise<MpcCalibrationEvaluationResult> {
   const evaluations: MpcCalibrationCaseEvaluation[] = [];
+  const trainableFolds: Array<{
+    heldOutCase: MpcCalibrationCaseRecord;
+    model: NonNullable<ReturnType<typeof trainMpcPreferenceModel>>;
+  }> = [];
 
   for (const heldOutCase of cases) {
     if (!heldOutCase.expectedIdentifier || heldOutCase.candidates.length < 2) {
@@ -96,16 +100,36 @@ export async function evaluateHeldOutCalibrationDataset(
       continue;
     }
 
+    trainableFolds.push({ heldOutCase, model });
+  }
+
+  if (trainableFolds.length === 0) {
+    return {
+      algorithmId: "held-out-unseen",
+      algorithmLabel: "Held-out unseen predictor",
+      summary: {
+        totalCases: 0,
+        matchedCases: 0,
+        mismatchedCases: 0,
+        accuracy: 0,
+      },
+      cases: evaluations,
+    };
+  }
+
+  const harvested = await harvestSourcePreferenceCandidates(
+    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+    async (name) => searchMpcAutofill(name, "CARD", true),
+    options.emphasizedSources
+  );
+  const profiles = await buildMpcSourceVisualProfiles(harvested);
+
+  for (const { heldOutCase, model } of trainableFolds) {
+
     const metadataScores = buildMpcPreferenceScoreMap(
       model,
       heldOutCase.candidates
     );
-    const harvested = await harvestSourcePreferenceCandidates(
-      BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-      async (name) => searchMpcAutofill(name, "CARD", true),
-      options.emphasizedSources
-    );
-    const profiles = await buildMpcSourceVisualProfiles(harvested);
     const visualScores = await buildMpcVisualPreferenceScoreMap(
       heldOutCase.candidates,
       profiles,

@@ -21,20 +21,18 @@ import {
   getMpcCalibrationPreferenceProfile,
   getMpcCalibrationPreferredIdentifier,
   listDefaultMpcCalibrationCases,
+  MPC_CALIBRATION_DATASET_VERSION,
 } from "@/helpers/mpcCalibrationStorage";
-import {
-  buildMpcPreferenceScoreMap,
-  trainMpcPreferenceModel,
-} from "@/helpers/mpcPreferenceModel";
+import { buildMpcPreferenceScoreMap } from "@/helpers/mpcPreferenceModel";
 import { hydrateMpcPreferences } from "@/helpers/mpcPreferenceBootstrap";
 import {
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
   harvestSourcePreferenceCandidates,
 } from "@/helpers/mpcPreferenceBootstrap";
 import {
-  buildMpcSourceVisualProfiles,
   buildMpcVisualPreferenceScoreMap,
 } from "@/helpers/mpcVisualPreference";
+import { getSharedMpcPreferenceContext } from "@/helpers/mpcPreferenceContextBuilder";
 import { ImportOrchestrator } from "@/helpers/ImportOrchestrator";
 import type { ImportIntent } from "@/helpers/importParsers";
 import { changeCardArtwork, createLinkedBackCard } from "@/helpers/dbUtils";
@@ -141,13 +139,26 @@ export function MpcUpgradeModal() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    setErrorMsg(null);
+    setRecommendations(null);
+    setActiveTab("fullProcess");
+    setSelectedIdentifier(null);
+    setSourceDebugInfo(null);
+
     void runPipeline(
       card.name,
       card.set,
       card.number,
       card.imageId,
+      card.uuid,
       controller.signal
     );
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cardUuid]);
 
@@ -156,11 +167,18 @@ export function MpcUpgradeModal() {
     set: string | undefined,
     collectorNumber: string | undefined,
     imageId: string | undefined,
+    sourceCardUuid: string | undefined,
     signal: AbortSignal
   ) {
     try {
       setPhase("searching");
-      const results = await searchMpcAutofill(cardName, "CARD", false);
+      const results = await searchMpcAutofill(
+        cardName,
+        "CARD",
+        false,
+        {},
+        signal
+      );
       if (signal.aborted) return;
 
       let sourceImageUrl: string | undefined;
@@ -173,7 +191,7 @@ export function MpcUpgradeModal() {
             name: cardName,
             set,
             collectorNumber,
-            uuid: card?.uuid,
+            uuid: sourceCardUuid,
             imageId,
             sourceImageUrl,
           });
@@ -183,7 +201,7 @@ export function MpcUpgradeModal() {
           name: cardName,
           set,
           collectorNumber,
-          uuid: card?.uuid,
+          uuid: sourceCardUuid,
           imageId,
         });
       }
@@ -204,8 +222,9 @@ export function MpcUpgradeModal() {
       );
       const artMatchCompare = createSsimCompare();
       await hydrateMpcPreferences();
+      if (signal.aborted) return;
       const preferenceInput = {
-        name: card!.name,
+        name: cardName,
         set,
         collectorNumber,
       };
@@ -219,39 +238,60 @@ export function MpcUpgradeModal() {
         preferredIdentifier || preferenceProfile
           ? undefined
           : await (async () => {
-              const model = trainMpcPreferenceModel(calibrationCases, {
-                emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
-              });
-              if (!model) {
+              const preferenceContext = await getSharedMpcPreferenceContext(
+                {
+                  dataset: {
+                    calibrationCases,
+                    version: MPC_CALIBRATION_DATASET_VERSION,
+                    content: {
+                      datasetName: "MPC Calibration Harness",
+                      selection: "default-calibration-datasets",
+                    },
+                  },
+                  source: {
+                    version: "bootstrap-preference-seeds-v1",
+                    content: {
+                      seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                      targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+                    },
+                    loadExamples: () =>
+                      harvestSourcePreferenceCandidates(
+                        BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                        async (name) =>
+                          searchMpcAutofill(name, "CARD", true, {}),
+                        ["Hathwellcrisping", "Chilli_Axe"]
+                      ),
+                  },
+                  provider: {
+                    version: "mpc-autofill-card-exact-v1",
+                    content: { cardType: "CARD", exactName: true },
+                  },
+                  algorithm: {
+                    version: "mpc-preference-model-visual-profile-v1",
+                    content: {
+                      metadataScore: "buildMpcPreferenceScoreMap",
+                      visualProfile: "buildMpcSourceVisualProfiles",
+                      visualScore: "buildMpcVisualPreferenceScoreMap",
+                    },
+                    trainingOptions: {
+                      emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+                    },
+                  },
+                },
+                signal
+              );
+              if (signal.aborted || !preferenceContext.model) {
                 return undefined;
               }
 
               const metadataScores = buildMpcPreferenceScoreMap(
-                model,
+                preferenceContext.model,
                 exactMatches
               );
-              const harvested = await harvestSourcePreferenceCandidates(
-                BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                async (name, operationAbortSignal) =>
-                  searchMpcAutofill(
-                    name,
-                    "CARD",
-                    true,
-                    {},
-                    operationAbortSignal
-                  ),
-                ["Hathwellcrisping", "Chilli_Axe"],
-                signal
-              );
-              if (signal.aborted) return undefined;
-
-              const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
-              if (signal.aborted) return undefined;
-
               const visualScores = await buildMpcVisualPreferenceScoreMap(
                 exactMatches,
-                profiles,
-                model,
+                preferenceContext.profiles,
+                preferenceContext.model,
                 signal
               );
               if (signal.aborted) return undefined;

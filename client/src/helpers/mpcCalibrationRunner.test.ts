@@ -10,6 +10,7 @@ const mockHarvestCandidates = vi.hoisted(() => vi.fn());
 const mockBuildVisualProfiles = vi.hoisted(() => vi.fn());
 const mockBuildVisualScoreMap = vi.hoisted(() => vi.fn());
 const mockBuildPreferenceScoreMap = vi.hoisted(() => vi.fn());
+const mockTrainMpcPreferenceModel = vi.hoisted(() => vi.fn());
 
 vi.mock("./mpcAutofillApi", () => ({
   searchMpcAutofill: mockSearchMpcAutofill,
@@ -39,6 +40,7 @@ vi.mock("./mpcPreferenceModel", async (importOriginal) => {
   return {
     ...actual,
     buildMpcPreferenceScoreMap: mockBuildPreferenceScoreMap,
+    trainMpcPreferenceModel: mockTrainMpcPreferenceModel,
   };
 });
 
@@ -120,6 +122,7 @@ describe("mpcCalibrationRunner", () => {
     mockBuildVisualProfiles.mockResolvedValue({});
     mockBuildVisualScoreMap.mockResolvedValue({});
     mockSearchMpcAutofill.mockResolvedValue([]);
+    mockTrainMpcPreferenceModel.mockReturnValue({});
   });
 
   it("evaluates a single case with comparison hints", async () => {
@@ -380,6 +383,7 @@ describe("mpcCalibrationRunner", () => {
       "exact-print": Number.NaN,
       "art-match": 0.9,
     }));
+    mockTrainMpcPreferenceModel.mockImplementation(() => ({}));
 
     const result = await evaluateHeldOutCalibrationDataset(
       dataset,
@@ -391,6 +395,7 @@ describe("mpcCalibrationRunner", () => {
     );
 
     expect(result.summary.totalCases).toBe(3);
+    expect(result.summary.matchedCases).toBe(0);
     expect(result.cases).toHaveLength(3);
     expect(result.summary.mismatchedCases).toBe(3);
     expect(result.cases.map((item) => item.predictedIdentifier)).toEqual([
@@ -398,9 +403,19 @@ describe("mpcCalibrationRunner", () => {
       "exact-print",
       "exact-print",
     ]);
+    expect(mockHarvestCandidates).toHaveBeenCalledTimes(1);
+    expect(mockBuildVisualProfiles).toHaveBeenCalledTimes(1);
+    expect(mockTrainMpcPreferenceModel.mock.calls.map(([trainSet]) =>
+      trainSet.map((calibrationCase: MpcCalibrationCaseRecord) => calibrationCase.id)
+    )).toEqual([
+      ["case-2", "case-3"],
+      ["case-1", "case-3"],
+      ["case-1", "case-2"],
+    ]);
   });
 
   it("skips held-out cases without labels, enough candidates, or a trainable model", async () => {
+    mockTrainMpcPreferenceModel.mockReturnValue(null);
     const unlabeled = {
       ...calibrationCase,
       id: "unlabeled",
@@ -429,6 +444,7 @@ describe("mpcCalibrationRunner", () => {
       accuracy: 0,
     });
     expect(mockHarvestCandidates).not.toHaveBeenCalled();
+    expect(mockBuildVisualProfiles).not.toHaveBeenCalled();
   });
 
   it("maps evaluations to persisted run result records", async () => {
