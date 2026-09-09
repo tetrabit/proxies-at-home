@@ -1,5 +1,11 @@
 # Architecture Review - Executive Summary
 
+> [!WARNING]
+> ## Historical architecture review — not current guidance
+> This is a preserved 2024 review. Its findings, recommendations, metrics, deadlines, and status are historical records and are not newly verified or current instructions. In particular, do not follow its proposals for an undefined Electron strategy, registry publishing, or GitHub Actions.
+>
+> Use the current decision sources instead: [ADR-001: bundled Electron microservice](docs/ADR-001-bundled-microservice.md), the [local private shared-client contract](shared/scryfall-client/README.md), and the [self-hosted/manual automation policy](docs/DEPLOYMENT_GUIDE.md#cicd-policy). The review text below is retained unchanged for provenance.
+
 **Date**: 2024-02-08  
 **Status**: ✅ SOLID ARCHITECTURE  
 **Grade**: **B+ (85/100)**  
