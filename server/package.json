@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "vitest run --silent",
+    "test:scryfall-contract": "node -e \"if (process.env.SCRYFALL_LIVE_CONTRACT !== '1') { console.error('Refusing live Scryfall contract request: set SCRYFALL_LIVE_CONTRACT=1.'); process.exit(1); }\" && vitest run --config vitest.scryfall-contract.config.ts --silent --no-file-parallelism --maxWorkers=1 --retry=0",
     "test:db-cache": "vitest run --silent=true src/db/nativeCompatibility.test.ts src/db/db.test.ts src/db/mpcSearchCache.test.ts --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",
     "test:coverage-internals": "vitest run --silent=true src/db src/services src/utils src/index.test.ts --coverage.enabled=true --coverage.include='src/db/**/*.ts' --coverage.include='src/services/**/*.ts' --coverage.include='src/utils/**/*.ts' --coverage.include='src/index.ts' --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --retry=0",
     "test:coverage-routes": "vitest run --silent=true src/routes --coverage.enabled=true --coverage.include='src/routes/**/*.ts' --coverage.thresholds.lines=100 --coverage.thresholds.branches=100 --coverage.thresholds.functions=100 --coverage.thresholds.statements=100 --retry=0",

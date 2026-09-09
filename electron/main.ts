@@ -370,6 +370,29 @@ let serverPort = 3001; // Default port, will be updated if server starts success
 let microserviceManager: MicroserviceManager | null = null;
 let microservicePort = 8080;
 let desktopPrivateBootstrap: { baseUrl: string; bearer: string } | null = null;
+type DesktopServiceReadiness = "starting" | "ready" | "failed";
+let desktopServiceReadiness: DesktopServiceReadiness = "starting";
+
+function assertDesktopServicesReady(): void {
+  if (desktopServiceReadiness !== "ready") {
+    throw new Error("Desktop services are not ready");
+  }
+}
+
+function getStartupShellUrl(state: "loading" | "failed"): string {
+  const title =
+    state === "loading" ? "Starting Proxxied" : "Proxxied could not start";
+  const message =
+    state === "loading"
+      ? "Preparing required local services…"
+      : "A required local service could not be started. Close Proxxied and try again.";
+  const document = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${title}</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111827;color:#f9fafb;font-family:system-ui,sans-serif}main{max-width:32rem;padding:2rem;text-align:center}h1{margin:0 0 .75rem;font-size:1.5rem}p{margin:0;color:#d1d5db;line-height:1.5}</style></head><body><main role="status"><h1>${title}</h1><p>${message}</p></main></body></html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(document)}`;
+}
+
+function showStartupShell(state: "loading" | "failed"): void {
+  void mainWindow?.loadURL(getStartupShellUrl(state));
+}
 
 function getPackagedIndexPath(): string {
   return path.join(__dirname, "../../client/dist/index.html");
@@ -453,20 +476,12 @@ function createWindow() {
   // Force system theme
   nativeTheme.themeSource = "system";
 
-  if (isDev) {
-    const url = `http://localhost:5173?serverPort=${serverPort}`;
-    mainWindow.loadURL(url);
+  if (desktopServiceReadiness === "ready") {
+    loadTrustedRenderer();
   } else {
-    // In prod with asar, __dirname is electron/dist/, need ../../ to reach root
-    const indexPath = getPackagedIndexPath();
-    console.log("[Electron] Loading index from:", indexPath);
-    mainWindow.loadFile(indexPath, {
-      query: { serverPort: serverPort.toString() },
-    });
-  }
-
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
+    showStartupShell(
+      desktopServiceReadiness === "failed" ? "failed" : "loading"
+    );
   }
 
   // Create Menu
@@ -524,19 +539,42 @@ function createWindow() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 
-  // Check for updates on startup (if enabled)
-  if (app.isPackaged) {
-    configureUpdateChannel();
-    if (electronSettings.autoUpdateEnabled !== false) {
-      // Default to enabled
-      autoUpdater.checkForUpdatesAndNotify();
-    } else {
-      console.log("[Electron] Auto-update check disabled by user");
-    }
-  }
-
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+}
+
+function checkForStartupUpdates(): void {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  configureUpdateChannel();
+  if (electronSettings.autoUpdateEnabled !== false) {
+    // Default to enabled
+    void autoUpdater.checkForUpdatesAndNotify();
+  } else {
+    console.log("[Electron] Auto-update check disabled by user");
+  }
+}
+
+function loadTrustedRenderer(): void {
+  if (mainWindow === null || desktopServiceReadiness !== "ready") {
+    return;
+  }
+
+  if (!app.isPackaged) {
+    const url = `http://localhost:5173?serverPort=${serverPort}`;
+    void mainWindow.loadURL(url);
+    mainWindow.webContents.openDevTools();
+    return;
+  }
+
+  // In prod with asar, __dirname is electron/dist/, need ../../ to reach root
+  const indexPath = getPackagedIndexPath();
+  console.log("[Electron] Loading index from:", indexPath);
+  void mainWindow.loadFile(indexPath, {
+    query: { serverPort: serverPort.toString() },
   });
 }
 
@@ -583,6 +621,22 @@ autoUpdater.on("update-downloaded", (info: unknown) => {
 
 app.whenReady().then(async () => {
   const isDev = !app.isPackaged;
+  createWindow();
+
+  ipcMain.handle("get-server-url", () => {
+    assertDesktopServicesReady();
+    return `http://localhost:${serverPort}`;
+  });
+  ipcMain.handle("get-private-api-bootstrap", async (event) =>
+    getTrustedPrivateApiBootstrap(event)
+  );
+  ipcMain.handle("get-microservice-url", () => {
+    assertDesktopServicesReady();
+    return `http://localhost:${microservicePort}`;
+  });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
 
   try {
     await initializeElectronSettings();
@@ -590,6 +644,7 @@ app.whenReady().then(async () => {
     electronSettings = {};
     console.error("[Electron] Failed to load settings:", error);
   }
+  checkForStartupUpdates();
 
   // Start Scryfall microservice first
   try {
@@ -607,6 +662,9 @@ app.whenReady().then(async () => {
       "Microservice Error",
       `Failed to start Scryfall microservice:\n${errorMessage}`
     );
+    desktopServiceReadiness = "failed";
+    showStartupShell("failed");
+    return;
   }
 
   // Start the Express server inside Electron's process
@@ -668,9 +726,9 @@ app.whenReady().then(async () => {
       };
       console.log("[Electron] Server started on port:", serverPort);
     } else {
-      console.error(
-        "[Electron] startServer function not found in server module"
-      );
+      const message = "[Electron] startServer function not found in server module";
+      console.error(message);
+      throw new Error(message);
     }
   } catch (err: unknown) {
     console.error("[Electron] Failed to start server:", err);
@@ -680,16 +738,14 @@ app.whenReady().then(async () => {
       "Server Error",
       `Failed to start server:\n${errorMessage}`
     );
+    desktopServiceReadiness = "failed";
+    showStartupShell("failed");
+    return;
   }
 
-  ipcMain.handle("get-server-url", () => `http://localhost:${serverPort}`);
-  ipcMain.handle("get-private-api-bootstrap", async (event) =>
-    getTrustedPrivateApiBootstrap(event)
-  );
-  ipcMain.handle(
-    "get-microservice-url",
-    () => `http://localhost:${microservicePort}`
-  );
+  desktopServiceReadiness = "ready";
+  loadTrustedRenderer();
+
   ipcMain.handle("get-app-version", () => app.getVersion());
   ipcMain.handle("get-update-channel", () => autoUpdater.channel || "latest");
   ipcMain.handle("set-update-channel", async (_event, channel: string) => {
@@ -779,11 +835,6 @@ app.whenReady().then(async () => {
       }
       throw error;
     }
-  });
-  createWindow();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 

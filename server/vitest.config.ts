@@ -13,7 +13,9 @@ export default defineConfig({
         globals: true,
         environment: 'node',
         include: ['src/**/*.test.ts'],
-        exclude: ['node_modules', 'dist'],
+        // Live Scryfall coverage has its own opt-in config and must never be
+        // selected by the default offline unit-test suite.
+        exclude: ['node_modules', 'dist', 'src/utils/scryfallContract.optin.test.ts'],
         testTimeout: 60000,
         retry: 5,
         coverage: {

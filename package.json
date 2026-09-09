@@ -28,6 +28,7 @@
     "release:promote": "node scripts/release.mjs --promote-stable",
     "release:revert": "node scripts/release.mjs --revert",
     "test:contract": "tsx --test tests/contract/scryfall-api.test.ts",
+    "test:contract:scryfall": "npm --prefix server run test:scryfall-contract",
     "coverage:policy": "node scripts/check-coverage-policy.mjs",
     "coverage:policy:test": "node --test scripts/check-coverage-policy.test.mjs",
     "coverage:client:baseline": "npm --prefix client test -- --coverage.enabled=true --coverage.thresholds.lines=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.statements=0",

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "crypto";
 import { pathToFileURL } from "url";
 
 let readyCallback: (() => Promise<void>) | undefined;
@@ -13,10 +14,10 @@ const processListenerEvents = [
   "unhandledRejection",
 ] as const;
 type ProcessListenerEvent = (typeof processListenerEvents)[number];
-const lifecycleFixtureParent = path.resolve(
+const lifecycleFixtureRunDirectory = path.resolve(
   process.cwd(),
   ".review-artifacts",
-  "electron-async-settings-01"
+  `electron-async-settings-${randomUUID()}`
 );
 let lifecycleFixtureDirectory = "";
 let processListenerBaseline = new Map<ProcessListenerEvent, Function[]>();
@@ -118,6 +119,16 @@ async function importAndRunReady(
   configure?: (mainModule: typeof import("./main.ts")) => void | Promise<void>
 ) {
   const mainModule = await import("./main.ts");
+  mainModule.electronMainRuntime.importServerModule = vi.fn(
+    async (modulePath: string) =>
+      modulePath.endsWith("/auth/privateRouteAuth.js")
+        ? {
+            createSingleBearerVerifier: vi.fn(() => ({
+              verifyBearer: () => null,
+            })),
+          }
+        : { startServer: vi.fn(async () => 3001) }
+  );
   await configure?.(mainModule);
   expect(readyCallback).toBeTypeOf("function");
   await readyCallback?.();
@@ -153,9 +164,12 @@ function createBeforeQuitEvent() {
 
 describe("electron main lifecycle", () => {
   beforeEach(async () => {
-    await fs.promises.mkdir(lifecycleFixtureParent, { recursive: true });
+    await fs.promises.mkdir(lifecycleFixtureRunDirectory, { recursive: true });
     lifecycleFixtureDirectory = await fs.promises.mkdtemp(
-      path.join(lifecycleFixtureParent, "electron-settings-fixture-")
+      path.join(
+        lifecycleFixtureRunDirectory,
+        `electron-settings-fixture-${randomUUID()}-`
+      )
     );
     processListenerBaseline = new Map(
       processListenerEvents.map(
@@ -273,6 +287,79 @@ describe("electron main lifecycle", () => {
     );
     expect(windows[0].webContents.send).toHaveBeenCalledWith("show-about");
     expect(autoUpdaterMock.checkForUpdatesAndNotify).toHaveBeenCalledOnce();
+  });
+
+  it("shows a loading shell while required services settle, gates dependent URLs, and only loads the renderer after readiness", async () => {
+    const delayedMicroserviceStart = createDeferred<number>();
+    const startServer = vi.fn(async () => 4555);
+    microservice.start.mockImplementationOnce(() => delayedMicroserviceStart.promise);
+
+    const mainModule = await import("./main.ts");
+    mainModule.electronMainRuntime.importServerModule = vi.fn(
+      async (modulePath: string) =>
+        modulePath.endsWith("/auth/privateRouteAuth.js")
+          ? {
+              createSingleBearerVerifier: vi.fn(() => ({
+                verifyBearer: () => null,
+              })),
+            }
+          : { startServer }
+    );
+
+    const startup = readyCallback?.();
+    expect(startup).toBeInstanceOf(Promise);
+    expect(windows).toHaveLength(1);
+    expect(windows[0].loadURL).toHaveBeenLastCalledWith(
+      expect.stringContaining("data:text/html;charset=utf-8,")
+    );
+    expect(windows[0].loadURL.mock.calls.at(-1)?.[0]).toContain(
+      encodeURIComponent("Starting Proxxied")
+    );
+    expect(() => ipcHandlers.get("get-server-url")?.()).toThrow(
+      "Desktop services are not ready"
+    );
+    expect(() => ipcHandlers.get("get-microservice-url")?.()).toThrow(
+      "Desktop services are not ready"
+    );
+    expect(mainModule.electronMainRuntime.importServerModule).not.toHaveBeenCalled();
+
+    delayedMicroserviceStart.resolve(8181);
+    await startup;
+
+    expect(startServer).toHaveBeenCalledOnce();
+    expect(windows[0].loadURL).toHaveBeenLastCalledWith(
+      "http://localhost:5173?serverPort=4555"
+    );
+    expect(ipcHandlers.get("get-server-url")?.()).toBe(
+      "http://localhost:4555"
+    );
+    expect(ipcHandlers.get("get-microservice-url")?.()).toBe(
+      "http://localhost:8181"
+    );
+  });
+
+  it("replaces the loading shell with a generic failure screen without rendering startup error text", async () => {
+    microservice.start.mockRejectedValueOnce(
+      new Error("<script>window.pwned = true</script>")
+    );
+
+    const mainModule = await import("./main.ts");
+    mainModule.electronMainRuntime.importServerModule = vi.fn();
+    const startup = readyCallback?.();
+    await startup;
+
+    expect(mainModule.electronMainRuntime.importServerModule).not.toHaveBeenCalled();
+    expect(windows[0].loadURL).toHaveBeenLastCalledWith(
+      expect.stringContaining("data:text/html;charset=utf-8,")
+    );
+    const failureShell = decodeURIComponent(
+      windows[0].loadURL.mock.calls.at(-1)?.[0].split(",")[1] ?? ""
+    );
+    expect(failureShell).toContain("Proxxied could not start");
+    expect(failureShell).not.toContain("window.pwned");
+    expect(() => ipcHandlers.get("get-server-url")?.()).toThrow(
+      "Desktop services are not ready"
+    );
   });
 
   it("implements update, preference, URL, app version, and Moxfield IPC handlers", async () => {
