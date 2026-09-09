@@ -265,6 +265,109 @@ describe('effectCache', () => {
             expect(render).toHaveBeenCalledTimes(1);
             error.mockRestore();
         });
+
+        it('admits distinct content hashes one Blob read at a time before worker rendering', async () => {
+            const processor = getEffectProcessor();
+            const render = vi.spyOn(processor, 'process').mockResolvedValue(new Blob(['rendered']));
+            let activeReads = 0;
+            let peakActiveReads = 0;
+            const reads = Array.from({ length: 3 }, (_, index) => {
+                let release: (() => void) | undefined;
+                const source = new Blob([`source-${index}`]);
+                const chunk = {
+                    arrayBuffer: vi.fn(() => new Promise<ArrayBuffer>(resolve => {
+                        activeReads++;
+                        peakActiveReads = Math.max(peakActiveReads, activeReads);
+                        release = () => {
+                            activeReads--;
+                            resolve(new Uint8Array([index]).buffer);
+                        };
+                    })),
+                };
+                vi.spyOn(source, 'slice').mockReturnValue(chunk as unknown as Blob);
+                return { source, chunk, release: () => release?.() };
+            });
+
+            queueBulkPreRender(reads.map(({ source }, index) => ({
+                card: { uuid: `card-${index}`, name: 'Adjusted', order: index, isUserUpload: false, imageId: `image-${index}`, overrides: { brightness: 1 } },
+                exportBlob: source,
+            })));
+
+            await vi.waitFor(() => expect(reads[0].chunk.arrayBuffer).toHaveBeenCalledTimes(1));
+            expect(reads[1].chunk.arrayBuffer).not.toHaveBeenCalled();
+            expect(reads[2].chunk.arrayBuffer).not.toHaveBeenCalled();
+            expect(peakActiveReads).toBe(1);
+
+            reads[0].release();
+            await vi.waitFor(() => expect(reads[1].chunk.arrayBuffer).toHaveBeenCalledTimes(1));
+            expect(reads[2].chunk.arrayBuffer).not.toHaveBeenCalled();
+            expect(peakActiveReads).toBe(1);
+
+            reads[1].release();
+            await vi.waitFor(() => expect(reads[2].chunk.arrayBuffer).toHaveBeenCalledTimes(1));
+            reads[2].release();
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(3));
+            expect(peakActiveReads).toBe(1);
+        });
+
+        it('releases failed content-hash admission so a retry and queued work can run', async () => {
+            const processor = getEffectProcessor();
+            const render = vi.spyOn(processor, 'process').mockResolvedValue(new Blob(['rendered']));
+            const retrySource = new Blob(['retry-source']);
+            const retryRead = vi.fn()
+                .mockRejectedValueOnce(new Error('hash read failed'))
+                .mockResolvedValueOnce(new Uint8Array([1]).buffer);
+            vi.spyOn(retrySource, 'slice').mockReturnValue({ arrayBuffer: retryRead } as unknown as Blob);
+            const queuedSource = new Blob(['queued-source']);
+            const queuedRead = vi.fn().mockResolvedValue(new Uint8Array([2]).buffer);
+            vi.spyOn(queuedSource, 'slice').mockReturnValue({ arrayBuffer: queuedRead } as unknown as Blob);
+            const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            const retryCard = { uuid: 'retry-card', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'retry-image', overrides: { brightness: 1 } };
+
+            queueBulkPreRender([
+                { card: retryCard, exportBlob: retrySource },
+                { card: { ...retryCard, uuid: 'queued-card', imageId: 'queued-image' }, exportBlob: queuedSource },
+            ]);
+
+            await vi.waitFor(() => expect(queuedRead).toHaveBeenCalledTimes(1));
+            await expect(preRenderEffect(retryCard, retrySource)).resolves.toBeUndefined();
+            expect(retryRead).toHaveBeenCalledTimes(2);
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(2));
+            error.mockRestore();
+        });
+
+        it('invalidates active and queued content hashes on destroy without stale rendering', async () => {
+            const processor = getEffectProcessor();
+            const render = vi.spyOn(processor, 'process').mockResolvedValue(new Blob(['rendered']));
+            let releaseActiveRead: (() => void) | undefined;
+            const activeSource = new Blob(['active-source']);
+            vi.spyOn(activeSource, 'slice').mockReturnValue({
+                arrayBuffer: vi.fn(() => new Promise<ArrayBuffer>(resolve => {
+                    releaseActiveRead = () => resolve(new Uint8Array([1]).buffer);
+                })),
+            } as unknown as Blob);
+            const queuedSource = new Blob(['queued-source']);
+            const queuedRead = vi.fn().mockResolvedValue(new Uint8Array([2]).buffer);
+            vi.spyOn(queuedSource, 'slice').mockReturnValue({ arrayBuffer: queuedRead } as unknown as Blob);
+            const card = { uuid: 'card-1', name: 'Adjusted', order: 0, isUserUpload: false, imageId: 'image-1', overrides: { brightness: 1 } };
+            const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+            const active = preRenderEffect(card, activeSource);
+            const queued = preRenderEffect({ ...card, uuid: 'card-2', imageId: 'image-2' }, queuedSource);
+            await vi.waitFor(() => expect(activeSource.slice).toHaveBeenCalledTimes(1));
+            processor.destroy();
+            await expect(Promise.all([active, queued])).resolves.toEqual([undefined, undefined]);
+
+            releaseActiveRead?.();
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(queuedRead).not.toHaveBeenCalled();
+            expect(render).not.toHaveBeenCalled();
+
+            await expect(preRenderEffect({ ...card, uuid: 'card-3', imageId: 'image-3' }, new Blob(['fresh-source']))).resolves.toBeUndefined();
+            expect(render).toHaveBeenCalledTimes(1);
+            error.mockRestore();
+        });
     });
 
     describe('EffectProcessor Logic', () => {

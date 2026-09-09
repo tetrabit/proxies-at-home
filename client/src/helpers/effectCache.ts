@@ -232,6 +232,7 @@ class EffectProcessor {
      */
     destroy() {
         effectProcessorGeneration++;
+        destroyContentDigestQueue();
         this.idleWorkers.forEach(w => {
             if (w.timeoutId) clearTimeout(w.timeoutId);
         });
@@ -435,6 +436,63 @@ async function digestBlobContents(exportBlob: Blob): Promise<string> {
     return hasher.digest();
 }
 
+interface ContentDigestTask {
+    exportBlob: Blob;
+    generation: number;
+    resolve: (digest: string) => void;
+    reject: (error: Error) => void;
+    settled: boolean;
+}
+
+// Content reads and SHA work must be bounded independently of worker admission.
+const MAX_CONCURRENT_CONTENT_DIGESTS = 1;
+let contentDigestGeneration = 0;
+const activeContentDigestTasks = new Set<ContentDigestTask>();
+let queuedContentDigestTasks: ContentDigestTask[] = [];
+
+function settleContentDigestTask(task: ContentDigestTask, error?: Error, digest?: string): void {
+    if (task.settled) return;
+    task.settled = true;
+    if (error) {
+        task.reject(error);
+    } else if (digest) {
+        task.resolve(digest);
+    } else {
+        task.reject(new Error('Content digest completed without a digest'));
+    }
+}
+
+function processContentDigestQueue(): void {
+    while (
+        activeContentDigestTasks.size < MAX_CONCURRENT_CONTENT_DIGESTS
+        && queuedContentDigestTasks.length > 0
+    ) {
+        const task = queuedContentDigestTasks.shift()!;
+        activeContentDigestTasks.add(task);
+        void digestBlobContents(task.exportBlob).then(
+            digest => {
+                if (task.generation !== contentDigestGeneration) {
+                    settleContentDigestTask(task, new Error('Effect processor destroyed'));
+                } else {
+                    settleContentDigestTask(task, undefined, digest);
+                }
+            },
+            error => settleContentDigestTask(task, error instanceof Error ? error : new Error(String(error)))
+        ).finally(() => {
+            activeContentDigestTasks.delete(task);
+            processContentDigestQueue();
+        });
+    }
+}
+
+function destroyContentDigestQueue(): void {
+    contentDigestGeneration++;
+    const destructionError = new Error('Effect processor destroyed');
+    queuedContentDigestTasks.forEach(task => settleContentDigestTask(task, destructionError));
+    queuedContentDigestTasks = [];
+    activeContentDigestTasks.forEach(task => settleContentDigestTask(task, destructionError));
+}
+
 const exportBlobContentDigests = new WeakMap<Blob, Promise<string>>();
 const inFlightRenditions = new Map<string, Promise<void>>();
 let effectProcessorGeneration = 0;
@@ -443,7 +501,11 @@ function getExportBlobContentDigest(exportBlob: Blob): Promise<string> {
     const existing = exportBlobContentDigests.get(exportBlob);
     if (existing) return existing;
 
-    const digest = digestBlobContents(exportBlob);
+    const generation = contentDigestGeneration;
+    const digest = new Promise<string>((resolve, reject) => {
+        queuedContentDigestTasks.push({ exportBlob, generation, resolve, reject, settled: false });
+        processContentDigestQueue();
+    });
     exportBlobContentDigests.set(exportBlob, digest);
     void digest.catch(() => {
         if (exportBlobContentDigests.get(exportBlob) === digest) {
