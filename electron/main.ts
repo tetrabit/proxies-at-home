@@ -10,6 +10,7 @@ import {
 } from "electron";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { randomBytes } from "node:crypto";
 import fs from "fs";
 import pkg from "electron-updater";
 import type { IpcMain } from "electron";
@@ -26,6 +27,51 @@ export const electronMainRuntime = {
     return import(pathToFileURL(serverScript).href);
   },
 };
+
+const desktopPrivateCapabilities = [
+  "backup:read",
+  "backup:write",
+  "preferences:read",
+  "preferences:write",
+  "calibration:read",
+  "calibration:write",
+  "metrics:read",
+  "metrics:write",
+] as const;
+
+type DesktopPrivateIdentity = {
+  ownerId: "desktop-local";
+  capabilities: ReadonlySet<(typeof desktopPrivateCapabilities)[number]>;
+  transport: "desktop-loopback";
+};
+
+type PrivateCredentialVerifier = {
+  verifyBearer(bearer: string): unknown;
+};
+
+type CreateSingleBearerVerifier = (
+  bearer: string,
+  identity: DesktopPrivateIdentity
+) => PrivateCredentialVerifier;
+
+type StartServer = (
+  port: number,
+  options: {
+    host: string;
+    privateCredentialVerifier: PrivateCredentialVerifier;
+  }
+) => Promise<number>;
+
+function createDesktopCredentialVerifier(
+  createSingleBearerVerifier: CreateSingleBearerVerifier
+): PrivateCredentialVerifier {
+  const bearer = randomBytes(32).toString("base64url");
+  return createSingleBearerVerifier(bearer, {
+    ownerId: "desktop-local",
+    capabilities: new Set(desktopPrivateCapabilities),
+    transport: "desktop-loopback",
+  });
+}
 
 // Settings file for persistent electron-specific settings
 function getSettingsPath() {
@@ -522,7 +568,29 @@ app.whenReady().then(async () => {
     const startServer = serverModule.startServer;
 
     if (typeof startServer === "function") {
-      serverPort = await startServer(0, { host: "127.0.0.1" }); // 0 = random available port
+      const authProviderScript = path.join(
+        path.dirname(serverScript),
+        "auth",
+        "privateRouteAuth.js"
+      );
+      const authProviderModule =
+        await electronMainRuntime.importServerModule(authProviderScript);
+      const createSingleBearerVerifier =
+        authProviderModule.createSingleBearerVerifier;
+
+      if (typeof createSingleBearerVerifier !== "function") {
+        throw new Error(
+          "[Electron] createSingleBearerVerifier function not found in server auth provider"
+        );
+      }
+
+      const privateCredentialVerifier = createDesktopCredentialVerifier(
+        createSingleBearerVerifier as CreateSingleBearerVerifier
+      );
+      serverPort = await (startServer as StartServer)(0, {
+        host: "127.0.0.1",
+        privateCredentialVerifier,
+      }); // 0 = random available port
       console.log("[Electron] Server started on port:", serverPort);
     } else {
       console.error(

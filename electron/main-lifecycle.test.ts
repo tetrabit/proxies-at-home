@@ -379,9 +379,16 @@ describe("electron main lifecycle", () => {
     );
 
     await importAndRunReady((mainModule) => {
-      mainModule.electronMainRuntime.importServerModule = vi.fn(async () => ({
-        startServer: vi.fn(async () => 4555),
-      }));
+      mainModule.electronMainRuntime.importServerModule = vi.fn(
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? {
+                createSingleBearerVerifier: vi.fn(() => ({
+                  verifyBearer: () => null,
+                })),
+              }
+            : { startServer: vi.fn(async () => 4555) }
+      );
     });
 
     expect(autoUpdaterMock.channel).toBe("latest");
@@ -392,12 +399,106 @@ describe("electron main lifecycle", () => {
     expect(ipcHandlers.get("set-auto-update-enabled")?.({}, true)).toBe(true);
   });
 
-  it("starts the desktop server with explicit loopback binding", async () => {
-    const startServer = vi.fn(async () => 4555);
+  it("starts the desktop server with a launch-only loopback credential verifier", async () => {
+    let configuredBearer = "";
+    const createSingleBearerVerifier = vi.fn(
+      (bearer: string, identity: unknown) => {
+        configuredBearer = bearer;
+        return {
+          verifyBearer: (presentedBearer: string) =>
+            presentedBearer === bearer ? identity : null,
+        };
+      }
+    );
+    const startServer = vi.fn(async (..._args: unknown[]) => 4555);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const writeSpy = vi.spyOn(fs, "writeFileSync");
+    const appendSpy = vi.spyOn(fs, "appendFileSync");
+
     await importAndRunReady((mainModule) => {
-      mainModule.electronMainRuntime.importServerModule = vi.fn(async () => ({ startServer }));
+      mainModule.electronMainRuntime.importServerModule = vi.fn(
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? { createSingleBearerVerifier }
+            : { startServer }
+      );
     });
-    expect(startServer).toHaveBeenCalledExactlyOnceWith(0, { host: '127.0.0.1' });
+
+    const [token, identity] = createSingleBearerVerifier.mock.calls[0];
+    const startServerOptions = startServer.mock.calls[0]?.[1] as {
+      host: string;
+      privateCredentialVerifier: { verifyBearer(bearer: string): unknown };
+    };
+
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(identity).toEqual({
+      ownerId: "desktop-local",
+      capabilities: new Set([
+        "backup:read",
+        "backup:write",
+        "preferences:read",
+        "preferences:write",
+        "calibration:read",
+        "calibration:write",
+        "metrics:read",
+        "metrics:write",
+      ]),
+      transport: "desktop-loopback",
+    });
+    expect(startServerOptions.host).toBe("127.0.0.1");
+    expect(
+      startServerOptions.privateCredentialVerifier.verifyBearer(configuredBearer)
+    ).toEqual(identity);
+    expect(
+      startServerOptions.privateCredentialVerifier.verifyBearer(
+        "wrong-launch-credential"
+      )
+    ).toBeNull();
+
+    const tokenWasRecorded = (calls: unknown[][]) =>
+      calls.flat().some((value) =>
+        typeof value === "string" && value.includes(configuredBearer)
+      );
+    expect(tokenWasRecorded(logSpy.mock.calls)).toBe(false);
+    expect(tokenWasRecorded(errorSpy.mock.calls)).toBe(false);
+    expect(tokenWasRecorded(writeSpy.mock.calls)).toBe(false);
+    expect(tokenWasRecorded(appendSpy.mock.calls)).toBe(false);
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    writeSpy.mockRestore();
+    appendSpy.mockRestore();
+  });
+
+  it("uses a distinct credential on each desktop boot", async () => {
+    const boot = async () => {
+      let configuredBearer = "";
+      const createSingleBearerVerifier = vi.fn((bearer: string) => {
+        configuredBearer = bearer;
+        return { verifyBearer: () => null };
+      });
+      const startServer = vi.fn(async () => 4555);
+
+      vi.resetModules();
+      readyCallback = undefined;
+      const mainModule = await import("./main.ts");
+      mainModule.electronMainRuntime.importServerModule = vi.fn(
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? { createSingleBearerVerifier }
+            : { startServer }
+      );
+      await readyCallback?.();
+      return configuredBearer;
+    };
+
+    const firstBootCredential = await boot();
+    const secondBootCredential = await boot();
+
+    expect(firstBootCredential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secondBootCredential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secondBootCredential).not.toBe(firstBootCredential);
   });
 
   it("handles updater events before a window exists", async () => {
@@ -449,7 +550,14 @@ describe("electron main lifecycle", () => {
       .mockImplementation(() => undefined);
     await importAndRunReady((mainModule) => {
       mainModule.electronMainRuntime.importServerModule = vi.fn(
-        async () => ({})
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? {
+                createSingleBearerVerifier: vi.fn(() => ({
+                  verifyBearer: () => null,
+                })),
+              }
+            : {}
       );
     });
 

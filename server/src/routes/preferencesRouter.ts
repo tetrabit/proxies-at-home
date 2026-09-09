@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
+import { createPrivateRouteAuth, type PrivateCapability } from '../auth/privateRouteAuth.js';
 import type {
     MpcPreferenceCandidate,
     MpcPreferenceCase,
@@ -11,13 +12,23 @@ import type {
 } from '../../../shared/types.js';
 
 const DEFAULT_PREFERENCES_FILENAME = 'mpc-preferences.user.json';
+const PREFERENCES_NAMESPACE_DIRECTORY = 'preferences';
 
 type JsonRecord = Record<string, unknown>;
+
+type PrivateRouteAuth = {
+    private(capability: PrivateCapability): RequestHandler;
+};
 
 interface PreferencesRouterOptions {
     dataDirectory?: string;
     configuredPath?: string | undefined;
+    privateRouteAuth?: PrivateRouteAuth;
 }
+
+const denyAllPrivateRouteAuth = createPrivateRouteAuth({
+    verifyBearer: () => null,
+});
 
 function isRecord(value: unknown): value is JsonRecord {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -180,6 +191,32 @@ export function resolvePreferencesFilePath(
     return resolvedPath;
 }
 
+/**
+ * Derives the private preference path from an authenticated server-owned
+ * identity. The owner ID is encoded so it never becomes a raw path segment.
+ */
+export function resolveOwnerPreferencesFilePath(ownerId: string, dataDirectory: string): string {
+    if (ownerId.length === 0) {
+        throw new Error('Preference owner namespace is unavailable');
+    }
+
+    const resolvedDataDirectory = path.resolve(dataDirectory);
+    const encodedOwnerId = Buffer.from(ownerId, 'utf-8').toString('base64url');
+    const resolvedPath = path.resolve(
+        resolvedDataDirectory,
+        PREFERENCES_NAMESPACE_DIRECTORY,
+        encodedOwnerId,
+        DEFAULT_PREFERENCES_FILENAME,
+    );
+    const relativePath = path.relative(resolvedDataDirectory, resolvedPath);
+
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        throw new Error('Preference owner namespace must stay within the data directory');
+    }
+
+    return resolvedPath;
+}
+
 async function writeJsonAtomically(filePath: string, payload: string): Promise<void> {
     const directory = path.dirname(filePath);
     const tempPath = path.join(directory, `${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
@@ -198,11 +235,23 @@ async function writeJsonAtomically(filePath: string, payload: string): Promise<v
 export function createPreferencesRouter(options: PreferencesRouterOptions = {}): Router {
     const router = Router();
     const dataDirectory = options.dataDirectory ?? path.resolve(process.cwd(), 'data');
-    const filePath = resolvePreferencesFilePath(options.configuredPath ?? process.env.MPC_PREFERENCES_PATH, dataDirectory);
+    const privateRouteAuth = options.privateRouteAuth ?? denyAllPrivateRouteAuth;
+
+    // MPC_PREFERENCES_PATH named the former global file. It is deliberately
+    // not read or migrated here because legacy bytes have no trusted owner.
+    // An explicit authenticated owner-claim migration is required first.
 
     let pendingWrite = Promise.resolve();
 
-    router.get('/', async (_req, res) => {
+    router.get('/', privateRouteAuth.private('preferences:read'), async (req, res) => {
+        let filePath: string;
+        try {
+            filePath = resolveOwnerPreferencesFilePath(req.privateIdentity!.ownerId, dataDirectory);
+        } catch {
+            res.status(500).json({ error: 'Failed to load preferences' });
+            return;
+        }
+
         try {
             const payload = await fs.readFile(filePath, 'utf-8');
             const parsed = validatePreferenceFixture(JSON.parse(payload));
@@ -218,7 +267,15 @@ export function createPreferencesRouter(options: PreferencesRouterOptions = {}):
         }
     });
 
-    router.put('/', async (req, res) => {
+    router.put('/', privateRouteAuth.private('preferences:write'), async (req, res) => {
+        let filePath: string;
+        try {
+            filePath = resolveOwnerPreferencesFilePath(req.privateIdentity!.ownerId, dataDirectory);
+        } catch {
+            res.status(500).json({ error: 'Failed to save preferences' });
+            return;
+        }
+
         let fixture: MpcPreferenceFixture;
 
         try {

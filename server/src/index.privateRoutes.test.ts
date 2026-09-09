@@ -27,7 +27,7 @@ vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: express.Rou
 vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: express.Router() }));
 vi.mock('./routes/backupRouter.js', () => ({ backupRouter: express.Router() }));
 vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: express.Router() }));
-vi.mock('./routes/preferencesRouter.js', () => ({ preferencesRouter: express.Router() }));
+vi.mock('./routes/preferencesRouter.js', () => ({ createPreferencesRouter: () => express.Router() }));
 vi.mock('./services/scryfallMicroserviceClient.js', () => ({
   getMicroserviceMetrics: state.getMicroserviceMetrics,
   isMicroserviceAvailable: state.isMicroserviceAvailable,

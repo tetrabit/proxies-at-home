@@ -424,27 +424,21 @@ export async function importProject(
   const newProjectId = crypto.randomUUID();
   const name = projectName || `${validatedBackup.project.name} (Imported)`;
 
-  // 1. Restore custom images first (idempotent — content-addressed)
-  for (const img of validatedBackup.userImages) {
-    const existing = await db.user_images.get(img.hash);
-    if (!existing) {
-      const blob = base64ToBlob(img.data, img.type);
-      await db.user_images.put({
-        hash: img.hash,
-        data: blob,
-        type: img.type,
-        createdAt: Date.now(),
-      });
-    }
-  }
+  // Decode all validated image payloads before opening the write transaction.
+  // This keeps decoding failures from leaving any persistent import state behind.
+  const decodedUserImages = validatedBackup.userImages.map((img) => ({
+    hash: img.hash,
+    type: img.type,
+    blob: base64ToBlob(img.data, img.type),
+  }));
 
-  // 2. Build UUID remap table (old → new)
+  // 1. Build UUID remap table (old → new)
   const uuidMap = new Map<string, string>();
   for (const card of validatedBackup.cards) {
     uuidMap.set(card.uuid, crypto.randomUUID());
   }
 
-  // 3. Create card records with new UUIDs and remapped links
+  // 2. Create card records with new UUIDs and remapped links
   const newCards: CardOption[] = validatedBackup.cards.map((card) => {
     const newUuid = uuidMap.get(card.uuid)!;
     const newLinkedFrontId = card.linkedFrontId
@@ -465,8 +459,21 @@ export async function importProject(
     };
   });
 
-  // 4. Write project + cards in a single transaction
-  await db.transaction('rw', db.projects, db.cards, async () => {
+  // 3. Write missing custom uploads, project, and cards atomically.
+  await db.transaction('rw', db.user_images, db.projects, db.cards, async () => {
+    // Preserve the sequential content-addressed deduplication behavior.
+    for (const image of decodedUserImages) {
+      const existing = await db.user_images.get(image.hash);
+      if (!existing) {
+        await db.user_images.put({
+          hash: image.hash,
+          data: image.blob,
+          type: image.type,
+          createdAt: Date.now(),
+        });
+      }
+    }
+
     await db.projects.add({
       id: newProjectId,
       name,

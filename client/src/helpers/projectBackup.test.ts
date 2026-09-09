@@ -56,7 +56,7 @@ describe("projectBackup", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     mocks.transaction.mockImplementation(
-      async (_mode, _projects, _cards, callback) => callback()
+      async (_mode, _userImages, _projects, _cards, callback) => callback()
     );
     mocks.cardsWhere.mockReturnValue({
       equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([]) })),

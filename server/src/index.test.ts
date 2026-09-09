@@ -22,6 +22,7 @@ const state = vi.hoisted(() => ({
   closeDatabase: vi.fn(),
   isMicroserviceAvailable: vi.fn(),
   logMicroserviceMetrics: vi.fn(),
+  createPreferencesRouter: vi.fn(() => ({ route: 'preferences' })),
   listenAddress: undefined as undefined | string | { port?: number },
 }));
 
@@ -86,7 +87,7 @@ vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: { route: 'm
 vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: { route: 'scryfall' } }));
 vi.mock('./routes/backupRouter.js', () => ({ backupRouter: { route: 'backup' } }));
 vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: { route: 'printer' } }));
-vi.mock('./routes/preferencesRouter.js', () => ({ preferencesRouter: { route: 'preferences' } }));
+vi.mock('./routes/preferencesRouter.js', () => ({ createPreferencesRouter: state.createPreferencesRouter }));
 vi.mock('./routes/metricsRouter.js', () => ({ createMetricsRouter: vi.fn(() => ({ route: 'metrics' })) }));
 
 function createResponse() {
@@ -123,6 +124,7 @@ describe('server index bootstrap and app wiring', () => {
     state.closeDatabase.mockClear();
     state.isMicroserviceAvailable.mockReset().mockResolvedValue(true);
     state.logMicroserviceMetrics.mockClear();
+    state.createPreferencesRouter.mockClear();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
@@ -144,6 +146,8 @@ describe('server index bootstrap and app wiring', () => {
     const port = await startServer(0);
     expect(port).toBe(49152);
     expect(state.app?.use).toHaveBeenCalledWith('/api/scryfall', { route: 'scryfall' });
+    expect(state.createPreferencesRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
+    expect(state.app?.use).toHaveBeenCalledWith('/api/preferences', { route: 'preferences' });
     expect(state.app?.use).toHaveBeenCalledWith('/api/metrics', { route: 'metrics' });
     expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0', expect.any(Function));
 

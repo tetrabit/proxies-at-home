@@ -12,7 +12,7 @@ import { scryfallRouter } from "./routes/scryfallRouter.js";
 import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
 import { backupRouter } from "./routes/backupRouter.js";
 import { printerCalibrationRouter } from "./routes/printerCalibrationRouter.js";
-import { preferencesRouter } from "./routes/preferencesRouter.js";
+import { createPreferencesRouter } from "./routes/preferencesRouter.js";
 import { createMetricsRouter } from "./routes/metricsRouter.js";
 import { createPrivateRouteAuth, type PrivateCredentialVerifier } from "./auth/privateRouteAuth.js";
 import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
@@ -216,7 +216,7 @@ export function createApp(options: StartServerOptions = {}) {
   app.use("/api/share", shareRouter);
   app.use("/api/backup", backupRouter);
   app.use("/api/printer-calibration", printerCalibrationRouter);
-  app.use("/api/preferences", preferencesRouter);
+  app.use("/api/preferences", createPreferencesRouter({ privateRouteAuth }));
   app.use("/api/metrics", createMetricsRouter(privateRouteAuth));
 
   return app;

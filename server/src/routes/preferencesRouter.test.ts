@@ -1,11 +1,17 @@
 import { promises as fs } from 'fs';
-import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MpcPreferenceFixture } from '../../../shared/types.js';
+import { createPrivateRouteAuth, type PrivateIdentity } from '../auth/privateRouteAuth.js';
 import { createPreferencesRouter, resolvePreferencesFilePath, validatePreferenceFixture } from './preferencesRouter.js';
+
+const fixtureRoot = fileURLToPath(
+    new URL('../../../.review-artifacts/preferences-fixtures/', import.meta.url),
+);
+const fixturePrefix = 'preferences-fixture-rework-01-';
 
 const validFixture: MpcPreferenceFixture = {
     version: 1,
@@ -42,44 +48,106 @@ const validFixture: MpcPreferenceFixture = {
     ],
 };
 
+const identitiesByBearer = new Map<string, PrivateIdentity>([
+    ['owner-a-read-write', {
+        ownerId: 'owner-a',
+        capabilities: new Set(['preferences:read', 'preferences:write']),
+        transport: 'server',
+    }],
+    ['owner-a-read-only', {
+        ownerId: 'owner-a',
+        capabilities: new Set(['preferences:read']),
+        transport: 'server',
+    }],
+    ['owner-a-write-only', {
+        ownerId: 'owner-a',
+        capabilities: new Set(['preferences:write']),
+        transport: 'server',
+    }],
+    ['owner-b-read-write', {
+        ownerId: 'owner-b',
+        capabilities: new Set(['preferences:read', 'preferences:write']),
+        transport: 'server',
+    }],
+]);
+
+const privateRouteAuth = createPrivateRouteAuth({
+    verifyBearer: bearer => identitiesByBearer.get(bearer) ?? null,
+});
+
+function authorizationFor(bearer: string): { Authorization: string } {
+    return { Authorization: `Bearer ${bearer}` };
+}
+
 describe('preferencesRouter', () => {
-    let tempDirectory: string;
+    let fixtureDirectory: string;
     let dataDirectory: string;
     let app: express.Express;
     let preferencesPath: string;
 
     beforeEach(async () => {
-        tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'preferences-router-'));
-        dataDirectory = path.join(tempDirectory, 'data');
+        await fs.mkdir(fixtureRoot, { recursive: true });
+        fixtureDirectory = await fs.mkdtemp(path.join(fixtureRoot, fixturePrefix));
+        dataDirectory = path.join(fixtureDirectory, 'data');
         app = express();
         app.use(express.json());
-        app.use('/api/preferences', createPreferencesRouter({ dataDirectory }));
-        preferencesPath = path.join(dataDirectory, 'mpc-preferences.user.json');
-    });
-
-    afterEach(async () => {
-        await fs.rm(tempDirectory, { recursive: true, force: true });
+        app.use('/api/preferences', createPreferencesRouter({ dataDirectory, privateRouteAuth }));
+        preferencesPath = path.join(
+            dataDirectory,
+            'preferences',
+            Buffer.from('owner-a').toString('base64url'),
+            'mpc-preferences.user.json',
+        );
     });
 
     it('rejects configured paths that escape the data directory', () => {
         expect(() => resolvePreferencesFilePath('../outside.json', dataDirectory)).toThrow(
             `MPC_PREFERENCES_PATH must stay within ${path.resolve(dataDirectory)}`
         );
-        expect(() => resolvePreferencesFilePath(path.join(tempDirectory, 'outside.json'), dataDirectory)).toThrow(
+        expect(() => resolvePreferencesFilePath(path.join(fixtureDirectory, 'outside.json'), dataDirectory)).toThrow(
             `MPC_PREFERENCES_PATH must stay within ${path.resolve(dataDirectory)}`
         );
     });
 
-    it('returns 404 when the preference file is missing', async () => {
-        const response = await request(app).get('/api/preferences');
+    it('rejects anonymous and wrong-capability requests before filesystem reads or writes', async () => {
+        const readFileSpy = vi.spyOn(fs, 'readFile');
+        const writeFileSpy = vi.spyOn(fs, 'writeFile');
+
+        const anonymousRead = await request(app).get('/api/preferences');
+        const writeOnlyRead = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-write-only'));
+        const anonymousWrite = await request(app).put('/api/preferences').send(validFixture);
+        const readOnlyWrite = await request(app)
+            .put('/api/preferences')
+            .set(authorizationFor('owner-a-read-only'))
+            .send(validFixture);
+
+        expect(anonymousRead.status).toBe(401);
+        expect(anonymousRead.body).toEqual({ error: 'unauthorized' });
+        expect(writeOnlyRead.status).toBe(403);
+        expect(writeOnlyRead.body).toEqual({ error: 'forbidden' });
+        expect(anonymousWrite.status).toBe(401);
+        expect(anonymousWrite.body).toEqual({ error: 'unauthorized' });
+        expect(readOnlyWrite.status).toBe(403);
+        expect(readOnlyWrite.body).toEqual({ error: 'forbidden' });
+        expect(readFileSpy).not.toHaveBeenCalled();
+        expect(writeFileSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the authenticated owner preference file is missing', async () => {
+        const response = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'));
 
         expect(response.status).toBe(404);
         expect(response.body.error).toBe('Preferences not found');
     });
 
-    it('round-trips a valid fixture through PUT and GET', async () => {
+    it('round-trips a valid fixture through authenticated PUT and GET', async () => {
         const putResponse = await request(app)
             .put('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'))
             .send(validFixture);
 
         expect(putResponse.status).toBe(200);
@@ -88,15 +156,73 @@ describe('preferencesRouter', () => {
         const writtenPayload = await fs.readFile(preferencesPath, 'utf-8');
         expect(JSON.parse(writtenPayload)).toEqual(validFixture);
 
-        const getResponse = await request(app).get('/api/preferences');
+        const getResponse = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'));
 
         expect(getResponse.status).toBe(200);
         expect(getResponse.body).toEqual(validFixture);
     });
 
+    it('isolates owners by the server-verified identity instead of client owner fields', async () => {
+        const ownerBFixture: MpcPreferenceFixture = {
+            ...validFixture,
+            exportedAt: '2026-04-18T12:00:01.000Z',
+        };
+
+        const ownerAWrite = await request(app)
+            .put('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'))
+            .send(validFixture);
+        const crossScopeRead = await request(app)
+            .get('/api/preferences?ownerId=owner-a')
+            .set(authorizationFor('owner-b-read-write'))
+            .set('X-Owner-Id', 'owner-a');
+        const ownerBWrite = await request(app)
+            .put('/api/preferences?ownerId=owner-a')
+            .set(authorizationFor('owner-b-read-write'))
+            .set('X-Owner-Id', 'owner-a')
+            .send(ownerBFixture);
+        const ownerARead = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'));
+        const ownerBRead = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-b-read-write'));
+
+        expect(ownerAWrite.status).toBe(200);
+        expect(crossScopeRead.status).toBe(404);
+        expect(crossScopeRead.body).toEqual({ error: 'Preferences not found' });
+        expect(ownerBWrite.status).toBe(200);
+        expect(ownerARead.body).toEqual(validFixture);
+        expect(ownerBRead.body).toEqual(ownerBFixture);
+    });
+
+    it('does not read or migrate a configured legacy global preference file', async () => {
+        const legacyPath = path.join(dataDirectory, 'legacy-preferences.json');
+        await fs.mkdir(dataDirectory, { recursive: true });
+        await fs.writeFile(legacyPath, JSON.stringify(validFixture), 'utf-8');
+
+        const legacyApp = express();
+        legacyApp.use(express.json());
+        legacyApp.use('/api/preferences', createPreferencesRouter({
+            dataDirectory,
+            configuredPath: 'legacy-preferences.json',
+            privateRouteAuth,
+        }));
+
+        const response = await request(legacyApp)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'));
+
+        expect(response.status).toBe(404);
+        expect(await fs.readFile(legacyPath, 'utf-8')).toBe(JSON.stringify(validFixture));
+    });
+
     it('rejects malformed PUT bodies with 400', async () => {
         const response = await request(app)
             .put('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'))
             .send({
                 version: 1,
                 exportedAt: '2026-04-18T12:00:00.000Z',
@@ -190,8 +316,8 @@ describe('preferencesRouter', () => {
         };
 
         const [responseA, responseB] = await Promise.all([
-            request(app).put('/api/preferences').send(fixtureA),
-            request(app).put('/api/preferences').send(fixtureB),
+            request(app).put('/api/preferences').set(authorizationFor('owner-a-read-write')).send(fixtureA),
+            request(app).put('/api/preferences').set(authorizationFor('owner-a-read-write')).send(fixtureB),
         ]);
 
         expect(responseA.status).toBe(200);
@@ -204,15 +330,26 @@ describe('preferencesRouter', () => {
     });
 
     it('returns 500 when preference JSON is corrupt or writes fail', async () => {
-        await fs.mkdir(dataDirectory, { recursive: true });
+        await fs.mkdir(path.dirname(preferencesPath), { recursive: true });
         await fs.writeFile(preferencesPath, '{not-json', 'utf-8');
-        const loadResponse = await request(app).get('/api/preferences');
+        const loadResponse = await request(app)
+            .get('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'));
         expect(loadResponse.status).toBe(500);
         expect(loadResponse.body.error).toBe('Failed to load preferences');
 
-        await fs.rm(dataDirectory, { recursive: true, force: true });
-        await fs.writeFile(dataDirectory, 'not a directory');
-        const saveResponse = await request(app).put('/api/preferences').send(validFixture);
+        const blockedDataDirectory = path.join(fixtureDirectory, 'blocked-data-directory');
+        await fs.writeFile(blockedDataDirectory, 'not a directory', 'utf-8');
+        const blockedApp = express();
+        blockedApp.use(express.json());
+        blockedApp.use('/api/preferences', createPreferencesRouter({
+            dataDirectory: blockedDataDirectory,
+            privateRouteAuth,
+        }));
+        const saveResponse = await request(blockedApp)
+            .put('/api/preferences')
+            .set(authorizationFor('owner-a-read-write'))
+            .send(validFixture);
         expect(saveResponse.status).toBe(500);
         expect(saveResponse.body.error).toBe('Failed to save preferences');
     });
@@ -225,6 +362,7 @@ describe('preferencesRouter', () => {
         try {
             const response = await request(app)
                 .put('/api/preferences')
+                .set(authorizationFor('owner-a-read-write'))
                 .send(validFixture);
 
             expect(response.status).toBe(500);
@@ -245,6 +383,7 @@ describe('preferencesRouter', () => {
         try {
             const response = await request(app)
                 .put('/api/preferences')
+                .set(authorizationFor('owner-a-read-write'))
                 .send(validFixture);
 
             expect(response.status).toBe(500);
