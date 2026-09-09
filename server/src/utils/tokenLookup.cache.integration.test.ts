@@ -149,6 +149,21 @@ describe("cached token oracle resolution", () => {
         next_page: null,
       },
     });
+    transport.collectionPost.mockResolvedValueOnce({
+      data: {
+        data: [
+          {
+            id: "linked-treasure-print",
+            name: "Treasure",
+            oracle_id: "treasure-oracle",
+            set: "told",
+            collector_number: "1",
+            released_at: "2020-01-01",
+          },
+        ],
+        not_found: [],
+      },
+    });
 
     const result = await tokenLookupModule.resolveLatestTokenParts(
       tokenUtilsModule.extractTokenParts(cachedParent),
@@ -163,14 +178,58 @@ describe("cached token oracle resolution", () => {
         type_line: "Token Artifact — Treasure",
       },
     ]);
-    expect(transport.collectionPost).not.toHaveBeenCalled();
-    expect(transport.tokenIdentityGet).toHaveBeenCalledWith(
-      "https://api.scryfall.com/cards/linked-treasure-print",
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    expect(transport.collectionPost).toHaveBeenCalledWith(
+      "https://api.scryfall.com/cards/collection",
+      { identifiers: [{ id: "linked-treasure-print" }] }
     );
+    expect(transport.tokenIdentityGet).not.toHaveBeenCalled();
     const searchedUrl = transport.pagedSearchGet.mock.calls[0]?.[0] as string;
     expect(new URL(searchedUrl).searchParams.get("q")).toBe(
       '!"Treasure" type:token include:extras unique:prints lang:en'
     );
+  });
+
+  it("deduplicates linked token identifiers into ordered collection batches before fallback", async () => {
+    const { tokenLookupModule } = await loadModules();
+    const unique = Array.from({ length: 76 }, (_, index) => ({
+      id: `token-${index}`,
+      name: `Token ${index}`,
+    }));
+    const tokenParts = [unique[75]!, ...unique.slice(0, 75), unique[75]!, unique[0]!];
+
+    transport.collectionPost.mockImplementation(async (_url: string, payload: {
+      identifiers: Array<{ id: string }>;
+    }) => ({
+      data: {
+        data: payload.identifiers.map(({ id }) => ({
+          id,
+          name: `Resolved ${id}`,
+          set: "tst",
+          collector_number: id.slice("token-".length),
+        })),
+        not_found: [],
+      },
+    }));
+
+    const result = await tokenLookupModule.resolveLatestTokenParts(tokenParts, "en");
+
+    expect(transport.collectionPost).toHaveBeenCalledTimes(2);
+    expect(transport.collectionPost.mock.calls.map(([, payload]) => payload.identifiers)).toEqual([
+      [
+        { id: "token-75" },
+        ...unique.slice(0, 74).map(({ id }) => ({ id })),
+      ],
+      [{ id: "token-74" }],
+    ]);
+    expect(transport.tokenIdentityGet).not.toHaveBeenCalled();
+    expect(transport.pagedSearchGet).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      { id: "token-75", name: "Resolved token-75", uri: "https://api.scryfall.com/cards/tst/75" },
+      ...unique.slice(0, 75).map(({ id }, index) => ({
+        id,
+        name: `Resolved ${id}`,
+        uri: `https://api.scryfall.com/cards/tst/${index}`,
+      })),
+    ]);
   });
 });

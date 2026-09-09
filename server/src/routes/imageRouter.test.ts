@@ -419,6 +419,43 @@ describe("getWithRetry logic", () => {
         sendFileSpy.mockRestore();
     });
 
+    it("binds proxy requests to a fresh pinned agent instead of an unvalidated client lookup", async () => {
+        const resolveAll = vi.fn((_hostname: string, _options: { all: true; verbatim: true }, callback: (error: NodeJS.ErrnoException | null, addresses: Array<{ address: string; family: number }>) => void) => {
+            callback(null, [{ address: "8.8.8.8", family: 4 }]);
+        });
+        __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
+        mockedAxios.get.mockResolvedValue({
+            status: 200,
+            data: Buffer.from("image data"),
+            headers: { "content-type": "image/png" },
+        });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/png").send("image data");
+        });
+
+        const url = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png";
+        const response = await request(app).get("/images/proxy").query({ url });
+        const options = mockedAxios.get.mock.calls[0][1] as {
+            httpsAgent: { options: { lookup: (hostname: string, options: unknown, callback: (error: NodeJS.ErrnoException | null, address?: string, family?: number) => void) => void } };
+            maxRedirects: number;
+            proxy: boolean;
+        };
+
+        await expect(new Promise<{ address: string; family: number }>((resolve, reject) => {
+            options.httpsAgent.options.lookup("cards.scryfall.io", {}, (error, address, family) => {
+                if (error || !address || !family) {
+                    reject(error ?? new Error("agent did not pin an address"));
+                    return;
+                }
+                resolve({ address, family });
+            });
+        })).resolves.toEqual({ address: "8.8.8.8", family: 4 });
+        expect(response.status).toBe(200);
+        expect(options).toMatchObject({ maxRedirects: 0, proxy: false });
+        expect(resolveAll).toHaveBeenCalledWith("cards.scryfall.io", { all: true, verbatim: true }, expect.any(Function));
+        sendFileSpy.mockRestore();
+    });
+
     it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
         mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: Buffer.from("png") });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -535,10 +572,12 @@ describe("getWithRetry logic", () => {
             expect(res.status).toBe(502);
             expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
             for (const [attempt, url] of candidates.entries()) {
-                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, {
+                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, expect.objectContaining({
                     responseType: "arraybuffer",
-                    maxRedirects: 5,
-                });
+                    maxRedirects: 0,
+                    proxy: false,
+                    httpsAgent: expect.any(Object),
+                }));
             }
             expect(fs.promises.writeFile).not.toHaveBeenCalled();
             expect(consoleErrorSpy).toHaveBeenCalledWith("MPC image proxy failed:", {
@@ -567,10 +606,12 @@ describe("getWithRetry logic", () => {
             expect(res.status).toBe(502);
             expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
             for (const [attempt, url] of candidates.entries()) {
-                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, {
+                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, expect.objectContaining({
                     responseType: "arraybuffer",
-                    maxRedirects: 5,
-                });
+                    maxRedirects: 0,
+                    proxy: false,
+                    httpsAgent: expect.any(Object),
+                }));
             }
             expect(fs.promises.writeFile).not.toHaveBeenCalled();
             expect(consoleErrorSpy).toHaveBeenCalledWith("MPC image proxy failed:", {

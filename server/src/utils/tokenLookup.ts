@@ -126,6 +126,58 @@ async function resolveLinkedTokenCard(token: TokenPart, language: string): Promi
   return (await getCardDataForCardInfo({ name: token.name, isToken: true }, language, true)) ?? undefined;
 }
 
+/**
+ * Return the identifier used by Scryfall's collection API for the first direct
+ * lookup that resolveLinkedTokenCard would otherwise make. A token id has the
+ * same precedence as the legacy sequential lookup; a one-segment card URI is
+ * used only when the token part has no id.
+ */
+function getLinkedTokenIdentifier(token: TokenPart): string | undefined {
+  if (token.id) return token.id;
+  return parseTokenUri(token.uri).id;
+}
+
+/**
+ * Resolve unique linked-token identifiers through batchFetchCards before
+ * retaining the existing per-token fallback ladder. The result is keyed by the
+ * original token object so a collection response cannot accidentally remap a
+ * same-named token to a different input position.
+ */
+async function resolveLinkedTokenIdentifiers(
+  tokens: TokenPart[],
+  language: string
+): Promise<Map<TokenPart, ScryfallApiCard>> {
+  const identifiers = new Map<string, CardInfo>();
+  const tokenIdentifiers = new Map<TokenPart, string>();
+
+  for (const token of tokens) {
+    const identifier = getLinkedTokenIdentifier(token);
+    if (!identifier) continue;
+    tokenIdentifiers.set(token, identifier);
+    if (!identifiers.has(identifier)) {
+      identifiers.set(identifier, { name: token.name, scryfallId: identifier, isToken: true });
+    }
+  }
+
+  if (identifiers.size === 0) return new Map();
+
+  let batchResults: Map<string, ScryfallApiCard> | undefined;
+  try {
+    batchResults = await batchFetchCards(Array.from(identifiers.values()), language);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    debugLog(`[tokenLookup] Linked token collection batch failed: ${msg}`);
+  }
+
+  const resolved = new Map<TokenPart, ScryfallApiCard>();
+  if (!batchResults) return resolved;
+  for (const [token, identifier] of tokenIdentifiers) {
+    const card = batchResults.get(`id:${identifier}`);
+    if (card) resolved.set(token, card);
+  }
+  return resolved;
+}
+
 async function resolveMostRecentTokenPrint(linkedToken: ScryfallApiCard, language: string): Promise<ScryfallApiCard> {
   if (!linkedToken.oracle_id || !linkedToken.name) {
     return linkedToken;
@@ -316,16 +368,23 @@ export async function resolveLatestTokenParts(
   if (!tokenParts || tokenParts.length === 0) return [];
 
   const seenSourceKeys = new Set<string>();
-  const seenResolvedKeys = new Set<string>();
-  const resolved: TokenPart[] = [];
-
+  const sourceTokens: TokenPart[] = [];
   for (const token of tokenParts) {
     if (!token.name) continue;
     const sourceKey = token.id ? `id:${token.id}` : `name:${token.name.toLowerCase()}`;
     if (seenSourceKeys.has(sourceKey)) continue;
     seenSourceKeys.add(sourceKey);
+    sourceTokens.push(token);
+  }
 
-    const linkedToken = await resolveLinkedTokenCard(token, language);
+  // Keep the source token as the map key so collection results are associated
+  // with their original input before only unresolved tokens enter fallback.
+  const batchedLinkedTokens = await resolveLinkedTokenIdentifiers(sourceTokens, language);
+  const seenResolvedKeys = new Set<string>();
+  const resolved: TokenPart[] = [];
+
+  for (const token of sourceTokens) {
+    const linkedToken = batchedLinkedTokens.get(token) ?? await resolveLinkedTokenCard(token, language);
     const latestToken = linkedToken ? await resolveMostRecentTokenPrint(linkedToken, language) : undefined;
     const nextToken = latestToken ? toResolvedTokenPart(latestToken, token) : token;
     /* v8 ignore next -- resolved tokens usually carry ids; name identity preserves legacy token rows. @preserve */

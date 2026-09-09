@@ -69,7 +69,8 @@ async function processCardForExport(
   index: number,
   imagesById: Map<string, Image>,
   usedNames: Map<string, number>,
-  preassignedFilenamePrefix?: string
+  preassignedFilenamePrefix?: string,
+  cacheWriteSettlements?: Array<Promise<void>>
 ): Promise<ExportResult> {
   const image = c.imageId ? imagesById.get(c.imageId) : undefined;
   let url = image?.sourceUrl || "";
@@ -120,7 +121,11 @@ async function processCardForExport(
       // Use setEffectCacheEntry from helper instead of reimplementing logic
       if (c.imageId && c.overrides) {
         const dpi = useSettingsStore.getState().dpi;
-        void setEffectCacheEntryWithDpi(c.imageId, c.overrides, blob, dpi);
+        const cacheWrite = setEffectCacheEntryWithDpi(c.imageId, c.overrides, blob, dpi)
+          .catch((error) => {
+            console.error("[ExportImagesZip] Optional effect-cache write failed:", error);
+          });
+        cacheWriteSettlements?.push(cacheWrite);
       }
     }
   } else if (image?.originalBlob) {
@@ -187,30 +192,36 @@ export async function ExportImagesZip(opts: ExportOpts) {
   const usedNames = new Map<string, number>();
   const zipFilenamePrefixes = preassignFilenamePrefixes(cards);
   const imagesById = new Map(images.map((img) => [img.id, img]));
+  const cacheWriteSettlements: Array<Promise<void>> = [];
 
-  // Prepare in parallel but retain results at their source indexes so JSZip insertion is deterministic.
-  const preparationTasks = cards.map((c, i) => () =>
-    processCardForExport(
-      c,
-      i,
-      imagesById,
-      usedNames,
-      zipFilenamePrefixes[i]
-    )
-  );
-  const preparedBySourceIndex = await runWithConcurrency(preparationTasks, concurrency);
+  try {
+    // Prepare in parallel but retain results at their source indexes so JSZip insertion is deterministic.
+    const preparationTasks = cards.map((c, i) => () =>
+      processCardForExport(
+        c,
+        i,
+        imagesById,
+        usedNames,
+        zipFilenamePrefixes[i],
+        cacheWriteSettlements
+      )
+    );
+    const preparedBySourceIndex = await runWithConcurrency(preparationTasks, concurrency);
 
-  // JSZip preserves file insertion order. Add successful preparations sequentially in input order.
-  for (const result of preparedBySourceIndex) {
-    if (result) {
-      zip.file(result.filename, result.blob);
+    // JSZip preserves file insertion order. Add successful preparations sequentially in input order.
+    for (const result of preparedBySourceIndex) {
+      if (result) {
+        zip.file(result.filename, result.blob);
+      }
     }
-  }
 
-  const date = new Date().toISOString().slice(0, 10);
-  const outName = `${fileBaseName || "card_images"}_${date}.zip`;
-  const content = await zip.generateAsync({ type: "blob" });
-  saveAs(content, outName);
+    const date = new Date().toISOString().slice(0, 10);
+    const outName = `${fileBaseName || "card_images"}_${date}.zip`;
+    const content = await zip.generateAsync({ type: "blob" });
+    saveAs(content, outName);
+  } finally {
+    await Promise.all(cacheWriteSettlements);
+  }
 }
 
 /**

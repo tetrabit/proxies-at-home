@@ -210,6 +210,34 @@ describe("resolveLatestTokenParts", () => {
     ]);
   });
 
+  it("preserves token-to-card mapping when a collection batch partially misses", async () => {
+    hoisted.mockBatchFetchCards.mockResolvedValueOnce(new Map([
+      ["id:batched-hit", { id: "batched-hit", name: "Batched Token", set: "tst", collector_number: "1" }],
+    ]));
+    hoisted.mockAxiosGet.mockResolvedValueOnce({
+      data: { id: "fallback-hit", name: "Fallback Token", set: "tst", collector_number: "2" },
+    });
+
+    const result = await resolveLatestTokenParts([
+      { id: "batched-hit", name: "First source name" },
+      { id: "fallback-hit", name: "Second source name" },
+      { id: "batched-hit", name: "Duplicate source name" },
+    ], "en");
+
+    expect(hoisted.mockBatchFetchCards).toHaveBeenCalledWith([
+      { name: "First source name", scryfallId: "batched-hit", isToken: true },
+      { name: "Second source name", scryfallId: "fallback-hit", isToken: true },
+    ], "en");
+    expect(hoisted.mockAxiosGet).toHaveBeenCalledWith(
+      "https://api.scryfall.com/cards/fallback-hit",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(result).toEqual([
+      { id: "batched-hit", name: "Batched Token", uri: "https://api.scryfall.com/cards/tst/1" },
+      { id: "fallback-hit", name: "Fallback Token", uri: "https://api.scryfall.com/cards/tst/2" },
+    ]);
+  });
+
   it("falls back to name lookup when id lookup fails and dedupes by token identity", async () => {
     hoisted.mockAxiosGet.mockResolvedValueOnce({ data: null });
     hoisted.mockGetCardDataForCardInfo.mockResolvedValueOnce({
@@ -354,7 +382,7 @@ describe("resolveLatestTokenParts additional branches", () => {
   it("returns empty for missing token part inputs and skips nameless tokens", async () => {
     await expect(resolveLatestTokenParts(undefined, "en")).resolves.toEqual([]);
     await expect(resolveLatestTokenParts([], "en")).resolves.toEqual([]);
-    await expect(resolveLatestTokenParts([{ id: "no-name" }], "en")).resolves.toEqual([]);
+    await expect(resolveLatestTokenParts([{ id: "no-name" } as TokenPart], "en")).resolves.toEqual([]);
   });
 
   it("resolves exact token print from a set/number uri when id lookup misses", async () => {

@@ -8,6 +8,7 @@ import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesP
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
 import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js";
+import { createPinnedHttpsAgent, type ResolveAll } from "./imageConnectionPolicy.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,12 +30,23 @@ const AX_GDRIVE = axios.create({
   validateStatus: acceptsSurfaceableStatus,
 });
 
+let imageResolveAllForTests: ResolveAll | undefined;
+
+function connectionTimeRequestOptions(options: AxiosRequestConfig = {}): AxiosRequestConfig {
+  return {
+    ...options,
+    httpsAgent: createPinnedHttpsAgent({ resolveAll: imageResolveAllForTests }),
+    maxRedirects: 0,
+    proxy: false,
+  };
+}
+
 // Improved retry with exponential backoff (reduced retries for faster failure)
 async function getWithRetry(url: string, opts: AxiosRequestConfig = {}, tries = 2): Promise<AxiosResponse> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await AX.get(url, opts);
+      const res = await AX.get(url, connectionTimeRequestOptions(opts));
       if (res.status === 429) {
         const wait = Number(res.headers["retry-after"] || 5);
         console.log(`[429] Rate limited. Waiting ${wait}s before retry...`);
@@ -598,10 +610,9 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
       for (const url of candidates) {
         try {
           // Use AX_GDRIVE with longer timeout for large Google Drive files
-          const r = await AX_GDRIVE.get(url, {
+          const r = await AX_GDRIVE.get(url, connectionTimeRequestOptions({
             responseType: "arraybuffer",
-            maxRedirects: 5,
-          });
+          }));
 
           const ct = (r.headers["content-type"] || "").toLowerCase();
           if (!ct.startsWith("image/")) {
@@ -741,6 +752,10 @@ export const __imageRouterTestInternals = {
   resetCacheCleanupForTests: () => {
     lastCacheCleanup = 0;
     enrichLookupTimeoutMs = 20_000;
+    imageResolveAllForTests = undefined;
+  },
+  setImageResolveAllForTests: (resolveAll: ResolveAll | undefined) => {
+    imageResolveAllForTests = resolveAll;
   },
 };
 

@@ -236,6 +236,54 @@ describe('exportImagesZip', () => {
             expect(mocks.file).toHaveBeenCalledWith('001 - Test Card.png', renderedBlob);
         });
 
+        it('settles deferred optional cache writes before the ZIP export resolves', async () => {
+            let resolveCacheWrite: (() => void) | undefined;
+            mocks.dbPut.mockImplementationOnce(() => new Promise<void>((resolve) => {
+                resolveCacheWrite = resolve;
+            }));
+            mocks.hasAdvancedOverrides.mockReturnValue(true);
+            mocks.renderCardWithOverridesWorker.mockResolvedValue(new Blob(['rendered'], { type: 'image/png' }));
+
+            let exportCompleted = false;
+            const exportPromise = ExportImagesZip({
+                cards: [createMockCard({ imageId: 'img-1', overrides: { brightness: 1.2 } })],
+                images: [createMockImage({ id: 'img-1', exportBlob: new Blob(['base'], { type: 'image/png' }) })],
+            }).then(() => {
+                exportCompleted = true;
+            });
+
+            await vi.waitFor(() => expect(mocks.dbPut).toHaveBeenCalledTimes(1));
+            await vi.waitFor(() => expect(mocks.saveAs).toHaveBeenCalledTimes(1));
+            expect(exportCompleted).toBe(false);
+
+            resolveCacheWrite?.();
+            await exportPromise;
+            expect(exportCompleted).toBe(true);
+        });
+
+        it('reports rejected optional cache writes without failing a saved ZIP export', async () => {
+            const cacheError = new Error('QuotaExceededError');
+            const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            mocks.dbPut.mockRejectedValueOnce(cacheError);
+            mocks.hasAdvancedOverrides.mockReturnValue(true);
+            mocks.renderCardWithOverridesWorker.mockResolvedValue(new Blob(['rendered'], { type: 'image/png' }));
+
+            try {
+                await expect(ExportImagesZip({
+                    cards: [createMockCard({ imageId: 'img-1', overrides: { brightness: 1.2 } })],
+                    images: [createMockImage({ id: 'img-1', exportBlob: new Blob(['base'], { type: 'image/png' }) })],
+                })).resolves.toBeUndefined();
+
+                expect(mocks.saveAs).toHaveBeenCalledTimes(1);
+                expect(consoleError).toHaveBeenCalledWith(
+                    '[ExportImagesZip] Optional effect-cache write failed:',
+                    cacheError
+                );
+            } finally {
+                consoleError.mockRestore();
+            }
+        });
+
         it('should handle darken modes correctly', async () => {
             const exportBlob = new Blob(['normal'], { type: 'image/png' });
             const exportBlobDarkened = new Blob(['darkened'], { type: 'image/png' });

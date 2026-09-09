@@ -8,8 +8,8 @@ vi.mock("./mpcAutofillApi", () => ({
 vi.mock("./scryfallApi", () => ({
   fetchCardBySetAndNumber: vi.fn(),
   fetchCardWithPrints: vi.fn(),
-  fetchCardsMetadataBatch: vi.fn(async (names: string[]) => new Map(
-    names.map((name) => [name.toLowerCase(), {
+  fetchCardsMetadataBatch: vi.fn(async (queries: Array<{ name: string }>) => new Map(
+    queries.map(({ name }) => [name.toLowerCase(), {
       name: `${name} // ${name} Back`,
       card_faces: [
         { name },

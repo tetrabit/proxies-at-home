@@ -4,6 +4,7 @@ import request from "supertest";
 
 const mocks = vi.hoisted(() => ({
   axiosGet: vi.fn(),
+  axiosPost: vi.fn(),
   axiosCreate: vi.fn(),
   isAxiosError: vi.fn(() => false),
   isMicroserviceAvailable: vi.fn(() => Promise.resolve(false)),
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("axios", () => {
   const axios = {
     get: mocks.axiosGet,
+    post: mocks.axiosPost,
     create: mocks.axiosCreate,
     isAxiosError: mocks.isAxiosError,
   };
@@ -153,6 +155,17 @@ describe("cross-caller Scryfall broker integration", () => {
       }
       throw new Error(`Unexpected direct Scryfall URL: ${url}`);
     });
+    mocks.axiosPost.mockImplementation((url: string) => {
+      if (url === "https://api.scryfall.com/cards/collection") {
+        return recordPhysicalDispatch("token-collection", {
+          data: {
+            data: [{ id: "token-direct-id", name: "Token cache miss" }],
+            not_found: [],
+          },
+        });
+      }
+      throw new Error(`Unexpected collection Scryfall URL: ${url}`);
+    });
 
     const app = express();
     app.use("/api/scryfall", scryfallRouter);
@@ -189,10 +202,19 @@ describe("cross-caller Scryfall broker integration", () => {
     expect(bulkResult).toEqual({ download_uri: "https://cdn.scryfall.invalid/all-cards.json", size: 1 });
     expect(enrichmentResult).toEqual(["enrichment.png"]);
 
+    expect(mocks.axiosPost).toHaveBeenCalledWith(
+      "https://api.scryfall.com/cards/collection",
+      { identifiers: [{ id: "token-direct-id" }] }
+    );
+    expect(mocks.axiosPost).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.axiosGet.mock.calls.some(([url]) => url === "https://api.scryfall.com/cards/token-direct-id")
+    ).toBe(false);
+
     expect(maximumActive).toBe(1);
     expect(dispatches.filter(({ caller }) => caller === "catalog")).toHaveLength(9);
     expect(dispatches.map(({ caller }) => caller)).toContain("router");
-    expect(dispatches.map(({ caller }) => caller)).toContain("token");
+    expect(dispatches.filter(({ caller }) => caller === "token-collection")).toHaveLength(1);
     expect(dispatches.map(({ caller }) => caller)).toContain("bulk");
     expect(dispatches.filter(({ caller }) => caller === "enrichment")).toHaveLength(2);
     expect(enrichmentAttempts).toBe(2);

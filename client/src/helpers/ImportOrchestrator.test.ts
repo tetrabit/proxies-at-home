@@ -345,8 +345,8 @@ describe('ImportOrchestrator', () => {
 
         await new Promise((resolve) => setTimeout(resolve, 0));
 
-        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc-front.jpg'], 1);
-        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/custom-back.jpg'], 0);
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc-front.jpg'], 1, undefined, expect.any(Function));
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/custom-back.jpg'], 0, undefined, expect.any(Function));
         expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
             expect.objectContaining({
                 frontUuid: 'mpc-uuid',
@@ -385,6 +385,8 @@ describe('ImportOrchestrator', () => {
         expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(
             ['https://scryfall.example/fallback-back.jpg'],
             0,
+            undefined,
+            expect.any(Function),
         );
         expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
             expect.objectContaining({ frontUuid: 'mpc-direct-1', backImageId: 'https://scryfall.example/fallback-back.jpg' }),
@@ -415,6 +417,8 @@ describe('ImportOrchestrator', () => {
         expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(
             ['https://mpc.example/explicit-back.jpg'],
             0,
+            undefined,
+            expect.any(Function),
         );
         expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
             expect.objectContaining({ frontUuid: 'explicit-direct-1', backImageId: 'https://mpc.example/explicit-back.jpg' }),
@@ -447,7 +451,7 @@ describe('ImportOrchestrator', () => {
         // Placeholders are visible before the deferred resolution begins.
         expect(addSpy).toHaveBeenCalledTimes(1);
         await vi.waitFor(() => {
-            expect(vi.mocked(scryfallApiModule.fetchCardsMetadataBatch)).toHaveBeenCalledWith(['Direct MPC']);
+            expect(vi.mocked(scryfallApiModule.fetchCardsMetadataBatch)).toHaveBeenCalledWith([{ name: 'Direct MPC' }]);
         });
         expect(onComplete).not.toHaveBeenCalled();
 
@@ -511,6 +515,62 @@ describe('ImportOrchestrator', () => {
             '[ImportOrchestrator] Failed to resolve image for Direct Error:',
             resolutionError,
         );
+    });
+
+    it('forwards an active signal to direct metadata resolution and prevents stale persistence after cancellation', async () => {
+        const controller = new AbortController();
+        let resolveMetadata!: (value: Map<string, ScryfallCard>) => void;
+        const metadata = new Promise<Map<string, ScryfallCard>>((resolve) => {
+            resolveMetadata = resolve;
+        });
+        const onComplete = vi.fn();
+
+        vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([{ uuid: 'cancelled-direct' } as CardOption]);
+        vi.mocked(scryfallApiModule.fetchCardsMetadataBatch).mockImplementation(async (_queries, signal) => {
+            expect(signal).toBe(controller.signal);
+            return metadata;
+        });
+
+        const processing = ImportOrchestrator.process([{
+            name: 'Cancelled Direct',
+            quantity: 1,
+            isToken: false,
+            mpcId: 'cancelled-direct-id',
+        }], { signal: controller.signal, onComplete });
+
+        await vi.waitFor(() => {
+            expect(vi.mocked(scryfallApiModule.fetchCardsMetadataBatch)).toHaveBeenCalledTimes(1);
+        });
+        controller.abort();
+        resolveMetadata(new Map([['cancelled direct', {
+            name: 'Cancelled Direct',
+            scryfall_id: 'stale-scryfall-id',
+        } as ScryfallCard]]));
+
+        await expect(processing).rejects.toMatchObject({ name: 'AbortError' });
+        expect(dbState.update).not.toHaveBeenCalled();
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).not.toHaveBeenCalled();
+        expect(onComplete).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pre-aborted direct import before creating placeholders or resolver requests', async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const onComplete = vi.fn();
+        const addSpy = vi.spyOn(undoableActionsModule, 'undoableAddCards');
+
+        await expect(ImportOrchestrator.process([{
+            name: 'Pre-aborted Direct',
+            quantity: 1,
+            isToken: false,
+            mpcId: 'pre-aborted-direct-id',
+        }], { signal: controller.signal, onComplete })).rejects.toMatchObject({ name: 'AbortError' });
+
+        expect(addSpy).not.toHaveBeenCalled();
+        expect(vi.mocked(scryfallApiModule.fetchCardsMetadataBatch)).not.toHaveBeenCalled();
+        expect(dbState.update).not.toHaveBeenCalled();
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).not.toHaveBeenCalled();
+        expect(onComplete).not.toHaveBeenCalled();
     });
 
     it('reports progress and completion callbacks across direct and streamed work', async () => {

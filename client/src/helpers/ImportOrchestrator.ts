@@ -51,6 +51,12 @@ export class ImportOrchestrator {
         this.streamControllers.clear();
     }
 
+    private static throwIfAborted(signal?: AbortSignal): void {
+        if (!signal?.aborted) return;
+        if (signal.reason instanceof Error) throw signal.reason;
+        throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+
     /**
      * Main entry point. Takes a raw list of intents, buckets them by strategy,
      * and executes them (potentially in parallel or sequence).
@@ -102,7 +108,7 @@ export class ImportOrchestrator {
         const tasks: Promise<void>[] = [];
 
         if (directIntents.length > 0) {
-            tasks.push(this.executeDirect(directIntents, settings.projectId).then(() => reportProgress(directIntents.length)));
+            tasks.push(this.executeDirect(directIntents, settings.projectId, options.signal).then(() => reportProgress(directIntents.length)));
         }
         if (mpcSearchIntents.length > 0) {
             tasks.push(this.executeStream(mpcSearchIntents, 'mpc', options, reportProgress, settings));
@@ -121,8 +127,10 @@ export class ImportOrchestrator {
      * Handles intents that have known data (Preloaded or MPC ID).
      * Shows placeholder cards immediately, then updates with images in background.
      */
-    private static async executeDirect(intents: ImportIntent[], projectId: string) {
+    private static async executeDirect(intents: ImportIntent[], projectId: string, signal?: AbortSignal) {
         if (intents.length === 0) return;
+        this.throwIfAborted(signal);
+        const ownsDirectImageWrites = () => !signal?.aborted;
 
         // Step 1: Add placeholder cards IMMEDIATELY (shows loading spinners in UI)
         const placeholderCards = intents.flatMap(intent => {
@@ -148,6 +156,7 @@ export class ImportOrchestrator {
         });
 
         const addedCards = await undoableAddCards(placeholderCards);
+        this.throwIfAborted(signal);
 
         // Step 2: Resolve images and update cards in background (non-blocking)
         const updateCardsWithImages = async () => {
@@ -161,16 +170,21 @@ export class ImportOrchestrator {
                 .filter(name => name); // Filter out empty names
 
             const uniqueMpcNames = [...new Set(mpcIntentNames)];
+            const metadataQueries = uniqueMpcNames.map(name => ({ name }));
 
             // Fetch all metadata in one batch request
-            const metadataCache = uniqueMpcNames.length > 0
-                ? await fetchCardsMetadataBatch(uniqueMpcNames)
+            const metadataCache = metadataQueries.length > 0
+                ? signal
+                    ? await fetchCardsMetadataBatch(metadataQueries, signal)
+                    : await fetchCardsMetadataBatch(metadataQueries)
                 : new Map();
+            this.throwIfAborted(signal);
 
             // Step 2b: Process each intent using the cached metadata
             let cardIndex = 0;
 
             for (const intent of intents) {
+                this.throwIfAborted(signal);
                 const quantity = intent.quantity ?? 1;
                 const cardUuids = addedCards.slice(cardIndex, cardIndex + quantity).map(c => c.uuid);
                 cardIndex += quantity;
@@ -233,7 +247,7 @@ export class ImportOrchestrator {
                                             const match = mpcMatches[0];
                                             // createLinkedBackCardsBulk accounts for each linked card.
                                             // Reserve no extra reference for this cached image.
-                                            backImageId = await addRemoteImage([match.imageUrl], 0);
+                                            backImageId = await addRemoteImage([match.imageUrl], 0, undefined, ownsDirectImageWrites);
                                             if (backImageId) {
                                                 console.debug(`[ImportOrchestrator] Found MPC back face for ${intent.name}: ${backFace.name}`);
                                                 dfcBackInfo = { imageId: backImageId, name: backFace.name };
@@ -245,7 +259,7 @@ export class ImportOrchestrator {
 
                                     // 2. Fallback to Scryfall image if no MPC image found
                                     if (!backImageId && backFace.imageUrl) {
-                                        backImageId = await addRemoteImage([backFace.imageUrl], 0);
+                                        backImageId = await addRemoteImage([backFace.imageUrl], 0, undefined, ownsDirectImageWrites);
                                         if (backImageId) {
                                             dfcBackInfo = { imageId: backImageId, name: backFace.name };
                                         }
@@ -257,7 +271,7 @@ export class ImportOrchestrator {
                     // Case 2: Explicit MPC ID (XML or Manual)
                     else if (intent.mpcId) {
                         const url = getMpcAutofillImageUrl(intent.mpcId);
-                        imageId = await addRemoteImage([url], quantity);
+                        imageId = await addRemoteImage([url], quantity, undefined, ownsDirectImageWrites);
                         hasBuiltInBleed = true;
 
                         // DFC & Metadata Enrichment - use cached batch result
@@ -280,7 +294,7 @@ export class ImportOrchestrator {
                                 if (!intent.linkedBackImageId && scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
                                     const backFace = scryfallCard.card_faces[1];
                                     if (backFace.imageUrl) {
-                                        const backId = await addRemoteImage([backFace.imageUrl], 0);
+                                        const backId = await addRemoteImage([backFace.imageUrl], 0, undefined, ownsDirectImageWrites);
                                         if (backId) {
                                             dfcBackInfo = { imageId: backId, name: backFace.name };
                                         }
@@ -292,10 +306,11 @@ export class ImportOrchestrator {
                     // Case 3: Preloaded Data with images (Scryfall)
                     else if (intent.preloadedData?.imageUrls && intent.preloadedData.imageUrls.length > 0) {
                         const data = intent.preloadedData;
-                        imageId = await addRemoteImage(data.imageUrls!, quantity, data.prints);
+                        imageId = await addRemoteImage(data.imageUrls!, quantity, data.prints, ownsDirectImageWrites);
                     }
 
                     // Update cards with resolved image data
+                    this.throwIfAborted(signal);
                     if (imageId || scryfallMetadata) {
                         await db.transaction('rw', db.cards, async () => {
                             for (const uuid of cardUuids) {
@@ -323,6 +338,8 @@ export class ImportOrchestrator {
                         });
                     }
 
+                    this.throwIfAborted(signal);
+
                     // Handle back cards
                     const explicitBackId = intent.linkedBackImageId;
                     if (explicitBackId) {
@@ -331,9 +348,10 @@ export class ImportOrchestrator {
 
                         if (!isCardbackId(backImageId)) {
                             const backUrl = getMpcAutofillImageUrl(backImageId);
-                            backImageId = (await addRemoteImage([backUrl], 0))!;
+                            backImageId = (await addRemoteImage([backUrl], 0, undefined, ownsDirectImageWrites))!;
                         }
 
+                        this.throwIfAborted(signal);
                         await createLinkedBackCardsBulk(
                             cardUuids.map(uuid => ({
                                 frontUuid: uuid,
@@ -343,6 +361,7 @@ export class ImportOrchestrator {
                             }))
                         );
                     } else if (dfcBackInfo) {
+                        this.throwIfAborted(signal);
                         await createLinkedBackCardsBulk(
                             cardUuids.map(uuid => ({
                                 frontUuid: uuid,
@@ -353,6 +372,7 @@ export class ImportOrchestrator {
                         );
                     }
                 } catch (e) {
+                    if (signal?.aborted) this.throwIfAborted(signal);
                     console.warn(`[ImportOrchestrator] Failed to resolve image for ${intent.name}:`, e);
                     // Mark as error state
                     const { db } = await import('../db');
