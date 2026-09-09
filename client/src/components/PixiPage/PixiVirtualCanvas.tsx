@@ -274,21 +274,64 @@ function PixiVirtualCanvasInner({
         const canvas = canvasRef.current;
         const sprites = spritesRef.current;
         const renditionIdentityAdmission = renditionIdentityAdmissionRef.current;
+        const pageGraphics = pageGraphicsRef.current;
+        let unmounted = false;
 
-        // If singleton already initialized and valid, just reuse it
-        if (pixiSingleton.app && pixiSingleton.app.stage) {
-            // Reattach refs to existing singleton
+        const attachSingleton = () => {
+            if (!pixiSingleton.app) return;
             appRef.current = pixiSingleton.app;
             worldContainerRef.current = pixiSingleton.worldContainer;
             pagesContainerRef.current = pixiSingleton.pagesContainer;
+            pageGuidesContainerRef.current = pixiSingleton.pageGuidesContainer;
             cardsContainerRef.current = pixiSingleton.cardsContainer;
             guidesContainerRef.current = pixiSingleton.guidesContainer;
-            // Set initial zoom scale on reattach
             if (pixiSingleton.worldContainer) {
                 pixiSingleton.worldContainer.scale.set(zoomRef.current);
             }
             setIsReady(true);
-            return;
+        };
+
+        // A mount only owns the sprites and rendition work it created. The Pixi
+        // singleton can be shared by a concurrent or Strict Mode remount, so it
+        // must survive this component's cleanup.
+        const cleanupComponent = () => {
+            if (unmounted) return;
+            unmounted = true;
+            updateCounterRef.current += 1;
+            renditionIdentityAdmission.dispose();
+
+            try {
+                sprites.forEach((data) => {
+                    try { cardsContainerRef.current?.removeChild(data.sprite); } catch { /* ignore */ }
+                    destroySpriteRendition(data);
+                });
+                sprites.clear();
+            } catch {
+                // Ignore
+            }
+
+            try {
+                pageGraphics.forEach((g) => {
+                    try { pagesContainerRef.current?.removeChild(g); } catch { /* ignore */ }
+                    try { g?.destroy(); } catch { /* ignore */ }
+                });
+                pageGraphics.clear();
+            } catch {
+                // Ignore
+            }
+
+            appRef.current = null;
+            worldContainerRef.current = null;
+            pagesContainerRef.current = null;
+            pageGuidesContainerRef.current = null;
+            cardsContainerRef.current = null;
+            guidesContainerRef.current = null;
+        };
+
+        // If singleton already initialized and valid, just reuse it
+        if (pixiSingleton.app && pixiSingleton.app.stage) {
+            attachSingleton();
+            return cleanupComponent;
         }
 
         // If currently initializing, wait for it
@@ -298,21 +341,11 @@ function PixiVirtualCanvasInner({
                 if (pixiSingleton.initPromise) {
                     await pixiSingleton.initPromise;
                 }
-                if (pixiSingleton.app) {
-                    appRef.current = pixiSingleton.app;
-                    worldContainerRef.current = pixiSingleton.worldContainer;
-                    pagesContainerRef.current = pixiSingleton.pagesContainer;
-                    cardsContainerRef.current = pixiSingleton.cardsContainer;
-                    guidesContainerRef.current = pixiSingleton.guidesContainer;
-                    // Set initial zoom scale when recovering
-                    if (pixiSingleton.worldContainer) {
-                        pixiSingleton.worldContainer.scale.set(zoomRef.current);
-                    }
-                    setIsReady(true);
-                }
+                if (unmounted) return;
+                attachSingleton();
             };
             waitForInit();
-            return;
+            return cleanupComponent;
         }
 
         // Clean up any invalid singleton (stage destroyed)
@@ -385,55 +418,13 @@ function PixiVirtualCanvasInner({
             // Expose app for PixiCardPreview to use
             setPixiApp(newApp);
 
-            // Store in refs
-            appRef.current = newApp;
-            worldContainerRef.current = worldContainer;
-            pagesContainerRef.current = pagesContainer;
-            pageGuidesContainerRef.current = pageGuidesContainer;
-            cardsContainerRef.current = cardsContainer;
-            guidesContainerRef.current = guidesContainer;
-            setIsReady(true);
+            if (!unmounted) {
+                attachSingleton();
+            }
         };
 
         pixiSingleton.initPromise = initApp();
-
-        // Capture refs for cleanup (must be done before return per React lint)
-        const pageGraphics = pageGraphicsRef.current;
-
-        // Cleanup only clears component-local resources, not the singleton
-        return () => {
-            updateCounterRef.current += 1;
-            setIsReady(false);
-
-            // Clean up card sprites (component-local)
-            try {
-                sprites.forEach((data) => destroySpriteRendition(data));
-                sprites.clear();
-            } catch {
-                // Ignore
-            }
-            renditionIdentityAdmission.dispose();
-
-            // Clean up page graphics
-            try {
-                pageGraphics.forEach((g) => {
-                    try { g?.destroy(); } catch { /* ignore */ }
-                });
-                pageGraphics.clear();
-            } catch {
-                // Ignore
-            }
-
-            // Reset singleton on unmount to get fresh WebGL context on remount
-            // This is important when key changes to force a clean reinit
-            resetPixiSingleton();
-
-            appRef.current = null;
-            worldContainerRef.current = null;
-            pagesContainerRef.current = null;
-            cardsContainerRef.current = null;
-            guidesContainerRef.current = null;
-        };
+        return cleanupComponent;
     }, []);
 
     // Resize canvas when viewport changes

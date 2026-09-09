@@ -628,8 +628,9 @@ describe("PixiVirtualCanvas", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalled();
 
     unmount();
-    expect(state.apps[0].destroy).toHaveBeenCalled();
-    expect(pixiSingleton.app).toBeNull();
+    expect(state.sprites.at(-1)?.destroy).toHaveBeenCalled();
+    expect(state.apps[0].destroy).not.toHaveBeenCalled();
+    expect(pixiSingleton.app).toBe(state.apps[0]);
   });
 
   it("covers placeholders, blank backs, active-card hiding, failed texture loads, and empty-guide fallbacks", async () => {
@@ -743,16 +744,26 @@ describe("PixiVirtualCanvas", () => {
 
     cleanup();
     resetPixiSingleton();
-    let resolveWithoutWorld: () => void = () => undefined;
+    let resolveUnmountedInit: () => void = () => undefined;
     pixiSingleton.isInitializing = true;
     pixiSingleton.initPromise = new Promise<void>((resolve) => {
-      resolveWithoutWorld = resolve;
+      resolveUnmountedInit = resolve;
     });
-    renderCanvas();
-    pixiSingleton.app = new state.Application!() as never;
-    pixiSingleton.worldContainer = null;
-    await act(async () => resolveWithoutWorld());
-    expect(pixiSingleton.app).not.toBeNull();
+    const unmountedWaiter = renderCanvas({ zoom: 2 });
+    unmountedWaiter.unmount();
+    const unmountedApp = new state.Application!();
+    const unmountedWorld = new state.Container!();
+    pixiSingleton.app = unmountedApp as never;
+    pixiSingleton.worldContainer = unmountedWorld as never;
+    pixiSingleton.pagesContainer = new state.Container!() as never;
+    pixiSingleton.cardsContainer = new state.Container!() as never;
+    pixiSingleton.guidesContainer = new state.Container!() as never;
+    await act(async () => resolveUnmountedInit());
+    expect(
+      (unmountedWorld.scale as { set: ReturnType<typeof vi.fn> }).set,
+    ).not.toHaveBeenCalled();
+    expect(unmountedApp.destroy).not.toHaveBeenCalled();
+    expect(pixiSingleton.app).toBe(unmountedApp);
   });
 
   it("handles singleton states without a world, promise, or valid stage", async () => {
@@ -792,20 +803,75 @@ describe("PixiVirtualCanvas", () => {
     ));
   });
 
-  it("reuses in-flight and existing singleton apps and reports init failures", async () => {
+  it("reuses singleton apps while canceling reattached identity and texture work", async () => {
     const state = pixiState();
+    const pendingImages: Array<{
+      onload: (() => void) | null;
+      onerror: (() => void) | null;
+    }> = [];
+    class ControlledImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        pendingImages.push(this);
+      }
+    }
+    vi.stubGlobal("Image", ControlledImage);
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:reattached-provisional"),
+      revokeObjectURL: vi.fn(),
+    });
     const existing = new state.Application!();
     const world = new state.Container!();
+    const cardsContainer = new state.Container!();
     pixiSingleton.app = existing as never;
     pixiSingleton.worldContainer = world as never;
     pixiSingleton.pagesContainer = new state.Container!() as never;
-    pixiSingleton.cardsContainer = new state.Container!() as never;
+    pixiSingleton.cardsContainer = cardsContainer as never;
     pixiSingleton.guidesContainer = new state.Container!() as never;
 
-    const { unmount } = renderCanvas({ zoom: 1.5 });
-    await waitFor(() => expect(world.scale.set).toHaveBeenCalledWith(1.5));
+    let resolveIdentity: (bytes: ArrayBuffer) => void = () => undefined;
+    const deferredBlob = new Blob(["front"]);
+    const deferredIdentity = new Promise<ArrayBuffer>((resolve) => {
+      resolveIdentity = resolve;
+    });
+    vi.spyOn(deferredBlob, "slice").mockReturnValue({
+      arrayBuffer: () => deferredIdentity,
+    } as never);
+    const withoutHoloAnimation = card({
+      imageBlob: deferredBlob,
+      backBlob: undefined,
+      backImageId: undefined,
+      card: {
+        ...card().card,
+        overrides: { ...card().card.overrides, holoEffect: "none" },
+      },
+    });
+    const { unmount } = renderCanvas({ cards: [withoutHoloAnimation], zoom: 1.5 });
+    await waitFor(() => expect(
+      (world.scale as { set: ReturnType<typeof vi.fn> }).set,
+    ).toHaveBeenCalledWith(1.5));
+    await waitFor(() => expect(deferredBlob.slice).toHaveBeenCalled());
     expect(state.apps.filter((app) => app !== existing).length).toBe(0);
     unmount();
+    await act(async () => resolveIdentity(new TextEncoder().encode("front").buffer));
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(state.sprites).toHaveLength(0);
+    expect(cardsContainer.addChild).not.toHaveBeenCalled();
+    expect(existing.destroy).not.toHaveBeenCalled();
+    expect(pixiSingleton.app).toBe(existing);
+
+    const provisional = renderCanvas({ cards: [withoutHoloAnimation] });
+    await waitFor(() => expect(pendingImages).toHaveLength(1));
+    provisional.unmount();
+    await act(async () => pendingImages[0].onload?.());
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:reattached-provisional");
+    expect(state.textures).toHaveLength(1);
+    expect(state.textures[0].destroy).toHaveBeenCalledTimes(1);
+    expect(state.sprites).toHaveLength(0);
+    expect(cardsContainer.addChild).not.toHaveBeenCalled();
+    expect(existing.destroy).not.toHaveBeenCalled();
+    expect(pixiSingleton.app).toBe(existing);
 
     cleanup();
     resetPixiSingleton();
