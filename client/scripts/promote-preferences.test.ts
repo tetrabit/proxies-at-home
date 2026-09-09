@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -17,10 +18,10 @@ let artifactDirectory: string;
 async function createExclusiveArtifactDirectory(): Promise<string> {
   await mkdir(artifactRoot, { recursive: true });
 
-  for (let id = 1; ; id += 1) {
+  for (;;) {
     const candidate = path.join(
       artifactRoot,
-      `promotion-atomic-failure-${String(id).padStart(2, "0")}`
+      `promotion-atomic-cleanup-${randomUUID()}`
     );
 
     try {
@@ -32,6 +33,31 @@ async function createExclusiveArtifactDirectory(): Promise<string> {
       }
     }
   }
+}
+
+interface FileIdentity {
+  device: number;
+  inode: number;
+  size: number;
+}
+
+async function readRegularFileIdentity(candidate: string): Promise<FileIdentity> {
+  const status = await lstat(candidate);
+
+  expect(status.isSymbolicLink()).toBe(false);
+  expect(status.isFile()).toBe(true);
+
+  return {
+    device: status.dev,
+    inode: status.ino,
+    size: status.size,
+  };
+}
+
+function temporaryPathPattern(destinationPath: string): RegExp {
+  return new RegExp(
+    `^${path.dirname(destinationPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.${path.basename(destinationPath)}\\.[0-9a-f-]{36}\\.tmp$`
+  );
 }
 
 async function runPromotion(sourcePath: string, destinationPath: string) {
@@ -77,6 +103,193 @@ afterAll(() => {
 });
 
 describe("preference promotion CLI", { retry: 0 }, () => {
+  it("retains a real operation-owned UUID temp after partial wx write failure when cleanup is denied", async () => {
+    const destinationPath = path.join(artifactDirectory, "real-partial-write-destination.json");
+    const priorBytes = "retained-real-partial-write-destination\n";
+    const partialBytes = "repla";
+    const writeError = Object.assign(new Error("disk full after partial write"), {
+      code: "ENOSPC",
+    });
+    const cleanupError = new Error("cleanup intentionally deferred for inventory");
+    let temporaryPath: string | undefined;
+    let ownedIdentity: FileIdentity | undefined;
+    let cleanupAttempts = 0;
+
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile: async (candidate, contents) => {
+          temporaryPath = candidate;
+          await writeFile(candidate, contents.slice(0, partialBytes.length), {
+            encoding: "utf8",
+            flag: "wx",
+          });
+          ownedIdentity = await readRegularFileIdentity(candidate);
+          throw writeError;
+        },
+        renameTemporaryFile: async () => {
+          throw new Error("rename must not run after a write failure");
+        },
+        removeTemporaryFile: async (candidate) => {
+          cleanupAttempts += 1;
+          expect(candidate).toBe(temporaryPath);
+          expect(await readRegularFileIdentity(candidate)).toEqual(ownedIdentity);
+          throw cleanupError;
+        },
+      })
+    ).rejects.toBe(cleanupError);
+
+    expect(cleanupAttempts).toBe(1);
+    expect(temporaryPath).toMatch(temporaryPathPattern(destinationPath));
+    expect(await readRegularFileIdentity(temporaryPath!)).toEqual(ownedIdentity);
+    await expect(readFile(temporaryPath!, "utf8")).resolves.toBe(partialBytes);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("retains a real operation-owned UUID temp after rename failure when cleanup is denied", async () => {
+    const destinationPath = path.join(artifactDirectory, "real-rename-failure-destination.json");
+    const priorBytes = "retained-real-rename-failure-destination\n";
+    const replacementBytes = "replacement-before-rename\n";
+    const renameError = Object.assign(new Error("rename failed"), { code: "EIO" });
+    const cleanupError = new Error("cleanup intentionally deferred for inventory");
+    let temporaryPath: string | undefined;
+    let ownedIdentity: FileIdentity | undefined;
+    let cleanupAttempts = 0;
+
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    await expect(
+      atomicallyReplace(destinationPath, replacementBytes, {
+        writeTemporaryFile: async (candidate, contents) => {
+          temporaryPath = candidate;
+          await writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
+          ownedIdentity = await readRegularFileIdentity(candidate);
+        },
+        renameTemporaryFile: async (candidate, destination) => {
+          expect(candidate).toBe(temporaryPath);
+          expect(destination).toBe(destinationPath);
+          throw renameError;
+        },
+        removeTemporaryFile: async (candidate) => {
+          cleanupAttempts += 1;
+          expect(candidate).toBe(temporaryPath);
+          expect(await readRegularFileIdentity(candidate)).toEqual(ownedIdentity);
+          throw cleanupError;
+        },
+      })
+    ).rejects.toBe(cleanupError);
+
+    expect(cleanupAttempts).toBe(1);
+    expect(temporaryPath).toMatch(temporaryPathPattern(destinationPath));
+    expect(await readRegularFileIdentity(temporaryPath!)).toEqual(ownedIdentity);
+    await expect(readFile(temporaryPath!, "utf8")).resolves.toBe(replacementBytes);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("physically removes its real wx partial-write temp while retaining the destination", async () => {
+    const destinationPath = path.join(artifactDirectory, "cleaned-partial-write-destination.json");
+    const priorBytes = "retained-cleaned-partial-write-destination\n";
+    const partialBytes = "repla";
+    const writeError = Object.assign(new Error("disk full after partial write"), {
+      code: "ENOSPC",
+    });
+    let temporaryPath: string | undefined;
+    let ownedIdentity: FileIdentity | undefined;
+
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile: async (candidate, contents) => {
+          temporaryPath = candidate;
+          await writeFile(candidate, contents.slice(0, partialBytes.length), {
+            encoding: "utf8",
+            flag: "wx",
+          });
+          ownedIdentity = await readRegularFileIdentity(candidate);
+          throw writeError;
+        },
+        renameTemporaryFile: async () => {
+          throw new Error("rename must not run after a write failure");
+        },
+        removeTemporaryFile: unlink,
+      })
+    ).rejects.toBe(writeError);
+
+    expect(temporaryPath).toMatch(temporaryPathPattern(destinationPath));
+    expect(ownedIdentity).toBeDefined();
+    await expect(lstat(temporaryPath!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("physically removes its real wx rename-failure temp while retaining the destination", async () => {
+    const destinationPath = path.join(artifactDirectory, "cleaned-rename-failure-destination.json");
+    const priorBytes = "retained-cleaned-rename-failure-destination\n";
+    const replacementBytes = "replacement-before-rename\n";
+    const renameError = Object.assign(new Error("rename failed"), { code: "EIO" });
+    let temporaryPath: string | undefined;
+    let ownedIdentity: FileIdentity | undefined;
+
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    await expect(
+      atomicallyReplace(destinationPath, replacementBytes, {
+        writeTemporaryFile: async (candidate, contents) => {
+          temporaryPath = candidate;
+          await writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
+          ownedIdentity = await readRegularFileIdentity(candidate);
+        },
+        renameTemporaryFile: async (candidate, destination) => {
+          expect(candidate).toBe(temporaryPath);
+          expect(destination).toBe(destinationPath);
+          throw renameError;
+        },
+        removeTemporaryFile: unlink,
+      })
+    ).rejects.toBe(renameError);
+
+    expect(temporaryPath).toMatch(temporaryPathPattern(destinationPath));
+    expect(ownedIdentity).toBeDefined();
+    await expect(lstat(temporaryPath!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("preserves a colliding UUID temp sentinel without attempting cleanup", async () => {
+    const destinationPath = path.join(artifactDirectory, "collision-destination.json");
+    const priorBytes = "retained-collision-destination\n";
+    const collisionBytes = "collision-sentinel-not-operation-owned\n";
+    let collisionPath: string | undefined;
+    let collisionIdentity: FileIdentity | undefined;
+    let cleanupAttempts = 0;
+
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile: async (candidate, contents) => {
+          collisionPath = candidate;
+          await writeFile(candidate, collisionBytes, { encoding: "utf8", flag: "wx" });
+          collisionIdentity = await readRegularFileIdentity(candidate);
+          await writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
+        },
+        renameTemporaryFile: async () => {
+          throw new Error("rename must not run after an exclusive-create collision");
+        },
+        removeTemporaryFile: async () => {
+          cleanupAttempts += 1;
+          throw new Error("collision sentinel must never be removed");
+        },
+      })
+    ).rejects.toMatchObject({ code: "EEXIST" });
+
+    expect(cleanupAttempts).toBe(0);
+    expect(collisionPath).toMatch(temporaryPathPattern(destinationPath));
+    expect(await readRegularFileIdentity(collisionPath!)).toEqual(collisionIdentity);
+    await expect(readFile(collisionPath!, "utf8")).resolves.toBe(collisionBytes);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
   it("cleans only its generated temporary target after a partial write failure", async () => {
     const destinationPath = path.join(artifactDirectory, "partial-write-destination.json");
     const priorBytes = "retained-partial-write-destination\n";
