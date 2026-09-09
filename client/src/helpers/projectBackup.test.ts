@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   cardsWhere: vi.fn(),
   userImagesGet: vi.fn(),
   userImagesPut: vi.fn(),
+  userImagesBulkGet: vi.fn(),
+  userImagesBulkPut: vi.fn(),
   projectsAdd: vi.fn(),
   cardsBulkAdd: vi.fn(),
   transaction: vi.fn(),
@@ -16,7 +18,12 @@ vi.mock("../db", () => ({
   db: {
     projects: { get: mocks.projectsGet, add: mocks.projectsAdd },
     cards: { where: mocks.cardsWhere, bulkAdd: mocks.cardsBulkAdd },
-    user_images: { get: mocks.userImagesGet, put: mocks.userImagesPut },
+    user_images: {
+      get: mocks.userImagesGet,
+      put: mocks.userImagesPut,
+      bulkGet: mocks.userImagesBulkGet,
+      bulkPut: mocks.userImagesBulkPut,
+    },
     transaction: mocks.transaction,
   },
 }));
@@ -62,6 +69,7 @@ describe("projectBackup", () => {
       equals: vi.fn(() => ({ sortBy: vi.fn().mockResolvedValue([]) })),
     });
     mocks.inferImageSource.mockReturnValue("custom");
+    mocks.userImagesBulkGet.mockResolvedValue([]);
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:backup");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn());
@@ -487,9 +495,10 @@ describe("projectBackup", () => {
   });
 
   it("imports projects with image restore, idempotent images, remapped DFC links, and default names", async () => {
-    mocks.userImagesGet
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ hash: "existing" });
+    mocks.userImagesBulkGet.mockResolvedValueOnce([
+      undefined,
+      { hash: "existing" },
+    ]);
     const backup: ProjectBackup = {
       ...validBackup,
       project: {
@@ -523,13 +532,14 @@ describe("projectBackup", () => {
 
     await expect(importProject(backup)).resolves.toBe("project-new");
 
-    expect(mocks.userImagesPut).toHaveBeenCalledWith(
+    expect(mocks.userImagesBulkGet).toHaveBeenCalledWith(["new-img", "existing"]);
+    expect(mocks.userImagesBulkPut).toHaveBeenCalledWith([
       expect.objectContaining({
         hash: "new-img",
         type: "text/plain",
         data: expect.any(Blob),
-      })
-    );
+      }),
+    ]);
     expect(mocks.projectsAdd).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "project-new",
@@ -555,20 +565,20 @@ describe("projectBackup", () => {
   });
 
   it("imports same-size legacy padded image data", async () => {
-    mocks.userImagesGet.mockResolvedValue(undefined);
+    mocks.userImagesBulkGet.mockResolvedValue([undefined]);
     const backup = {
       ...validBackup,
       userImages: [{ hash: "legacy", type: "text/plain", data: "TWE=" }],
     };
 
     await expect(importProject(backup)).resolves.toBe("project-new");
-    expect(mocks.userImagesPut).toHaveBeenCalledWith(
+    expect(mocks.userImagesBulkPut).toHaveBeenCalledWith([
       expect.objectContaining({
         hash: "legacy",
         type: "text/plain",
         data: expect.objectContaining({ size: 2 }),
-      })
-    );
+      }),
+    ]);
   });
 
   it("imports projects with an explicit name", async () => {

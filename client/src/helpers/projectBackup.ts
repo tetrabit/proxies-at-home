@@ -426,10 +426,18 @@ export async function importProject(
 
   // Decode all validated image payloads before opening the write transaction.
   // This keeps decoding failures from leaving any persistent import state behind.
-  const decodedUserImages = validatedBackup.userImages.map((img) => ({
-    hash: img.hash,
-    type: img.type,
-    blob: base64ToBlob(img.data, img.type),
+  // Keep the first image metadata for duplicate content hashes. A later record
+  // with the same content address cannot describe a distinct stored upload.
+  const uniqueBackupImages = new Map<string, BackupUserImage>();
+  for (const image of validatedBackup.userImages) {
+    if (!uniqueBackupImages.has(image.hash)) {
+      uniqueBackupImages.set(image.hash, image);
+    }
+  }
+  const decodedUserImages = Array.from(uniqueBackupImages.values(), (image) => ({
+    hash: image.hash,
+    type: image.type,
+    blob: base64ToBlob(image.data, image.type),
   }));
 
   // 1. Build UUID remap table (old → new)
@@ -461,17 +469,19 @@ export async function importProject(
 
   // 3. Write missing custom uploads, project, and cards atomically.
   await db.transaction('rw', db.user_images, db.projects, db.cards, async () => {
-    // Preserve the sequential content-addressed deduplication behavior.
-    for (const image of decodedUserImages) {
-      const existing = await db.user_images.get(image.hash);
-      if (!existing) {
-        await db.user_images.put({
-          hash: image.hash,
-          data: image.blob,
-          type: image.type,
-          createdAt: Date.now(),
-        });
-      }
+    const imageHashes = decodedUserImages.map((image) => image.hash);
+    const existingImages = await db.user_images.bulkGet(imageHashes);
+    const missingImages = decodedUserImages.flatMap((image, index) => {
+      if (existingImages[index]) return [];
+      return [{
+        hash: image.hash,
+        data: image.blob,
+        type: image.type,
+        createdAt: Date.now(),
+      }];
+    });
+    if (missingImages.length > 0) {
+      await db.user_images.bulkPut(missingImages);
     }
 
     await db.projects.add({

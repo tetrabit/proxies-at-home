@@ -166,4 +166,76 @@ describe("importProject atomic persistence", () => {
     expect(front.linkedBackId).toBe(back.uuid);
     expect(back.linkedFrontId).toBe(front.uuid);
   });
+
+  it("bulk-deduplicates image hashes, preserves stored collisions, and keeps card hash mappings", async () => {
+    const suffix = unique("bulk-images");
+    const { existingHash, cacheImageId } = await seedUnrelatedState(suffix);
+    const firstNewHash = unique("first-new-image");
+    const secondNewHash = unique("second-new-image");
+    const backup = createBackup(
+      suffix,
+      [
+        { hash: firstNewHash, type: "text/first", data: "Zmlyc3Q=" },
+        { hash: existingHash, type: "text/replacement", data: "cmVwbGFjZWQ=" },
+        { hash: firstNewHash, type: "text/duplicate", data: "ZHVwbGljYXRl" },
+        { hash: secondNewHash, type: "text/second", data: "c2Vjb25k" },
+        { hash: existingHash, type: "text/replacement-duplicate", data: "YWdhaW4=" },
+      ],
+      [
+        {
+          uuid: "first-card-old",
+          name: "First",
+          order: 0,
+          isUserUpload: true,
+          imageId: firstNewHash,
+        },
+        {
+          uuid: "existing-card-old",
+          name: "Existing",
+          order: 1,
+          isUserUpload: true,
+          imageId: existingHash,
+        },
+        {
+          uuid: "duplicate-card-old",
+          name: "Duplicate",
+          order: 2,
+          isUserUpload: true,
+          imageId: firstNewHash,
+        },
+      ]
+    );
+    const bulkGet = vi.spyOn(db.user_images, "bulkGet");
+    const bulkPut = vi.spyOn(db.user_images, "bulkPut");
+    const originalExistingImage = await db.user_images.get(existingHash);
+    const originalCacheImage = await db.images.get(cacheImageId);
+
+    const projectId = await importProject(backup);
+
+    expect(bulkGet).toHaveBeenCalledTimes(1);
+    expect(bulkGet).toHaveBeenCalledWith([firstNewHash, existingHash, secondNewHash]);
+    expect(bulkPut).toHaveBeenCalledTimes(1);
+    const [insertedImages] = bulkPut.mock.calls[0];
+    expect(insertedImages).toHaveLength(2);
+    expect(insertedImages.map((image) => ({ hash: image.hash, type: image.type }))).toEqual([
+      { hash: firstNewHash, type: "text/first" },
+      { hash: secondNewHash, type: "text/second" },
+    ]);
+    expect(insertedImages[0].data).toMatchObject({ size: 5, type: "text/first" });
+    expect(insertedImages[1].data).toMatchObject({ size: 6, type: "text/second" });
+
+    await expect(db.user_images.get(existingHash)).resolves.toMatchObject({
+      hash: existingHash,
+      type: "text/existing",
+    });
+    expect(await db.user_images.get(existingHash)).toEqual(originalExistingImage);
+    expect(await db.images.get(cacheImageId)).toEqual(originalCacheImage);
+
+    const importedCards = await db.cards.where("projectId").equals(projectId).toArray();
+    expect(importedCards.map((card) => card.imageId)).toEqual([
+      firstNewHash,
+      existingHash,
+      firstNewHash,
+    ]);
+  });
 });
