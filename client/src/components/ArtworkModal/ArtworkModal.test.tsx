@@ -260,8 +260,10 @@ vi.mock('./ArtworkTabContent', () => ({
                 <button data-testid="close-button" onClick={onClose}>Close</button>
                 <button data-testid="switch-to-mpc" onClick={() => setArtSource('mpc')}>Switch to MPC</button>
                 <button data-testid="select-artwork" onClick={() => onSelectArtwork('https://example.com/art.jpg')}>Select</button>
+                <button data-testid="select-alternate-artwork" onClick={() => onSelectArtwork('https://example.com/alternate-art.jpg')}>Select Alternate</button>
                 <button data-testid="select-specific-artwork" onClick={() => onSelectArtwork('https://example.com/specific-art.jpg', 'Specific Name', { set: 'spc', number: '7' })}>Select Specific Artwork</button>
                 <button data-testid="select-mpc-art" onClick={() => onSelectMpcArt({ identifier: 'mpc-123', name: 'MPC Card' })}>Select MPC</button>
+                <button data-testid="select-alternate-mpc-art" onClick={() => onSelectMpcArt({ identifier: 'mpc-456', name: 'Alternate MPC Card' })}>Select Alternate MPC</button>
                 <button data-testid="select-cardback" onClick={() => onSelectCardback('cardback-1', 'Custom Back')}>Select Cardback</button>
                 <button data-testid="set-default-cardback" onClick={() => onSetAsDefaultCardback('cardback-2', 'Default Back')}>Set Default</button>
                 <button data-testid="delete-cardback" onClick={() => onRequestDelete('cardback-1', 'Custom Back')}>Delete</button>
@@ -670,6 +672,55 @@ describe('ArtworkModal', () => {
 
             errorSpy.mockRestore();
         });
+
+        it('does not apply an older Scryfall selection after a newer selection resolves first', async () => {
+            let resolveFirst!: (value: Awaited<ReturnType<typeof ImportOrchestrator.resolve>>) => void;
+            let resolveSecond!: (value: Awaited<ReturnType<typeof ImportOrchestrator.resolve>>) => void;
+            const first = new Promise<Awaited<ReturnType<typeof ImportOrchestrator.resolve>>>((resolve) => {
+                resolveFirst = resolve;
+            });
+            const second = new Promise<Awaited<ReturnType<typeof ImportOrchestrator.resolve>>>((resolve) => {
+                resolveSecond = resolve;
+            });
+            vi.mocked(ImportOrchestrator.resolve)
+                .mockReturnValueOnce(first)
+                .mockReturnValueOnce(second);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-artwork'));
+            fireEvent.click(screen.getByTestId('select-alternate-artwork'));
+
+            await act(async () => {
+                resolveSecond({
+                    cardsToAdd: [{ name: 'Newer Scryfall', imageId: 'newer-scryfall-image', isUserUpload: false }],
+                    backCardTasks: [],
+                });
+                await Promise.resolve();
+            });
+
+            await waitFor(() => {
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'test-image-id',
+                    'https://example.com/alternate-art.jpg',
+                    expect.objectContaining({ uuid: 'test-uuid' }),
+                    false,
+                    'Newer Scryfall',
+                    undefined,
+                    expect.anything(),
+                    undefined,
+                );
+            });
+
+            await act(async () => {
+                resolveFirst({
+                    cardsToAdd: [{ name: 'Older Scryfall', imageId: 'older-scryfall-image', isUserUpload: false }],
+                    backCardTasks: [],
+                });
+                await Promise.resolve();
+            });
+
+            expect(mockChangeCardArtwork).toHaveBeenCalledTimes(1);
+        });
     });
 
     describe('handleSelectMpcArt', () => {
@@ -831,6 +882,98 @@ describe('ArtworkModal', () => {
             await waitFor(() => {
                 expect(ImportOrchestrator.resolve).toHaveBeenCalled();
             });
+            expect(mockChangeCardArtwork).not.toHaveBeenCalled();
+        });
+
+        it('does not apply an older MPC selection after a newer selection resolves first', async () => {
+            let resolveFirst!: (value: Awaited<ReturnType<typeof ImportOrchestrator.resolve>>) => void;
+            let resolveSecond!: (value: Awaited<ReturnType<typeof ImportOrchestrator.resolve>>) => void;
+            const first = new Promise<Awaited<ReturnType<typeof ImportOrchestrator.resolve>>>((resolve) => {
+                resolveFirst = resolve;
+            });
+            const second = new Promise<Awaited<ReturnType<typeof ImportOrchestrator.resolve>>>((resolve) => {
+                resolveSecond = resolve;
+            });
+            vi.mocked(ImportOrchestrator.resolve)
+                .mockReturnValueOnce(first)
+                .mockReturnValueOnce(second);
+
+            render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+            fireEvent.click(screen.getByTestId('select-alternate-mpc-art'));
+
+            await act(async () => {
+                resolveSecond({
+                    cardsToAdd: [{
+                        name: 'Newer MPC',
+                        imageId: 'newer-mpc-image',
+                        isUserUpload: false,
+                        hasBuiltInBleed: false,
+                        needsEnrichment: false,
+                    }],
+                    backCardTasks: [],
+                });
+                await Promise.resolve();
+            });
+
+            await waitFor(() => {
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'test-image-id',
+                    'newer-mpc-image',
+                    expect.objectContaining({ uuid: 'test-uuid' }),
+                    false,
+                    'Newer MPC',
+                    undefined,
+                    expect.anything(),
+                    false,
+                );
+            });
+
+            await act(async () => {
+                resolveFirst({
+                    cardsToAdd: [{
+                        name: 'Older MPC',
+                        imageId: 'older-mpc-image',
+                        isUserUpload: false,
+                        hasBuiltInBleed: false,
+                        needsEnrichment: false,
+                    }],
+                    backCardTasks: [],
+                });
+                await Promise.resolve();
+            });
+
+            expect(mockChangeCardArtwork).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not apply an MPC selection that resolves after navigation', async () => {
+            let resolveSelection!: (value: Awaited<ReturnType<typeof ImportOrchestrator.resolve>>) => void;
+            const selection = new Promise<Awaited<ReturnType<typeof ImportOrchestrator.resolve>>>((resolve) => {
+                resolveSelection = resolve;
+            });
+            vi.mocked(ImportOrchestrator.resolve).mockReturnValueOnce(selection);
+
+            const { rerender } = render(<ArtworkModal />);
+            fireEvent.click(screen.getByTestId('select-mpc-art'));
+            await waitFor(() => expect(ImportOrchestrator.resolve).toHaveBeenCalledTimes(1));
+
+            mockState.modalCard = { uuid: 'next-uuid', name: 'Next Card', imageId: 'next-image-id' };
+            rerender(<ArtworkModal />);
+
+            await act(async () => {
+                resolveSelection({
+                    cardsToAdd: [{
+                        name: 'Stale MPC',
+                        imageId: 'stale-mpc-image',
+                        isUserUpload: false,
+                        hasBuiltInBleed: false,
+                        needsEnrichment: false,
+                    }],
+                    backCardTasks: [],
+                });
+                await Promise.resolve();
+            });
+
             expect(mockChangeCardArtwork).not.toHaveBeenCalled();
         });
     });

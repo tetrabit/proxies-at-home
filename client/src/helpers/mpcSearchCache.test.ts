@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import "fake-indexeddb/auto";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
 // Use vi.hoisted to ensure mock is available before vi.mock factory runs
 const mockMpcSearchCache = vi.hoisted(() => ({
@@ -24,9 +25,11 @@ import {
     getCachedMpcSearch,
     getCachedMpcSearchBulk,
     cacheMpcSearch,
+    cacheMpcSearchBulk,
     clearMpcSearchCache,
     getMpcCacheStats,
 } from "./mpcSearchCache";
+import type { MpcSearchCacheEntry } from "../db";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
 
 async function flushAsyncTrim() {
@@ -263,6 +266,85 @@ describe("mpcSearchCache", () => {
                 expect.any(Error)
             );
             consoleSpy.mockRestore();
+        });
+    });
+
+    describe("cacheMpcSearchBulk real Dexie transactions", () => {
+        let liveDb: typeof import("../db").db;
+        let liveCacheMpcSearchBulk: typeof cacheMpcSearchBulk;
+
+        beforeAll(async () => {
+            vi.doUnmock("../db");
+            vi.resetModules();
+            ({ db: liveDb } = await import("../db"));
+            ({ cacheMpcSearchBulk: liveCacheMpcSearchBulk } = await import("./mpcSearchCache"));
+        });
+
+        beforeEach(() => {
+            vi.useRealTimers();
+        });
+
+        it("normalizes duplicate keys, rejects malformed batches, and reads back only complete entries", async () => {
+            const duplicateQuery = "td-151745 real dexie duplicate";
+            const malformedQuery = "td-151745 real dexie malformed";
+            const firstCards = [createMockMpcCard({ identifier: "first" })];
+            const replacementCards = [createMockMpcCard({ identifier: "replacement" })];
+
+            await liveCacheMpcSearchBulk([
+                { query: `  ${duplicateQuery.toUpperCase()}  `, cardType: "CARD", cards: firstCards },
+                { query: duplicateQuery, cardType: "CARD", cards: replacementCards },
+            ]);
+
+            await expect(liveDb.mpcSearchCache.get([duplicateQuery, "CARD"])).resolves.toMatchObject({
+                cards: replacementCards,
+            });
+            await expect(liveDb.mpcSearchCache.where("query").equals(duplicateQuery).count()).resolves.toBe(1);
+
+            const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            await liveCacheMpcSearchBulk([
+                { query: malformedQuery, cardType: "CARD", cards: [createMockMpcCard()] },
+                {
+                    query: "td-151745 real dexie malformed partial",
+                    cardType: "CARD",
+                    cards: [{ identifier: "partial", name: "Partial" }] as unknown as MpcAutofillCard[],
+                },
+            ]);
+
+            expect(warn).toHaveBeenCalledWith(
+                "[MPC Client Cache] Failed to cache searches:",
+                expect.any(Error)
+            );
+            await expect(liveDb.mpcSearchCache.get([malformedQuery, "CARD"])).resolves.toBeUndefined();
+            warn.mockRestore();
+        });
+
+        it("rolls back an interrupted real-Dexie bulk write without a partial readback", async () => {
+            const firstQuery = "td-151745 real dexie rollback first";
+            const secondQuery = "td-151745 real dexie rollback second";
+            const originalBulkPut = liveDb.mpcSearchCache.bulkPut.bind(liveDb.mpcSearchCache);
+            const injectedFailure = new Error("injected bulk put failure");
+            const failBulkPut = async (entries: readonly MpcSearchCacheEntry[]) => {
+                await originalBulkPut([entries[0]!]);
+                throw injectedFailure;
+            };
+            const bulkPut = vi.spyOn(liveDb.mpcSearchCache, "bulkPut").mockImplementation(
+                failBulkPut as unknown as typeof liveDb.mpcSearchCache.bulkPut
+            );
+            const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            await liveCacheMpcSearchBulk([
+                { query: firstQuery, cardType: "CARD", cards: [createMockMpcCard({ identifier: "first" })] },
+                { query: secondQuery, cardType: "CARD", cards: [createMockMpcCard({ identifier: "second" })] },
+            ]);
+
+            expect(bulkPut).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith("[MPC Client Cache] Failed to cache searches:", injectedFailure);
+            await expect(liveDb.mpcSearchCache.bulkGet([
+                [firstQuery, "CARD"],
+                [secondQuery, "CARD"],
+            ])).resolves.toEqual([undefined, undefined]);
+            bulkPut.mockRestore();
+            warn.mockRestore();
         });
     });
 

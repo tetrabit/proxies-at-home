@@ -45,6 +45,24 @@ function isAbortError(err: unknown): boolean {
     return err instanceof Error && err.name === "AbortError";
 }
 
+function isValidMpcAutofillCard(card: unknown): card is MpcAutofillCard {
+    if (card === null || typeof card !== 'object') {
+        return false;
+    }
+
+    const candidate = card as Partial<MpcAutofillCard>;
+    return typeof candidate.identifier === 'string' && candidate.identifier.length > 0 &&
+        typeof candidate.name === 'string' &&
+        typeof candidate.smallThumbnailUrl === 'string' &&
+        typeof candidate.mediumThumbnailUrl === 'string' &&
+        typeof candidate.dpi === 'number' && Number.isFinite(candidate.dpi) &&
+        Array.isArray(candidate.tags) && candidate.tags.every(tag => typeof tag === 'string') &&
+        typeof candidate.sourceName === 'string' &&
+        typeof candidate.source === 'string' &&
+        typeof candidate.extension === 'string' &&
+        typeof candidate.size === 'number' && Number.isFinite(candidate.size);
+}
+
 interface InFlightMpcSearch {
     promise: Promise<MpcAutofillCard[]>;
     activeSubscribers: Set<symbol>;
@@ -252,7 +270,7 @@ export async function batchSearchMpcAutofill(
         return {};
     }
 
-    const { getCachedMpcSearchBulk, cacheMpcSearch } = await import('./mpcSearchCache');
+    const { getCachedMpcSearchBulk, cacheMpcSearchBulk } = await import('./mpcSearchCache');
     const results: Record<string, MpcAutofillCard[]> = {};
     const queriesByNormalized = new Map<string, { originalQueries: string[]; requestQuery: string }>();
 
@@ -315,11 +333,17 @@ export async function batchSearchMpcAutofill(
         throwIfAborted(signal);
 
         // Map normalized response names back to every original request spelling.
-        // Cache and merge results (batch always uses fuzzy=true).
+        // Build every cache entry before writing, so one malformed server result
+        // cannot leave an earlier result persisted by itself.
+        const cacheEntries: Array<{
+            query: string;
+            cardType: "CARD" | "CARDBACK" | "TOKEN";
+            cards: MpcAutofillCard[];
+        }> = [];
         for (const [query, rawCards] of Object.entries(data.results || {})) {
             const normalizedQuery = query.trim().toLowerCase();
             const originalEntry = queriesByNormalized.get(normalizedQuery);
-            if (!originalEntry) {
+            if (!originalEntry || !Array.isArray(rawCards) || !rawCards.every(isValidMpcAutofillCard)) {
                 continue;
             }
 
@@ -332,11 +356,18 @@ export async function batchSearchMpcAutofill(
                 results[originalQuery] = parsedCards;
             }
             if (parsedCards.length > 0) {
-                const cacheKey = `${normalizedQuery}:fuzzy`;
-                throwIfAborted(signal);
-                await cacheMpcSearch(cacheKey, cardType, parsedCards);
-                throwIfAborted(signal);
+                cacheEntries.push({
+                    query: `${normalizedQuery}:fuzzy`,
+                    cardType,
+                    cards: parsedCards,
+                });
             }
+        }
+
+        if (cacheEntries.length > 0) {
+            throwIfAborted(signal);
+            await cacheMpcSearchBulk(cacheEntries);
+            throwIfAborted(signal);
         }
 
         return results;

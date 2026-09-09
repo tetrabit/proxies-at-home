@@ -142,6 +142,84 @@ export async function cacheMpcSearch(
     }
 }
 
+export interface MpcSearchCacheWrite {
+    query: string;
+    cardType: 'CARD' | 'CARDBACK' | 'TOKEN';
+    cards: MpcAutofillCard[];
+}
+
+function isValidMpcCacheCard(card: unknown): card is MpcAutofillCard {
+    if (card === null || typeof card !== 'object') {
+        return false;
+    }
+
+    const candidate = card as Partial<MpcAutofillCard>;
+    return typeof candidate.identifier === 'string' && candidate.identifier.length > 0 &&
+        typeof candidate.name === 'string' &&
+        typeof candidate.smallThumbnailUrl === 'string' &&
+        typeof candidate.mediumThumbnailUrl === 'string' &&
+        typeof candidate.dpi === 'number' && Number.isFinite(candidate.dpi) &&
+        Array.isArray(candidate.tags) && candidate.tags.every(tag => typeof tag === 'string') &&
+        typeof candidate.sourceName === 'string' &&
+        typeof candidate.source === 'string' &&
+        typeof candidate.extension === 'string' &&
+        typeof candidate.size === 'number' && Number.isFinite(candidate.size);
+}
+
+function normalizeMpcSearchCacheWrites(entries: readonly MpcSearchCacheWrite[]): MpcSearchCacheEntry[] {
+    const normalizedEntries = new Map<string, MpcSearchCacheEntry>();
+    const now = Date.now();
+
+    for (const entry of entries) {
+        if (!entry || typeof entry.query !== 'string' || !Array.isArray(entry.cards)) {
+            throw new Error('Invalid MPC cache entry');
+        }
+
+        const query = entry.query.toLowerCase().trim();
+        if (!query || !['CARD', 'CARDBACK', 'TOKEN'].includes(entry.cardType)) {
+            throw new Error('Invalid MPC cache entry');
+        }
+
+        if (!entry.cards.every(isValidMpcCacheCard)) {
+            throw new Error('Invalid MPC cache cards');
+        }
+
+        normalizedEntries.set(`${query}\u0000${entry.cardType}`, {
+            query,
+            cardType: entry.cardType,
+            cards: entry.cards,
+            cachedAt: now,
+        });
+    }
+
+    return [...normalizedEntries.values()];
+}
+
+/**
+ * Store a batch of MPC search results atomically.
+ * Entries are normalized and validated before the transaction begins so an
+ * invalid response cannot leave earlier batch entries persisted on its own.
+ */
+export async function cacheMpcSearchBulk(entries: readonly MpcSearchCacheWrite[]): Promise<void> {
+    try {
+        const normalizedEntries = normalizeMpcSearchCacheWrites(entries);
+        if (normalizedEntries.length === 0) {
+            return;
+        }
+
+        await db.transaction('rw', db.mpcSearchCache, async () => {
+            await db.mpcSearchCache.bulkPut(normalizedEntries);
+        });
+
+        // Keep the existing LRU policy without extending the write transaction.
+        trimMpcCacheIfNeeded().catch(e =>
+            console.warn('[MPC Client Cache] Trim failed:', e)
+        );
+    } catch (error) {
+        console.warn('[MPC Client Cache] Failed to cache searches:', error);
+    }
+}
+
 /**
  * Trim cache if over MAX_ENTRIES.
  * Deletes oldest entries first (LRU eviction).

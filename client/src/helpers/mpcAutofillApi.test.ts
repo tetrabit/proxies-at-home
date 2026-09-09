@@ -5,6 +5,7 @@ const mockGetMpcImageUrl = vi.hoisted(() => vi.fn());
 const mockGetCachedMpcSearch = vi.hoisted(() => vi.fn());
 const mockGetCachedMpcSearchBulk = vi.hoisted(() => vi.fn());
 const mockCacheMpcSearch = vi.hoisted(() => vi.fn());
+const mockCacheMpcSearchBulk = vi.hoisted(() => vi.fn());
 const mockDebugLog = vi.hoisted(() => vi.fn());
 
 vi.mock("./mpc", () => ({
@@ -15,6 +16,7 @@ vi.mock("./mpcSearchCache", () => ({
     getCachedMpcSearch: mockGetCachedMpcSearch,
     getCachedMpcSearchBulk: mockGetCachedMpcSearchBulk,
     cacheMpcSearch: mockCacheMpcSearch,
+    cacheMpcSearchBulk: mockCacheMpcSearchBulk,
 }));
 
 vi.mock("./debug", () => ({
@@ -67,6 +69,7 @@ describe("mpcAutofillApi", () => {
         mockGetCachedMpcSearchBulk.mockReset();
         mockGetCachedMpcSearchBulk.mockResolvedValue(new Map());
         mockCacheMpcSearch.mockReset();
+        mockCacheMpcSearchBulk.mockReset();
         mockDebugLog.mockReset();
         vi.stubGlobal("fetch", vi.fn());
     });
@@ -628,11 +631,40 @@ describe("mpcAutofillApi", () => {
                     body: JSON.stringify({ queries: ["Forest"], cardType: "CARD" }),
                 })
             );
-            expect(mockCacheMpcSearch).toHaveBeenCalledWith(
-                "forest:fuzzy",
-                "CARD",
-                [expect.objectContaining({ identifier: "forest", name: "Forest" })]
-            );
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalledTimes(1);
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalledWith([
+                {
+                    query: "forest:fuzzy",
+                    cardType: "CARD",
+                    cards: [expect.objectContaining({ identifier: "forest", name: "Forest" })],
+                },
+            ]);
+        });
+
+        it("writes every successful uncached result through one bulk cache call", async () => {
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map());
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({
+                    results: {
+                        Forest: [createMpcCard({ identifier: "forest", name: "Forest [THB]" })],
+                        "Sol Ring": [createMpcCard({ identifier: "sol-ring", name: "Sol Ring {C21}" })],
+                    },
+                }),
+            } as Response);
+
+            await expect(batchSearchMpcAutofill(["Forest", "Sol Ring"])).resolves.toEqual({
+                Forest: [expect.objectContaining({ identifier: "forest", name: "Forest" })],
+                "Sol Ring": [expect.objectContaining({ identifier: "sol-ring", name: "Sol Ring" })],
+            });
+
+            expect(mockCacheMpcSearch).not.toHaveBeenCalled();
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalledTimes(1);
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalledWith([
+                expect.objectContaining({ query: "forest:fuzzy", cardType: "CARD" }),
+                expect.objectContaining({ query: "sol ring:fuzzy", cardType: "CARD" }),
+            ]);
         });
 
         it("should forward an optional AbortSignal to the batch request", async () => {
@@ -670,8 +702,8 @@ describe("mpcAutofillApi", () => {
             const abortError = new DOMException("Request aborted", "AbortError");
             const firstCacheWrite = createDeferred<void>();
             const firstCacheWriteStarted = createDeferred<void>();
-            mockGetCachedMpcSearch.mockResolvedValue(null);
-            mockCacheMpcSearch.mockImplementationOnce(() => {
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map());
+            mockCacheMpcSearchBulk.mockImplementationOnce(() => {
                 firstCacheWriteStarted.resolve();
                 return firstCacheWrite.promise;
             });
@@ -691,7 +723,7 @@ describe("mpcAutofillApi", () => {
             firstCacheWrite.resolve();
 
             await expect(search).rejects.toBe(abortError);
-            expect(mockCacheMpcSearch).toHaveBeenCalledTimes(1);
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalledTimes(1);
         });
 
         it("should parse card names before returning results", async () => {
@@ -734,9 +766,9 @@ describe("mpcAutofillApi", () => {
 
             await batchSearchMpcAutofill(["Dark Ritual"]);
 
-            // Verify cacheMpcSearch was called with parsed names
-            expect(mockCacheMpcSearch).toHaveBeenCalled();
-            const cachedCards = mockCacheMpcSearch.mock.calls[0][2];
+            // Verify cacheMpcSearchBulk was called with parsed names
+            expect(mockCacheMpcSearchBulk).toHaveBeenCalled();
+            const cachedCards = mockCacheMpcSearchBulk.mock.calls[0][0][0].cards;
             expect(cachedCards[0].name).toBe("Dark Ritual");
         });
 

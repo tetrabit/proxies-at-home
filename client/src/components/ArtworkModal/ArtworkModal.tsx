@@ -60,6 +60,13 @@ import type { ImportIntent } from "@/helpers/importParsers";
 import { handleAutoImportTokens } from "@/helpers/tokenImportHelper";
 import { debugLog } from "@/helpers/debug";
 
+type ArtworkSelectionOperation = {
+  generation: number;
+  targetUuid: string;
+  projectId: string | null;
+  modalCardUuid: string;
+};
+
 export function ArtworkModal() {
   const [isSearching, setIsSearching] = useState(false);
   const [applyToAll, setApplyToAll] = useState(false);
@@ -90,6 +97,7 @@ export function ArtworkModal() {
     undefined
   );
   const previewOperationGenerationRef = useRef(0);
+  const artworkSelectionGenerationRef = useRef(0);
   const isArtworkModalMountedRef = useRef(false);
 
   const isModalOpen = useArtworkModalStore((state) => state.open);
@@ -119,6 +127,7 @@ export function ArtworkModal() {
   );
 
   if (isModalOpen && modalCard?.uuid !== lastOpenCardUuid) {
+    artworkSelectionGenerationRef.current += 1;
     setLastOpenCardUuid(modalCard?.uuid);
 
     setPreviewCardData(null);
@@ -148,6 +157,7 @@ export function ArtworkModal() {
     return () => {
       isArtworkModalMountedRef.current = false;
       previewOperationGenerationRef.current += 1;
+      artworkSelectionGenerationRef.current += 1;
     };
   }, []);
 
@@ -240,6 +250,34 @@ export function ArtworkModal() {
 
   const activeCard =
     selectedFace === "back" && linkedBackCard ? linkedBackCard : modalCard;
+  const invalidateArtworkSelection = useCallback(() => {
+    artworkSelectionGenerationRef.current += 1;
+  }, []);
+  const beginArtworkSelection = (): ArtworkSelectionOperation | null => {
+    if (!activeCard || !modalCard) return null;
+
+    return {
+      generation: ++artworkSelectionGenerationRef.current,
+      targetUuid: activeCard.uuid,
+      projectId:
+        activeCard.projectId ?? useProjectStore.getState().currentProjectId,
+      modalCardUuid: modalCard.uuid,
+    };
+  };
+  const isCurrentArtworkSelection = (operation: ArtworkSelectionOperation) => {
+    const currentModal = useArtworkModalStore.getState();
+    const currentTargetUuid =
+      currentModal.card?.uuid === operation.targetUuid ||
+      currentModal.card?.linkedBackId === operation.targetUuid;
+    return (
+      isArtworkModalMountedRef.current &&
+      artworkSelectionGenerationRef.current === operation.generation &&
+      currentModal.open &&
+      currentModal.card?.uuid === operation.modalCardUuid &&
+      currentTargetUuid &&
+      useProjectStore.getState().currentProjectId === operation.projectId
+    );
+  };
   const handleSaveName = useCallback(async () => {
     /* v8 ignore next -- save is only reachable from the edit UI after entering a custom-upload card. @preserve */
     if (!editedName.trim() || !activeCard) return;
@@ -518,11 +556,20 @@ export function ArtworkModal() {
     specificPrint?: { set: string; number: string },
     previewOperationGeneration?: number
   ) {
+    if (
+      previewOperationGeneration !== undefined &&
+      !isCurrentPreviewOperation(previewOperationGeneration)
+    ) {
+      return;
+    }
+    const selectionOperation = beginArtworkSelection();
     const shouldContinue = () =>
-      previewOperationGeneration === undefined ||
-      isCurrentPreviewOperation(previewOperationGeneration);
+      !!selectionOperation &&
+      isCurrentArtworkSelection(selectionOperation) &&
+      (previewOperationGeneration === undefined ||
+        isCurrentPreviewOperation(previewOperationGeneration));
     /* v8 ignore next -- artwork buttons are not exposed without an active card. @preserve */
-    if (!activeCard || !shouldContinue()) return;
+    if (!activeCard || !selectionOperation || !shouldContinue()) return;
 
     debugLog("[ArtworkModal] handleSelectArtwork:", {
       newImageUrl: newImageUrl?.substring(0, 80),
@@ -689,6 +736,11 @@ export function ArtworkModal() {
       return;
     }
 
+    const selectionOperation = beginArtworkSelection();
+    const shouldContinue = () =>
+      !!selectionOperation && isCurrentArtworkSelection(selectionOperation);
+    if (!selectionOperation || !shouldContinue()) return;
+
     setAppliedMpcCardId(card.identifier);
 
     const intent: ImportIntent = {
@@ -708,6 +760,7 @@ export function ArtworkModal() {
         intent,
         projectId
       );
+      if (!shouldContinue()) return;
       const resolved = cardsToAdd[0];
 
       debugLog("[ArtworkModal] handleSelectMpcArt resolved:", {
@@ -736,7 +789,9 @@ export function ArtworkModal() {
             type_line: resolved.type_line,
             mana_cost: resolved.mana_cost,
           },
+          shouldContinue,
         });
+        if (!shouldContinue()) return;
 
         // Handle DFC back face linking
         if (
@@ -757,6 +812,7 @@ export function ArtworkModal() {
                 (backTask as { hasBleed?: boolean }).hasBleed ?? false,
               usesDefaultCardback: false,
             });
+            if (!shouldContinue()) return;
           } else {
             // Create new linked back card
             await createLinkedBackCard(
@@ -769,6 +825,7 @@ export function ArtworkModal() {
                   (backTask as { hasBleed?: boolean }).hasBleed ?? false,
               }
             );
+            if (!shouldContinue()) return;
           }
         }
 
@@ -1100,12 +1157,27 @@ export function ArtworkModal() {
   }, []);
 
   const handleGoToNextCard = useCallback(() => {
+    invalidateArtworkSelection();
     goToNextCard();
-  }, [goToNextCard]);
+  }, [goToNextCard, invalidateArtworkSelection]);
 
   const handleGoToPrevCard = useCallback(() => {
+    invalidateArtworkSelection();
     goToPrevCard();
-  }, [goToPrevCard]);
+  }, [goToPrevCard, invalidateArtworkSelection]);
+
+  const handleSelectedFaceChange = useCallback(
+    (face: "front" | "back") => {
+      if (face !== selectedFace) invalidateArtworkSelection();
+      setSelectedFace(face);
+    },
+    [invalidateArtworkSelection, selectedFace]
+  );
+
+  const handleCloseModal = useCallback(() => {
+    invalidateArtworkSelection();
+    closeModal();
+  }, [closeModal, invalidateArtworkSelection]);
 
   useEffect(() => {
     if (!isModalOpen) return;
@@ -1135,7 +1207,7 @@ export function ArtworkModal() {
   ]);
 
   /* v8 ignore next -- modal close is disabled only during delete confirmation. @preserve */
-  const modalOnClose = pendingDeleteId ? () => {} : closeModal;
+  const modalOnClose = pendingDeleteId ? () => {} : handleCloseModal;
 
   return (
     <>
@@ -1169,7 +1241,7 @@ export function ArtworkModal() {
         header={
           <div className="landscape-sidebar-header border-b border-gray-200 dark:border-gray-600 max-lg:portrait:hidden">
             <button
-              onClick={closeModal}
+              onClick={handleCloseModal}
               className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors lg:order-last"
             >
               <X className="w-5 h-5" />
@@ -1281,13 +1353,13 @@ export function ArtworkModal() {
                       { id: "back" as const, label: tabLabels.back },
                     ]}
                     activeTab={selectedFace}
-                    onTabChange={setSelectedFace}
+                    onTabChange={handleSelectedFaceChange}
                     variant="primary"
                   />
                 </div>
                 <div className="lg:hidden p-2">
                   <button
-                    onClick={closeModal}
+                    onClick={handleCloseModal}
                     className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors max-lg:landscape:order-first"
                   >
                     <X className="w-5 h-5" />
@@ -1389,7 +1461,7 @@ export function ArtworkModal() {
               onSetAsDefaultCardback={handleSetAsDefaultCardback}
               onSelectArtwork={handleSelectArtwork}
               onSelectMpcArt={handleSelectMpcArt}
-              onClose={closeModal}
+              onClose={handleCloseModal}
               onRequestDelete={handleRequestDelete}
               onExecuteDelete={handleExecuteDelete}
               artSource={artSource}
@@ -1398,7 +1470,7 @@ export function ArtworkModal() {
               onMpcFiltersCollapsedChange={setMpcFiltersCollapsed}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
-              setSelectedFace={setSelectedFace}
+              setSelectedFace={handleSelectedFaceChange}
               setZoomLevel={setZoomLevel}
             />
           )}

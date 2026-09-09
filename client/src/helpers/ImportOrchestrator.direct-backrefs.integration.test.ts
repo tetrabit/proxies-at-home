@@ -116,4 +116,78 @@ describe("ImportOrchestrator direct back image persistence", () => {
     expect(await db.cards.where("projectId").equals(projectId).count()).toBe(0);
     expect(await db.images.count()).toBe(0);
   });
+
+  it("fences deferred direct persistence when switchProject changes the active project", async () => {
+    const sourceProjectId = "direct-switch-persistence-source";
+    const targetProjectId = "direct-switch-persistence-target";
+    await db.projects.bulkPut([
+      { id: sourceProjectId, name: "Source", createdAt: 1, lastOpenedAt: 1, cardCount: 0, settings: {} },
+      { id: targetProjectId, name: "Target", createdAt: 2, lastOpenedAt: 2, cardCount: 0, settings: {} },
+    ]);
+    useProjectStore.setState({ currentProjectId: sourceProjectId });
+
+    let resolveMetadata!: (value: Map<string, ScryfallCard>) => void;
+    vi.mocked(await import("./scryfallApi")).fetchCardsMetadataBatch.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveMetadata = resolve;
+    }));
+    const onComplete = vi.fn();
+
+    const processing = ImportOrchestrator.process([{
+      name: "Switched Front",
+      quantity: 1,
+      isToken: false,
+      mpcId: "switched-front",
+      linkedBackImageId: "switched-back",
+      linkedBackName: "Switched Back",
+    }], { settings: { ...settings, projectId: sourceProjectId }, onComplete });
+
+    await vi.waitFor(async () => {
+      expect(await db.cards.where("projectId").equals(sourceProjectId).count()).toBe(2);
+    });
+
+    await useProjectStore.getState().switchProject(targetProjectId);
+    expect(useProjectStore.getState().currentProjectId).toBe(targetProjectId);
+
+    resolveMetadata(new Map());
+
+    await expect(processing).rejects.toMatchObject({ name: "AbortError" });
+    const sourceCards = await db.cards.where("projectId").equals(sourceProjectId).toArray();
+    expect(sourceCards).toHaveLength(2);
+    expect(sourceCards.filter((card) => !card.linkedFrontId)).toEqual([
+      expect.objectContaining({ imageId: undefined }),
+    ]);
+    expect(sourceCards.filter((card) => card.linkedFrontId)).toHaveLength(1);
+    expect(await db.images.count()).toBe(0);
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it("preserves the external abort fence during deferred direct persistence", async () => {
+    const projectId = "direct-external-abort-persistence-fence";
+    const controller = new AbortController();
+    let resolveMetadata!: (value: Map<string, ScryfallCard>) => void;
+    vi.mocked(await import("./scryfallApi")).fetchCardsMetadataBatch.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveMetadata = resolve;
+    }));
+    const onComplete = vi.fn();
+
+    const processing = ImportOrchestrator.process([{
+      name: "Aborted Front",
+      quantity: 1,
+      isToken: false,
+      mpcId: "aborted-front",
+      linkedBackImageId: "aborted-back",
+      linkedBackName: "Aborted Back",
+    }], { settings: { ...settings, projectId }, signal: controller.signal, onComplete });
+
+    await vi.waitFor(async () => {
+      expect(await db.cards.where("projectId").equals(projectId).count()).toBe(2);
+    });
+
+    controller.abort();
+    resolveMetadata(new Map());
+
+    await expect(processing).rejects.toMatchObject({ name: "AbortError" });
+    expect(await db.images.count()).toBe(0);
+    expect(onComplete).not.toHaveBeenCalled();
+  });
 });
