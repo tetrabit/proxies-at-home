@@ -138,6 +138,25 @@ describe("streamCards", () => {
     expect(fetchEventSource).not.toHaveBeenCalled();
   });
 
+  it("leaves implicit import orders for addCards to reserve atomically at insertion", async () => {
+    (db.cardbacks.toArray as any).mockResolvedValueOnce([
+      { id: "cardback-atomic", displayName: "Atomic Sleeve" },
+    ]);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "atomic-sleeve" }]);
+
+    await streamCards({
+      cardInfos: [{ name: "Atomic Sleeve" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(undoableAddCards).toHaveBeenCalledWith(
+      [expect.not.objectContaining({ order: expect.any(Number) })],
+      expect.anything()
+    );
+  });
+
   it("should stop direct MPC processing when the signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -153,7 +172,7 @@ describe("streamCards", () => {
     expect(result).toEqual({ addedCardUuids: [], totalCardsAdded: 0 });
   });
 
-  it("keeps MPC placeholder order project-local for an empty project and later append", async () => {
+  it("leaves MPC placeholder order allocation to atomic insertion", async () => {
     const mockedCards = db.cards;
     const realDb = new Dexie(`stream-project-order-${crypto.randomUUID()}`);
     realDb.version(1).stores({ cards: "&uuid, order, projectId, [projectId+order]" });
@@ -193,8 +212,8 @@ describe("streamCards", () => {
 
       await expect(cards.get("stream-placeholder-0")).resolves.toMatchObject({
         projectId: "project-a",
-        order: 10,
       });
+      await expect(cards.get("stream-placeholder-0")).resolves.not.toHaveProperty("order");
 
       await streamCards({
         cardInfos: [{ name: "Later Placeholder A" }],
@@ -207,8 +226,8 @@ describe("streamCards", () => {
 
       await expect(cards.get("stream-placeholder-1")).resolves.toMatchObject({
         projectId: "project-a",
-        order: 20,
       });
+      await expect(cards.get("stream-placeholder-1")).resolves.not.toHaveProperty("order");
     } finally {
       (db as any).cards = mockedCards;
       realDb.close();
@@ -568,7 +587,7 @@ describe("streamCards", () => {
     expect(result.addedCardUuids).toEqual(["placeholder-fallback"]);
   });
 
-  it("should use zero as the starting order when no existing cards are present", async () => {
+  it("leaves unmatched cards without a requested order for atomic append allocation", async () => {
     (db.cards.orderBy as any).mockReturnValueOnce({
       last: vi.fn().mockResolvedValue(undefined),
     });
@@ -591,7 +610,7 @@ describe("streamCards", () => {
     });
 
     expect(addCards).toHaveBeenCalledWith(
-      [expect.objectContaining({ name: "Missing Zero", order: 10 })],
+      [expect.not.objectContaining({ order: expect.any(Number) })],
       undefined
     );
   });
@@ -649,7 +668,7 @@ describe("streamCards", () => {
     );
   });
 
-  it("should add a default-error card when SSE card-error has no matching entry", async () => {
+  it("should leave an unknown error card unordered for append allocation", async () => {
     (addCards as any).mockResolvedValue([{ uuid: "unknown-error" }]);
     (fetchEventSource as any).mockImplementation(
       async (_url: string, opts: any) => {
@@ -673,7 +692,6 @@ describe("streamCards", () => {
         expect.objectContaining({
           name: "Unknown Missing",
           lookupError: "Card not found",
-          order: 0,
         }),
       ],
       undefined

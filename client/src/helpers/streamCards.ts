@@ -1,5 +1,4 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import Dexie from "dexie";
 import { undoableAddCards } from "./undoableActions";
 import { addCards, addRemoteImage, createLinkedBackCardsBulk } from "./dbUtils";
 import { createImportSession, getCurrentSession, type ImportType } from "./importSession";
@@ -116,23 +115,11 @@ const cardKey = (info: CardInfo) =>
 export async function streamCards(options: StreamCardsOptions): Promise<StreamCardsResult> {
     const { cardInfos, language, importType, signal, artSource, onProgress, onFirstCard, onComplete, projectId } = options;
 
-    // Capture the import scope before the first await so later work cannot borrow
-    // another project's order space. Legacy cards without a project retain global ordering.
-    const streamProjectId = projectId;
-    const initialMaxOrder = streamProjectId === undefined
-        ? (await db.cards.orderBy("order").last())?.order ?? 0
-        : (await db.cards
-            .where("[projectId+order]")
-            .between(
-                [streamProjectId, Dexie.minKey],
-                [streamProjectId, Dexie.maxKey]
-            )
-            .last())?.order ?? 0;
-    let currentOrderBase = initialMaxOrder + 10;
-
     // Build quantity map for deduplication AND track original order positions
-    // The key insight: each unique card should be placed at its FIRST occurrence position
-    // Update: To support scattered duplicates, we track ALL instances of the card
+    // Explicit import orders stay intact. Implicit imports intentionally leave their
+    // order undefined so addCards can reserve an append range with its insertion.
+    // This must happen after image/network work, rather than keeping a Dexie
+    // transaction open while those operations complete.
     const quantityByKey = new Map<string, { info: CardInfo; instances: CardInfo[]; placeholderUuids?: string[] }>();
 
     for (const info of cardInfos) {
@@ -146,23 +133,13 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
         }
 
         // Create an instance for each count of quantity
-        const baseOrder = info.order ?? currentOrderBase;
+        const baseOrder = info.order;
         for (let i = 0; i < cardQty; i++) {
             entry.instances.push({
                 ...info,
-                // If original had explicit order, use it. If implicit, preserve sequential spacing
-                // Note: If multiple quantity with explicit order, we might need to increment? 
-                // Share data usually has quantity=1 for each entry if they are distinct in array?
-                // No, standard import might have quantity=4.
-                // If info.order is set, all 4 get same order? That implies collision.
-                // Usually share data deserializer creates distinct intents for EACH card in the array, so quantity is always 1 for shared cards.
-                // Standard import might have quantity > 1.
-                order: baseOrder + (i * 10)
+                order: baseOrder === undefined ? undefined : baseOrder + (i * 10)
             });
         }
-
-        // Advance order counter by quantity (even for duplicates, to reserve space)
-        currentOrderBase += cardQty * 10;
     }
 
     // --- Handle cards with explicit MPC identifiers first ---
@@ -446,7 +423,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     });
                 } else {
                     // No existing placeholders - add new error cards
-                    const instances = entry?.instances ?? Array.from({ length: 1 }, () => ({ ...query, order: (entry?.instances?.[0]?.order ?? 0) })); // Fallback if entry missing?
+                    const instances = entry?.instances ?? [query];
 
                     const placeholderCards = instances.map(instance => createCardOption({
                         name: query.name,
@@ -716,7 +693,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 function createCardOption(
     base: Partial<Omit<CardOption, "uuid" | "order"> & { imageId?: string }>,
     order?: number
-): Omit<CardOption, "uuid"> & { imageId?: string } {
+): Omit<CardOption, "uuid" | "order"> & { order?: number; imageId?: string } {
     const defaults = {
         set: undefined,
         number: undefined,
@@ -732,7 +709,6 @@ function createCardOption(
     return {
         ...defaults,
         ...base,
-        /* v8 ignore next -- all call sites pass an explicit order; zero is a defensive fallback. @preserve */
-        order: order ?? 0,
-    } as Omit<CardOption, "uuid"> & { imageId?: string };
+        ...(order === undefined ? {} : { order }),
+    } as Omit<CardOption, "uuid" | "order"> & { order?: number; imageId?: string };
 }

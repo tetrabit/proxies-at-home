@@ -418,32 +418,37 @@ export async function addCards(
   >,
   options?: { startOrder?: number }
 ): Promise<CardOption[]> {
-  // Use explicit startOrder if provided. Otherwise, append within the input
-  // project's order space; legacy cards without a project retain global ordering.
-  const projectId = cardsData[0]?.projectId;
-  const lastCard =
-    projectId === undefined
-      ? await db.cards.orderBy("order").last()
-      : await db.cards
-          .where("[projectId+order]")
-          .between(
-            [projectId, Dexie.minKey],
-            [projectId, Dexie.maxKey]
-          )
-          .last();
-  const startOrder = options?.startOrder ?? (lastCard?.order ?? 0) + 10;
+  // Read the current maximum and insert the resulting cards in one transaction.
+  // A separate read followed by bulkAdd lets concurrent appenders reuse the same
+  // range before either write is committed.
+  return db.transaction("rw", db.cards, async () => {
+    // Use explicit startOrder if provided. Otherwise, append within the input
+    // project's order space; legacy cards without a project retain global ordering.
+    const projectId = cardsData[0]?.projectId;
+    const lastCard =
+      projectId === undefined
+        ? await db.cards.orderBy("order").last()
+        : await db.cards
+            .where("[projectId+order]")
+            .between(
+              [projectId, Dexie.minKey],
+              [projectId, Dexie.maxKey]
+            )
+            .last();
+    const startOrder = options?.startOrder ?? (lastCard?.order ?? 0) + 10;
 
-  const newCards: CardOption[] = cardsData.map((cardData, i) => ({
-    ...cardData,
-    uuid: crypto.randomUUID(),
-    // Respect explicit order if provided, otherwise use sequential order
-    order: cardData.order ?? startOrder + i * 10,
-  }));
+    const newCards: CardOption[] = cardsData.map((cardData, i) => ({
+      ...cardData,
+      uuid: crypto.randomUUID(),
+      // Respect explicit order if provided, otherwise use sequential order
+      order: cardData.order ?? startOrder + i * 10,
+    }));
 
-  if (newCards.length > 0) {
-    await db.cards.bulkAdd(newCards);
-  }
-  return newCards;
+    if (newCards.length > 0) {
+      await db.cards.bulkAdd(newCards);
+    }
+    return newCards;
+  });
 }
 
 /**

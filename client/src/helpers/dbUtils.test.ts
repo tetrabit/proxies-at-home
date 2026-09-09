@@ -94,6 +94,68 @@ describe("dbUtils", () => {
       });
     });
 
+    it("atomically reserves noncolliding append slots for concurrent batches in one project", async () => {
+      await db.cards.add({
+        uuid: "project-a-existing",
+        name: "Existing A",
+        order: 20,
+        isUserUpload: false,
+        projectId: "project-a",
+      });
+
+      const [firstBatch, secondBatch] = await Promise.all([
+        addCards([
+          { name: "First A", isUserUpload: false, projectId: "project-a" },
+          { name: "Second A", isUserUpload: false, projectId: "project-a" },
+        ]),
+        addCards([
+          { name: "Third A", isUserUpload: false, projectId: "project-a" },
+        ]),
+      ]);
+
+      expect(firstBatch.map((card) => card.order)).toEqual([30, 40]);
+      expect(secondBatch.map((card) => card.order)).toEqual([50]);
+      await expect(
+        db.cards
+          .where("projectId")
+          .equals("project-a")
+          .filter((card) => !card.linkedFrontId)
+          .sortBy("order")
+      ).resolves.toMatchObject([
+        { name: "Existing A", order: 20 },
+        { name: "First A", order: 30 },
+        { name: "Second A", order: 40 },
+        { name: "Third A", order: 50 },
+      ]);
+    });
+
+    it("reserves append slots independently for concurrent project A and project B inserts", async () => {
+      await db.cards.bulkAdd([
+        {
+          uuid: "project-a-existing",
+          name: "Existing A",
+          order: 20,
+          isUserUpload: false,
+          projectId: "project-a",
+        },
+        {
+          uuid: "project-b-existing",
+          name: "Existing B",
+          order: 70,
+          isUserUpload: false,
+          projectId: "project-b",
+        },
+      ]);
+
+      const [projectA, projectB] = await Promise.all([
+        addCards([{ name: "Added A", isUserUpload: false, projectId: "project-a" }]),
+        addCards([{ name: "Added B", isUserUpload: false, projectId: "project-b" }]),
+      ]);
+
+      expect(projectA[0]).toMatchObject({ projectId: "project-a", order: 30 });
+      expect(projectB[0]).toMatchObject({ projectId: "project-b", order: 80 });
+    });
+
     it("starts an empty project at the default order despite another project's cards", async () => {
       await db.cards.add({
         uuid: "project-b-distant",
