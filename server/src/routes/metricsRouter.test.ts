@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
+import { createMetricsRouter } from './metricsRouter.js';
+
 vi.mock('@tetrabit/scryfall-cache-client', () => ({
   ScryfallCacheClient: class {
     health = vi.fn();
@@ -12,10 +14,10 @@ const service = await import('../services/scryfallMicroserviceClient.js');
 const getMetricsSpy = vi.spyOn(service, 'getMicroserviceMetrics');
 const logMetricsSpy = vi.spyOn(service, 'logMicroserviceMetrics');
 const resetMetricsSpy = vi.spyOn(service, 'resetMicroserviceMetrics');
-const { default: metricsRouter } = await import('./metricsRouter.js');
-
 const app = express();
-app.use('/api/metrics', metricsRouter);
+app.use('/api/metrics', createMetricsRouter({
+  private: () => (_request, _response, next) => next(),
+}));
 
 describe('metricsRouter', () => {
   beforeEach(() => {

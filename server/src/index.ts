@@ -13,7 +13,8 @@ import { shareRouter, cleanupExpiredShares } from "./routes/shareRouter.js";
 import { backupRouter } from "./routes/backupRouter.js";
 import { printerCalibrationRouter } from "./routes/printerCalibrationRouter.js";
 import { preferencesRouter } from "./routes/preferencesRouter.js";
-import metricsRouter from "./routes/metricsRouter.js";
+import { createMetricsRouter } from "./routes/metricsRouter.js";
+import { createPrivateRouteAuth, type PrivateCredentialVerifier } from "./auth/privateRouteAuth.js";
 import { logMicroserviceMetrics } from "./services/scryfallMicroserviceClient.js";
 import { initDatabase } from "./db/db.js";
 import { startImportScheduler } from "./services/importScheduler.js";
@@ -47,8 +48,24 @@ if (process.env.SCRYFALL_CACHE_URL) {
  * If port is 0, a random available port will be used.
  * @returns Promise resolving to the actual port the server is listening on
  */
-export function startServer(port: number = 3001, options: { host?: string } = {}): Promise<number> {
+export interface StartServerOptions {
+  host?: string;
+  /**
+   * Server-owned credential verifier injected by Electron main or a trusted
+   * server deployment. Missing configuration deliberately denies private routes.
+   */
+  privateCredentialVerifier?: PrivateCredentialVerifier;
+}
+
+const denyAllPrivateCredentials: PrivateCredentialVerifier = {
+  verifyBearer: () => null,
+};
+
+export function createApp(options: StartServerOptions = {}) {
   const app = express();
+  const privateRouteAuth = createPrivateRouteAuth(
+    options.privateCredentialVerifier ?? denyAllPrivateCredentials,
+  );
 
   // Security headers via helmet.js
   app.use(
@@ -142,7 +159,7 @@ export function startServer(port: number = 3001, options: { host?: string } = {}
   });
 
   // Deep health check (includes database and microservice)
-  app.get("/health/deep", async (_req, res) => {
+  app.get("/health/deep", privateRouteAuth.private("metrics:read"), async (_req, res) => {
     const health: {
       status: string;
       uptime: number;
@@ -200,7 +217,13 @@ export function startServer(port: number = 3001, options: { host?: string } = {}
   app.use("/api/backup", backupRouter);
   app.use("/api/printer-calibration", printerCalibrationRouter);
   app.use("/api/preferences", preferencesRouter);
-  app.use("/api/metrics", metricsRouter);
+  app.use("/api/metrics", createMetricsRouter(privateRouteAuth));
+
+  return app;
+}
+
+export function startServer(port: number = 3001, options: StartServerOptions = {}): Promise<number> {
+  const app = createApp(options);
 
   return new Promise((resolve) => {
     const server = app.listen(port, options.host ?? "0.0.0.0", () => {

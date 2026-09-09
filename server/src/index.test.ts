@@ -29,8 +29,8 @@ vi.mock('express', () => {
   const express = vi.fn(() => {
     const app = {
       use: vi.fn(),
-      get: vi.fn((path: string, handler: RequestHandler) => {
-        state.getHandlers.set(path, handler);
+      get: vi.fn((path: string, ...handlers: RequestHandler[]) => {
+        state.getHandlers.set(path, handlers.at(-1) as RequestHandler);
       }),
       listen: vi.fn((port: number, _host: string, cb: () => void) => {
         const server = {
@@ -87,7 +87,7 @@ vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: { route: 'scryfal
 vi.mock('./routes/backupRouter.js', () => ({ backupRouter: { route: 'backup' } }));
 vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: { route: 'printer' } }));
 vi.mock('./routes/preferencesRouter.js', () => ({ preferencesRouter: { route: 'preferences' } }));
-vi.mock('./routes/metricsRouter.js', () => ({ default: { route: 'metrics' } }));
+vi.mock('./routes/metricsRouter.js', () => ({ createMetricsRouter: vi.fn(() => ({ route: 'metrics' })) }));
 
 function createResponse() {
   return {
