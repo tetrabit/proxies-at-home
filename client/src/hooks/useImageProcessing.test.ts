@@ -1,4 +1,4 @@
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { useImageProcessing } from "./useImageProcessing";
 import { db } from "../db";
@@ -17,6 +17,9 @@ vi.mock("../db", () => ({
     cardbacks: {
       get: vi.fn(),
       put: vi.fn(),
+    },
+    user_images: {
+      get: vi.fn(),
     },
   },
 }));
@@ -87,23 +90,39 @@ describe("useImageProcessing", () => {
     expect(mockProcess).not.toHaveBeenCalled();
   });
 
-  it("should not process if image already has displayBlob", async () => {
-    (db.images.get as Mock).mockResolvedValue({ displayBlob: new Blob() });
-
-    const { result } = renderHook(() =>
-      useImageProcessing({
-        unit: "mm",
-        bleedEdgeWidth: 1,
-        imageProcessor: mockImageProcessor,
-      })
-    );
-
-    await act(async () => {
-      await result.current.ensureProcessed(card);
+  it("should not process a valid cached display blob", async () => {
+    (db.images.get as Mock).mockResolvedValue({
+      displayBlob: new Blob(["display"]),
+      displayBlobDarkened: new Blob(["darkened"]),
+      exportBleedWidth: 1,
+      exportDpi: 300,
+      generatedHasBuiltInBleed: false,
+      generatedExistingBleedMm: 0,
+      generatedBleedMode: "generate",
+      generatedRenderVersion: IMAGE_PROCESSING.RENDER_CACHE_VERSION,
     });
+    const consoleError = vi.spyOn(console, "error");
 
-    expect(db.images.get).toHaveBeenCalledWith("image123");
-    expect(mockProcess).not.toHaveBeenCalled();
+    try {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
+
+      await act(async () => {
+        await result.current.ensureProcessed(card);
+      });
+
+      expect(db.images.get).toHaveBeenCalledExactlyOnceWith("image123");
+      expect(db.user_images.get).not.toHaveBeenCalled();
+      expect(mockProcess).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("should call imageProcessor.process for an unprocessed image", async () => {
@@ -191,23 +210,34 @@ describe("useImageProcessing", () => {
     (db.images.get as Mock).mockResolvedValue({
       sourceUrl: "http://example.com/img.png",
     });
-    mockProcess.mockRejectedValue(new Error("Processing failed"));
+    const expectedError = new Error("Processing failed");
+    mockProcess.mockRejectedValue(expectedError);
+    const consoleError = vi.spyOn(console, "error");
 
-    const { result } = renderHook(() =>
-      useImageProcessing({
-        unit: "mm",
-        bleedEdgeWidth: 1,
-        imageProcessor: mockImageProcessor,
-      })
-    );
+    try {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
 
-    await act(async () => {
-      await result.current.ensureProcessed(card);
-    });
+      await act(async () => {
+        await result.current.ensureProcessed(card);
+      });
 
-    // With imageId-keyed loading state, check using getLoadingState
-    expect(result.current.getLoadingState(card.imageId)).toBe("error");
-    expect(db.images.put).not.toHaveBeenCalled();
+      // With imageId-keyed loading state, check using getLoadingState
+      expect(result.current.getLoadingState(card.imageId)).toBe("error");
+      expect(db.images.put).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+        "processCardInternal error for",
+        card.name,
+        expectedError
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("reprocessSelectedImages should process multiple cards", async () => {
@@ -349,22 +379,32 @@ describe("useImageProcessing", () => {
       sourceUrl: "http://example.com/img.png",
     });
     mockProcess.mockResolvedValue({ error: "Processing failed gracefully" });
+    const consoleError = vi.spyOn(console, "error");
 
-    const { result } = renderHook(() =>
-      useImageProcessing({
-        unit: "mm",
-        bleedEdgeWidth: 1,
-        imageProcessor: mockImageProcessor,
-      })
-    );
+    try {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
 
-    await act(async () => {
-      await result.current.ensureProcessed(card);
-    });
+      await act(async () => {
+        await result.current.ensureProcessed(card);
+      });
 
-    // With imageId-keyed loading state, check using getLoadingState
-    expect(result.current.getLoadingState(card.imageId)).toBe("error");
-    expect(db.images.put).not.toHaveBeenCalled();
+      // With imageId-keyed loading state, check using getLoadingState
+      expect(result.current.getLoadingState(card.imageId)).toBe("error");
+      expect(db.images.put).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+        "processCardInternal error for",
+        card.name,
+        expect.objectContaining({ message: "Processing failed gracefully" })
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("reprocessSelectedImages should handle errors", async () => {
@@ -373,21 +413,31 @@ describe("useImageProcessing", () => {
       sourceUrl: "https://example.com/url1",
     });
     mockProcess.mockResolvedValue({ error: "Processing failed" });
+    const consoleError = vi.spyOn(console, "error");
 
-    const { result } = renderHook(() =>
-      useImageProcessing({
-        unit: "mm",
-        bleedEdgeWidth: 1,
-        imageProcessor: mockImageProcessor,
-      })
-    );
+    try {
+      const { result } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: mockImageProcessor,
+        })
+      );
 
-    await act(async () => {
-      await result.current.reprocessSelectedImages(cards, 2);
-    });
+      await act(async () => {
+        await result.current.reprocessSelectedImages(cards, 2);
+      });
 
-    expect(mockProcess).toHaveBeenCalledTimes(1);
-    expect(db.images.put).not.toHaveBeenCalled();
+      expect(mockProcess).toHaveBeenCalledTimes(1);
+      expect(db.images.put).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+        "processCardInternal error for",
+        card.name,
+        expect.objectContaining({ message: "Processing failed" })
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("reprocessSelectedImages should submit large reprocess jobs in batches", async () => {
@@ -631,5 +681,80 @@ describe("useImageProcessing", () => {
       // Should be idle after completion
       expect(result.current.getLoadingState(card.imageId)).toBe("idle");
     });
+  });
+
+  it("revokes only its owned blob URL after an active worker is cancelled following unmount", async () => {
+    const ownedUrl = "blob:hook-owned";
+    const createObjectURL = vi.fn(() => ownedUrl);
+    const revokeObjectURL = vi.fn();
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const workers: Array<{
+      postMessage: ReturnType<typeof vi.fn>;
+      terminate: ReturnType<typeof vi.fn>;
+      onmessage: ((event: MessageEvent) => void) | null;
+      onerror: ((event: ErrorEvent) => void) | null;
+    }> = [];
+
+    class ActiveWorker {
+      postMessage = vi.fn();
+      terminate = vi.fn();
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+
+      constructor() {
+        workers.push(this);
+      }
+    }
+
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+    vi.stubGlobal("Worker", ActiveWorker);
+
+    const { ImageProcessor: RealImageProcessor } = await vi.importActual<
+      typeof import("../helpers/imageProcessor")
+    >("../helpers/imageProcessor");
+    const pool = RealImageProcessor.getInstance();
+
+    try {
+      const blob = new Blob(["original"], { type: "image/png" });
+      (db.images.get as Mock).mockResolvedValue({ originalBlob: blob });
+      const { result, unmount } = renderHook(() =>
+        useImageProcessing({
+          unit: "mm",
+          bleedEdgeWidth: 1,
+          imageProcessor: pool as unknown as ImageProcessor,
+        })
+      );
+
+      const cancelProcessing = result.current.cancelProcessing;
+      let processing: Promise<void>;
+      await act(async () => {
+        processing = result.current.ensureProcessed(card);
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(workers).toHaveLength(1);
+        expect(workers[0].postMessage).toHaveBeenCalledTimes(1);
+      });
+      expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(blob);
+
+      unmount();
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+
+      await act(async () => {
+        cancelProcessing();
+        await processing!;
+      });
+
+      expect(workers[0].terminate).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL.mock.calls).toEqual([[ownedUrl]]);
+    } finally {
+      pool.destroy();
+      URL.createObjectURL = originalCreateObjectURL;
+      URL.revokeObjectURL = originalRevokeObjectURL;
+      vi.unstubAllGlobals();
+    }
   });
 });
