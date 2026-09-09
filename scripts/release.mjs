@@ -155,9 +155,9 @@ const runValidation = () => {
     info('Running pre-release validation...');
     console.log('');
 
-    info('Building client...');
-    run('npm run build --prefix client', { throwOnError: true });
-    success('Build passed!');
+    info('Building client, server, and Electron TypeScript...');
+    run('npm run build:parallel', { throwOnError: true });
+    success('Component builds passed!');
 
     info('Typechecking client...');
     run('npm run typecheck --prefix client', { throwOnError: true });

@@ -8,11 +8,19 @@ import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const releaseScript = path.join(repositoryRoot, 'scripts', 'release.mjs');
-const fixtureRoot = path.join(
-  repositoryRoot,
-  '.review-artifacts',
-  'release-validation-test-fixtures',
-);
+const fixtureRoot = process.env.RELEASE_VALIDATION_FIXTURE_ROOT
+  ? path.resolve(process.env.RELEASE_VALIDATION_FIXTURE_ROOT)
+  : path.join(repositoryRoot, '.review-artifacts', 'release-validation-test-fixtures');
+
+const componentBuildCommand = 'npm:run build:parallel';
+const validationCommandEvents = [
+  componentBuildCommand,
+  'npm:run typecheck --prefix client',
+  'npm:run lint --prefix client',
+  'npm:run test --prefix client',
+  'npm:run test --prefix server',
+  'npx:--no-install vitest --config electron/vitest.config.ts run',
+];
 
 function writeExecutable(filePath, source) {
   writeFileSync(filePath, source, { mode: 0o755 });
@@ -94,6 +102,38 @@ function releaseEnvironment(fixture) {
   return environment;
 }
 
+function assertCommandOccurredBefore(events, earlierCommand, laterCommand) {
+  assert.ok(events.indexOf(earlierCommand) >= 0, `missing event: ${earlierCommand}`);
+  assert.ok(events.indexOf(laterCommand) >= 0, `missing event: ${laterCommand}`);
+  assert.ok(
+    events.indexOf(earlierCommand) < events.indexOf(laterCommand),
+    `expected ${earlierCommand} before ${laterCommand}`,
+  );
+}
+
+function assertNoReleaseMutation(events) {
+  assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
+}
+
+test('a failing aggregate component build aborts release validation before downstream gates', () => {
+  const fixture = createFixture({ failingNpmCommand: 'run build:parallel' });
+  const result = spawnSync(process.execPath, [releaseScript, '1.0.1', '--dry-run'], {
+    cwd: fixture.fixtureDirectory,
+    encoding: 'utf8',
+    env: releaseEnvironment(fixture),
+  });
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const events = readFileSync(fixture.eventLog, 'utf8').trim().split('\n');
+
+  assert.equal(result.status, 1, output);
+  assert.match(output, /fixture npm failure: run build:parallel/);
+  assert.ok(events.includes(componentBuildCommand));
+  assert.equal(events.some((event) => validationCommandEvents.slice(1).includes(event)), false);
+  assertNoReleaseMutation(events);
+  assert.equal(output.includes('Release Summary'), false);
+});
+
 test('a failing client typecheck aborts release validation before promotion', () => {
   const fixture = createFixture();
   const result = spawnSync(process.execPath, [releaseScript, '1.0.1', '--dry-run'], {
@@ -108,8 +148,9 @@ test('a failing client typecheck aborts release validation before promotion', ()
   assert.equal(result.status, 1, output);
   assert.match(output, /fixture npm failure: run typecheck --prefix client/);
   assert.ok(events.includes('npm:run typecheck --prefix client'));
+  assertCommandOccurredBefore(events, componentBuildCommand, 'npm:run typecheck --prefix client');
   assert.equal(events.includes('npm:run lint --prefix client'), false);
-  assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
+  assertNoReleaseMutation(events);
   assert.equal(output.includes('Release Summary'), false);
 });
 
@@ -127,9 +168,10 @@ test('a failing client test aborts release validation before promotion', () => {
   assert.equal(result.status, 1, output);
   assert.match(output, /fixture npm failure: run test --prefix client/);
   assert.ok(events.includes('npm:run test --prefix client'));
+  assertCommandOccurredBefore(events, componentBuildCommand, 'npm:run test --prefix client');
   assert.equal(events.includes('npm:run lint --prefix client'), true);
   assert.equal(events.includes('npm:run test --prefix server'), false);
-  assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
+  assertNoReleaseMutation(events);
   assert.equal(output.includes('Release Summary'), false);
 });
 
@@ -148,7 +190,8 @@ test('a failing server test aborts release validation before promotion', () => {
   assert.match(output, /fixture npm failure: run test --prefix server/);
   assert.ok(events.includes('npm:run test --prefix client'));
   assert.ok(events.includes('npm:run test --prefix server'));
-  assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
+  assertCommandOccurredBefore(events, componentBuildCommand, 'npm:run test --prefix server');
+  assertNoReleaseMutation(events);
   assert.equal(output.includes('Release Summary'), false);
 });
 
@@ -170,7 +213,12 @@ test('a failing Electron test aborts release validation before promotion', () =>
   assert.match(output, /fixture npx failure: --no-install vitest --config electron\/vitest\.config\.ts run/);
   assert.ok(events.includes('npm:run test --prefix server'));
   assert.ok(events.includes('npx:--no-install vitest --config electron/vitest.config.ts run'));
-  assert.equal(events.some((event) => /^git:(?:commit|push|tag -[ad])\b/.test(event)), false);
+  assertCommandOccurredBefore(
+    events,
+    componentBuildCommand,
+    'npx:--no-install vitest --config electron/vitest.config.ts run',
+  );
+  assertNoReleaseMutation(events);
   assert.equal(output.includes('Release Summary'), false);
 });
 
@@ -188,8 +236,30 @@ test('skip-validation labels all validation gates as skipped rather than passed'
   assert.equal(result.status, 0, output);
   assert.match(output, /Skipping pre-release validation \(--skip-validation\)/);
   assert.equal(events.some((event) => /^(npm|npx):/.test(event)), false);
+  assert.equal(events.includes(componentBuildCommand), false);
+  assertNoReleaseMutation(events);
   assert.equal(output.includes('Pre-release validation complete!'), false);
+  assert.equal(output.includes('Component builds passed!'), false);
+  assert.equal(output.includes('Typecheck passed!'), false);
+  assert.equal(output.includes('Lint passed!'), false);
   assert.equal(output.includes('Client tests passed!'), false);
   assert.equal(output.includes('Server tests passed!'), false);
   assert.equal(output.includes('Electron tests passed!'), false);
+});
+
+test('successful validation runs component builds and downstream gates in order without release mutation', () => {
+  const fixture = createFixture({ failingNpmCommand: '', failingNpxCommand: '' });
+  const result = spawnSync(process.execPath, [releaseScript, '1.0.1', '--dry-run'], {
+    cwd: fixture.fixtureDirectory,
+    encoding: 'utf8',
+    env: releaseEnvironment(fixture),
+  });
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const events = readFileSync(fixture.eventLog, 'utf8').trim().split('\n');
+  const validationEvents = events.filter((event) => validationCommandEvents.includes(event));
+
+  assert.equal(result.status, 0, output);
+  assert.deepEqual(validationEvents, validationCommandEvents);
+  assertNoReleaseMutation(events);
 });
