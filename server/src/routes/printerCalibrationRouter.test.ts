@@ -1,6 +1,7 @@
 import nativeFs, { promises as fs } from "fs";
 import { randomUUID } from "node:crypto";
 import path from "path";
+import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "url";
 import express from "express";
 import request from "supertest";
@@ -53,6 +54,17 @@ async function createRetainedFixtureDirectory(label: string): Promise<string> {
   );
   await fs.mkdir(directory);
   return directory;
+}
+
+function streamedBytes(byteLength: number): Readable {
+  const chunk = Buffer.alloc(64 * 1024, 0x61);
+  return Readable.from(
+    (function* () {
+      for (let remaining = byteLength; remaining > 0; remaining -= chunk.length) {
+        yield chunk.subarray(0, Math.min(remaining, chunk.length));
+      }
+    })()
+  );
 }
 
 describe("printer calibration route authorization", () => {
@@ -340,8 +352,62 @@ describe("printerCalibrationRouter", () => {
     restoreDownloadBoundary = installRetainedDownloadBoundary();
   });
 
-  it("allows calibration uploads up to 10 GB", () => {
-    expect(CALIBRATION_UPLOAD_LIMIT_BYTES).toBe(10 * 1024 * 1024 * 1024);
+  it("sets the measured 64 MiB calibration upload cap", () => {
+    expect(CALIBRATION_UPLOAD_LIMIT_BYTES).toBe(67_108_864);
+  });
+
+  it("rejects an oversized streamed upload before the runner and only invokes Multer cleanup", async () => {
+    const fixtureDirectory = await createRetainedFixtureDirectory("upload-cap");
+    const sentinelPath = path.join(fixtureDirectory, "request-unowned-sentinel.txt");
+    await fs.writeFile(sentinelPath, "retain me");
+    filesystemState.tmpdir = fixtureDirectory;
+
+    let attemptedUploadPath: string | undefined;
+    const writeStreamSpy = createWriteStreamSpy.mockImplementation((filePath) => {
+      attemptedUploadPath = String(filePath);
+      let bytesWritten = 0;
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          bytesWritten += chunk.length;
+          callback();
+        },
+      });
+      Object.defineProperty(stream, "bytesWritten", { get: () => bytesWritten });
+      return stream as ReturnType<typeof nativeFs.createWriteStream>;
+    });
+    // Invocation-only boundary: do not perform a physical unlink in this test.
+    const multerUnlinkSpy = vi.spyOn(nativeFs, "unlink").mockImplementation((_filePath, callback) => {
+      callback?.(null);
+      return undefined;
+    });
+    const runCli = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const oversizedApp = express();
+    mountAuthorizedCalibrationRouter(oversizedApp, {
+      dataDirectory: path.join(fixtureDirectory, "data"),
+      runCli,
+    });
+
+    try {
+      const response = await request(oversizedApp)
+        .post("/api/printer-calibration/apply")
+        .field("profileName", "office")
+        .attach("file", streamedBytes(CALIBRATION_UPLOAD_LIMIT_BYTES + 1) as unknown as import("node:fs").ReadStream, {
+          filename: "oversized.pdf",
+          contentType: "application/pdf",
+        });
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual({ error: "Calibration upload exceeds the 64 MiB limit." });
+      expect(runCli).not.toHaveBeenCalled();
+      await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("retain me");
+      expect(attemptedUploadPath).toBeDefined();
+      expect(multerUnlinkSpy).toHaveBeenCalledTimes(1);
+      expect(multerUnlinkSpy).toHaveBeenCalledWith(attemptedUploadPath, expect.any(Function));
+      expect(attemptedUploadPath).not.toBe(sentinelPath);
+    } finally {
+      writeStreamSpy.mockRestore();
+      multerUnlinkSpy.mockRestore();
+    }
   });
 
   afterEach(() => {

@@ -507,7 +507,7 @@ function unavailableStatus(error: unknown): 500 | 501 {
     : 500;
 }
 
-export const CALIBRATION_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+export const CALIBRATION_UPLOAD_LIMIT_BYTES = 67_108_864;
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -521,6 +521,16 @@ const upload = multer({
   }),
   limits: { fileSize: CALIBRATION_UPLOAD_LIMIT_BYTES },
 });
+
+const uploadCalibrationPdf: RequestHandler = (req, res, next) => {
+  upload.single("file")(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ error: "Calibration upload exceeds the 64 MiB limit." });
+      return;
+    }
+    next(error);
+  });
+};
 
 export function createPrinterCalibrationRouter(
   options: PrinterCalibrationRouterOptions = {}
@@ -740,7 +750,7 @@ export function createPrinterCalibrationRouter(
   router.post(
     "/apply",
     requirePrivate("calibration:write"),
-    upload.single("file"),
+    uploadCalibrationPdf,
     async (req: Request, res: Response) => {
       const file = req.file;
       const profileName = String(req.body.profileName || "").trim();

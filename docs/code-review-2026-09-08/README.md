@@ -19,6 +19,10 @@ This report contains **54 numbered findings: 22 High, 30 Medium, 2 Low**, plus s
 | [Electron/build](electron-build.md) | 12 | Process supervision, startup/shutdown, IPC, build DAG, release tooling |
 | [Calibration/deployment](calibration-deployment.md) | 6 | Python persistence/API, duplex memory, Docker runtime, fixture promotion |
 
+## Runtime evidence follow-up
+
+[Runtime evidence limits](runtime-evidence-limits.md) indexes the accepted candidate-bound `td-7ac55e` one-card/one-page synthetic 1200-DPI Chromium proof, the separately bounded G02 result, the preserved historical E12 preload failure, and the independently accepted narrow emitted-preload remediation for `td-90ec38` (candidate `95d6ef0536f3508d68ce587718d8183a978d6f03`, QA `rv-be098a0b`). It retains the offline native-binary blocker and the development-mode, RSS-versus-CPU/GPU, retained-console-error, packaged/native-lifecycle, and high-DPI limits; no narrow probe is presented as a general GPU, cross-browser, production-readiness, or broader remediation proof.
+
 ## Most consequential findings
 
 - **C01:** Concurrent enrichment cache probes reorder request cards, but response mapping uses the original batch order. Metadata/art can be assigned to the wrong UUID.
