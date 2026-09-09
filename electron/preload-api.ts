@@ -1,5 +1,7 @@
 import type { MpcPreferenceFixture } from './mpc-preferences.js';
 
+// Retained as a compatibility-test helper; the sandboxed preload must use its inline copy.
+
 type IpcRendererLike = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
   on(channel: string, listener: (...args: unknown[]) => void): void;

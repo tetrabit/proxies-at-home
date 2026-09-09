@@ -30,7 +30,6 @@ const buildInputPaths = [
 const lockInputPaths = [path.join(repositoryRoot, 'package-lock.json')];
 const postbuildArtifactPaths = [
   path.join(repositoryRoot, 'electron', 'dist', 'preload.cjs'),
-  path.join(repositoryRoot, 'electron', 'dist', 'preload-api.js'),
 ];
 const provenanceScopePaths = [
   ...buildInputPaths,
@@ -52,6 +51,24 @@ async function fileRecord(filePath) {
     bytes: details.size,
     mtime: details.mtime.toISOString(),
     sha256: await sha256(filePath),
+  };
+}
+
+export function emittedPreloadDependencyGraph(source) {
+  const requireSpecifiers = [];
+  const requirePattern = /\brequire\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+  for (const match of source.matchAll(requirePattern)) {
+    if (!requireSpecifiers.includes(match[2])) requireSpecifiers.push(match[2]);
+  }
+  const relativeRequireSpecifiers = requireSpecifiers.filter((specifier) =>
+    specifier.startsWith('./') || specifier.startsWith('../') || path.isAbsolute(specifier)
+  );
+  const unexpectedRequireSpecifiers = requireSpecifiers.filter((specifier) => specifier !== 'electron');
+  return {
+    requireSpecifiers,
+    relativeRequireSpecifiers,
+    unexpectedRequireSpecifiers,
+    selfContained: relativeRequireSpecifiers.length === 0 && unexpectedRequireSpecifiers.length === 0,
   };
 }
 
@@ -249,6 +266,16 @@ async function runProbe() {
   const compilerVersion = commandRecord(process.execPath, [typescriptExecutable, '--version']);
   const build = commandRecord(process.execPath, [typescriptExecutable, '-p', 'electron/tsconfig.json']);
   const postbuildArtifacts = await Promise.all(postbuildArtifactPaths.map(fileRecord));
+  const emittedPreload = postbuildArtifacts[0];
+  let emittedDependencyGraph = null;
+  let emittedPreloadDependencyGraphError = null;
+  if (emittedPreload?.exists) {
+    try {
+      emittedDependencyGraph = emittedPreloadDependencyGraph(await readFile(emittedPreload.path, 'utf8'));
+    } catch (error) {
+      emittedPreloadDependencyGraphError = serializeCommandError(error);
+    }
+  }
   const runtimeInputs = await Promise.all([
     electronExecutable,
     harness,
@@ -348,7 +375,9 @@ async function runProbe() {
     git.dirtyScopedStatus !== null &&
     compilerVersion.ok &&
     lockInputs.every((record) => record.exists) &&
-    postbuildArtifacts.every((record) => record.exists);
+    postbuildArtifacts.every((record) => record.exists) &&
+    emittedDependencyGraph?.selfContained === true &&
+    emittedPreloadDependencyGraphError === null;
   const blocked = missing.length > 0 || !build.ok || !compilerVersion.ok || !provenanceComplete || launchError !== null;
   const passed =
     !blocked &&
@@ -374,6 +403,8 @@ async function runProbe() {
         inputHashes: buildInputs,
         lockInputHashes: lockInputs,
         postbuildArtifactHashes: postbuildArtifacts,
+        emittedPreloadDependencyGraph: emittedDependencyGraph,
+        emittedPreloadDependencyGraphError,
       },
       complete: provenanceComplete,
     },

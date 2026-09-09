@@ -2,9 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  emittedPreloadDependencyGraph,
   ownedProcessGroupMembers,
   isVerifiedOwnedChildShutdown,
 } from './preload-compatibility-smoke.mjs';
+
+test('emittedPreloadDependencyGraph rejects a split preload helper', () => {
+  const graph = emittedPreloadDependencyGraph("const { contextBridge } = require('electron'); require('./preload-api.js');");
+
+  assert.deepEqual(graph.requireSpecifiers, ['electron', './preload-api.js']);
+  assert.deepEqual(graph.relativeRequireSpecifiers, ['./preload-api.js']);
+  assert.deepEqual(graph.unexpectedRequireSpecifiers, ['./preload-api.js']);
+  assert.equal(graph.selfContained, false);
+});
 
 test('ownedProcessGroupMembers records ps failures as unknown instead of empty', () => {
   const error = Object.assign(new Error('ps unavailable'), { code: 'ENOENT' });
