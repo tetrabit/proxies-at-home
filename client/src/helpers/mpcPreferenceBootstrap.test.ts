@@ -18,6 +18,35 @@ import {
 import * as fsAccessPreferenceTargetModule from "./fsAccessPreferenceTarget";
 import * as mpcPreferenceSyncModule from "./mpcPreferenceSync";
 import recoveredPreferenceFixture from "../../tests/fixtures/mpc-preference-defaults.v1.json";
+import { IMPORT_CONFIG } from "./importConfig";
+import type { MpcAutofillCard } from "./mpcAutofillApi";
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+
+  return { promise, resolve, reject };
+}
+
+function createMpcCandidate(name: string, sourceName = "Hathwellcrisping"): MpcAutofillCard {
+  return {
+    identifier: `${name}-${sourceName}`,
+    name,
+    rawName: name,
+    smallThumbnailUrl: "",
+    mediumThumbnailUrl: "",
+    dpi: 800,
+    tags: [],
+    sourceName,
+    source: sourceName,
+    extension: "png",
+    size: 1,
+  };
+}
 
 describe("mpcPreferenceBootstrap", () => {
   beforeEach(async () => {
@@ -520,6 +549,59 @@ describe("mpcPreferenceBootstrap", () => {
     ]);
   });
 
+  it("admits seed searches only up to the MPC concurrency limit", async () => {
+    const seedCardNames = Array.from(
+      { length: IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE + 1 },
+      (_, index) => `Seed ${index + 1}`
+    );
+    let activeSearches = 0;
+    let peakSearches = 0;
+    const search = vi.fn(async () => {
+      activeSearches += 1;
+      peakSearches = Math.max(peakSearches, activeSearches);
+      await Promise.resolve();
+      activeSearches -= 1;
+      return [];
+    });
+
+    const harvesting = harvestSourcePreferenceCandidates(seedCardNames, search);
+
+    expect(search).toHaveBeenCalledTimes(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
+    expect(peakSearches).toBe(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
+
+    await harvesting;
+    expect(search).toHaveBeenCalledTimes(seedCardNames.length);
+  });
+
+  it("returns harvested examples in seed order when searches complete in reverse order", async () => {
+    const deferredByName = new Map<string, ReturnType<typeof createDeferred<MpcAutofillCard[]>>>();
+    const search = vi.fn((name: string) => {
+      const deferred = createDeferred<MpcAutofillCard[]>();
+      deferredByName.set(name, deferred);
+      return deferred.promise;
+    });
+    const seedCardNames = ["First Seed", "Second Seed", "Third Seed"];
+
+    const harvesting = harvestSourcePreferenceCandidates(
+      seedCardNames,
+      search,
+      ["Hathwellcrisping"]
+    );
+    expect(search).toHaveBeenCalledTimes(seedCardNames.length);
+
+    deferredByName.get("Third Seed")?.resolve([createMpcCandidate("Third Seed")]);
+    await Promise.resolve();
+    deferredByName.get("Second Seed")?.resolve([createMpcCandidate("Second Seed")]);
+    await Promise.resolve();
+    deferredByName.get("First Seed")?.resolve([createMpcCandidate("First Seed")]);
+
+    await expect(harvesting).resolves.toEqual([
+      expect.objectContaining({ cardName: "First Seed" }),
+      expect.objectContaining({ cardName: "Second Seed" }),
+      expect.objectContaining({ cardName: "Third Seed" }),
+    ]);
+  });
+
   it("harvests Hathwellcrisping and Chilli_Axe source examples from live candidate pools", async () => {
     const harvested = await harvestSourcePreferenceCandidates(
       ["No Results", "Windborn Muse", "Thassa, Deep-Dwelling"],
@@ -587,36 +669,76 @@ describe("mpcPreferenceBootstrap", () => {
     expect(search).not.toHaveBeenCalled();
   });
 
-  it("stops queued seed transport after an in-flight request is aborted", async () => {
-    let resolveFirst!: (value: []) => void;
-    const firstRequest = new Promise<[]>((resolve) => {
-      resolveFirst = resolve;
-    });
+  it("stops queued seed transport after in-flight searches are aborted", async () => {
+    const seedCardNames = Array.from(
+      { length: IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE + 1 },
+      (_, index) => `Seed ${index + 1}`
+    );
     const controller = new AbortController();
+    const deferredByName = new Map<string, ReturnType<typeof createDeferred<MpcAutofillCard[]>>>();
     const signals: Array<AbortSignal | undefined> = [];
     const search = vi.fn((name: string, signal?: AbortSignal) => {
       signals.push(signal);
-      if (name === "First Seed") {
-        return firstRequest;
-      }
-      return Promise.resolve([]);
+      const deferred = createDeferred<MpcAutofillCard[]>();
+      deferredByName.set(name, deferred);
+      return deferred.promise;
     });
 
     const harvesting = harvestSourcePreferenceCandidates(
-      ["First Seed", "Queued Seed"],
+      seedCardNames,
       search,
       BOOTSTRAP_PREFERENCE_SOURCES,
       controller.signal
     );
-    await Promise.resolve();
-    expect(search).toHaveBeenCalledTimes(1);
-    expect(signals).toEqual([controller.signal]);
+    expect(search).toHaveBeenCalledTimes(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
+    expect(signals).toEqual(
+      Array.from(
+        { length: IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE },
+        () => controller.signal
+      )
+    );
 
     controller.abort(new DOMException("seed harvest stopped", "AbortError"));
-    resolveFirst([]);
+    for (const deferred of deferredByName.values()) {
+      deferred.resolve([]);
+    }
 
     await expect(harvesting).rejects.toMatchObject({ name: "AbortError" });
-    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledTimes(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
+  });
+
+  it("waits for admitted searches before publishing a search failure", async () => {
+    const seedCardNames = Array.from(
+      { length: IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE + 1 },
+      (_, index) => `Seed ${index + 1}`
+    );
+    const deferredByName = new Map<string, ReturnType<typeof createDeferred<MpcAutofillCard[]>>>();
+    const search = vi.fn((name: string) => {
+      const deferred = createDeferred<MpcAutofillCard[]>();
+      deferredByName.set(name, deferred);
+      return deferred.promise;
+    });
+    let settled = false;
+    const harvesting = harvestSourcePreferenceCandidates(seedCardNames, search);
+    void harvesting.then(
+      () => { settled = true; },
+      () => { settled = true; }
+    );
+
+    deferredByName.get("Seed 1")?.reject(new Error("seed search failed"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+
+    for (const [name, deferred] of deferredByName) {
+      if (name !== "Seed 1") {
+        deferred.resolve([]);
+      }
+    }
+
+    await expect(harvesting).rejects.toThrow("seed search failed");
+    expect(search).toHaveBeenCalledTimes(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
   });
 
   it("preserves the legacy bootstrap helper as a compatibility wrapper", async () => {

@@ -23,6 +23,7 @@ import {
   loadActivePreferenceOverrides,
   serializeCurrentPreferenceFixture,
 } from "./mpcPreferenceSync";
+import { IMPORT_CONFIG } from "./importConfig";
 
 export const BOOTSTRAP_PREFERENCE_SOURCES = ["Hathwellcrisping", "Chilli_Axe"];
 
@@ -363,37 +364,64 @@ export async function harvestSourcePreferenceCandidates(
   signal?: AbortSignal
 ): Promise<MpcHarvestedSourceExample[]> {
   const targetSet = new Set(targetSources);
-  const harvested: MpcHarvestedSourceExample[] = [];
+  const harvestedBySeed: MpcHarvestedSourceExample[][] = Array.from(
+    { length: seedCardNames.length },
+    () => []
+  );
+  let nextSeedIndex = 0;
+  let harvestFailure: unknown;
+  let hasHarvestFailure = false;
 
-  for (const seedCardName of seedCardNames) {
-    throwIfAborted(signal);
-    const candidates = await search(seedCardName, signal);
-    throwIfAborted(signal);
-    if (candidates.length === 0) continue;
+  const harvestSeed = async (): Promise<void> => {
+    while (nextSeedIndex < seedCardNames.length && !hasHarvestFailure) {
+      try {
+        throwIfAborted(signal);
+        const seedIndex = nextSeedIndex++;
+        const seedCardName = seedCardNames[seedIndex]!;
+        const candidates = await search(seedCardName, signal);
+        throwIfAborted(signal);
+        if (candidates.length === 0) continue;
 
-    for (const sourceName of targetSources) {
-      const matching = candidates.filter(
-        (candidate) =>
-          targetSet.has(candidate.sourceName) &&
-          candidate.sourceName === sourceName
-      );
-      if (matching.length === 0) continue;
+        for (const sourceName of targetSources) {
+          const matching = candidates.filter(
+            (candidate) =>
+              targetSet.has(candidate.sourceName) &&
+              candidate.sourceName === sourceName
+          );
+          if (matching.length === 0) continue;
 
-      harvested.push({
-        cardName: seedCardName,
-        sourceName,
-        candidates: matching.map((candidate) => ({
-          identifier: candidate.identifier,
-          name: candidate.name,
-          rawName: candidate.rawName ?? candidate.name,
-          dpi: candidate.dpi,
-          tags: candidate.tags,
-          sourceName: candidate.sourceName,
-          imageUrl: candidate.smallThumbnailUrl || candidate.mediumThumbnailUrl,
-        })),
-      });
+          harvestedBySeed[seedIndex]!.push({
+            cardName: seedCardName,
+            sourceName,
+            candidates: matching.map((candidate) => ({
+              identifier: candidate.identifier,
+              name: candidate.name,
+              rawName: candidate.rawName ?? candidate.name,
+              dpi: candidate.dpi,
+              tags: candidate.tags,
+              sourceName: candidate.sourceName,
+              imageUrl: candidate.smallThumbnailUrl || candidate.mediumThumbnailUrl,
+            })),
+          });
+        }
+      } catch (error) {
+        hasHarvestFailure = true;
+        harvestFailure = error;
+        return;
+      }
     }
+  };
+
+  throwIfAborted(signal);
+  await Promise.all(
+    Array.from(
+      { length: Math.min(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE, seedCardNames.length) },
+      harvestSeed
+    )
+  );
+  if (hasHarvestFailure) {
+    throw harvestFailure;
   }
 
-  return harvested;
+  return harvestedBySeed.flat();
 }
