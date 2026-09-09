@@ -460,6 +460,19 @@ describe("CalibrationModal", () => {
     expect(mockCalibrationState.closeModal).toHaveBeenCalled();
   });
 
+  it("passes its effect signal into visual profile decoding", async () => {
+    mockTrainMpcPreferenceModel.mockReturnValue({} as never);
+
+    render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockBuildMpcSourceVisualProfiles).toHaveBeenCalledWith(
+        [],
+        expect.any(AbortSignal)
+      );
+    });
+  });
+
   it("aborts queued seed transport during harvest without publishing profiles", async () => {
     mockTrainMpcPreferenceModel.mockReturnValue({} as never);
     let releaseHarvest!: () => void;

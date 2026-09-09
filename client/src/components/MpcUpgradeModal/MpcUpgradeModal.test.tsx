@@ -917,6 +917,10 @@ describe("MpcUpgradeModal", () => {
         })
       );
     });
+    expect(mockBuildSourceVisualProfiles).toHaveBeenCalledWith(
+      [],
+      expect.any(AbortSignal)
+    );
     const unseenPreferenceScores =
       mockRankCandidates.mock.calls[0]?.[0].unseenPreferenceScores;
     expect(unseenPreferenceScores?.["visual-pick"]).toBeGreaterThan(4.2);

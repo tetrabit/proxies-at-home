@@ -262,7 +262,7 @@ export function CalibrationModal() {
             );
             if (signal.aborted) return;
 
-            const profiles = await buildMpcSourceVisualProfiles(harvested);
+            const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
             if (signal.aborted) return;
 
             const visualScores = await buildMpcVisualPreferenceScoreMap(

@@ -245,7 +245,7 @@ export function MpcUpgradeModal() {
               );
               if (signal.aborted) return undefined;
 
-              const profiles = await buildMpcSourceVisualProfiles(harvested);
+              const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
               if (signal.aborted) return undefined;
 
               const visualScores = await buildMpcVisualPreferenceScoreMap(

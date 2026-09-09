@@ -192,7 +192,9 @@ async function prefetchMpcCandidates(
  * Prepares the preference context (trained model and visual profiles)
  * used to score candidates when no explicit user replay exists.
  */
-async function preparePreferenceContext(): Promise<PreferenceContext> {
+async function preparePreferenceContext(
+  signal?: AbortSignal
+): Promise<PreferenceContext> {
   await hydrateMpcPreferences();
   const calibrationCases = await listDefaultMpcCalibrationCases();
 
@@ -206,7 +208,7 @@ async function preparePreferenceContext(): Promise<PreferenceContext> {
 
   const harvested = buildStoredPreferenceExamples(calibrationCases);
 
-  const profiles = await buildMpcSourceVisualProfiles(harvested);
+  const profiles = await buildMpcSourceVisualProfiles(harvested, signal);
 
   return { calibrationCases, model, profiles };
 }
@@ -410,7 +412,7 @@ export async function bulkUpgradeToMpcAutofill(
   }
 
   // Prepare preference context once, without issuing unrelated live searches.
-  const prefContext = await preparePreferenceContext();
+  const prefContext = await preparePreferenceContext(signal);
   const ssimCompare = createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE);
 
   for (let i = 0; i < totalImages; i++) {

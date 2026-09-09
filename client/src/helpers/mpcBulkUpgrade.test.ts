@@ -550,11 +550,15 @@ describe("bulkUpgradeToMpcAutofill", () => {
     mockAddRemoteImage.mockResolvedValue("new-image-id");
     mockDbImages.get.mockResolvedValue({ refCount: 1 });
 
-    const result = await bulkUpgradeToMpcAutofill();
+    const controller = new AbortController();
+    const result = await bulkUpgradeToMpcAutofill({ signal: controller.signal });
 
     expect(result.upgraded).toBe(1);
     expect(mockHarvestCandidates).not.toHaveBeenCalled();
-    expect(mockBuildVisualProfiles).toHaveBeenCalled();
+    expect(mockBuildVisualProfiles).toHaveBeenCalledWith(
+      expect.any(Array),
+      controller.signal
+    );
     expect(mockBuildVisualScoreMap).toHaveBeenCalled();
     expect(mockAddRemoteImage).toHaveBeenCalledWith(
       ["https://mpc.test/visual-pick"],

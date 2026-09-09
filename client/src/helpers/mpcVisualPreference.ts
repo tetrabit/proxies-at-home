@@ -16,6 +16,57 @@ export interface MpcSourceVisualProfile {
   sampleCount: number;
 }
 
+// This is module-global so concurrent profile builds share one decoder budget.
+const MAX_CONCURRENT_MPC_PROFILE_DECODES = 2;
+
+type ProfileDecodeRelease = () => void;
+type ProfileDecodeWaiter = {
+  signal?: AbortSignal;
+  resolve: (release: ProfileDecodeRelease | null) => void;
+  onAbort?: () => void;
+};
+
+let activeMpcProfileDecodes = 0;
+const mpcProfileDecodeWaiters: ProfileDecodeWaiter[] = [];
+
+function releaseMpcProfileDecodeSlot(): void {
+  while (mpcProfileDecodeWaiters.length > 0) {
+    const waiter = mpcProfileDecodeWaiters.shift()!;
+    if (waiter.onAbort) {
+      waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    }
+    if (waiter.signal?.aborted) {
+      waiter.resolve(null);
+      continue;
+    }
+    waiter.resolve(releaseMpcProfileDecodeSlot);
+    return;
+  }
+  activeMpcProfileDecodes -= 1;
+}
+
+function acquireMpcProfileDecodeSlot(
+  signal?: AbortSignal
+): Promise<ProfileDecodeRelease | null> {
+  if (signal?.aborted) return Promise.resolve(null);
+  if (activeMpcProfileDecodes < MAX_CONCURRENT_MPC_PROFILE_DECODES) {
+    activeMpcProfileDecodes += 1;
+    return Promise.resolve(releaseMpcProfileDecodeSlot);
+  }
+  return new Promise((resolve) => {
+    const waiter: ProfileDecodeWaiter = { signal, resolve };
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = mpcProfileDecodeWaiters.indexOf(waiter);
+        if (index !== -1) mpcProfileDecodeWaiters.splice(index, 1);
+        resolve(null);
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+    }
+    mpcProfileDecodeWaiters.push(waiter);
+  });
+}
+
 export async function buildMpcVisualPreferenceScoreMap(
   candidates: Pick<
     MpcCalibrationFrozenCandidate,
@@ -121,33 +172,73 @@ export async function extractMpcImageDescriptor(
 }
 
 export async function buildMpcSourceVisualProfiles(
-  examples: MpcHarvestedSourceExample[]
+  examples: MpcHarvestedSourceExample[],
+  signal?: AbortSignal
 ): Promise<Record<string, MpcSourceVisualProfile>> {
-  const grouped = new Map<string, MpcImageDescriptor[]>();
-
-  const tasks: Array<Promise<{ sourceName: string; descriptor: MpcImageDescriptor } | null>> = [];
+  const tasks: Array<{ index: number; sourceName: string; imageUrl: string }> = [];
   for (const example of examples) {
     for (const candidate of example.candidates) {
       if (!candidate.imageUrl) continue;
-      tasks.push(
-        extractMpcImageDescriptor(candidate.imageUrl).then((descriptor) =>
-          descriptor ? { sourceName: example.sourceName, descriptor } : null
-        )
-      );
+      tasks.push({
+        index: tasks.length,
+        sourceName: example.sourceName,
+        imageUrl: candidate.imageUrl,
+      });
     }
   }
 
-  for (const result of await Promise.all(tasks)) {
-    if (!result) continue;
-    const descriptors = grouped.get(result.sourceName) ?? [];
-    descriptors.push(result.descriptor);
-    grouped.set(result.sourceName, descriptors);
+  if (signal?.aborted || tasks.length === 0) return {};
+
+  const descriptors: Array<MpcImageDescriptor | null> = Array(tasks.length).fill(
+    null
+  );
+  let nextTaskIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    while (!signal?.aborted) {
+      const task = tasks[nextTaskIndex++];
+      if (!task) return;
+
+      const release = await acquireMpcProfileDecodeSlot(signal);
+      if (!release || signal?.aborted) {
+        release?.();
+        return;
+      }
+
+      try {
+        const descriptor = await extractMpcImageDescriptor(task.imageUrl, signal);
+        if (!signal?.aborted) {
+          descriptors[task.index] = descriptor;
+        }
+      } finally {
+        // Extraction owns bitmap.close() and must settle before this permit moves.
+        release();
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_CONCURRENT_MPC_PROFILE_DECODES, tasks.length) },
+      runWorker
+    )
+  );
+
+  if (signal?.aborted) return {};
+
+  const grouped = new Map<string, MpcImageDescriptor[]>();
+  for (const task of tasks) {
+    const descriptor = descriptors[task.index];
+    if (!descriptor) continue;
+    const sourceDescriptors = grouped.get(task.sourceName) ?? [];
+    sourceDescriptors.push(descriptor);
+    grouped.set(task.sourceName, sourceDescriptors);
   }
 
   return Object.fromEntries(
-    Array.from(grouped.entries()).map(([sourceName, descriptors]) => {
-      const sampleCount = descriptors.length;
-      const descriptor = descriptors.reduce(
+    Array.from(grouped.entries()).map(([sourceName, sourceDescriptors]) => {
+      const sampleCount = sourceDescriptors.length;
+      const descriptor = sourceDescriptors.reduce(
         (acc, value) => ({
           meanLuma: acc.meanLuma + value.meanLuma / sampleCount,
           variance: acc.variance + value.variance / sampleCount,
