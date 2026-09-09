@@ -7,6 +7,7 @@ import fs from "fs";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import type { PrivateCapability } from "../auth/privateRouteAuth.js";
+import { createCalibrationProcessAdmission } from "./calibrationProcessAdmission.js";
 
 export type PrinterCalibrationProfile = {
   name: string;
@@ -30,7 +31,7 @@ type PrinterCalibrationRunner =
   | { kind: "python"; python: string; repoDir?: string };
 
 type CliResult = { stdout: string; stderr: string };
-type CliRunner = (args: string[]) => Promise<CliResult>;
+type CliRunner = (args: string[], options?: { signal?: AbortSignal }) => Promise<CliResult>;
 type PrivateRouteAuth = {
   private(capability: PrivateCapability): RequestHandler;
 };
@@ -47,6 +48,48 @@ const DEFAULT_PROFILES_FILENAME = "printer-calibration/profiles.toml";
 const CENTER_X_MM = 107.95;
 const CENTER_Y_MM = 139.7;
 const ROUTES_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_MAX_ACTIVE_PYTHON = 2;
+const DEFAULT_MAX_QUEUED_PYTHON = 16;
+
+function configuredAdmissionLimit(
+  primaryName: string,
+  alternateName: string,
+  fallback: number,
+  minimum: number,
+  environment: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = environment[primaryName] ?? environment[alternateName];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < minimum) {
+    throw new Error(`${primaryName} must be a finite integer greater than or equal to ${minimum}.`);
+  }
+  return value;
+}
+
+function createConfiguredCalibrationProcessAdmission(
+  environment: NodeJS.ProcessEnv = process.env
+) {
+  return createCalibrationProcessAdmission({
+    maxActive: configuredAdmissionLimit(
+      "PRINTER_CALIBRATION_MAX_ACTIVE_PYTHON",
+      "PRINTER_CALIBRATION_MAX_ACTIVE_PROCESSES",
+      DEFAULT_MAX_ACTIVE_PYTHON,
+      1,
+      environment
+    ),
+    maxQueued: configuredAdmissionLimit(
+      "PRINTER_CALIBRATION_MAX_QUEUED_PYTHON",
+      "PRINTER_CALIBRATION_MAX_QUEUED_PROCESSES",
+      DEFAULT_MAX_QUEUED_PYTHON,
+      0,
+      environment
+    ),
+  });
+}
+
+const defaultCalibrationProcessAdmission = createConfiguredCalibrationProcessAdmission();
+type CalibrationProcessAdmission = typeof defaultCalibrationProcessAdmission;
 
 function fileExists(filePath: string) {
   try {
@@ -141,46 +184,87 @@ export function shouldTryNextPrinterCalibrationRunner(message: string): boolean 
 function runProcess(
   cmd: string,
   args: string[],
-  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {}
+  opts: {
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    admission?: CalibrationProcessAdmission;
+  } = {}
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env || {}) },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+  const deadline = Date.now() + timeoutMs;
+  const admission = opts.admission ?? defaultCalibrationProcessAdmission;
+  return admission.enqueue(
+    () =>
+      new Promise((resolve, reject) => {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          reject(new Error(`printer calibration command timed out after ${timeoutMs}ms`));
+          return;
+        }
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (data) => {
-      stdout += data;
-    });
-    child.stderr.on("data", (data) => {
-      stderr += data;
-    });
+        const child = spawn(cmd, args, {
+          cwd: opts.cwd,
+          env: { ...process.env, ...(opts.env || {}) },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
 
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(
-        new Error(`printer calibration command timed out after ${timeoutMs}ms`)
-      );
-    }, timeoutMs);
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        let terminationError: Error | null = null;
+        const finish = (error?: Error, result?: { stdout: string; stderr: string; code: number }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          opts.signal?.removeEventListener("abort", abortChild);
+          if (error) reject(error);
+          else resolve(result!);
+        };
+        const terminateChild = (error: Error) => {
+          if (terminationError) return;
+          terminationError = error;
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The close/error listener remains the owner of releasing this slot.
+          }
+        };
+        const abortChild = () => terminateChild(new Error("Printer calibration command was aborted."));
+        const timer = setTimeout(() => {
+          terminateChild(new Error(`printer calibration command timed out after ${timeoutMs}ms`));
+        }, remainingMs);
 
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code: code ?? -1 });
-    });
-  });
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (data) => {
+          stdout += data;
+        });
+        child.stderr.on("data", (data) => {
+          stderr += data;
+        });
+
+        if (opts.signal?.aborted) {
+          abortChild();
+        } else {
+          opts.signal?.addEventListener("abort", abortChild, { once: true });
+        }
+        child.on("error", (error) => {
+          if (!terminationError) terminationError = error;
+        });
+        child.on("close", (code) => {
+          finish(terminationError ?? undefined, { stdout, stderr, code: code ?? -1 });
+        });
+      }),
+    { signal: opts.signal, timeoutMs }
+  );
 }
 
-async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
+async function runPrinterCalibrationCli(
+  args: string[],
+  options: { signal?: AbortSignal } = {}
+): Promise<CliResult> {
   const runners = resolveRunners();
   /* v8 ignore next 3 -- resolveRunners always appends python and binary fallbacks; this guards future configuration changes. @preserve */
   if (!runners.length) {
@@ -200,6 +284,7 @@ async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
           cwd: runner.cwd,
           env: runner.extraEnv,
           timeoutMs: 120_000,
+          signal: options.signal,
         });
         if (result.code !== 0) {
           throw new Error(
@@ -225,6 +310,7 @@ async function runPrinterCalibrationCli(args: string[]): Promise<CliResult> {
           cwd: runner.repoDir,
           env,
           timeoutMs: 120_000,
+          signal: options.signal,
         }
       );
       if (result.code !== 0) {
@@ -438,15 +524,27 @@ export function createPrinterCalibrationRouter(
   const profilesPathForRequest = (request: Request): string =>
     resolveOwnerPrinterCalibrationProfilesPath(dataDirectory, request.privateIdentity?.ownerId ?? "");
   const runCli = options.runCli ?? runPrinterCalibrationCli;
+  const runCliForRequest = async (req: Request, res: Response, args: string[]): Promise<CliResult> => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    req.once("aborted", abort);
+    res.once("close", abort);
+    try {
+      return await runCli(args, { signal: controller.signal });
+    } finally {
+      req.off("aborted", abort);
+      res.off("close", abort);
+    }
+  };
 
-  router.get("/sheet", requirePrivate("calibration:read"), async (_req: Request, res: Response) => {
+  router.get("/sheet", requirePrivate("calibration:read"), async (req: Request, res: Response) => {
     const outputPath = path.join(
       os.tmpdir(),
       `proxxied-printer-calibration-sheet-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`
     );
 
     try {
-      await runCli(["sheet", "--output", outputPath]);
+      await runCliForRequest(req, res, ["sheet", "--output", outputPath]);
       res.setHeader("Content-Type", "application/pdf");
       res.download(outputPath, "printer_calibration_sheet.pdf", (error) => {
         unlinkQuiet(outputPath);
@@ -465,7 +563,7 @@ export function createPrinterCalibrationRouter(
   router.get("/profiles", requirePrivate("calibration:read"), async (req: Request, res: Response) => {
     try {
       const profilesPath = profilesPathForRequest(req);
-      const listResult = await runCli(["profile", "list", "--profile-file", profilesPath]);
+      const listResult = await runCliForRequest(req, res, ["profile", "list", "--profile-file", profilesPath]);
       const names = listResult.stdout
         .split(/\r?\n/)
         .map((name) => name.trim())
@@ -473,7 +571,7 @@ export function createPrinterCalibrationRouter(
 
       const profiles = await Promise.all(
         names.map(async (name) => {
-          const result = await runCli([
+          const result = await runCliForRequest(req, res, [
             "profile",
             "show",
             "--name",
@@ -505,7 +603,7 @@ export function createPrinterCalibrationRouter(
       if (!name) {
         return res.status(400).json({ error: "Profile name is required." });
       }
-      const result = await runCli([
+      const result = await runCliForRequest(req, res, [
         "profile",
         "show",
         "--name",
@@ -534,7 +632,7 @@ export function createPrinterCalibrationRouter(
       const backX = safeNumber(req.body.back_x_mm, "back_x_mm");
       const backY = safeNumber(req.body.back_y_mm, "back_y_mm");
 
-      await runCli([
+      await runCliForRequest(req, res, [
         "profile",
         "set",
         "--name",
@@ -551,7 +649,7 @@ export function createPrinterCalibrationRouter(
         profilesPath,
       ]);
 
-      const showResult = await runCli([
+      const showResult = await runCliForRequest(req, res, [
         "profile",
         "show",
         "--name",
@@ -579,7 +677,7 @@ export function createPrinterCalibrationRouter(
       if (!name) {
         return res.status(400).json({ error: "Profile name is required." });
       }
-      await runCli([
+      await runCliForRequest(req, res, [
         "profile",
         "delete",
         "--name",
@@ -654,7 +752,7 @@ export function createPrinterCalibrationRouter(
         inputPath = file.path;
         /* v8 ignore next -- multer supplies originalname for file uploads; document fallback is defensive. @preserve */
         outputPath = buildTempFilePath("output", `${path.parse(file.originalname || "document").name}.pdf`);
-        await runCli([
+        await runCliForRequest(req, res, [
           "apply",
           "--profile",
           profileName,
@@ -693,6 +791,8 @@ export const printerCalibrationRouter = createPrinterCalibrationRouter();
 
 export const __printerCalibrationTestInternals = {
   resolveRunners,
+  configuredAdmissionLimit,
+  createConfiguredCalibrationProcessAdmission,
   runProcess,
   runPrinterCalibrationCli,
   buildTempFilePath,
