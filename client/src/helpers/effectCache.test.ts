@@ -56,14 +56,31 @@ describe('effectCache', () => {
     }
 
     function webpBlob(width: number, height: number): Blob {
-        return new Blob([new Uint8Array([
-            0x52, 0x49, 0x46, 0x46, 0x16, 0x00, 0x00, 0x00,
-            0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58,
-            0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        return webpChunkBlob('VP8X', [
+            0x00, 0x00, 0x00, 0x00,
             (width - 1) & 0xff, (width - 1) >>> 8, (width - 1) >>> 16,
             (height - 1) & 0xff, (height - 1) >>> 8, (height - 1) >>> 16,
+        ]);
+    }
+
+    function webpChunkBlob(chunkType: string, payload: readonly number[], declaredRiffSize?: number): Blob {
+        const paddedPayloadLength = payload.length + (payload.length % 2);
+        const riffSize = declaredRiffSize ?? 4 + 8 + paddedPayloadLength;
+        return new Blob([new Uint8Array([
+            0x52, 0x49, 0x46, 0x46, riffSize & 0xff, (riffSize >>> 8) & 0xff, (riffSize >>> 16) & 0xff, riffSize >>> 24,
+            0x57, 0x45, 0x42, 0x50,
+            ...Array.from(chunkType, character => character.charCodeAt(0)),
+            payload.length & 0xff, (payload.length >>> 8) & 0xff, (payload.length >>> 16) & 0xff, payload.length >>> 24,
+            ...payload,
+            ...(payload.length % 2 ? [0x00] : []),
         ])], { type: 'image/webp' });
     }
+
+    const validWebpDimensionChunks = [
+        ['VP8X', [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]],
+        ['VP8 ', [0x00, 0x00, 0x00, 0x9d, 0x01, 0x2a, 0x01, 0x00, 0x01, 0x00]],
+        ['VP8L', [0x2f, 0x00, 0x00, 0x00, 0x00]],
+    ] as const;
 
     function gifBlob(width: number, height: number): Blob {
         return new Blob([new Uint8Array([
@@ -664,6 +681,144 @@ describe('effectCache', () => {
         ])('rejects %s before bitmap decode', async (_description, source) => {
             const processor = getEffectProcessor();
             const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it('rejects VP8X chunks appended outside a declared-short RIFF container before bitmap decode', async () => {
+            const processor = getEffectProcessor();
+            const source = new Blob([new Uint8Array([
+                0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+                0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ])]);
+
+            const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it.each(validWebpDimensionChunks)('admits a bounded, declared WebP %s dimensions chunk', async (chunkType, payload) => {
+            const processor = getEffectProcessor();
+            const source = webpChunkBlob(chunkType, payload);
+            const rendition = processor.process(source, {} as RenderParams);
+
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source, { imageOrientation: 'none' }));
+            await expect(rendition).resolves.toBeInstanceOf(Blob);
+        });
+
+        it.each(validWebpDimensionChunks)('rejects a declared-short RIFF with appended %s dimensions before bitmap decode', async (chunkType, payload) => {
+            const processor = getEffectProcessor();
+            const rejected = processor.process(webpChunkBlob(chunkType, payload, 4), {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['a chunk crossing the declared RIFF boundary', webpChunkBlob('VP8X', validWebpDimensionChunks[0][1], 21)],
+            ['an odd-length chunk whose padding crosses the declared RIFF boundary', webpChunkBlob('VP8L', validWebpDimensionChunks[2][1], 17)],
+        ])('rejects %s before bitmap decode', async (_description, source) => {
+            const processor = getEffectProcessor();
+            const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it('rejects a declared RIFF container truncated before its VP8X payload ends', async () => {
+            const source = new Blob([new Uint8Array([
+                0x52, 0x49, 0x46, 0x46, 0x16, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+                0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00,
+            ])], { type: 'image/webp' });
+            const processor = getEffectProcessor();
+            const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it('admits bounded VP8X dimensions from a valid RIFF container larger than the header probe', async () => {
+            const containerLength = (513 * 1024);
+            const bytes = new Uint8Array(containerLength);
+            bytes.set([0x52, 0x49, 0x46, 0x46], 0);
+            bytes.set([0x57, 0x45, 0x42, 0x50], 8);
+            new DataView(bytes.buffer).setUint32(4, containerLength - 8, true);
+            bytes.set([
+                0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x4a, 0x55, 0x4e, 0x4b,
+            ], 12);
+            new DataView(bytes.buffer).setUint32(34, containerLength - 38, true);
+            const source = new Blob([bytes], { type: 'image/webp' });
+            const processor = getEffectProcessor();
+            const rendition = processor.process(source, {} as RenderParams);
+
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source, { imageOrientation: 'none' }));
+            await expect(rendition).resolves.toBeInstanceOf(Blob);
+        });
+
+        it.each([
+            ['a RIFF size smaller than the mandatory WEBP form', new Blob([new Uint8Array([
+                0x52, 0x49, 0x46, 0x46, 0x03, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+            ])], { type: 'image/webp' })],
+            ['a RIFF size extending beyond the actual Blob length', new Blob([new Uint8Array([
+                0x52, 0x49, 0x46, 0x46, 0xff, 0xff, 0xff, 0xff, 0x57, 0x45, 0x42, 0x50,
+            ])], { type: 'image/webp' })],
+        ])('rejects %s before bitmap decode', async (_description, source) => {
+            const processor = getEffectProcessor();
+            const rejected = processor.process(source, {} as RenderParams);
+            const error = rejected.then(() => undefined, reason => reason);
+
+            await vi.waitFor(async () => {
+                await expect(error).resolves.toMatchObject({
+                    message: 'Unable to determine image dimensions from the first 524288 bytes',
+                });
+            });
+            expect(createImageBitmap).not.toHaveBeenCalled();
+        });
+
+        it('rejects dimensions that lie beyond the bounded probe of an otherwise valid large RIFF container', async () => {
+            const firstChunkPayloadLength = 512 * 1024;
+            const vp8xOffset = 20 + firstChunkPayloadLength;
+            const bytes = new Uint8Array(vp8xOffset + 18);
+            bytes.set([0x52, 0x49, 0x46, 0x46], 0);
+            bytes.set([0x57, 0x45, 0x42, 0x50, 0x4a, 0x55, 0x4e, 0x4b], 8);
+            new DataView(bytes.buffer).setUint32(4, bytes.length - 8, true);
+            new DataView(bytes.buffer).setUint32(16, firstChunkPayloadLength, true);
+            bytes.set([
+                0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ], vp8xOffset);
+            const processor = getEffectProcessor();
+            const rejected = processor.process(new Blob([bytes], { type: 'image/webp' }), {} as RenderParams);
             const error = rejected.then(() => undefined, reason => reason);
 
             await vi.waitFor(async () => {

@@ -102,33 +102,49 @@ function probeJpegDimensions(bytes: Uint8Array): ImageDimensions | undefined {
     return undefined;
 }
 
-function probeWebpDimensions(bytes: Uint8Array): ImageDimensions | undefined {
+function probeWebpDimensions(bytes: Uint8Array, blobLength: number): ImageDimensions | undefined {
     if (
         bytes.length < 12
         || bytes[0] !== 0x52 || bytes[1] !== 0x49 || bytes[2] !== 0x46 || bytes[3] !== 0x46
         || bytes[8] !== 0x57 || bytes[9] !== 0x45 || bytes[10] !== 0x42 || bytes[11] !== 0x50
     ) return undefined;
 
+    const riffSize = readUint32LE(bytes, 4);
+    if (riffSize === undefined || riffSize < 4) return undefined;
+    const declaredRiffEnd = 8 + riffSize;
+    if (!Number.isSafeInteger(declaredRiffEnd) || declaredRiffEnd < 12 || declaredRiffEnd > blobLength) return undefined;
+
+    let dimensions: ImageDimensions | undefined;
     let offset = 12;
-    while (offset + 8 <= bytes.length) {
+    while (offset < declaredRiffEnd) {
+        if (offset + 8 > declaredRiffEnd) return undefined;
+        // A valid RIFF container may be larger than the bounded probe. Only use
+        // dimensions from chunks wholly present in the probe, while retaining the
+        // declared container boundary for every parsed chunk.
+        if (offset + 8 > bytes.length) return dimensions;
+
         const chunkLength = readUint32LE(bytes, offset + 4);
         if (chunkLength === undefined) return undefined;
         const dataOffset = offset + 8;
         const paddedLength = chunkLength + (chunkLength % 2);
-        if (paddedLength > bytes.length - dataOffset) return undefined;
+        const chunkEnd = dataOffset + paddedLength;
+        if (!Number.isSafeInteger(chunkEnd) || chunkEnd > declaredRiffEnd) return undefined;
+        if (chunkEnd > bytes.length) return dimensions;
 
         const isVp8x = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x58;
         if (isVp8x && chunkLength >= 10) {
             const width = readUint24LE(bytes, dataOffset + 4);
             const height = readUint24LE(bytes, dataOffset + 7);
-            return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width + 1, height + 1);
+            dimensions = width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width + 1, height + 1);
+            if (!dimensions) return undefined;
         }
 
         const isVp8l = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x4c;
         if (isVp8l && chunkLength >= 5 && bytes[dataOffset] === 0x2f) {
             const width = 1 + (bytes[dataOffset + 1] | ((bytes[dataOffset + 2] & 0x3f) << 8));
             const height = 1 + ((bytes[dataOffset + 2] >>> 6) | (bytes[dataOffset + 3] << 2) | ((bytes[dataOffset + 4] & 0x0f) << 10));
-            return dimensionsOrUndefined(width, height);
+            dimensions = dimensionsOrUndefined(width, height);
+            if (!dimensions) return undefined;
         }
 
         const isVp8 = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x20;
@@ -138,14 +154,15 @@ function probeWebpDimensions(bytes: Uint8Array): ImageDimensions | undefined {
         ) {
             const width = readUint16LE(bytes, dataOffset + 6);
             const height = readUint16LE(bytes, dataOffset + 8);
-            return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width & 0x3fff, height & 0x3fff);
+            dimensions = width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width & 0x3fff, height & 0x3fff);
+            if (!dimensions) return undefined;
         }
-        offset = dataOffset + paddedLength;
+        offset = chunkEnd;
     }
-    return undefined;
+    return dimensions;
 }
 
-function probeImageDimensions(bytes: Uint8Array): ImageDimensions | undefined {
+function probeImageDimensions(bytes: Uint8Array, blobLength: number = bytes.length): ImageDimensions | undefined {
     if (
         bytes.length >= 33
         && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
@@ -176,13 +193,13 @@ function probeImageDimensions(bytes: Uint8Array): ImageDimensions | undefined {
         return dimensionsOrUndefined(width, Math.abs(height));
     }
 
-    return probeJpegDimensions(bytes) ?? probeWebpDimensions(bytes);
+    return probeJpegDimensions(bytes) ?? probeWebpDimensions(bytes, blobLength);
 }
 
 async function probeImageDimensionsFromBlob(exportBlob: Blob): Promise<ImageDimensions> {
     const probeLength = Math.min(exportBlob.size, MAX_IMAGE_HEADER_PROBE_BYTES);
     const bytes = new Uint8Array(await exportBlob.slice(0, probeLength).arrayBuffer());
-    const dimensions = probeImageDimensions(bytes);
+    const dimensions = probeImageDimensions(bytes, exportBlob.size);
     if (!dimensions) {
         throw new Error(`Unable to determine image dimensions from the first ${MAX_IMAGE_HEADER_PROBE_BYTES} bytes`);
     }
