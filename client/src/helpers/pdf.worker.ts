@@ -15,6 +15,7 @@ import { db, type EffectCacheEntry } from "../db";
 import type { CardOption, CardOverrides } from "../../../shared/types";
 import { debugLog } from "./debug";
 import { IMAGE_PROCESSING } from "../constants/imageProcessing";
+import { CanvasLruCache, type CanvasCacheLease } from "./pdfCanvasLruCache";
 
 export { };
 declare const self: DedicatedWorkerGlobalScope;
@@ -73,7 +74,8 @@ async function decodeImageBitmap(blob: Blob, ctxLabel: string): Promise<ImageBit
 async function processWithConcurrency<T, R>(
     items: T[],
     processor: (item: T, index: number) => Promise<R>,
-    limit: number
+    limit: number,
+    disposeResultAfterFailure?: (result: R) => void,
 ): Promise<R[]> {
     const results: R[] = new Array(items.length);
     let currentIndex = 0;
@@ -85,9 +87,19 @@ async function processWithConcurrency<T, R>(
         }
     }
 
-    // Start `limit` workers
+    // Do not reject on the first failed worker: other workers can already own
+    // canvases and must physically settle before their results can be released.
     const workers = Array.from({ length: Math.min(limit, items.length) }, () => processNext());
-    await Promise.all(workers);
+    const workerOutcomes = await Promise.allSettled(workers);
+    const failedWorker = workerOutcomes.find(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+    );
+    if (failedWorker) {
+        for (let index = 0; index < results.length; index++) {
+            if (index in results) disposeResultAfterFailure?.(results[index]);
+        }
+        throw failedWorker.reason;
+    }
 
     return results;
 }
@@ -453,7 +465,21 @@ function createGuideCanvas(
     return canvas;
 }
 
-const canvasCache = new Map<string, OffscreenCanvas>();
+/**
+ * Worker-owned CPU RGBA8 canvas cache admission budget. This intentionally
+ * excludes browser, driver, and GPU allocations, which cannot be measured here.
+ */
+export const PDF_CANVAS_CACHE_BYTE_BUDGET = 128 * 1024 * 1024;
+
+function disposeOffscreenCanvas(canvas: OffscreenCanvas): void {
+    canvas.width = 0;
+    canvas.height = 0;
+}
+
+const canvasCache = new CanvasLruCache<OffscreenCanvas>(
+    PDF_CANVAS_CACHE_BYTE_BUDGET,
+    disposeOffscreenCanvas,
+);
 
 self.onmessage = async (event: MessageEvent) => {
     try {
@@ -542,6 +568,14 @@ self.onmessage = async (event: MessageEvent) => {
             height: contentHeightInPx + 2 * MM_TO_PX(Math.max(0, bleedMm), DPI),
         });
 
+        const disposeRenderSurface = (surface: OffscreenCanvas | ImageBitmap): void => {
+            if (surface instanceof ImageBitmap) {
+                surface.close();
+            } else {
+                disposeOffscreenCanvas(surface);
+            }
+        };
+
         const normalizeToRenderSize = (
             source: OffscreenCanvas | ImageBitmap,
             targetWidth: number,
@@ -562,9 +596,7 @@ self.onmessage = async (event: MessageEvent) => {
             normalizedCtx.imageSmoothingQuality = 'high';
             normalizedCtx.drawImage(source, 0, 0, targetWidth, targetHeight);
 
-            if (source instanceof ImageBitmap) {
-                source.close();
-            }
+            disposeRenderSurface(source);
 
             return normalized;
         };
@@ -618,8 +650,20 @@ self.onmessage = async (event: MessageEvent) => {
             imageCardWidthPx: number;
             imageCardHeightPx: number;
             bleedPx: number;
+            cacheLease?: CanvasCacheLease<OffscreenCanvas>;
+            disposeCanvasAfterDraw: boolean;
             isBlank: boolean;  // True for cardback_builtin_blank cards (no guides)
             isBackFace: boolean; // True for linked back cards
+        };
+
+        const releasePreparedCanvas = (prepared: PreparedCard): void => {
+            if (prepared.canvas instanceof ImageBitmap) {
+                prepared.canvas.close();
+            }
+            prepared.cacheLease?.release();
+            if (prepared.disposeCanvasAfterDraw && prepared.canvas instanceof OffscreenCanvas) {
+                disposeOffscreenCanvas(prepared.canvas);
+            }
         };
 
         // PHASE 1: Prepare cards with LIMITED CONCURRENCY to avoid memory exhaustion
@@ -655,7 +699,11 @@ self.onmessage = async (event: MessageEvent) => {
 
             const isBackCard = card.imageId?.startsWith('cardback_');
             const usesInsetBorderBleed = usesCardbackInsetBorderBleed(card);
-            let finalCardCanvas: OffscreenCanvas | ImageBitmap;
+            let finalCardCanvas!: OffscreenCanvas | ImageBitmap;
+            let cacheLease: CanvasCacheLease<OffscreenCanvas> | undefined;
+            let disposeCanvasAfterDraw = false;
+            let prepared = false;
+            const prepareCard = async (): Promise<PreparedCard> => {
             const imageInfo = card.imageId ? imagesById.get(card.imageId) : undefined;
 
             // Determine effective mode and settings
@@ -830,22 +878,28 @@ self.onmessage = async (event: MessageEvent) => {
             if (!isCacheValid) {
                 let needsSourceLoad = true;
 
-                // Check canvas cache
-                if (cacheKey && canvasCache.has(cacheKey)) {
-                    const cached = canvasCache.get(cacheKey)!;
-                    const isExactCachedCanvasSize =
-                        cached.width === expectedCachedCanvasWidth && cached.height === expectedCachedCanvasHeight;
+                // Acquire an exact-sized cached canvas. The lease keeps it pinned
+                // until sequential page drawing is finished, even if other card
+                // preparations trigger cache pressure meanwhile.
+                if (cacheKey) {
+                    const cachedLease = canvasCache.acquire(cacheKey);
+                    if (cachedLease) {
+                        const cached = cachedLease.canvas;
+                        const isExactCachedCanvasSize =
+                            cached.width === expectedCachedCanvasWidth && cached.height === expectedCachedCanvasHeight;
 
-                    if (isExactCachedCanvasSize) {
-                        finalCardCanvas = cached;
-                        fromCanvasCache = true; // Mark that we got it from cache
-                        fromFinalRenderCache = usesInsetBorderBleed;
-                        needsSourceLoad = false;
-                    } else {
-                        debugLog(
-                            `[PDF Worker] Card ${idx}: Cached canvas dimensions ${cached.width}x${cached.height} do not match target ${expectedCachedCanvasWidth}x${expectedCachedCanvasHeight}; regenerating`
-                        );
-                        canvasCache.delete(cacheKey);
+                        if (isExactCachedCanvasSize) {
+                            finalCardCanvas = cached;
+                            cacheLease = cachedLease;
+                            fromCanvasCache = true;
+                            fromFinalRenderCache = usesInsetBorderBleed;
+                            needsSourceLoad = false;
+                        } else {
+                            debugLog(
+                                `[PDF Worker] Card ${idx}: Cached canvas dimensions ${cached.width}x${cached.height} do not match target ${expectedCachedCanvasWidth}x${expectedCachedCanvasHeight}; regenerating`
+                            );
+                            cachedLease.release();
+                        }
                     }
                 }
 
@@ -1007,7 +1061,14 @@ self.onmessage = async (event: MessageEvent) => {
                 }
             }
 
-            const normalizedCanvas = fromFinalRenderCache || usesInsetBorderBleed
+            if (!finalCardCanvas) {
+                throw new Error(`Failed to prepare canvas for card ${idx}`);
+            }
+
+            // A cache lease owns a shared canvas through phase two. Its exact-size
+            // admission check makes normalization unnecessary and, critically,
+            // keeps normalizeToRenderSize from disposing that shared surface.
+            const normalizedCanvas = cacheLease || fromFinalRenderCache || usesInsetBorderBleed
                 ? finalCardCanvas
                 : normalizeToRenderSize(finalCardCanvas, targetRenderWidth, targetRenderHeight);
             const renderCanvas = usesInsetBorderBleed && !fromFinalRenderCache
@@ -1019,12 +1080,20 @@ self.onmessage = async (event: MessageEvent) => {
                     MM_TO_PX(targetBleedMm, DPI),
                 )
                 : normalizedCanvas;
+            if (renderCanvas !== normalizedCanvas) {
+                if (cacheLease) {
+                    throw new Error(`Cannot compose a leased canvas for card ${idx}`);
+                }
+                disposeRenderSurface(normalizedCanvas);
+            }
+            finalCardCanvas = renderCanvas;
             const normalizedWidth = renderCanvas.width;
             const normalizedHeight = renderCanvas.height;
 
             // Cache the normalized target render (only cache OffscreenCanvas, not ImageBitmap).
-            // Slot centering stays outside this cache so guide layout changes cannot poison it.
-            // Skip if we already retrieved this from cache (no need to re-cache)
+            // The admission lease keeps this canvas valid through phase-two drawing;
+            // an oversized or temporarily non-admissible canvas stays usable but is
+            // disposed after its final draw instead of entering the cache.
             if (
                 cacheKey &&
                 renderCanvas instanceof OffscreenCanvas &&
@@ -1032,10 +1101,13 @@ self.onmessage = async (event: MessageEvent) => {
                 normalizedWidth === expectedCachedCanvasWidth &&
                 normalizedHeight === expectedCachedCanvasHeight
             ) {
-                canvasCache.set(cacheKey, renderCanvas);
+                cacheLease = canvasCache.admit(cacheKey, renderCanvas);
+                disposeCanvasAfterDraw = !cacheLease;
+            } else if (renderCanvas instanceof OffscreenCanvas && !fromCanvasCache) {
+                disposeCanvasAfterDraw = true;
             }
 
-            return {
+            const preparedCard = {
                 canvas: renderCanvas,
                 x,
                 y,
@@ -1044,35 +1116,64 @@ self.onmessage = async (event: MessageEvent) => {
                 imageCardWidthPx: normalizedWidth,
                 imageCardHeightPx: normalizedHeight,
                 bleedPx: cardLayout.bleedPx,
+                cacheLease,
+                disposeCanvasAfterDraw,
                 isBlank: card.imageId === 'cardback_builtin_blank',
                 isBackFace: !!card.linkedFrontId,
             };
-        }, MAX_CONCURRENT_CARDS);
+            return preparedCard;
+            };
 
-        // PHASE 2: Draw all cards SEQUENTIALLY (canvas context not thread-safe)
-        let imagesProcessed = 0;
-        for (const prepared of preparedCards) {
-            // Skip drawing blank cards entirely (leave transparent/page background)
-            if (!prepared.isBlank) {
-                ctx.save();
-                ctx.drawImage(prepared.canvas, prepared.x + prepared.centerOffsetX, prepared.y + prepared.centerOffsetY, prepared.imageCardWidthPx, prepared.imageCardHeightPx);
-                ctx.restore();
-
-                if (prepared.canvas instanceof ImageBitmap) {
-                    prepared.canvas.close();
-                }
-
-                // Stamp per-card guide overlay (skip for blank cards)
-                if (perCardGuideCanvas && (showGuideLinesOnBackCards || !prepared.isBackFace)) {
-                    ctx.save();
-                    // Guides are anchored to the fixed card origin, not affected by per-card bleed overrides
-                    ctx.drawImage(perCardGuideCanvas, prepared.x, prepared.y);
-                    ctx.restore();
+            try {
+            const preparedCard = await prepareCard();
+            prepared = true;
+            return preparedCard;
+            } finally {
+                if (!prepared) {
+                    cacheLease?.release();
+                    if (finalCardCanvas && !cacheLease) {
+                        disposeRenderSurface(finalCardCanvas);
+                    }
                 }
             }
+        }, MAX_CONCURRENT_CARDS, releasePreparedCanvas);
 
-            imagesProcessed++;
-            self.postMessage({ type: 'progress', pageIndex, imagesProcessed });
+        // PHASE 2: Draw all cards SEQUENTIALLY (canvas context not thread-safe)
+        // Every cached surface remains leased through its draw. If drawing aborts,
+        // release the current and remaining prepared surfaces before reporting it.
+        let imagesProcessed = 0;
+        let preparedCardIndex = 0;
+        try {
+            for (; preparedCardIndex < preparedCards.length; preparedCardIndex++) {
+                const prepared = preparedCards[preparedCardIndex];
+                try {
+                    // Skip drawing blank cards entirely (leave transparent/page background)
+                    if (!prepared.isBlank) {
+                        ctx.save();
+                        ctx.drawImage(prepared.canvas, prepared.x + prepared.centerOffsetX, prepared.y + prepared.centerOffsetY, prepared.imageCardWidthPx, prepared.imageCardHeightPx);
+                        ctx.restore();
+
+                        // Stamp per-card guide overlay (skip for blank cards)
+                        if (perCardGuideCanvas && (showGuideLinesOnBackCards || !prepared.isBackFace)) {
+                            ctx.save();
+                            // Guides are anchored to the fixed card origin, not affected by per-card bleed overrides
+                            ctx.drawImage(perCardGuideCanvas, prepared.x, prepared.y);
+                            ctx.restore();
+                        }
+                    }
+                } finally {
+                    releasePreparedCanvas(prepared);
+                }
+
+                imagesProcessed++;
+                self.postMessage({ type: 'progress', pageIndex, imagesProcessed });
+            }
+        } finally {
+            // The current index is already released on a draw failure, so start
+            // cleanup after it; successful iterations incremented the index.
+            for (let index = preparedCardIndex + 1; index < preparedCards.length; index++) {
+                releasePreparedCanvas(preparedCards[index]);
+            }
         }
 
         // Draw Silhouette registration marks if enabled (on top of everything)
