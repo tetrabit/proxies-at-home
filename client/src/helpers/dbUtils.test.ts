@@ -1973,80 +1973,82 @@ describe("dbUtils", () => {
         ]);
     });
 
-    it("relinks colliding image swaps with constant bulk operations and no growing update-array searches", async () => {
+    it("records deterministic relink collision operation vectors at 64 and 256 links", async () => {
       const { createLinkedBackCardsBulk } = await import("./dbUtils");
-      const pairCount = 32;
-      const images = Array.from({ length: pairCount * 2 }, (_, index) => ({
-        id: `image-${index}`,
-        refCount: 1,
-      }));
-      const cards = Array.from({ length: pairCount * 2 }, (_, index) => ({
-        uuid: `front-${index}`,
-        name: `Front ${index}`,
-        order: index + 1,
-        isUserUpload: false,
-        linkedBackId: `back-${index}`,
-      })).flatMap((front, index) => [
-        front,
-        {
-          uuid: `back-${index}`,
-          name: `Back ${index}`,
+      const relinkAndCapture = async (linkCount: number, prefix: string) => {
+        const images = Array.from({ length: linkCount }, (_, index) => ({
+          id: `${prefix}-image-${index}`,
+          refCount: 1,
+        }));
+        const cards = Array.from({ length: linkCount }, (_, index) => ({
+          uuid: `${prefix}-front-${index}`,
+          name: `Front ${index}`,
           order: index + 1,
           isUserUpload: false,
-          imageId: `image-${index}`,
-          linkedFrontId: front.uuid,
-        },
-      ]);
-      const assignments = Array.from(
-        { length: pairCount * 2 },
-        (_, index) => ({
-          frontUuid: `front-${index}`,
-          backImageId: `image-${index ^ 1}`,
+          linkedBackId: `${prefix}-back-${index}`,
+        })).flatMap((front, index) => [
+          front,
+          {
+            uuid: `${prefix}-back-${index}`,
+            name: `Back ${index}`,
+            order: index + 1,
+            isUserUpload: false,
+            imageId: `${prefix}-image-${index}`,
+            linkedFrontId: front.uuid,
+          },
+        ]);
+        const assignments = Array.from({ length: linkCount }, (_, index) => ({
+          frontUuid: `${prefix}-front-${index}`,
+          backImageId: `${prefix}-image-${index ^ 1}`,
           backName: `Replacement ${index}`,
-        })
-      );
+        }));
+        await db.images.bulkAdd(images);
+        await db.cards.bulkAdd(cards);
 
-      await db.images.bulkAdd(images);
-      await db.cards.bulkAdd(cards);
+        const cardBulkGet = vi.spyOn(db.cards, "bulkGet");
+        const imageBulkGet = vi.spyOn(db.images, "bulkGet");
+        const cardBulkUpdate = vi.spyOn(db.cards, "bulkUpdate");
+        const imageBulkUpdate = vi.spyOn(db.images, "bulkUpdate");
+        const arrayFind = vi.spyOn(Array.prototype, "find");
+        let operationCounts: Record<string, number>;
 
-      const cardBulkGet = vi.spyOn(db.cards, "bulkGet");
-      const imageBulkGet = vi.spyOn(db.images, "bulkGet");
-      const cardBulkUpdate = vi.spyOn(db.cards, "bulkUpdate");
-      const imageBulkUpdate = vi.spyOn(db.images, "bulkUpdate");
-      const arrayFind = vi.spyOn(Array.prototype, "find");
-      let operationCounts: Record<string, number>;
+        try {
+          await createLinkedBackCardsBulk(assignments);
+          operationCounts = {
+            cardBulkGet: cardBulkGet.mock.calls.length,
+            imageBulkGet: imageBulkGet.mock.calls.length,
+            cardBulkUpdate: cardBulkUpdate.mock.calls.length,
+            imageBulkUpdate: imageBulkUpdate.mock.calls.length,
+            arrayFind: arrayFind.mock.calls.length,
+          };
+        } finally {
+          arrayFind.mockRestore();
+          cardBulkGet.mockRestore();
+          imageBulkGet.mockRestore();
+          cardBulkUpdate.mockRestore();
+          imageBulkUpdate.mockRestore();
+        }
 
-      try {
-        await createLinkedBackCardsBulk(assignments);
-        operationCounts = {
-          cardBulkGet: cardBulkGet.mock.calls.length,
-          imageBulkGet: imageBulkGet.mock.calls.length,
-          cardBulkUpdate: cardBulkUpdate.mock.calls.length,
-          imageBulkUpdate: imageBulkUpdate.mock.calls.length,
-          arrayFind: arrayFind.mock.calls.length,
-        };
-      } finally {
-        arrayFind.mockRestore();
-        cardBulkGet.mockRestore();
-        imageBulkGet.mockRestore();
-        cardBulkUpdate.mockRestore();
-        imageBulkUpdate.mockRestore();
-      }
+        const backIds = Array.from({ length: linkCount }, (_, index) => `${prefix}-back-${index}`);
+        await expect(db.cards.bulkGet(backIds).then((backs) => backs.map((back) => back?.imageId))).resolves.toEqual(
+          Array.from({ length: linkCount }, (_, index) => `${prefix}-image-${index ^ 1}`),
+        );
+        await expect(db.images.bulkGet(images.map((image) => image.id))).resolves.toEqual(images);
+        expect(operationCounts!).toEqual({
+          cardBulkGet: 2,
+          imageBulkGet: 1,
+          cardBulkUpdate: 1,
+          imageBulkUpdate: 0,
+          arrayFind: 2,
+        });
 
-      expect(operationCounts!).toEqual({
-        cardBulkGet: 2,
-        imageBulkGet: 1,
-        cardBulkUpdate: 1,
-        imageBulkUpdate: 0,
-        arrayFind: 2,
-      });
-      await expect(db.images.bulkGet(images.map((image) => image.id))).resolves.toEqual(
-        expect.arrayContaining(images)
-      );
-      await expect(db.cards.bulkGet(["back-0", "back-1"]).then((backs) => backs.map((back) => back?.imageId))).resolves.toEqual([
-        "image-1",
-        "image-0",
-      ]);
+        return operationCounts!;
+      };
+
+      const small = await relinkAndCapture(64, "n64");
+      const large = await relinkAndCapture(256, "n256");
+
+      expect(large).toEqual(small);
     });
   });
 

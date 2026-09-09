@@ -464,57 +464,87 @@ describe("PageView behavior", () => {
     });
   });
 
-  it("records exact multi-drag undo adjustments with a single original-order lookup pass", async () => {
+  it("records deterministic multi-drag original-order lookup scaling at 64 and 256 cards", async () => {
     vi.useFakeTimers();
-    const cards = Array.from({ length: 64 }, (_, index) =>
-      makeCard({
-        uuid: `card-${index + 1}`,
-        order: (index + 1) * 100,
-        imageId: "img-1",
-      }),
-    );
-    let uuidReads = 0;
-    for (const card of cards) {
-      const uuid = card.uuid;
-      Object.defineProperty(card, "uuid", {
-        configurable: true,
-        enumerable: true,
-        get: () => {
-          uuidReads += 1;
-          return uuid;
-        },
-      });
-    }
+    const dragAndCapture = async (cardCount: number) => {
+      cleanup();
+      vi.clearAllTimers();
+      state.dndProps = [];
+      state.undoableReorderMultipleCards.mockClear();
+      state.rebalanceCardOrders.mockClear();
 
-    state.selection.selectedCards = new Set(cards.slice(0, 32).map((card) => card.uuid));
-    renderPage(cards);
-    await act(async () => undefined);
+      const cards = Array.from({ length: cardCount }, (_, index) =>
+        makeCard({
+          uuid: `card-${index + 1}`,
+          order: (index + 1) * 100,
+          imageId: "img-1",
+        }),
+      );
+      state.selection.selectedCards = new Set(cards.slice(0, cardCount / 2).map((card) => card.uuid));
+      renderPage(cards);
+      await act(async () => undefined);
 
-    act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
-    act(() => vi.advanceTimersByTime(50));
-    await act(async () => undefined);
-    act(() => state.dndProps.at(-1)!.onDragOver({
-      active: { id: "card-1" },
-      over: { id: "card-64" },
-    }));
-    act(() => vi.advanceTimersByTime(100));
-    await act(async () => undefined);
-
-    uuidReads = 0;
-    await act(async () => {
-      await state.dndProps.at(-1)!.onDragEnd({
+      act(() => state.dndProps.at(-1)!.onDragStart({ active: { id: "card-1" } }));
+      act(() => vi.advanceTimersByTime(50));
+      await act(async () => undefined);
+      act(() => state.dndProps.at(-1)!.onDragOver({
         active: { id: "card-1" },
-        over: { id: "card-64" },
-      });
-    });
+        over: { id: `card-${cardCount}` },
+      }));
+      act(() => vi.advanceTimersByTime(100));
+      await act(async () => undefined);
 
-    expect(uuidReads).toBeLessThan(cards.length * 10);
-    expect(state.undoableReorderMultipleCards).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        { uuid: "card-33", oldOrder: 3300, newOrder: 10 },
-        { uuid: "card-1", oldOrder: 100, newOrder: 330 },
-      ]),
-    );
+      const mapGetSpy = vi.spyOn(Map.prototype, "get");
+      let originalOrderLookupCount: number;
+      try {
+        await act(async () => {
+          await state.dndProps.at(-1)!.onDragEnd({
+            active: { id: "card-1" },
+            over: { id: `card-${cardCount}` },
+          });
+        });
+        originalOrderLookupCount = mapGetSpy.mock.calls.filter(
+          ([key], index) => {
+            const map = mapGetSpy.mock.contexts[index];
+            return (
+              typeof key === "string" &&
+              /^card-\d+$/.test(key) &&
+              map instanceof Map &&
+              map.size === cardCount &&
+              map.has("card-1") &&
+              map.has(`card-${cardCount}`)
+            );
+          },
+        ).length;
+      } finally {
+        mapGetSpy.mockRestore();
+      }
+
+      const expectedAdjustments = [
+        ...Array.from({ length: cardCount / 2 }, (_, index) => {
+          const cardNumber = cardCount / 2 + index + 1;
+          return { uuid: `card-${cardNumber}`, oldOrder: cardNumber * 100, newOrder: (index + 1) * 10 };
+        }),
+        ...Array.from({ length: cardCount / 2 }, (_, index) => ({
+          uuid: `card-${index + 1}`,
+          oldOrder: (index + 1) * 100,
+          newOrder: (cardCount / 2 + index + 1) * 10,
+        })),
+      ];
+      const adjustments = state.undoableReorderMultipleCards.mock.calls[0]?.[0];
+      expect(adjustments).toEqual(expectedAdjustments);
+      expect(originalOrderLookupCount!).toBe(cardCount);
+      expect(state.rebalanceCardOrders).toHaveBeenCalledWith("project-1");
+
+      return { adjustments, originalOrderLookupCount: originalOrderLookupCount! };
+    };
+
+    const small = await dragAndCapture(64);
+    const large = await dragAndCapture(256);
+
+    expect(large.originalOrderLookupCount).toBe(small.originalOrderLookupCount * 4);
+    expect(small.adjustments).toHaveLength(64);
+    expect(large.adjustments).toHaveLength(256);
   });
 
   it("updates PageView and drag-overlay geometry for every source target primitive", async () => {

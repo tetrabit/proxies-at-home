@@ -234,8 +234,9 @@ describe("shareHelper", () => {
       findSpy.mockRestore();
     });
 
-    it("keeps UUID lookup operations proportional for DFC-heavy shares", () => {
-      const serializeAndCountMapGets = (pairCount: number) => {
+    it("records deterministic DFC UUID lookup scaling at 64 and 256 cards", () => {
+      const serializeAndCountMapGets = (cardCount: number) => {
+        const pairCount = cardCount / 2;
         const fronts: CardOption[] = Array.from({ length: pairCount }, (_, index) => ({
           uuid: `front-${index}`,
           name: `Front ${index}`,
@@ -257,23 +258,40 @@ describe("shareHelper", () => {
           linkedFrontId: `front-${index}`,
         }));
         const mapGetSpy = vi.spyOn(Map.prototype, "get");
-        const result = serializeCards([...fronts, ...backs]);
-        const mapGetCount = mapGetSpy.mock.calls.length;
-        mapGetSpy.mockRestore();
+        const arrayFindSpy = vi.spyOn(Array.prototype, "find");
+        let result: ReturnType<typeof serializeCards>;
+        let mapGetCount: number;
+        let arrayFindCount: number;
 
-        return { result, mapGetCount };
+        try {
+          result = serializeCards([...fronts, ...backs]);
+          mapGetCount = mapGetSpy.mock.calls.length;
+          arrayFindCount = arrayFindSpy.mock.calls.length;
+        } finally {
+          arrayFindSpy.mockRestore();
+          mapGetSpy.mockRestore();
+        }
+
+        return { result: result!, mapGetCount: mapGetCount!, arrayFindCount: arrayFindCount! };
       };
 
-      const small = serializeAndCountMapGets(16);
-      const large = serializeAndCountMapGets(64);
+      const small = serializeAndCountMapGets(64);
+      const large = serializeAndCountMapGets(256);
 
       expect(small.result.dfc).toEqual(
-        Array.from({ length: 16 }, (_, index) => [index, index + 16])
+        Array.from({ length: 32 }, (_, index) => [index, index + 32])
       );
       expect(large.result.dfc).toEqual(
-        Array.from({ length: 64 }, (_, index) => [index, index + 64])
+        Array.from({ length: 128 }, (_, index) => [index, index + 128])
       );
-      expect(small.mapGetCount).toBeGreaterThan(0);
+      expect(small.result.shareCards).toHaveLength(64);
+      expect(large.result.shareCards).toHaveLength(256);
+      expect(small.result.skipped).toBe(0);
+      expect(large.result.skipped).toBe(0);
+      expect(small.arrayFindCount).toBe(0);
+      expect(large.arrayFindCount).toBe(0);
+      expect(small.mapGetCount).toBe(64);
+      expect(large.mapGetCount).toBe(256);
       expect(large.mapGetCount).toBe(small.mapGetCount * 4);
     });
   });

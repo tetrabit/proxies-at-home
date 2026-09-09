@@ -14,7 +14,7 @@
  *   npm run release -- --skip-validation  # Skip build/lint validation
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 import { createInterface } from 'readline';
 import { isReleaseNotesProviderConfigured, startReleaseNotesGeneration } from './release-notes.mjs';
@@ -61,6 +61,32 @@ const run = (cmd, options = {}) => {
         error(`Command failed: ${cmd}\n${e.message}`);
     }
 };
+
+const runAsync = (cmd) => new Promise((resolve, reject) => {
+    const child = spawn(cmd, { shell: true, stdio: 'inherit' });
+    let settled = false;
+
+    const fail = (reason) => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`Command failed: ${cmd}\n${reason.message}`));
+    };
+
+    child.once('error', fail);
+    child.once('close', (code, signal) => {
+        if (code === 0) {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+            return;
+        }
+
+        fail(new Error(signal
+            ? `Command terminated by signal ${signal}`
+            : `Command failed with exit code ${code}`));
+    });
+});
 
 // Helper to prompt user
 const prompt = (question) => {
@@ -150,8 +176,51 @@ const checkGhAuth = () => {
     return { available: true, authenticated };
 };
 
-// Run pre-release validation (build + typecheck + lint + component tests)
-const runValidation = () => {
+const VALIDATION_CONCURRENCY = 3;
+
+const runValidationGates = async (gates) => {
+    const running = new Set();
+    let nextGate = 0;
+    let firstFailure = null;
+
+    const launch = (gate) => {
+        info(gate.startMessage);
+        let completion;
+        completion = runAsync(gate.command).then(
+            () => {
+                success(gate.successMessage);
+                return { completion, error: null };
+            },
+            (error) => {
+                firstFailure ??= error;
+                return { completion, error };
+            },
+        );
+        running.add(completion);
+    };
+
+    while (nextGate < gates.length && running.size < VALIDATION_CONCURRENCY) {
+        launch(gates[nextGate++]);
+    }
+
+    while (running.size > 0) {
+        const result = await Promise.race(running);
+        running.delete(result.completion);
+
+        if (!firstFailure) {
+            while (nextGate < gates.length && running.size < VALIDATION_CONCURRENCY) {
+                launch(gates[nextGate++]);
+            }
+        }
+    }
+
+    if (firstFailure) {
+        throw firstFailure;
+    }
+};
+
+// Run pre-release validation (aggregate build, then bounded independent gates)
+const runValidation = async () => {
     info('Running pre-release validation...');
     console.log('');
 
@@ -159,25 +228,35 @@ const runValidation = () => {
     run('npm run build:parallel', { throwOnError: true });
     success('Component builds passed!');
 
-    info('Typechecking client...');
-    run('npm run typecheck --prefix client', { throwOnError: true });
-    success('Typecheck passed!');
+    const gates = [
+        {
+            startMessage: 'Typechecking client...',
+            command: 'npm run typecheck --prefix client',
+            successMessage: 'Typecheck passed!',
+        },
+        {
+            startMessage: 'Linting client...',
+            command: 'npm run lint --prefix client',
+            successMessage: 'Lint passed!',
+        },
+        {
+            startMessage: 'Testing client...',
+            command: 'npm run test --prefix client',
+            successMessage: 'Client tests passed!',
+        },
+        {
+            startMessage: 'Testing server...',
+            command: 'npm run test --prefix server',
+            successMessage: 'Server tests passed!',
+        },
+        {
+            startMessage: 'Testing Electron...',
+            command: 'npx --no-install vitest --config electron/vitest.config.ts run',
+            successMessage: 'Electron tests passed!',
+        },
+    ];
 
-    info('Linting client...');
-    run('npm run lint --prefix client', { throwOnError: true });
-    success('Lint passed!');
-
-    info('Testing client...');
-    run('npm run test --prefix client', { throwOnError: true });
-    success('Client tests passed!');
-
-    info('Testing server...');
-    run('npm run test --prefix server', { throwOnError: true });
-    success('Server tests passed!');
-
-    info('Testing Electron...');
-    run('npx --no-install vitest --config electron/vitest.config.ts run', { throwOnError: true });
-    success('Electron tests passed!');
+    await runValidationGates(gates);
 
     console.log('');
     success('Pre-release validation complete!');
@@ -548,7 +627,7 @@ async function main() {
     // Run pre-release validation unless skipped
     if (!skipValidation) {
         console.log('');
-        runValidation();
+        await runValidation();
     } else {
         warn('Skipping pre-release validation (--skip-validation)');
     }
