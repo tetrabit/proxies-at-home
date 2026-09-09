@@ -1,5 +1,17 @@
 import { EventEmitter } from "events";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
+const emittedEsmFixtureDirectory = path.join(
+  repositoryRoot,
+  ".review-artifacts",
+  "electron-esm-path-01"
+);
 
 const appMock = {
   isPackaged: false,
@@ -130,6 +142,64 @@ describe("MicroserviceManager", () => {
 
     expect(manager.getPort()).toBe(9090);
     expect(manager.isRunning()).toBe(false);
+  });
+
+  it("resolves the development binary from its emitted ESM module URL", async () => {
+    const childProcess = process.getBuiltinModule("node:child_process");
+    const fsPromises = process.getBuiltinModule("node:fs/promises");
+    if (!childProcess || !fsPromises) {
+      throw new Error("Node built-in modules are unavailable for the emitted ESM probe");
+    }
+    const { execFileSync } = childProcess;
+    const { mkdir, writeFile } = fsPromises;
+    await mkdir(emittedEsmFixtureDirectory, { recursive: true });
+    const electronStub = path.join(emittedEsmFixtureDirectory, "electron-stub.mjs");
+    const loader = path.join(emittedEsmFixtureDirectory, "electron-loader.mjs");
+    const probe = path.join(emittedEsmFixtureDirectory, "emitted-esm-probe.mjs");
+    await writeFile(
+      electronStub,
+      'export const app = { isPackaged: false, getPath: () => "" };\n'
+    );
+    await writeFile(
+      loader,
+      `const electronStub = new URL("./electron-stub.mjs", import.meta.url).href;
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "electron") {
+    return { url: electronStub, shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`
+    );
+    await writeFile(
+      probe,
+      `import { MicroserviceManager } from "../../electron/dist/microservice-manager.js";
+const config = { binaryName: "cache-bin" };
+console.log(MicroserviceManager.prototype.getBinaryPath.call({ config }));
+`
+    );
+
+    execFileSync(
+      path.join(repositoryRoot, "node_modules", ".bin", "tsc"),
+      ["-p", "electron/tsconfig.json"],
+      { cwd: repositoryRoot, stdio: "pipe" }
+    );
+    const emittedPath = execFileSync(
+      process.execPath,
+      ["--experimental-loader", loader, probe],
+      { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+    ).trim();
+
+    expect(emittedPath).toBe(
+      path.join(
+        repositoryRoot,
+        "..",
+        "scryfall-cache-microservice",
+        "target",
+        "release",
+        "cache-bin"
+      )
+    );
   });
 
   it("starts an injected harness launch with deterministic environment and stops it cleanly", async () => {

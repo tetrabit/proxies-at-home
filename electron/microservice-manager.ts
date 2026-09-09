@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { app } from "electron";
 import http from "http";
+import { fileURLToPath } from "url";
 
 export interface MicroserviceConfig {
   name: string;
@@ -198,7 +199,7 @@ export class MicroserviceManager {
     if (isDev) {
       const ext = process.platform === "win32" ? ".exe" : "";
       return path.join(
-        __dirname,
+        path.dirname(fileURLToPath(import.meta.url)),
         "../../..",
         "scryfall-cache-microservice",
         "target",
