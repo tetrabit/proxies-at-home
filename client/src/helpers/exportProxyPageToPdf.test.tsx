@@ -206,6 +206,72 @@ describe("exportProxyPagesToPdf", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:page-0");
   });
 
+  it("sends each worker page only its referenced front and back images without changing page cards", async () => {
+    const defaultCardback = { id: "cardback_builtin_mtg" } as import("../db").Image;
+    const frontOne = { id: "front-one" } as import("../db").Image;
+    const frontTwo = { id: "front-two" } as import("../db").Image;
+    const unrelatedImage = { id: "unrelated" } as import("../db").Image;
+    const imagesById = new Map<string, import("../db").Image>([
+      [frontOne.id, frontOne],
+      [frontTwo.id, frontTwo],
+      [defaultCardback.id, defaultCardback],
+      [unrelatedImage.id, unrelatedImage],
+    ]);
+    const cards = [
+      testCard({
+        uuid: "front-1",
+        imageId: frontOne.id,
+        overrides: { brightness: 3 },
+      }),
+      testCard({
+        uuid: "back-1",
+        imageId: defaultCardback.id,
+        linkedFrontId: "front-1",
+        usesDefaultCardback: true,
+      }),
+      testCard({ uuid: "front-2", imageId: frontTwo.id }),
+      testCard({
+        uuid: "back-2",
+        imageId: defaultCardback.id,
+        linkedFrontId: "front-2",
+        usesDefaultCardback: true,
+      }),
+      testCard({ uuid: "missing-image", imageId: "missing" }),
+    ];
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+
+    await exportProxyPagesToPdf({
+      cards,
+      imagesById,
+      pdfSettings: { ...baseSettings, columns: 2, rows: 1 },
+      pagesPerPdf: 0,
+      cancellationPromise: new Promise(() => undefined),
+      returnBuffer: true,
+    });
+
+    const posted = MockWorker.instances[0].postMessage.mock.calls.map(
+      ([message]) => message
+    );
+    expect(posted.map((message) => message.pageCards)).toEqual([
+      cards.slice(0, 2),
+      cards.slice(2, 4),
+      cards.slice(4, 5),
+    ]);
+    expect(posted[0].pageCards[0].overrides).toEqual({ brightness: 3 });
+    expect(posted.map((message) => [...message.settings.imagesById.keys()])).toEqual([
+      [frontOne.id, defaultCardback.id],
+      [frontTwo.id, defaultCardback.id],
+      [],
+    ]);
+    expect(posted[0].settings.imagesById.get(frontOne.id)).toBe(frontOne);
+    expect(posted[1].settings.imagesById.get(defaultCardback.id)).toBe(
+      defaultCardback
+    );
+    expect(posted.every((message) => message.settings.imagesById !== imagesById)).toBe(
+      true
+    );
+  });
+
   it("downloads merged PDFs and includes filename suffixes", async () => {
     vi.useFakeTimers();
     const link = document.createElement("a");

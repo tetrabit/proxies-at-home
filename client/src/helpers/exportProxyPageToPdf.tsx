@@ -29,6 +29,22 @@ function* pageGenerator(
   }
 }
 
+function buildPageImagesById(
+  pageCards: CardOption[],
+  imagesById: Map<string, import("../db").Image>
+): Map<string, import("../db").Image> {
+  const pageImagesById = new Map<string, import("../db").Image>();
+  for (const card of pageCards) {
+    if (!card.imageId) continue;
+
+    const image = imagesById.get(card.imageId);
+    if (image !== undefined) {
+      pageImagesById.set(card.imageId, image);
+    }
+  }
+  return pageImagesById;
+}
+
 export async function exportProxyPagesToPdf({
   cards,
   imagesById,
@@ -277,6 +293,11 @@ export async function exportProxyPagesToPdf({
                     }
                   }
 
+                  const pageImagesById = buildPageImagesById(
+                    task.pageCards,
+                    imagesById
+                  );
+
                   const settings = {
                     pageWidth,
                     pageHeight,
@@ -291,7 +312,7 @@ export async function exportProxyPagesToPdf({
                     guideColor,
                     guideWidthCssPx,
                     DPI: dpi,
-                    imagesById,
+                    imagesById: pageImagesById,
                     API_BASE,
                     darkenMode,
                     darkenThreshold,
