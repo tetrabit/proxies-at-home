@@ -320,8 +320,9 @@ describe('CardEditorModal', () => {
         });
 
         it('keeps the actual modal open and shows an error when selected apply rejects', async () => {
-            const rejectedApply = vi.fn().mockRejectedValue(new Error('Selection is no longer valid'));
-            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            const expectedApplicationError = new Error('Selection is no longer valid');
+            const rejectedApply = vi.fn().mockRejectedValue(expectedApplicationError);
+            const errorSpy = vi.spyOn(console, 'error');
             try {
                 render(
                     <CardEditorModal
@@ -341,18 +342,22 @@ describe('CardEditorModal', () => {
                 expect(mockOnClose).not.toHaveBeenCalled();
                 expect(await screen.findByRole('alert')).toHaveTextContent('Selection is no longer valid');
                 expect(screen.getByText('Apply to 2 & Close')).toBeInTheDocument();
-                expect(errorSpy).toHaveBeenCalledWith(
+                // This expected application rejection diagnostic must remain visible; the exact
+                // one-call assertion also fails on unexpected diagnostics, including act warnings.
+                expect(errorSpy).toHaveBeenCalledTimes(1);
+                expect(errorSpy.mock.calls).toEqual([[
                     '[CardEditorModal] Apply failed:',
-                    expect.any(Error),
-                );
+                    expectedApplicationError,
+                ]]);
             } finally {
                 errorSpy.mockRestore();
             }
         });
 
         it('retains actual modal state and shows an error when selected reset rejects', async () => {
-            const rejectedReset = vi.fn().mockRejectedValue(new Error('Selection reset failed'));
-            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            const expectedApplicationError = new Error('Selection reset failed');
+            const rejectedReset = vi.fn().mockRejectedValue(expectedApplicationError);
+            const errorSpy = vi.spyOn(console, 'error');
             try {
                 render(
                     <CardEditorModal
@@ -373,10 +378,13 @@ describe('CardEditorModal', () => {
                 expect(mockOnClose).not.toHaveBeenCalled();
                 expect(await screen.findByRole('alert')).toHaveTextContent('Selection reset failed');
                 expect(screen.getByTitle('Reset to global defaults')).toBeInTheDocument();
-                expect(errorSpy).toHaveBeenCalledWith(
+                // This expected application rejection diagnostic must remain visible; the exact
+                // one-call assertion also fails on unexpected diagnostics, including act warnings.
+                expect(errorSpy).toHaveBeenCalledTimes(1);
+                expect(errorSpy.mock.calls).toEqual([[
                     '[CardEditorModal] Reset failed:',
-                    expect.any(Error),
-                );
+                    expectedApplicationError,
+                ]]);
             } finally {
                 errorSpy.mockRestore();
             }
