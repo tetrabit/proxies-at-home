@@ -275,6 +275,150 @@ describe("exportProxyPagesToPdf", () => {
     expect(MockWorker.instances).toHaveLength(0);
   });
 
+  it("admits a common 1200-DPI Letter page with nine MPC-bleed cards", async () => {
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+    const cards = Array.from({ length: 9 }, (_, index) =>
+      testCard({
+        uuid: `card-${index}`,
+        bleedMode: "generate",
+        generateBleedMm: 3.175,
+      })
+    );
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards,
+        imagesById: new Map(),
+        pdfSettings: {
+          ...baseSettings,
+          dpi: 1200,
+          pageWidth: 8.5,
+          pageHeight: 11,
+          columns: 3,
+          rows: 3,
+          bleedEdge: true,
+          bleedEdgeWidthMm: 3.175,
+        },
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).resolves.toEqual(new Uint8Array([1, 2, 3]));
+
+    expect(MockWorker.instances).toHaveLength(1);
+  });
+
+  it("rejects a small-page export whose oversized card alone exceeds CPU admission before cache or worker work", async () => {
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards: [
+          testCard({
+            bleedMode: "generate",
+            generateBleedMm: 120,
+            overrides: { brightness: 1 },
+            imageId: "image-1",
+          }),
+        ],
+        imagesById: new Map(),
+        pdfSettings: {
+          ...baseSettings,
+          dpi: 1200,
+          bleedEdge: true,
+        },
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).rejects.toThrow("PDF export CPU surfaces exceed the admission budget");
+
+    expect(mocks.getEffectCacheEntry).not.toHaveBeenCalled();
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("rejects a Letter page when nine retained cards plus four preparations exceed CPU admission", async () => {
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+    const cards = Array.from({ length: 9 }, (_, index) =>
+      testCard({
+        uuid: `large-card-${index}`,
+        bleedMode: "generate",
+        generateBleedMm: 12,
+      })
+    );
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards,
+        imagesById: new Map(),
+        pdfSettings: {
+          ...baseSettings,
+          dpi: 1200,
+          pageWidth: 8.5,
+          pageHeight: 11,
+          columns: 3,
+          rows: 3,
+          bleedEdge: true,
+        },
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).rejects.toThrow("PDF export CPU surfaces exceed the admission budget");
+
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("counts a configured per-card guide surface alongside retained cards and four preparations", async () => {
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+    const cards = Array.from({ length: 9 }, (_, index) =>
+      testCard({
+        uuid: `guided-card-${index}`,
+        bleedMode: "generate",
+        generateBleedMm: 11,
+      })
+    );
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards,
+        imagesById: new Map(),
+        pdfSettings: {
+          ...baseSettings,
+          dpi: 1200,
+          pageWidth: 8.5,
+          pageHeight: 11,
+          columns: 3,
+          rows: 3,
+          bleedEdge: true,
+          perCardGuideStyle: "corners",
+        },
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).rejects.toThrow("PDF export CPU surfaces exceed the admission budget");
+
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it("rejects non-finite admission inputs before spawning a worker", async () => {
+    const { exportProxyPagesToPdf } = await import("./exportProxyPageToPdf");
+
+    await expect(
+      exportProxyPagesToPdf({
+        cards: [testCard()],
+        imagesById: new Map(),
+        pdfSettings: { ...baseSettings, dpi: Number.NaN },
+        pagesPerPdf: 1,
+        cancellationPromise: new Promise(() => undefined),
+        returnBuffer: true,
+      })
+    ).rejects.toThrow("PDF export settings must be finite positive values");
+
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
   it("sends each worker page only its referenced front and back images without changing page cards", async () => {
     const defaultCardback = { id: "cardback_builtin_mtg" } as import("../db").Image;
     const frontOne = { id: "front-one" } as import("../db").Image;

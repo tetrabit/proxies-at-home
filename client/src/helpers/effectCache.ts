@@ -763,6 +763,17 @@ interface RenditionGeneration {
     value: number;
 }
 
+interface RenderedRendition {
+    generation: number;
+    entry: EffectCacheEntry;
+}
+
+interface RenditionPersistenceFence {
+    cacheEntryKey: string;
+    generation: RenditionGeneration;
+    processorGeneration: number;
+}
+
 interface InFlightRendition {
     completion: Promise<void>;
     cacheEntryKey: string;
@@ -776,6 +787,7 @@ const inFlightRenditions = new Map<string, InFlightRendition>();
 // must not replace the newer source revision at that key.
 const latestRenditionGenerationByCacheKey = new Map<string, number>();
 const pendingRenditionRequestsByCacheKey = new Map<string, number>();
+const latestRenderedRenditionByCacheKey = new Map<string, RenderedRendition>();
 let nextRenditionGeneration = 0;
 let effectProcessorGeneration = 0;
 
@@ -797,10 +809,22 @@ function releaseRenditionGeneration(cacheEntryKey: string): void {
     }
     pendingRenditionRequestsByCacheKey.delete(cacheEntryKey);
     latestRenditionGenerationByCacheKey.delete(cacheEntryKey);
+    latestRenderedRenditionByCacheKey.delete(cacheEntryKey);
 }
 
 function isCurrentRenditionGeneration(cacheEntryKey: string, generation: number): boolean {
     return latestRenditionGenerationByCacheKey.get(cacheEntryKey) === generation;
+}
+
+function transferRenderedRenditionOwnership(
+    cacheEntryKey: string,
+    previousGeneration: number,
+    nextGeneration: number
+): void {
+    const rendered = latestRenderedRenditionByCacheKey.get(cacheEntryKey);
+    if (rendered?.generation === previousGeneration) {
+        rendered.generation = nextGeneration;
+    }
 }
 
 function getExportBlobContentDigest(exportBlob: Blob): Promise<string> {
@@ -854,7 +878,9 @@ async function getOrCreatePreRender(
         if (existing) {
             // Equivalent source bytes share a renderer, but the newest request owns
             // the target cache generation that its shared result may persist into.
+            const previousGeneration = existing.generation.value;
             existing.generation.value = renditionGeneration;
+            transferRenderedRenditionOwnership(cacheEntryKey, previousGeneration, renditionGeneration);
             return existing.completion;
         }
 
@@ -862,13 +888,11 @@ async function getOrCreatePreRender(
         const completion = (async () => {
             const params = overridesToRenderParams(overrides);
             const renderedBlob = await EffectProcessor.getInstance().process(exportBlob, params);
-            if (
-                processorGeneration !== effectProcessorGeneration
-                || !isCurrentRenditionGeneration(cacheEntryKey, generation.value)
-            ) {
-                return;
-            }
-            await setEffectCacheEntry(imageId, overrides, renderedBlob, dpi);
+            await setEffectCacheEntry(imageId, overrides, renderedBlob, dpi, {
+                cacheEntryKey,
+                generation,
+                processorGeneration,
+            });
         })();
         const rendition: InFlightRendition = {
             cacheEntryKey,
@@ -897,6 +921,51 @@ function enforceEffectCacheLimitsSerially(): Promise<void> {
         .then(() => undefined);
     effectCacheLimitEnforcement = enforcement.catch(() => undefined);
     return enforcement;
+}
+
+function isCurrentPersistenceFence(fence: RenditionPersistenceFence, generation: number): boolean {
+    return (
+        fence.processorGeneration === effectProcessorGeneration
+        && isCurrentRenditionGeneration(fence.cacheEntryKey, generation)
+    );
+}
+
+async function persistFencedEffectCacheEntry(
+    entry: EffectCacheEntry,
+    fence: RenditionPersistenceFence
+): Promise<boolean> {
+    // Capture ownership at the transaction boundary. The mutable generation may
+    // transfer to an equivalent coalesced request while an earlier transaction waits.
+    const generationAtBoundary = fence.generation.value;
+    let committed = false;
+    await db.transaction('rw', db.effectCache, async () => {
+        if (!isCurrentPersistenceFence(fence, generationAtBoundary)) return;
+        await db.effectCache.put(entry);
+        committed = true;
+    });
+
+    if (!committed || isCurrentPersistenceFence(fence, generationAtBoundary)) {
+        return committed;
+    }
+
+    // A testable, asynchronous table implementation can let an already-dispatched
+    // write settle after ownership changes. Restore the newest rendered candidate
+    // only when it is still the owner; never replay the obsolete entry.
+    const current = latestRenderedRenditionByCacheKey.get(fence.cacheEntryKey);
+    if (!current || !isCurrentPersistenceFence(fence, current.generation)) {
+        return false;
+    }
+    if (current.entry === entry) {
+        return true;
+    }
+
+    let restored = false;
+    await db.transaction('rw', db.effectCache, async () => {
+        if (!isCurrentPersistenceFence(fence, current.generation)) return;
+        await db.effectCache.put(current.entry);
+        restored = true;
+    });
+    return restored;
 }
 
 // --- Public Cache API ---
@@ -929,7 +998,8 @@ async function setEffectCacheEntry(
     imageId: string,
     overrides: CardOverrides,
     blob: Blob,
-    dpi?: number
+    dpi?: number,
+    fence?: RenditionPersistenceFence
 ): Promise<void> {
     const effectiveDpi = dpi ?? useSettingsStore.getState().dpi;
     const key = computeCacheKey(imageId, overrides, effectiveDpi);
@@ -939,7 +1009,15 @@ async function setEffectCacheEntry(
         size: blob.size,
         cachedAt: Date.now(),
     };
-    await db.effectCache.put(entry);
+    if (fence) {
+        latestRenderedRenditionByCacheKey.set(fence.cacheEntryKey, {
+            generation: fence.generation.value,
+            entry,
+        });
+        if (!await persistFencedEffectCacheEntry(entry, fence)) return;
+    } else {
+        await db.effectCache.put(entry);
+    }
     await enforceEffectCacheLimitsSerially();
 }
 

@@ -5,6 +5,7 @@ import { AsyncLock } from "./AsyncLock";
 import type { WorkerPdfSettings } from "./serializeSettingsForWorker";
 import { getEffectCacheEntry } from "./effectCache";
 import { hasActiveAdjustments } from "./adjustmentUtils";
+import { assertPdfExportCpuAdmission } from "./pdfExportResourceBudget";
 
 /**
  * Worker event types for coordinator pattern
@@ -21,54 +22,10 @@ interface WorkerInfo {
 }
 
 /**
- * One high-DPI page worker is the documented CPU RGBA8 admission budget.
- *
- * This is deliberately independent of hardwareConcurrency: browser canvas,
- * encoder, driver, and GPU allocations are not CPU-accountable here and must
- * not be inferred from processor count.
+ * PDF workers are deliberately serialized. Admission accounts for the one
+ * worker's page/card CPU capacity; processor count is not a GPU/decoder bound.
  */
 const PDF_WORKERS_MAX = 1;
-const RGBA8_BYTES_PER_PIXEL = 4;
-const PDF_PAGE_CPU_SURFACES_PER_WORKER = 2;
-// Letter at 1200 DPI: two 10,200 × 13,200 RGBA8 CPU surfaces.
-const PDF_PAGE_CPU_SURFACE_BYTE_BUDGET = 1_077_120_000;
-const PDF_PAGE_CPU_PIXEL_BUDGET = Math.floor(
-  PDF_PAGE_CPU_SURFACE_BYTE_BUDGET /
-    (RGBA8_BYTES_PER_PIXEL * PDF_PAGE_CPU_SURFACES_PER_WORKER)
-);
-
-function assertPdfPageSurfaceFitsBudget({
-  dpi,
-  pageWidth,
-  pageHeight,
-  pageSizeUnit,
-}: Pick<
-  WorkerPdfSettings,
-  "dpi" | "pageWidth" | "pageHeight" | "pageSizeUnit"
->): void {
-  const pixelsPerUnit = dpi * (pageSizeUnit === "in" ? 1 : 1 / 25.4);
-  const widthPx = Math.ceil(pageWidth * pixelsPerUnit);
-  const heightPx = Math.ceil(pageHeight * pixelsPerUnit);
-
-  if (
-    !Number.isSafeInteger(widthPx) ||
-    !Number.isSafeInteger(heightPx) ||
-    widthPx < 1 ||
-    heightPx < 1
-  ) {
-    throw new Error(
-      "PDF export page dimensions must produce finite positive pixel dimensions"
-    );
-  }
-
-  // Compare against a quotient so an invalid request cannot overflow a byte
-  // calculation while being admitted.
-  if (widthPx > Math.floor(PDF_PAGE_CPU_PIXEL_BUDGET / heightPx)) {
-    throw new Error(
-      "PDF export page surfaces exceed the CPU admission budget"
-    );
-  }
-}
 
 function* pageGenerator(
   cards: CardOption[],
@@ -169,11 +126,10 @@ export async function exportProxyPagesToPdf({
     return [undefined, new Uint8Array()][Number(Boolean(returnBuffer))];
   }
 
-  assertPdfPageSurfaceFitsBudget({
-    dpi,
-    pageWidth,
-    pageHeight,
-    pageSizeUnit,
+  assertPdfExportCpuAdmission({
+    cards: cardsForExport,
+    imagesById,
+    settings: pdfSettings,
   });
 
   const totalImages = cardsForExport.length;

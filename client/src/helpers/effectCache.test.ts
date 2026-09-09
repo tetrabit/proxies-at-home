@@ -1,3 +1,4 @@
+import Dexie from 'dexie';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 import type { RenderParams } from '../components/CardCanvas/types';
@@ -13,6 +14,10 @@ vi.mock('@/store/settings', () => ({
 
 vi.mock('@/db', () => ({
     db: {
+        transaction: vi.fn((_mode: string, ...args: Array<unknown>) => {
+            const callback = args.at(-1) as () => unknown;
+            return callback();
+        }),
         effectCache: {
             get: vi.fn().mockResolvedValue(undefined),
             put: vi.fn().mockResolvedValue(undefined),
@@ -1102,6 +1107,101 @@ describe('effectCache', () => {
             const persistedAfterObsolete = await liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).first();
             expect(persistedAfterObsolete).toMatchObject({ size: currentRendered.size });
             await expect(liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).count()).resolves.toBe(1);
+        });
+
+        it('fences an obsolete real-Dexie write when a newer generation advances while it awaits persistence', async () => {
+            const imageId = 'td-48e40b-transaction-fence-race';
+            const processor = liveGetEffectProcessor();
+            const renderResolvers: Array<(blob: Blob) => void> = [];
+            vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                renderResolvers.push(resolve);
+            }));
+            const card = {
+                name: 'Adjusted',
+                order: 0,
+                isUserUpload: false,
+                imageId,
+                overrides: { brightness: 1 },
+            };
+            const obsoleteRendered = new Blob(['obsolete rendered revision'], { type: 'image/png' });
+            const currentRendered = new Blob(['current rendered revision'], { type: 'image/png' });
+            let releaseObsoletePut: (() => void) | undefined;
+            const originalPut = liveDb.effectCache.put.bind(liveDb.effectCache);
+            const put = vi.spyOn(liveDb.effectCache, 'put').mockImplementation((entry => {
+                if (entry.blob === obsoleteRendered) {
+                    return Dexie.waitFor(new Promise<void>(resolve => {
+                        releaseObsoletePut = resolve;
+                    })).then(() => originalPut(entry));
+                }
+                return originalPut(entry);
+            }) as typeof liveDb.effectCache.put);
+
+            const obsolete = livePreRenderEffect(
+                { ...card, uuid: 'td-48e40b-transaction-fence-obsolete' },
+                new Blob(['obsolete source revision'], { type: 'image/png' })
+            );
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(1));
+            renderResolvers[0](obsoleteRendered);
+            await vi.waitFor(() => expect(releaseObsoletePut).toBeTypeOf('function'));
+
+            const current = livePreRenderEffect(
+                { ...card, uuid: 'td-48e40b-transaction-fence-current' },
+                new Blob(['current source revision'], { type: 'image/png' })
+            );
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(2));
+            renderResolvers[1](currentRendered);
+            await Promise.resolve();
+            await Promise.resolve();
+
+            releaseObsoletePut?.();
+            await expect(Promise.all([obsolete, current])).resolves.toEqual([undefined, undefined]);
+            put.mockRestore();
+
+            await expect(liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).first())
+                .resolves.toMatchObject({ size: currentRendered.size });
+        });
+
+        it('transfers a coalesced request generation to the persistence fence', async () => {
+            const imageId = 'td-48e40b-coalesced-transaction-fence';
+            const processor = liveGetEffectProcessor();
+            let resolveRender: ((blob: Blob) => void) | undefined;
+            vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRender = resolve;
+            }));
+            const card = {
+                name: 'Adjusted',
+                order: 0,
+                isUserUpload: false,
+                imageId,
+                overrides: { brightness: 1 },
+            };
+            const rendered = new Blob(['coalesced rendered revision'], { type: 'image/png' });
+            let releasePut: (() => void) | undefined;
+            const originalPut = liveDb.effectCache.put.bind(liveDb.effectCache);
+            const put = vi.spyOn(liveDb.effectCache, 'put').mockImplementation((entry => {
+                if (entry.blob === rendered) {
+                    return Dexie.waitFor(new Promise<void>(resolve => {
+                        releasePut = resolve;
+                    })).then(() => originalPut(entry));
+                }
+                return originalPut(entry);
+            }) as typeof liveDb.effectCache.put);
+            const source = new Blob(['same source revision'], { type: 'image/png' });
+
+            const first = livePreRenderEffect({ ...card, uuid: 'td-48e40b-coalesced-first' }, source);
+            await vi.waitFor(() => expect(processor.process).toHaveBeenCalledTimes(1));
+            resolveRender?.(rendered);
+            await vi.waitFor(() => expect(releasePut).toBeTypeOf('function'));
+
+            const second = livePreRenderEffect({ ...card, uuid: 'td-48e40b-coalesced-second' }, source);
+            await Promise.resolve();
+            expect(processor.process).toHaveBeenCalledTimes(1);
+
+            releasePut?.();
+            await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+            put.mockRestore();
+            await expect(liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).first())
+                .resolves.toMatchObject({ size: rendered.size });
         });
     });
 
