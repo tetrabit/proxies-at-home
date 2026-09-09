@@ -150,7 +150,7 @@ const checkGhAuth = () => {
     return { available: true, authenticated };
 };
 
-// Run pre-release validation (build + lint)
+// Run pre-release validation (build + typecheck + lint)
 const runValidation = () => {
     info('Running pre-release validation...');
     console.log('');
@@ -158,6 +158,10 @@ const runValidation = () => {
     info('Building client...');
     run('npm run build --prefix client', { throwOnError: true });
     success('Build passed!');
+
+    info('Typechecking client...');
+    run('npm run typecheck --prefix client', { throwOnError: true });
+    success('Typecheck passed!');
 
     info('Linting client...');
     run('npm run lint --prefix client', { throwOnError: true });

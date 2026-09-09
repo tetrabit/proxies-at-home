@@ -11,6 +11,7 @@ MICROSERVICE_JOBS="${MICROSERVICE_JOBS:-}"
 MICROSERVICE_CLEAN="${MICROSERVICE_CLEAN:-}"
 MICROSERVICE_NO_MOLD="${MICROSERVICE_NO_MOLD:-}"
 MICROSERVICE_INCREMENTAL="${MICROSERVICE_INCREMENTAL:-}" # 0|1 (optional override)
+MICROSERVICE_ARTIFACT_MANIFEST="${MICROSERVICE_ARTIFACT_MANIFEST:-$PROJECT_ROOT/electron/dist/microservice-artifact.json}"
 
 echo "Building Scryfall Cache Microservice..."
 
@@ -32,6 +33,17 @@ case "$MICROSERVICE_PROFILE" in
         exit 1
         ;;
 esac
+
+if [ "${OS:-}" = "Windows_NT" ]; then
+    PLATFORM="win32"
+elif [ "$(uname -s)" = "Darwin" ]; then
+    PLATFORM="darwin"
+elif [ "$(uname -s)" = "Linux" ]; then
+    PLATFORM="linux"
+else
+    echo "ERROR: Unsupported build platform: $(uname -s)"
+    exit 1
+fi
 
 if [ -n "$MICROSERVICE_JOBS" ]; then
     JOBS="$MICROSERVICE_JOBS"
@@ -69,6 +81,7 @@ fi
 echo "  microservice: $MICROSERVICE_DIR"
 echo "  profile:      $MICROSERVICE_PROFILE"
 echo "  target-dir:   $CARGO_TARGET_DIR"
+echo "  manifest:     $MICROSERVICE_ARTIFACT_MANIFEST"
 echo "  jobs:         $JOBS"
 echo "  incremental:  $CARGO_INCREMENTAL"
 if [ "$USE_MOLD" = "1" ]; then
@@ -107,7 +120,7 @@ cargo build \
 
 # Check if binary was created
 BINARY="$CARGO_TARGET_DIR/$PROFILE_DIR/scryfall-cache"
-if [ "$OS" = "Windows_NT" ]; then
+if [ "$PLATFORM" = "win32" ]; then
     BINARY="${BINARY}.exe"
 fi
 
@@ -115,6 +128,23 @@ if [ ! -f "$BINARY" ]; then
     echo "ERROR: Binary not created at $BINARY"
     exit 1
 fi
+
+BINARY_DIR="$(cd "$(dirname "$BINARY")" && pwd)"
+BINARY="$BINARY_DIR/$(basename "$BINARY")"
+
+mkdir -p "$(dirname "$MICROSERVICE_ARTIFACT_MANIFEST")"
+MANIFEST_TEMP="${MICROSERVICE_ARTIFACT_MANIFEST}.tmp.$$"
+node - "$MANIFEST_TEMP" "$MICROSERVICE_ARTIFACT_MANIFEST" "$BINARY" "$PLATFORM" "$MICROSERVICE_PROFILE" <<'NODE'
+const fs = require("node:fs");
+
+const [temporaryPath, manifestPath, binaryPath, platform, profile] = process.argv.slice(2);
+fs.writeFileSync(
+  temporaryPath,
+  `${JSON.stringify({ schemaVersion: 1, binaryPath, platform, profile }, null, 2)}\n`,
+  { mode: 0o644 }
+);
+fs.renameSync(temporaryPath, manifestPath);
+NODE
 
 SIZE=$(du -h "$BINARY" | cut -f1)
 echo "✅ Microservice built successfully: $SIZE"
