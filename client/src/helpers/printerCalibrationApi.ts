@@ -25,7 +25,19 @@ export interface CalculateProfileRequest {
   back_y_measured_mm: number;
 }
 
-export type CalibrationPageMode = "duplex" | "back-only";
+export type CalibrationPageMode = "duplex" | "back-only" | "grouped-duplex";
+
+export type ApplyCalibrationOptions =
+  | {
+      pageMode?: Exclude<CalibrationPageMode, "grouped-duplex">;
+      signal?: AbortSignal;
+      frontPageCount?: never;
+    }
+  | {
+      pageMode: "grouped-duplex";
+      frontPageCount: number;
+      signal?: AbortSignal;
+    };
 
 /**
  * Wraps a network-level fetch rejection (TypeError / "Failed to fetch" / CORS /
@@ -145,7 +157,7 @@ export const generateCalibrationSheet = async (): Promise<Blob> => {
 export const applyCalibration = async (
   pdfBlob: Blob,
   profileName: string,
-  options?: { pageMode?: CalibrationPageMode; signal?: AbortSignal }
+  options?: ApplyCalibrationOptions
 ): Promise<Blob> => {
   return withCalibrationNetworkGuard("applyCalibration", async () => {
     const formData = new FormData();
@@ -153,6 +165,9 @@ export const applyCalibration = async (
     formData.append('profileName', profileName);
     if (options?.pageMode) {
       formData.append('pageMode', options.pageMode);
+    }
+    if (options?.pageMode === "grouped-duplex") {
+      formData.append('frontPageCount', String(options.frontPageCount));
     }
 
     const res = await privateFetch('/api/printer-calibration/apply', {

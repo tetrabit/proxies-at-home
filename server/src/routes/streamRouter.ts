@@ -8,6 +8,29 @@ import { type ScryfallCard } from "../../../shared/types.js";
 
 const streamRouter = express.Router();
 
+const DEFAULT_STREAM_OPERATION_TIMEOUT_MS = 120_000;
+
+function assertOperationTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("STREAM_OPERATION_TIMEOUT_MS must be a finite positive integer.");
+  }
+  return timeoutMs;
+}
+
+/**
+ * Bounds the complete POST /cards SSE operation, including time waiting in the
+ * Scryfall request broker and all card resolver work. Configure with
+ * STREAM_OPERATION_TIMEOUT_MS; the default is two minutes.
+ */
+function configuredOperationTimeout(environment: NodeJS.ProcessEnv = process.env): number {
+  const raw = environment.STREAM_OPERATION_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_STREAM_OPERATION_TIMEOUT_MS;
+  return assertOperationTimeout(Number(raw));
+}
+
+const configuredStreamOperationTimeoutMs = configuredOperationTimeout();
+let streamOperationTimeoutMs = configuredStreamOperationTimeoutMs;
+
 /**
  * Extract image URLs and prints from a Scryfall API card.
  * If requestedFaceName is provided, prioritize that face's image first.
@@ -151,25 +174,53 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
     return res.status(400).json({ error: validation.error });
   }
 
-  // 1. Set SSE headers for a persistent connection
+  // 1. Set SSE headers for a persistent connection.
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  // 2. Keep-alive pings to prevent timeouts (10s for slow networks)
-  const keepAliveInterval = setInterval(() => {
-    if (!isClosed) res.write(":keep-alive\n\n");
-  }, 10000);
-
-  // 3. Cancel resolver work only when this response is disconnected early.
-  // Request `close` is not a disconnect signal here: it can occur after Express
-  // has consumed the request body while the SSE response is still active.
+  // 2. A single deadline bounds queueing plus every resolver in this stream;
+  // it deliberately is not restarted between cards.
   let isClosed = false;
   const abortController = new AbortController();
+  let keepAliveInterval: ReturnType<typeof setInterval> | undefined;
+  let operationDeadline: ReturnType<typeof setTimeout> | undefined;
+  const stopStreamTimers = () => {
+    if (keepAliveInterval !== undefined) {
+      clearInterval(keepAliveInterval);
+      keepAliveInterval = undefined;
+    }
+    if (operationDeadline !== undefined) {
+      clearTimeout(operationDeadline);
+      operationDeadline = undefined;
+    }
+  };
+
+  operationDeadline = setTimeout(() => {
+    if (isClosed || res.writableEnded) return;
+    res.write(`event: fatal-error\ndata: ${JSON.stringify({
+      message: "The card stream operation timed out.",
+      timeoutMs: streamOperationTimeoutMs,
+    })}\n\n`);
+    isClosed = true;
+    stopStreamTimers();
+    abortController.abort();
+    res.end();
+  }, streamOperationTimeoutMs);
+
+  // 3. Keep-alive pings prevent intermediary idle timeouts while the bounded
+  // operation is pending.
+  keepAliveInterval = setInterval(() => {
+    if (!isClosed) res.write(":keep-alive\n\n");
+  }, 10_000);
+
+  // 4. Cancel resolver work only when this response is disconnected early.
+  // Request `close` is not a disconnect signal here: it can occur after Express
+  // has consumed the request body while the SSE response is still active.
   res.on("close", () => {
     isClosed = true;
-    clearInterval(keepAliveInterval);
+    stopStreamTimers();
     if (!res.writableEnded) abortController.abort();
   });
 
@@ -186,9 +237,10 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
     // 4. Handshake: Inform the client how many cards to expect
     res.write(`event: handshake\ndata: ${JSON.stringify({ total, cardArt })}\n\n`);
 
-    if (isClosed || total === 0) {
+    if (isClosed) return;
+    if (total === 0) {
       res.write("event: done\ndata: {}\n\n");
-      clearInterval(keepAliveInterval);
+      stopStreamTimers();
       res.end();
       return;
     }
@@ -286,14 +338,14 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
     // 7. Signal completion and clean up
     if (isClosed) return;
     res.write("event: done\ndata: {}\n\n");
-    clearInterval(keepAliveInterval);
+    stopStreamTimers();
     res.end();
 
   } catch (error: unknown) {
     if (isClosed) return;
     console.error("[STREAM] A fatal error occurred:", error);
     res.write(`event: fatal-error\ndata: ${JSON.stringify({ message: "An unexpected server error occurred." })}\n\n`);
-    clearInterval(keepAliveInterval);
+    stopStreamTimers();
     res.end();
   }
 });
@@ -356,5 +408,15 @@ streamRouter.post("/metadata", async (req: Request, res: Response) => {
     res.status(500).json({ error: "An unexpected server error occurred." });
   }
 });
+
+export const __streamRouterTestInternals = {
+  configuredOperationTimeout,
+  setOperationTimeoutForTests: (timeoutMs: number) => {
+    streamOperationTimeoutMs = assertOperationTimeout(timeoutMs);
+  },
+  resetOperationTimeoutForTests: () => {
+    streamOperationTimeoutMs = configuredStreamOperationTimeoutMs;
+  },
+};
 
 export { streamRouter };

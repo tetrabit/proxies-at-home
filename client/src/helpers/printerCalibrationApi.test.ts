@@ -189,13 +189,35 @@ describe("printerCalibrationApi – network error normalization", () => {
       expect(new Headers(request.headers).get('Authorization')).toBe('Bearer calibration-test-bearer');
     });
 
-    it("omits pageMode when not provided", async () => {
+    it("forwards grouped-duplex metadata with the existing upload and AbortSignal", async () => {
+      mockFetch.mockResolvedValueOnce(makeOkJsonResponse({ ok: true }));
+      const controller = new AbortController();
+      const input = new Blob(["input"], { type: "application/pdf" });
+
+      await applyCalibration(input, "myProfile", {
+        pageMode: "grouped-duplex",
+        frontPageCount: 2,
+        signal: controller.signal,
+      });
+
+      const fetchArgs = mockFetch.mock.calls[0];
+      const request = fetchArgs?.[1] as { body: FormData; signal?: AbortSignal };
+      expect(request.body).toBeInstanceOf(FormData);
+      expect(request.body.get("file")).toBeInstanceOf(File);
+      expect(request.body.get("profileName")).toBe("myProfile");
+      expect(request.body.get("pageMode")).toBe("grouped-duplex");
+      expect(request.body.get("frontPageCount")).toBe("2");
+      expect(request.signal).toBe(controller.signal);
+    });
+
+    it("omits grouped-duplex metadata when not provided", async () => {
       mockFetch.mockResolvedValueOnce(makeOkJsonResponse({ ok: true }));
       await applyCalibration(new Blob(["input"]), "myProfile");
 
       const fetchArgs = mockFetch.mock.calls[0];
       const request = fetchArgs[1] as { body: FormData };
       expect(request.body.get("pageMode")).toBeNull();
+      expect(request.body.get("frontPageCount")).toBeNull();
     });
   });
 

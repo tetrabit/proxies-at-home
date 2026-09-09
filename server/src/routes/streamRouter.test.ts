@@ -2,7 +2,7 @@ import { vi, describe, beforeEach, afterEach, it, expect } from 'vitest';
 import { createServer, request as httpRequest } from "node:http";
 import request from "supertest";
 import express, { type Express, json } from "express";
-import { streamRouter } from "./streamRouter";
+import { __streamRouterTestInternals, streamRouter } from "./streamRouter";
 import * as getCardImagesPaged from "../utils/getCardImagesPaged";
 import type { CardInfo } from "../../../shared/types";
 
@@ -31,6 +31,19 @@ describe("Stream Router", () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        __streamRouterTestInternals.resetOperationTimeoutForTests();
+    });
+
+    it("accepts only finite positive integer SSE operation timeout configuration", () => {
+        expect(__streamRouterTestInternals.configuredOperationTimeout({})).toBe(120_000);
+        expect(__streamRouterTestInternals.configuredOperationTimeout({ STREAM_OPERATION_TIMEOUT_MS: "2500" })).toBe(2500);
+
+        expect(__streamRouterTestInternals.configuredOperationTimeout({ STREAM_OPERATION_TIMEOUT_MS: "" })).toBe(120_000);
+
+        for (const value of ["0", "-1", "1.5", "Infinity", "not-a-number"]) {
+            expect(() => __streamRouterTestInternals.configuredOperationTimeout({ STREAM_OPERATION_TIMEOUT_MS: value }))
+                .toThrow("STREAM_OPERATION_TIMEOUT_MS must be a finite positive integer.");
+        }
     });
 
     it("aborts only the disconnected SSE request and releases the next queued resolver", async () => {
@@ -462,6 +475,104 @@ describe("Stream Router", () => {
 
         expect(response.status).toBe(200);
         expect(response.text).toContain(":keep-alive\n\n");
+    });
+
+    it("closes a timed-out hung SSE operation without affecting a normal stream", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(0));
+        __streamRouterTestInternals.setOperationTimeoutForTests(20_000);
+
+        let settleHungResolver!: (value: Awaited<ReturnType<typeof getCardImagesPaged.getCardsWithImagesForCardInfo>>) => void;
+        const aborts: string[] = [];
+        const resolverStarts: Array<{ name: string; at: number }> = [];
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockImplementation(() => {
+            return Promise.resolve(new Map([["normal", {
+                name: "Normal",
+                image_uris: { png: "normal.png" },
+            }]])) as ReturnType<typeof getCardImagesPaged.batchFetchCards>;
+        });
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo).mockImplementation((query, _mode, _language, _fallback, signal) => {
+            resolverStarts.push({ name: query.name, at: Date.now() });
+            if (query.name === "First") {
+                return new Promise((resolve) => setTimeout(() => resolve([]), 15_000));
+            }
+            return new Promise<Awaited<ReturnType<typeof getCardImagesPaged.getCardsWithImagesForCardInfo>>>((resolve) => {
+                settleHungResolver = resolve;
+                signal!.addEventListener("abort", () => aborts.push(query.name), { once: true });
+            }) as ReturnType<typeof getCardImagesPaged.getCardsWithImagesForCardInfo>;
+        });
+
+        const server = createServer(app);
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Expected a TCP test server");
+
+        const openStream = (body: unknown) => new Promise<{
+            ended: Promise<void>;
+            response: import("node:http").IncomingMessage;
+            text: () => string;
+        }>((resolve, reject) => {
+            const client = httpRequest({
+                host: "127.0.0.1",
+                port: address.port,
+                path: "/stream/cards",
+                method: "POST",
+                headers: { "content-type": "application/json" },
+            });
+            client.once("error", reject);
+            client.once("response", (response) => {
+                let text = "";
+                response.setEncoding("utf8");
+                response.on("data", (chunk: string) => { text += chunk; });
+                resolve({
+                    response,
+                    ended: new Promise<void>((resolveEnd) => response.once("end", resolveEnd)),
+                    text: () => text,
+                });
+            });
+            client.end(JSON.stringify(body));
+        });
+
+        try {
+            const hung = await openStream({
+                cardArt: "prints",
+                cardQueries: [{ name: "First" }, { name: "Second" }],
+            });
+            await vi.waitFor(() => expect(getCardImagesPaged.getCardsWithImagesForCardInfo).toHaveBeenCalledTimes(1));
+            const normal = await openStream({ cardQueries: [{ name: "Normal" }] });
+            await normal.ended;
+
+            expect(normal.response.headers["content-type"]).toContain("text/event-stream");
+            expect(normal.response.headers["content-encoding"]).toBeUndefined();
+            expect(normal.text().split("\n\n").filter(Boolean).map((event) => event.split("\n", 1)[0])).toEqual([
+                "event: handshake",
+                "event: card-found",
+                "event: progress",
+                "event: done",
+            ]);
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            await vi.waitFor(() => expect(hung.text()).toContain(":keep-alive\n\n"));
+            await vi.advanceTimersByTimeAsync(5_000);
+            await vi.waitFor(() => expect(getCardImagesPaged.getCardsWithImagesForCardInfo).toHaveBeenCalledTimes(2));
+            expect(resolverStarts).toEqual([{ name: "First", at: 0 }, { name: "Second", at: 15_000 }]);
+            await vi.advanceTimersByTimeAsync(5_000);
+            await hung.ended;
+
+            const timedOutResponse = hung.text();
+            expect(timedOutResponse).toContain("event: fatal-error");
+            expect(timedOutResponse).toContain('"timeoutMs":20000');
+            expect(timedOutResponse).not.toContain("event: done");
+            expect(aborts).toEqual(["Second"]);
+            expect(vi.getTimerCount()).toBe(0);
+
+            settleHungResolver([]);
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(20_000);
+            expect(hung.text()).toBe(timedOutResponse);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
     });
 
     it("returns metadata for batch hits, fallback hits, misses, per-card errors, empty input, and fatal failures", async () => {
