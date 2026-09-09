@@ -11,7 +11,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours (aligned with server)
 const MAX_ENTRIES = 1000;
 
 /**
- * Get cached MPC search results if fresh (< 1 week old).
+ * Get cached MPC search results if fresh (< 24 hours old).
  * Returns null if not cached or expired.
  */
 export async function getCachedMpcSearch(
@@ -50,6 +50,64 @@ export async function getCachedMpcSearch(
     } catch (error) {
         console.warn('[MPC Client Cache] Failed to get cached search:', error);
         return null;
+    }
+}
+
+/**
+ * Bulk-read cached MPC search results using one IndexedDB request.
+ * Returned keys are normalized query strings, so callers can map their original
+ * request strings back to cache hits without repeated database reads.
+ */
+export async function getCachedMpcSearchBulk(
+    queries: string[],
+    cardType: 'CARD' | 'CARDBACK' | 'TOKEN'
+): Promise<Map<string, MpcAutofillCard[]>> {
+    const normalizedQueries = new Map<string, [string, 'CARD' | 'CARDBACK' | 'TOKEN']>();
+    for (const query of queries) {
+        const normalizedQuery = query.toLowerCase().trim();
+        normalizedQueries.set(normalizedQuery, [normalizedQuery, cardType]);
+    }
+
+    if (normalizedQueries.size === 0) {
+        return new Map();
+    }
+
+    try {
+        const entries = await db.mpcSearchCache.bulkGet([...normalizedQueries.values()]);
+        const now = Date.now();
+        const expiryTime = now - CACHE_TTL_MS;
+        const results = new Map<string, MpcAutofillCard[]>();
+
+        for (const [index, normalizedQuery] of [...normalizedQueries.keys()].entries()) {
+            try {
+                const entry = entries[index];
+                if (!entry) {
+                    continue;
+                }
+
+                if (entry.cachedAt < expiryTime) {
+                    await db.mpcSearchCache.delete([normalizedQuery, cardType]);
+                    continue;
+                }
+
+                await db.mpcSearchCache.update([normalizedQuery, cardType], { cachedAt: now });
+                results.set(
+                    normalizedQuery,
+                    (entry.cards as MpcAutofillCard[]).map((card) => ({
+                        ...card,
+                        rawName: card.rawName || card.name,
+                        name: parseMpcCardName(card.name, card.name),
+                    }))
+                );
+            } catch (error) {
+                console.warn('[MPC Client Cache] Failed to get cached search:', error);
+            }
+        }
+
+        return results;
+    } catch (error) {
+        console.warn('[MPC Client Cache] Failed to get cached search:', error);
+        return new Map();
     }
 }
 

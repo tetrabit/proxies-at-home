@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Use vi.hoisted to ensure mock is available before vi.mock factory runs
 const mockMpcSearchCache = vi.hoisted(() => ({
     get: vi.fn(),
+    bulkGet: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
     update: vi.fn(),
@@ -19,7 +20,13 @@ vi.mock("../db", () => ({
     },
 }));
 
-import { getCachedMpcSearch, cacheMpcSearch, clearMpcSearchCache, getMpcCacheStats } from "./mpcSearchCache";
+import {
+    getCachedMpcSearch,
+    getCachedMpcSearchBulk,
+    cacheMpcSearch,
+    clearMpcSearchCache,
+    getMpcCacheStats,
+} from "./mpcSearchCache";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
 
 async function flushAsyncTrim() {
@@ -46,7 +53,7 @@ function createMockMpcCard(overrides: Partial<MpcAutofillCard> = {}): MpcAutofil
 }
 
 describe("mpcSearchCache", () => {
-    const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
+    const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -142,6 +149,46 @@ describe("mpcSearchCache", () => {
             expect(result).toBeNull();
             expect(consoleSpy).toHaveBeenCalled();
             consoleSpy.mockRestore();
+        });
+    });
+
+    describe("getCachedMpcSearchBulk", () => {
+        it("deduplicates normalized queries in one bulk read while retaining fresh hits and expiring stale entries", async () => {
+            const now = Date.now();
+            const freshCards = [createMockMpcCard({ name: "Lightning Bolt" })];
+            mockMpcSearchCache.bulkGet.mockResolvedValue([
+                {
+                    query: "lightning bolt:fuzzy",
+                    cardType: "CARD",
+                    cards: freshCards,
+                    cachedAt: now - 1,
+                },
+                {
+                    query: "sol ring:fuzzy",
+                    cardType: "CARD",
+                    cards: [],
+                    cachedAt: now - CACHE_TTL_MS - 1,
+                },
+            ]);
+
+            const results = await getCachedMpcSearchBulk(
+                ["  Lightning BOLT:fuzzy  ", "lightning bolt:FUZZY", " SOL RING:fuzzy "],
+                "CARD"
+            );
+
+            expect(mockMpcSearchCache.bulkGet).toHaveBeenCalledTimes(1);
+            expect(mockMpcSearchCache.bulkGet).toHaveBeenCalledWith([
+                ["lightning bolt:fuzzy", "CARD"],
+                ["sol ring:fuzzy", "CARD"],
+            ]);
+            expect(mockMpcSearchCache.get).not.toHaveBeenCalled();
+            expect(results).toEqual(new Map([["lightning bolt:fuzzy", freshCards]]));
+            expect(mockMpcSearchCache.update).toHaveBeenCalledTimes(1);
+            expect(mockMpcSearchCache.update).toHaveBeenCalledWith(
+                ["lightning bolt:fuzzy", "CARD"],
+                { cachedAt: now }
+            );
+            expect(mockMpcSearchCache.delete).toHaveBeenCalledWith(["sol ring:fuzzy", "CARD"]);
         });
     });
 

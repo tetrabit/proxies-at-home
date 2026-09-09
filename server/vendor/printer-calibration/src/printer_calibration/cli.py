@@ -2,6 +2,7 @@ import argparse
 import sys
 import traceback
 from pathlib import Path
+from typing import Callable
 
 
 def _default_profile_file() -> str:
@@ -163,24 +164,34 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
 # ---------------------------------------------------------------------------
 
 
-def _handle_sheet(args: argparse.Namespace) -> None:
-    from printer_calibration.sheet import generate_sheet
-
+def _run_command_with_error_adapter(
+    command: Callable[[], None], *, value_errors_are_user_errors: bool = True
+) -> None:
+    """Run one CLI command while preserving its established error contract."""
     try:
-        generate_sheet(args.output)
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        command()
     except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
+        if isinstance(exc, ValueError) and value_errors_are_user_errors:
+            print(f"Error: {exc}", file=sys.stderr)
+        else:
+            traceback.print_exc()
+            print(f"Unexpected error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _handle_sheet(args: argparse.Namespace) -> None:
+    def command() -> None:
+        from printer_calibration.sheet import generate_sheet
+
+        generate_sheet(args.output)
+
+    _run_command_with_error_adapter(command)
 
 
 def _handle_profile_set(args: argparse.Namespace) -> None:
-    from printer_calibration.profile import set_profile
+    def command() -> None:
+        from printer_calibration.profile import set_profile
 
-    try:
         set_profile(
             name=args.name,
             front_x_mm=args.front_x_mm,
@@ -190,70 +201,53 @@ def _handle_profile_set(args: argparse.Namespace) -> None:
             profile_file=args.profile_file,
         )
         print(f"Profile '{args.name}' saved to {args.profile_file}")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+    _run_command_with_error_adapter(command)
 
 
 def _handle_profile_list(args: argparse.Namespace) -> None:
-    from printer_calibration.profile import list_profiles
+    def command() -> None:
+        from printer_calibration.profile import list_profiles
 
-    try:
         names = list_profiles(profile_file=args.profile_file)
         for name in names:
             print(name)
-    except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+    _run_command_with_error_adapter(command, value_errors_are_user_errors=False)
 
 
 def _handle_profile_show(args: argparse.Namespace) -> None:
-    from printer_calibration.profile import show_profile
+    def command() -> None:
+        from printer_calibration.profile import show_profile
 
-    try:
         profile = show_profile(name=args.name, profile_file=args.profile_file)
         for key, value in profile.items():
             print(f"{key}: {value}")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+    _run_command_with_error_adapter(command)
 
 
 def _handle_profile_delete(args: argparse.Namespace) -> None:
-    from printer_calibration.profile import delete_profile
+    def command() -> None:
+        from printer_calibration.profile import delete_profile
 
-    try:
         delete_profile(name=args.name, profile_file=args.profile_file)
         print(f"Profile '{args.name}' deleted.")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+    _run_command_with_error_adapter(command)
 
 
 def _handle_apply(args: argparse.Namespace) -> None:
-    from printer_calibration.profile import get_profile
-    from printer_calibration.transform import apply_profile
-
     input_path = Path(args.input_pdf)
     if args.output_pdf is not None:
         output_path = Path(args.output_pdf)
     else:
         output_path = input_path.parent / (input_path.stem + ".calibrated.pdf")
 
-    try:
+    def command() -> None:
+        from printer_calibration.profile import get_profile
+        from printer_calibration.transform import apply_profile
+
         profile = get_profile(name=args.profile_name, profile_file=args.profile_file)
         apply_profile(
             str(input_path),
@@ -263,13 +257,8 @@ def _handle_apply(args: argparse.Namespace) -> None:
             front_page_count=args.front_page_count,
         )
         print(f"Calibrated PDF written to {output_path}")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        traceback.print_exc()
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+    _run_command_with_error_adapter(command)
 
 
 # ---------------------------------------------------------------------------

@@ -252,25 +252,45 @@ export async function batchSearchMpcAutofill(
         return {};
     }
 
-    const { getCachedMpcSearch, cacheMpcSearch } = await import('./mpcSearchCache');
+    const { getCachedMpcSearchBulk, cacheMpcSearch } = await import('./mpcSearchCache');
     const results: Record<string, MpcAutofillCard[]> = {};
-    const uncachedQueries: string[] = [];
+    const queriesByNormalized = new Map<string, { originalQueries: string[]; requestQuery: string }>();
 
-    // Batch search always uses fuzzy=true, so cache key includes :fuzzy suffix
-    // Check cache for each query first
     for (const query of queries) {
-        const cacheKey = `${query.trim().toLowerCase()}:fuzzy`;
-        const cached = await getCachedMpcSearch(cacheKey, cardType);
-        if (cached) {
-            results[query] = cached;
+        const normalizedQuery = query.trim().toLowerCase();
+        const existing = queriesByNormalized.get(normalizedQuery);
+        if (existing) {
+            existing.originalQueries.push(query);
         } else {
-            uncachedQueries.push(query);
+            queriesByNormalized.set(normalizedQuery, {
+                originalQueries: [query],
+                requestQuery: query.trim(),
+            });
         }
     }
 
-    const cacheHits = queries.length - uncachedQueries.length;
+    // Batch search always uses fuzzy=true, so cache keys include :fuzzy suffix.
+    // One bulk read avoids a separate IndexedDB request for every original query.
+    const cacheKeys = [...queriesByNormalized.keys()].map((query) => `${query}:fuzzy`);
+    const cachedByKey = await getCachedMpcSearchBulk(cacheKeys, cardType);
+    throwIfAborted(signal);
+
+    const uncachedQueries: Array<{ normalizedQuery: string; requestQuery: string; originalQueries: string[] }> = [];
+    let cacheHits = 0;
+    for (const [normalizedQuery, entry] of queriesByNormalized) {
+        const cached = cachedByKey.get(`${normalizedQuery}:fuzzy`);
+        if (cached) {
+            for (const originalQuery of entry.originalQueries) {
+                results[originalQuery] = cached;
+            }
+            cacheHits += entry.originalQueries.length;
+        } else {
+            uncachedQueries.push({ normalizedQuery, ...entry });
+        }
+    }
+
     if (cacheHits > 0) {
-        debugLog(`[MPC Batch] ${cacheHits} cache hits, ${uncachedQueries.length} misses`);
+        debugLog(`[MPC Batch] ${cacheHits} cache hits, ${queries.length - cacheHits} misses`);
     }
 
     if (uncachedQueries.length === 0) {
@@ -281,7 +301,7 @@ export async function batchSearchMpcAutofill(
         const response = await fetch(`${API_BASE}/api/mpcfill/batch-search`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ queries: uncachedQueries.map(q => q.trim()), cardType }),
+            body: JSON.stringify({ queries: uncachedQueries.map(({ requestQuery }) => requestQuery), cardType }),
             signal,
         });
         throwIfAborted(signal);
@@ -294,17 +314,25 @@ export async function batchSearchMpcAutofill(
         const data: MpcBatchSearchResponse = await response.json();
         throwIfAborted(signal);
 
-        // Cache and merge results (batch always uses fuzzy=true)
-        // Parse card names to extract base names (strips { } and ( ) suffixes)
+        // Map normalized response names back to every original request spelling.
+        // Cache and merge results (batch always uses fuzzy=true).
         for (const [query, rawCards] of Object.entries(data.results || {})) {
+            const normalizedQuery = query.trim().toLowerCase();
+            const originalEntry = queriesByNormalized.get(normalizedQuery);
+            if (!originalEntry) {
+                continue;
+            }
+
             const parsedCards = rawCards.map((card) => ({
                 ...card,
                 rawName: card.name,
                 name: parseMpcCardName(card.name, card.name),
             }));
-            results[query] = parsedCards;
+            for (const originalQuery of originalEntry.originalQueries) {
+                results[originalQuery] = parsedCards;
+            }
             if (parsedCards.length > 0) {
-                const cacheKey = `${query.toLowerCase()}:fuzzy`;
+                const cacheKey = `${normalizedQuery}:fuzzy`;
                 throwIfAborted(signal);
                 await cacheMpcSearch(cacheKey, cardType, parsedCards);
                 throwIfAborted(signal);

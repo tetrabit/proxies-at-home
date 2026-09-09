@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock dependencies with vi.hoisted
 const mockGetMpcImageUrl = vi.hoisted(() => vi.fn());
 const mockGetCachedMpcSearch = vi.hoisted(() => vi.fn());
+const mockGetCachedMpcSearchBulk = vi.hoisted(() => vi.fn());
 const mockCacheMpcSearch = vi.hoisted(() => vi.fn());
 const mockDebugLog = vi.hoisted(() => vi.fn());
 
@@ -12,6 +13,7 @@ vi.mock("./mpc", () => ({
 
 vi.mock("./mpcSearchCache", () => ({
     getCachedMpcSearch: mockGetCachedMpcSearch,
+    getCachedMpcSearchBulk: mockGetCachedMpcSearchBulk,
     cacheMpcSearch: mockCacheMpcSearch,
 }));
 
@@ -62,6 +64,8 @@ describe("mpcAutofillApi", () => {
         vi.clearAllMocks();
         mockGetMpcImageUrl.mockReset();
         mockGetCachedMpcSearch.mockReset();
+        mockGetCachedMpcSearchBulk.mockReset();
+        mockGetCachedMpcSearchBulk.mockResolvedValue(new Map());
         mockCacheMpcSearch.mockReset();
         mockDebugLog.mockReset();
         vi.stubGlobal("fetch", vi.fn());
@@ -589,6 +593,48 @@ describe("mpcAutofillApi", () => {
     });
 
     describe("batchSearchMpcAutofill", () => {
+        it("uses one bulk cache read and maps normalized duplicate hits and misses back to original queries", async () => {
+            const cachedBolt = [createMpcCard({ identifier: "cached-bolt", name: "Lightning Bolt" })];
+            const forestCards = [createMpcCard({ identifier: "forest", name: "Forest [THB] {254}" })];
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map([
+                ["lightning bolt:fuzzy", cachedBolt],
+            ]));
+            vi.mocked(fetch).mockResolvedValue({
+                ok: true,
+                json: () => Promise.resolve({ results: { Forest: forestCards } }),
+            } as Response);
+
+            await expect(batchSearchMpcAutofill([
+                " Lightning BOLT ",
+                "lightning bolt",
+                "Forest",
+                " forest ",
+            ])).resolves.toEqual({
+                " Lightning BOLT ": cachedBolt,
+                "lightning bolt": cachedBolt,
+                Forest: [expect.objectContaining({ identifier: "forest", name: "Forest" })],
+                " forest ": [expect.objectContaining({ identifier: "forest", name: "Forest" })],
+            });
+
+            expect(mockGetCachedMpcSearchBulk).toHaveBeenCalledTimes(1);
+            expect(mockGetCachedMpcSearchBulk).toHaveBeenCalledWith(
+                ["lightning bolt:fuzzy", "forest:fuzzy"],
+                "CARD"
+            );
+            expect(mockGetCachedMpcSearch).not.toHaveBeenCalled();
+            expect(fetch).toHaveBeenCalledWith(
+                expect.stringContaining("/api/mpcfill/batch-search"),
+                expect.objectContaining({
+                    body: JSON.stringify({ queries: ["Forest"], cardType: "CARD" }),
+                })
+            );
+            expect(mockCacheMpcSearch).toHaveBeenCalledWith(
+                "forest:fuzzy",
+                "CARD",
+                [expect.objectContaining({ identifier: "forest", name: "Forest" })]
+            );
+        });
+
         it("should forward an optional AbortSignal to the batch request", async () => {
             const controller = new AbortController();
             mockGetCachedMpcSearch.mockResolvedValue(null);
@@ -702,9 +748,10 @@ describe("mpcAutofillApi", () => {
         it("should return cached batch results without fetching when every query is cached", async () => {
             const cachedBolt = [createMpcCard({ identifier: "bolt", name: "Lightning Bolt" })];
             const cachedForest = [createMpcCard({ identifier: "forest", name: "Forest" })];
-            mockGetCachedMpcSearch
-                .mockResolvedValueOnce(cachedBolt)
-                .mockResolvedValueOnce(cachedForest);
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map([
+                ["lightning bolt:fuzzy", cachedBolt],
+                ["forest:fuzzy", cachedForest],
+            ]));
 
             await expect(batchSearchMpcAutofill([" Lightning Bolt ", "Forest"], "TOKEN")).resolves.toEqual({
                 " Lightning Bolt ": cachedBolt,
@@ -718,9 +765,9 @@ describe("mpcAutofillApi", () => {
         it("should keep cached batch hits when the uncached server request fails", async () => {
             const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
             const cachedBolt = [createMpcCard({ identifier: "bolt", name: "Lightning Bolt" })];
-            mockGetCachedMpcSearch
-                .mockResolvedValueOnce(cachedBolt)
-                .mockResolvedValueOnce(null);
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map([
+                ["lightning bolt:fuzzy", cachedBolt],
+            ]));
             vi.mocked(fetch).mockResolvedValue({ ok: false, status: 502 } as Response);
 
             await expect(batchSearchMpcAutofill(["Lightning Bolt", "Forest"])).resolves.toEqual({
@@ -734,9 +781,9 @@ describe("mpcAutofillApi", () => {
             const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
             const error = new Error("network down");
             const cachedBolt = [createMpcCard({ identifier: "bolt", name: "Lightning Bolt" })];
-            mockGetCachedMpcSearch
-                .mockResolvedValueOnce(cachedBolt)
-                .mockResolvedValueOnce(null);
+            mockGetCachedMpcSearchBulk.mockResolvedValue(new Map([
+                ["lightning bolt:fuzzy", cachedBolt],
+            ]));
             vi.mocked(fetch).mockRejectedValue(error);
 
             await expect(batchSearchMpcAutofill(["Lightning Bolt", "Forest"])).resolves.toEqual({
@@ -754,7 +801,7 @@ describe("mpcAutofillApi", () => {
             } as Response);
 
             await expect(batchSearchMpcAutofill([" Forest "])).resolves.toEqual({
-                Forest: [],
+                " Forest ": [],
             });
 
             expect(mockCacheMpcSearch).not.toHaveBeenCalled();
