@@ -1,31 +1,72 @@
 import { promises as fs } from "fs";
-import os from "os";
+import { randomUUID } from "node:crypto";
 import path from "path";
+import { fileURLToPath } from "url";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrivateIdentity } from "../auth/privateRouteAuth.js";
 import { createPrinterCalibrationRouter } from "./printerCalibrationRouter.js";
+
+const fixtureState = vi.hoisted(() => ({ tmpdir: "" }));
+
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("os")>();
+  const tmpdir = () => fixtureState.tmpdir;
+  return {
+    ...actual,
+    tmpdir,
+    default: { ...actual, tmpdir },
+  };
+});
+
+const FIXTURE_PARENT_DIRECTORY = fileURLToPath(
+  new URL("../../../.review-artifacts/calibration-auth-fixtures/", import.meta.url)
+);
+
+async function createRetainedFixtureDirectory(label: string): Promise<string> {
+  await fs.mkdir(FIXTURE_PARENT_DIRECTORY, { recursive: true });
+  const directory = path.join(
+    FIXTURE_PARENT_DIRECTORY,
+    `${label}-${process.pid}-${Date.now()}-${randomUUID()}`
+  );
+  await fs.mkdir(directory);
+  return directory;
+}
+
+const testIdentity: PrivateIdentity = {
+  ownerId: "default-runner-test-owner",
+  capabilities: new Set(["calibration:read", "calibration:write"]),
+  transport: "server",
+};
 
 describe("printerCalibrationRouter default CLI runner", () => {
   let tempDirectory: string;
   let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(async () => {
-    tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "printer-calibration-runner-"));
+    tempDirectory = await createRetainedFixtureDirectory("default-runner");
+    fixtureState.tmpdir = tempDirectory;
     originalEnv = { ...process.env };
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     process.env = originalEnv;
-    await fs.rm(tempDirectory, { recursive: true, force: true });
   });
 
   function app() {
     const expressApp = express();
     expressApp.use(express.json());
+    expressApp.use((req, _res, next) => {
+      req.privateIdentity = testIdentity;
+      next();
+    });
     expressApp.use(
       "/api/printer-calibration",
-      createPrinterCalibrationRouter({ dataDirectory: path.join(tempDirectory, "data") })
+      createPrinterCalibrationRouter({
+        dataDirectory: path.join(tempDirectory, "data"),
+        privateRouteAuth: { private: () => (_req, _res, next) => next() },
+      })
     );
     return expressApp;
   }

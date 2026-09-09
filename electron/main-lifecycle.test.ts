@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "url";
 
 let readyCallback: (() => Promise<void>) | undefined;
 const updaterHandlers = new Map<string, (...args: unknown[]) => void>();
@@ -71,6 +72,7 @@ class BrowserWindowMock {
   webContents = {
     send: vi.fn(),
     openDevTools: vi.fn(),
+    mainFrame: { url: "" },
   };
 
   loadURL = vi.fn();
@@ -196,6 +198,7 @@ describe("electron main lifecycle", () => {
       "download-update",
       "install-update",
       "get-server-url",
+      "get-private-api-bootstrap",
       "get-microservice-url",
       "get-app-version",
       "get-update-channel",
@@ -501,6 +504,112 @@ describe("electron main lifecycle", () => {
     expect(secondBootCredential).not.toBe(firstBootCredential);
   });
 
+  it("returns the launch bootstrap only to the current development main frame at its exact document URL", async () => {
+    let launchBearer = "";
+    const createSingleBearerVerifier = vi.fn((bearer: string) => {
+      launchBearer = bearer;
+      return { verifyBearer: () => null };
+    });
+    const startServer = vi.fn(async () => 4555);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await importAndRunReady((mainModule) => {
+      mainModule.electronMainRuntime.importServerModule = vi.fn(
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? { createSingleBearerVerifier }
+            : { startServer }
+      );
+    });
+
+    const window = windows[0];
+    const bootstrap = ipcHandlers.get("get-private-api-bootstrap");
+    const trustedEvent = {
+      sender: window.webContents,
+      senderFrame: window.webContents.mainFrame,
+    };
+    window.webContents.mainFrame.url = "http://localhost:5173/?serverPort=4555";
+
+    await expect(bootstrap?.(trustedEvent)).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:4555",
+      bearer: launchBearer,
+    });
+
+    await expect(
+      bootstrap?.({ sender: {}, senderFrame: window.webContents.mainFrame })
+    ).rejects.toThrow("Private API bootstrap unavailable");
+    await expect(
+      bootstrap?.({ sender: window.webContents, senderFrame: {} })
+    ).rejects.toThrow("Private API bootstrap unavailable");
+    window.webContents.mainFrame.url = "http://localhost:5173/?serverPort=4555#unexpected";
+    await expect(bootstrap?.(trustedEvent)).rejects.toThrow(
+      "Private API bootstrap unavailable"
+    );
+    await expect(
+      bootstrap?.({ sender: window.webContents, senderFrame: null })
+    ).rejects.toThrow("Private API bootstrap unavailable");
+    await expect(
+      bootstrap?.({ sender: null, senderFrame: window.webContents.mainFrame })
+    ).rejects.toThrow("Private API bootstrap unavailable");
+    window.webContents.mainFrame.url = "http://localhost:5173/?serverPort=4555";
+    window.close?.();
+    await expect(bootstrap?.(trustedEvent)).rejects.toThrow(
+      "Private API bootstrap unavailable"
+    );
+
+    const tokenWasRecorded = (calls: unknown[][]) =>
+      calls.flat().some((value) =>
+        typeof value === "string" && value.includes(launchBearer)
+      );
+    expect(tokenWasRecorded(logSpy.mock.calls)).toBe(false);
+    expect(tokenWasRecorded(errorSpy.mock.calls)).toBe(false);
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("accepts only the exact packaged index document", async () => {
+    appMock.isPackaged = true;
+    Object.defineProperty(process, "resourcesPath", {
+      configurable: true,
+      value: "/opt/proxxied/resources",
+    });
+    let launchBearer = "";
+    const createSingleBearerVerifier = vi.fn((bearer: string) => {
+      launchBearer = bearer;
+      return { verifyBearer: () => null };
+    });
+
+    await importAndRunReady((mainModule) => {
+      mainModule.electronMainRuntime.importServerModule = vi.fn(
+        async (modulePath: string) =>
+          modulePath.endsWith("/auth/privateRouteAuth.js")
+            ? { createSingleBearerVerifier }
+            : { startServer: vi.fn(async () => 4555) }
+      );
+    });
+
+    const window = windows[0];
+    const bootstrap = ipcHandlers.get("get-private-api-bootstrap");
+    const trustedEvent = {
+      sender: window.webContents,
+      senderFrame: window.webContents.mainFrame,
+    };
+    const expectedUrl = pathToFileURL(
+      window.loadFile.mock.calls[0][0] as string
+    );
+    expectedUrl.searchParams.set("serverPort", "4555");
+    window.webContents.mainFrame.url = expectedUrl.href;
+    await expect(bootstrap?.(trustedEvent)).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:4555",
+      bearer: launchBearer,
+    });
+    window.webContents.mainFrame.url = "file:///tmp/untrusted.html?serverPort=4555";
+    await expect(bootstrap?.(trustedEvent)).rejects.toThrow(
+      "Private API bootstrap unavailable"
+    );
+  });
+
   it("handles updater events before a window exists", async () => {
     await import("./main.ts");
 
@@ -564,6 +673,14 @@ describe("electron main lifecycle", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       "[Electron] startServer function not found in server module"
     );
+    const window = windows[0];
+    window.webContents.mainFrame.url = "http://localhost:5173/?serverPort=3001";
+    await expect(
+      ipcHandlers.get("get-private-api-bootstrap")?.({
+        sender: window.webContents,
+        senderFrame: window.webContents.mainFrame,
+      })
+    ).rejects.toThrow("Private API bootstrap unavailable");
     errorSpy.mockRestore();
   });
 

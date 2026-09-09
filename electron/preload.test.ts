@@ -57,6 +57,7 @@ describe('preload', () => {
     const api = createElectronApi({ invoke, on, removeListener: vi.fn() });
 
     await api.serverUrl();
+    await api.getPrivateApiBootstrap();
     await api.getMicroserviceUrl();
     await api.getAppVersion();
     await api.getUpdateChannel();
@@ -70,6 +71,7 @@ describe('preload', () => {
 
     expect(invoke.mock.calls).toEqual([
       ['get-server-url'],
+      ['get-private-api-bootstrap'],
       ['get-microservice-url'],
       ['get-app-version'],
       ['get-update-channel'],

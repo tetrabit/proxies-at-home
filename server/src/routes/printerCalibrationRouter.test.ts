@@ -1,9 +1,33 @@
-import { promises as fs } from "fs";
-import os from "os";
+import nativeFs, { promises as fs } from "fs";
+import { randomUUID } from "node:crypto";
 import path from "path";
+import { fileURLToPath } from "url";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const filesystemState = vi.hoisted(() => ({
+  tmpdir: "",
+}));
+
+const createWriteStreamSpy = vi.spyOn(nativeFs, "createWriteStream");
+const unlinkSyncSpy = vi.spyOn(nativeFs, "unlinkSync").mockImplementation(() => undefined);
+
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("os")>();
+  const tmpdir = () => filesystemState.tmpdir;
+  return {
+    ...actual,
+    tmpdir,
+    default: { ...actual, tmpdir },
+  };
+});
+
+import {
+  createPrivateRouteAuth,
+  type PrivateCredentialVerifier,
+  type PrivateIdentity,
+} from "../auth/privateRouteAuth.js";
 import {
   CALIBRATION_UPLOAD_LIMIT_BYTES,
   __printerCalibrationTestInternals,
@@ -17,6 +41,218 @@ import {
   type PrinterCalibrationProfile,
 } from "./printerCalibrationRouter.js";
 
+const FIXTURE_PARENT_DIRECTORY = fileURLToPath(
+  new URL("../../../.review-artifacts/calibration-auth-fixtures/", import.meta.url)
+);
+
+async function createRetainedFixtureDirectory(label: string): Promise<string> {
+  await fs.mkdir(FIXTURE_PARENT_DIRECTORY, { recursive: true });
+  const directory = path.join(
+    FIXTURE_PARENT_DIRECTORY,
+    `${label}-${process.pid}-${Date.now()}-${randomUUID()}`
+  );
+  await fs.mkdir(directory);
+  return directory;
+}
+
+describe("printer calibration route authorization", () => {
+  const reader: PrivateIdentity = {
+    ownerId: "server-owner-a",
+    capabilities: new Set(["calibration:read"]),
+    transport: "server",
+  };
+  const writer: PrivateIdentity = {
+    ownerId: "server-owner-a",
+    capabilities: new Set(["calibration:write"]),
+    transport: "server",
+  };
+
+  function verifierFor(...identities: Array<[string, PrivateIdentity]>): PrivateCredentialVerifier {
+    return {
+      verifyBearer: vi.fn((bearer: string) =>
+        identities.find(([configuredBearer]) => configuredBearer === bearer)?.[1] ?? null
+      ),
+    };
+  }
+
+  it("authenticates before calibration runners or Multer allocate upload files", async () => {
+    const runCli = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const fixtureDirectory = await createRetainedFixtureDirectory("route-auth");
+    filesystemState.tmpdir = fixtureDirectory;
+    const app = express();
+    app.use(express.json());
+    app.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory: path.join(fixtureDirectory, "data"),
+        runCli,
+        privateRouteAuth: createPrivateRouteAuth(verifierFor(["reader", reader], ["writer", writer])),
+      })
+    );
+    createWriteStreamSpy.mockClear();
+
+    const unauthenticatedList = await request(app).get("/api/printer-calibration/profiles");
+    const forbiddenList = await request(app)
+      .get("/api/printer-calibration/profiles")
+      .set("Authorization", "Bearer writer");
+    const forbiddenCalculate = await request(app)
+      .post("/api/printer-calibration/calculate")
+      .set("Authorization", "Bearer reader")
+      .send({});
+    const unauthenticatedUpload = await request(app)
+      .post("/api/printer-calibration/apply")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(unauthenticatedList.status).toBe(401);
+    expect(unauthenticatedList.body).toEqual({ error: "unauthorized" });
+    expect(forbiddenList.status).toBe(403);
+    expect(forbiddenList.body).toEqual({ error: "forbidden" });
+    expect(forbiddenCalculate.status).toBe(403);
+    expect(forbiddenCalculate.body).toEqual({ error: "forbidden" });
+    expect(unauthenticatedUpload.status).toBe(401);
+    expect(unauthenticatedUpload.body).toEqual({ error: "unauthorized" });
+    expect(runCli).not.toHaveBeenCalled();
+    expect(createWriteStreamSpy).not.toHaveBeenCalled();
+
+    const authorizedCalculate = await request(app)
+      .post("/api/printer-calibration/calculate")
+      .set("Authorization", "Bearer writer")
+      .send({
+        front_x_measured_mm: 1,
+        front_y_measured_mm: 2,
+        back_x_measured_mm: 3,
+        back_y_measured_mm: 4,
+      });
+    expect(authorizedCalculate.status).toBe(200);
+  });
+
+  it("derives profile namespaces from verified owners and rejects legacy global profile paths", async () => {
+    const fixtureDirectory = await createRetainedFixtureDirectory("owner-isolation");
+    filesystemState.tmpdir = fixtureDirectory;
+    const ownerA: PrivateIdentity = {
+      ...writer,
+      capabilities: new Set(["calibration:read", "calibration:write"]),
+    };
+    const ownerB: PrivateIdentity = {
+      ...reader,
+      ownerId: "server-owner-b",
+      capabilities: new Set(["calibration:read", "calibration:write"]),
+    };
+    const profilesByPath = new Map<string, PrinterCalibrationProfile>();
+    const runCli = vi.fn(async (args: string[]) => {
+      const profilePath = args[args.indexOf("--profile-file") + 1];
+      const name = args[args.indexOf("--name") + 1];
+      if (args[0] === "profile" && args[1] === "set") {
+        profilesByPath.set(profilePath, {
+          name,
+          front_x_mm: Number(args[args.indexOf("--front-x-mm") + 1]),
+          front_y_mm: Number(args[args.indexOf("--front-y-mm") + 1]),
+          back_x_mm: Number(args[args.indexOf("--back-x-mm") + 1]),
+          back_y_mm: Number(args[args.indexOf("--back-y-mm") + 1]),
+        });
+        return { stdout: "", stderr: "" };
+      }
+      if (args[0] === "profile" && args[1] === "show") {
+        const profile = profilesByPath.get(profilePath);
+        if (profile) {
+          return {
+            stdout: `front_x_mm: ${profile.front_x_mm}\nfront_y_mm: ${profile.front_y_mm}\nback_x_mm: ${profile.back_x_mm}\nback_y_mm: ${profile.back_y_mm}`,
+            stderr: "",
+          };
+        }
+      }
+      throw new Error("Profile not found");
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      "/api/printer-calibration",
+      createPrinterCalibrationRouter({
+        dataDirectory: path.join(fixtureDirectory, "data"),
+        runCli,
+        privateRouteAuth: createPrivateRouteAuth(
+          verifierFor(["owner-a", ownerA], ["owner-b", ownerB])
+        ),
+      })
+    );
+
+    const saved = await request(app)
+      .put("/api/printer-calibration/profiles/office?ownerId=client-controlled-owner")
+      .set("Authorization", "Bearer owner-a")
+      .send({ front_x_mm: 1, front_y_mm: 2, back_x_mm: 3, back_y_mm: 4 });
+    const otherOwner = await request(app)
+      .get("/api/printer-calibration/profiles/office?ownerId=server-owner-a")
+      .set("Authorization", "Bearer owner-b");
+    const owner = await request(app)
+      .get("/api/printer-calibration/profiles/office?profilesPath=client-controlled-path")
+      .set("Authorization", "Bearer owner-a");
+
+    expect(saved.status).toBe(200);
+    expect(otherOwner.status).toBe(404);
+    expect(owner.status).toBe(200);
+    const usedPaths = runCli.mock.calls
+      .map(([args]) => (args as string[])[(args as string[]).indexOf("--profile-file") + 1])
+      .filter(Boolean);
+    expect(new Set(usedPaths).size).toBe(2);
+    expect(usedPaths.some((profilePath) => profilePath.includes("server-owner-a"))).toBe(false);
+    expect(usedPaths.some((profilePath) => profilePath.includes("server-owner-b"))).toBe(false);
+
+    expect(() =>
+      createPrinterCalibrationRouter({
+        dataDirectory: path.join(fixtureDirectory, "legacy-global"),
+        configuredProfilesPath: "printer-calibration/profiles.toml",
+        privateRouteAuth: createPrivateRouteAuth(verifierFor(["owner-a", writer])),
+      })
+    ).toThrow("legacy global profile path");
+  });
+});
+
+const functionalTestIdentity: PrivateIdentity = {
+  ownerId: "functional-test-owner",
+  capabilities: new Set(["calibration:read", "calibration:write"]),
+  transport: "server",
+};
+
+function mountAuthorizedCalibrationRouter(
+  app: express.Express,
+  options: Parameters<typeof createPrinterCalibrationRouter>[0]
+): void {
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.privateIdentity = functionalTestIdentity;
+    next();
+  });
+  app.use(
+    "/api/printer-calibration",
+    createPrinterCalibrationRouter({
+      ...options,
+      privateRouteAuth: { private: () => (_req, _res, next) => next() },
+    })
+  );
+}
+
+function installRetainedDownloadBoundary(): () => void {
+  const downloadSpy = vi.spyOn(express.response, "download").mockImplementation(function (
+    this: express.Response,
+    ...args: Parameters<typeof express.response.download>
+  ) {
+    const [filePath, filename, optionsOrCallback, callback] = args;
+    const completion =
+      typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+    void fs.readFile(filePath).then(
+      (contents) => {
+        this.attachment(filename);
+        this.send(contents);
+        completion?.(undefined as never);
+      },
+      (error: unknown) => {
+        completion?.(error instanceof Error ? error : new Error(String(error)));
+        if (!this.headersSent) this.status(500).end();
+      }
+    );
+  });
+  return () => downloadSpy.mockRestore();
+}
 
 describe("printerCalibrationRouter", () => {
   let tempDirectory: string;
@@ -24,11 +260,11 @@ describe("printerCalibrationRouter", () => {
   let app: express.Express;
   let profiles = new Map<string, PrinterCalibrationProfile>();
   let applyInvocations: string[][] = [];
+  let restoreDownloadBoundary: () => void = () => undefined;
 
   beforeEach(async () => {
-    tempDirectory = await fs.mkdtemp(
-      path.join(os.tmpdir(), "printer-calibration-router-")
-    );
+    tempDirectory = await createRetainedFixtureDirectory("router");
+    filesystemState.tmpdir = tempDirectory;
     dataDirectory = path.join(tempDirectory, "data");
     profiles = new Map();
     applyInvocations = [];
@@ -100,19 +336,17 @@ describe("printerCalibrationRouter", () => {
     });
 
     app = express();
-    app.use(express.json());
-    app.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({ dataDirectory, runCli })
-    );
+    mountAuthorizedCalibrationRouter(app, { dataDirectory, runCli });
+    restoreDownloadBoundary = installRetainedDownloadBoundary();
   });
 
   it("allows calibration uploads up to 10 GB", () => {
     expect(CALIBRATION_UPLOAD_LIMIT_BYTES).toBe(10 * 1024 * 1024 * 1024);
   });
 
-  afterEach(async () => {
-    await fs.rm(tempDirectory, { recursive: true, force: true });
+  afterEach(() => {
+    restoreDownloadBoundary();
+    unlinkSyncSpy.mockClear();
   });
 
   it("rejects configured paths that escape the data directory", () => {
@@ -355,11 +589,7 @@ exit 1
 
     try {
       const defaultApp = express();
-      defaultApp.use(express.json());
-      defaultApp.use(
-        "/api/printer-calibration",
-        createPrinterCalibrationRouter({ dataDirectory })
-      );
+      mountAuthorizedCalibrationRouter(defaultApp, { dataDirectory });
 
       const response = await request(defaultApp).get("/api/printer-calibration/sheet");
       expect(response.status).toBe(200);
@@ -498,11 +728,14 @@ exit 1
 
       const tempPath = __printerCalibrationTestInternals.buildTempFilePath("unit", "");
       expect(tempPath).toMatch(/\.bin$/);
-      const doomed = path.join(tempDirectory, "doomed.txt");
-      await fs.writeFile(doomed, "remove me");
+      const doomed = path.join(tempDirectory, "retained-unlink-boundary.txt");
+      await fs.writeFile(doomed, "retain me");
+      unlinkSyncSpy.mockClear();
       __printerCalibrationTestInternals.unlinkQuiet(null);
       __printerCalibrationTestInternals.unlinkQuiet(doomed);
-      await expect(fs.stat(doomed)).rejects.toThrow();
+      expect(unlinkSyncSpy).toHaveBeenCalledTimes(1);
+      expect(unlinkSyncSpy).toHaveBeenCalledWith(doomed);
+      await expect(fs.readFile(doomed, "utf8")).resolves.toBe("retain me");
 
       expect(__printerCalibrationTestInternals.unavailableStatus("not configured")).toBe(501);
     } finally {
@@ -532,7 +765,7 @@ exit 1
       this.status(200).end();
       return this;
     });
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleErrorSpy = vi.spyOn(console, "error");
 
     const response = await request(app)
       .post("/api/printer-calibration/apply")
@@ -605,16 +838,12 @@ exit 1
 
   it("returns 501 when the python tool is unavailable", async () => {
     const unavailableApp = express();
-    unavailableApp.use(express.json());
-    unavailableApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(unavailableApp, {
         dataDirectory,
         runCli: async () => {
           throw new Error("Printer calibration unavailable. No module named printer_calibration");
         },
-      })
-    );
+      });
 
     const response = await request(unavailableApp).get(
       "/api/printer-calibration/profiles"
@@ -628,16 +857,12 @@ exit 1
     expect(ok.header["content-type"]).toContain("application/pdf");
 
     const failingApp = express();
-    failingApp.use(express.json());
-    failingApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(failingApp, {
         dataDirectory,
         runCli: async () => {
           throw new Error("sheet unavailable");
         },
-      })
-    );
+      });
     const failed = await request(failingApp).get("/api/printer-calibration/sheet");
     expect(failed.status).toBe(501);
     expect(failed.body.error).toBe("sheet unavailable");
@@ -654,7 +879,7 @@ exit 1
       this.status(200).end();
       return this;
     });
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleErrorSpy = vi.spyOn(console, "error");
 
     try {
       const response = await request(app).get("/api/printer-calibration/sheet");
@@ -684,43 +909,32 @@ exit 1
     expect(missingDelete.status).toBe(404);
 
     const badShowApp = express();
-    badShowApp.use(express.json());
-    badShowApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(badShowApp, {
         dataDirectory,
         runCli: async (args: string[]) => {
           if (args[0] === "profile" && args[1] === "list") return { stdout: "bad\n", stderr: "" };
           if (args[0] === "profile" && args[1] === "show") throw new Error("show exploded");
           return { stdout: "", stderr: "" };
         },
-      })
-    );
+      });
     const listFailure = await request(badShowApp).get("/api/printer-calibration/profiles");
     expect(listFailure.status).toBe(500);
     expect(listFailure.body.error).toBe("show exploded");
 
     const missingToolApp = express();
-    missingToolApp.use(express.json());
-    missingToolApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(missingToolApp, {
         dataDirectory,
         runCli: async () => {
           throw new Error("PRINTER_CALIBRATION_BIN does not exist: /missing");
         },
-      })
-    );
+      });
     const unavailable = await request(missingToolApp).delete("/api/printer-calibration/profiles/office");
     expect(unavailable.status).toBe(501);
   });
 
   it("stringifies non-Error failures from sheet and profile routes", async () => {
     const stringErrorApp = express();
-    stringErrorApp.use(express.json());
-    stringErrorApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(stringErrorApp, {
         dataDirectory,
         runCli: async (args: string[]) => {
           const [command, subcommand] = args;
@@ -734,8 +948,7 @@ exit 1
           if (command === "profile" && subcommand === "delete") throw "plain delete failure";
           return { stdout: "", stderr: "" };
         },
-      })
-    );
+      });
 
     const sheet = await request(stringErrorApp).get("/api/printer-calibration/sheet");
     expect(sheet.status).toBe(500);
@@ -772,16 +985,12 @@ exit 1
     expect(missingProfile.body.error).toBe("Missing profileName.");
 
     const notFoundApp = express();
-    notFoundApp.use(express.json());
-    notFoundApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(notFoundApp, {
         dataDirectory,
         runCli: async () => {
           throw new Error("Profile 'office' not found");
         },
-      })
-    );
+      });
     const notFound = await request(notFoundApp)
       .post("/api/printer-calibration/apply")
       .field("profileName", "office")
@@ -789,16 +998,12 @@ exit 1
     expect(notFound.status).toBe(404);
 
     const failingApp = express();
-    failingApp.use(express.json());
-    failingApp.use(
-      "/api/printer-calibration",
-      createPrinterCalibrationRouter({
+    mountAuthorizedCalibrationRouter(failingApp, {
         dataDirectory,
         runCli: async () => {
           throw "plain failure";
         },
-      })
-    );
+      });
     const failed = await request(failingApp)
       .post("/api/printer-calibration/apply")
       .field("profileName", "office")
@@ -814,4 +1019,9 @@ exit 1
   });
 
 
+});
+
+afterAll(() => {
+  createWriteStreamSpy.mockRestore();
+  unlinkSyncSpy.mockRestore();
 });

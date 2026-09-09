@@ -1,10 +1,12 @@
-import express, { type Request, type Response } from "express";
+import { createHash } from "node:crypto";
+import express, { type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import os from "os";
 import path from "path";
 import fs from "fs";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import type { PrivateCapability } from "../auth/privateRouteAuth.js";
 
 export type PrinterCalibrationProfile = {
   name: string;
@@ -29,11 +31,16 @@ type PrinterCalibrationRunner =
 
 type CliResult = { stdout: string; stderr: string };
 type CliRunner = (args: string[]) => Promise<CliResult>;
+type PrivateRouteAuth = {
+  private(capability: PrivateCapability): RequestHandler;
+};
 
 interface PrinterCalibrationRouterOptions {
   dataDirectory?: string;
+  /** Legacy global paths are intentionally rejected; profiles are owner-scoped. */
   configuredProfilesPath?: string;
   runCli?: CliRunner;
+  privateRouteAuth?: PrivateRouteAuth;
 }
 
 const DEFAULT_PROFILES_FILENAME = "printer-calibration/profiles.toml";
@@ -301,6 +308,28 @@ export function resolvePrinterCalibrationProfilesPath(
   return resolvedPath;
 }
 
+export function resolveOwnerPrinterCalibrationProfilesPath(
+  dataDirectory: string,
+  ownerId: string
+): string {
+  if (!ownerId) {
+    throw new Error("Missing server-owned calibration owner.");
+  }
+
+  const ownerKey = createHash("sha256").update(ownerId).digest("hex");
+  return path.join(
+    path.resolve(dataDirectory),
+    "printer-calibration",
+    "owners",
+    ownerKey,
+    "profiles.toml"
+  );
+}
+
+function denyPrivateCalibrationRoute(_req: Request, res: Response): void {
+  res.status(401).json({ error: "unauthorized" });
+}
+
 export function calculatePrinterCalibrationProfile(input: {
   front_x_measured_mm: number;
   front_y_measured_mm: number;
@@ -397,13 +426,20 @@ export function createPrinterCalibrationRouter(
 ) {
   const router = express.Router();
   const dataDirectory = options.dataDirectory ?? path.resolve(process.cwd(), "data");
-  const profilesPath = resolvePrinterCalibrationProfilesPath(
-    options.configuredProfilesPath ?? process.env.PRINTER_CALIBRATION_PROFILES_PATH,
-    dataDirectory
-  );
+  const configuredProfilesPath =
+    options.configuredProfilesPath ?? process.env.PRINTER_CALIBRATION_PROFILES_PATH;
+  if (configuredProfilesPath?.trim()) {
+    throw new Error(
+      "PRINTER_CALIBRATION_PROFILES_PATH is a legacy global profile path and cannot be used for private calibration routes."
+    );
+  }
+  const requirePrivate = (capability: PrivateCapability): RequestHandler =>
+    options.privateRouteAuth?.private(capability) ?? denyPrivateCalibrationRoute;
+  const profilesPathForRequest = (request: Request): string =>
+    resolveOwnerPrinterCalibrationProfilesPath(dataDirectory, request.privateIdentity?.ownerId ?? "");
   const runCli = options.runCli ?? runPrinterCalibrationCli;
 
-  router.get("/sheet", async (_req: Request, res: Response) => {
+  router.get("/sheet", requirePrivate("calibration:read"), async (_req: Request, res: Response) => {
     const outputPath = path.join(
       os.tmpdir(),
       `proxxied-printer-calibration-sheet-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`
@@ -426,8 +462,9 @@ export function createPrinterCalibrationRouter(
     }
   });
 
-  router.get("/profiles", async (_req: Request, res: Response) => {
+  router.get("/profiles", requirePrivate("calibration:read"), async (req: Request, res: Response) => {
     try {
+      const profilesPath = profilesPathForRequest(req);
       const listResult = await runCli(["profile", "list", "--profile-file", profilesPath]);
       const names = listResult.stdout
         .split(/\r?\n/)
@@ -460,8 +497,9 @@ export function createPrinterCalibrationRouter(
     }
   });
 
-  router.get("/profiles/:name", async (req: Request, res: Response) => {
+  router.get("/profiles/:name", requirePrivate("calibration:read"), async (req: Request, res: Response) => {
     try {
+      const profilesPath = profilesPathForRequest(req);
       /* v8 ignore next -- Express cannot match /profiles/:name without a route parameter. @preserve */
       const name = String(req.params.name || "").trim();
       if (!name) {
@@ -483,8 +521,9 @@ export function createPrinterCalibrationRouter(
     }
   });
 
-  router.put("/profiles/:name", async (req: Request, res: Response) => {
+  router.put("/profiles/:name", requirePrivate("calibration:write"), async (req: Request, res: Response) => {
     try {
+      const profilesPath = profilesPathForRequest(req);
       /* v8 ignore next -- Express cannot match /profiles/:name without a route parameter. @preserve */
       const name = String(req.params.name || "").trim();
       if (!name) {
@@ -532,8 +571,9 @@ export function createPrinterCalibrationRouter(
     }
   });
 
-  router.delete("/profiles/:name", async (req: Request, res: Response) => {
+  router.delete("/profiles/:name", requirePrivate("calibration:write"), async (req: Request, res: Response) => {
     try {
+      const profilesPath = profilesPathForRequest(req);
       /* v8 ignore next -- Express cannot match /profiles/:name without a route parameter. @preserve */
       const name = String(req.params.name || "").trim();
       if (!name) {
@@ -555,7 +595,7 @@ export function createPrinterCalibrationRouter(
     }
   });
 
-  router.post("/calculate", (req: Request, res: Response) => {
+  router.post("/calculate", requirePrivate("calibration:write"), (req: Request, res: Response) => {
     try {
       const profile = calculatePrinterCalibrationProfile({
         front_x_measured_mm: safeNumber(
@@ -586,6 +626,7 @@ export function createPrinterCalibrationRouter(
 
   router.post(
     "/apply",
+    requirePrivate("calibration:write"),
     upload.single("file"),
     async (req: Request, res: Response) => {
       const file = req.file;
@@ -609,6 +650,7 @@ export function createPrinterCalibrationRouter(
       let inputPath: string | null = null;
       let outputPath: string | null = null;
       try {
+        const profilesPath = profilesPathForRequest(req);
         inputPath = file.path;
         /* v8 ignore next -- multer supplies originalname for file uploads; document fallback is defensive. @preserve */
         outputPath = buildTempFilePath("output", `${path.parse(file.originalname || "document").name}.pdf`);

@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
   isMicroserviceAvailable: vi.fn(),
   logMicroserviceMetrics: vi.fn(),
   createPreferencesRouter: vi.fn(() => ({ route: 'preferences' })),
+  createPrinterCalibrationRouter: vi.fn(() => ({ route: 'printer' })),
   listenAddress: undefined as undefined | string | { port?: number },
 }));
 
@@ -86,7 +87,7 @@ vi.mock('./routes/streamRouter.js', () => ({ streamRouter: { route: 'stream' } }
 vi.mock('./routes/mpcAutofillRouter.js', () => ({ mpcAutofillRouter: { route: 'mpc' } }));
 vi.mock('./routes/scryfallRouter.js', () => ({ scryfallRouter: { route: 'scryfall' } }));
 vi.mock('./routes/backupRouter.js', () => ({ backupRouter: { route: 'backup' } }));
-vi.mock('./routes/printerCalibrationRouter.js', () => ({ printerCalibrationRouter: { route: 'printer' } }));
+vi.mock('./routes/printerCalibrationRouter.js', () => ({ createPrinterCalibrationRouter: state.createPrinterCalibrationRouter }));
 vi.mock('./routes/preferencesRouter.js', () => ({ createPreferencesRouter: state.createPreferencesRouter }));
 vi.mock('./routes/metricsRouter.js', () => ({ createMetricsRouter: vi.fn(() => ({ route: 'metrics' })) }));
 
@@ -125,6 +126,7 @@ describe('server index bootstrap and app wiring', () => {
     state.isMicroserviceAvailable.mockReset().mockResolvedValue(true);
     state.logMicroserviceMetrics.mockClear();
     state.createPreferencesRouter.mockClear();
+    state.createPrinterCalibrationRouter.mockClear();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
@@ -146,6 +148,8 @@ describe('server index bootstrap and app wiring', () => {
     const port = await startServer(0);
     expect(port).toBe(49152);
     expect(state.app?.use).toHaveBeenCalledWith('/api/scryfall', { route: 'scryfall' });
+    expect(state.createPrinterCalibrationRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
+    expect(state.app?.use).toHaveBeenCalledWith('/api/printer-calibration', { route: 'printer' });
     expect(state.createPreferencesRouter).toHaveBeenCalledWith({ privateRouteAuth: expect.any(Object) });
     expect(state.app?.use).toHaveBeenCalledWith('/api/preferences', { route: 'preferences' });
     expect(state.app?.use).toHaveBeenCalledWith('/api/metrics', { route: 'metrics' });

@@ -6,6 +6,11 @@ type IpcRendererLike = {
   removeListener(channel: string, listener: (...args: unknown[]) => void): void;
 };
 
+type PrivateApiBootstrap = {
+  baseUrl: string;
+  bearer: string;
+};
+
 export function createElectronApi(ipcRenderer: IpcRendererLike) {
   const subscribe = (channel: 'update-status' | 'show-about', listener: (...args: unknown[]) => void) => {
     ipcRenderer.on(channel, listener);
@@ -18,6 +23,8 @@ export function createElectronApi(ipcRenderer: IpcRendererLike) {
   };
   return {
     serverUrl: () => ipcRenderer.invoke('get-server-url') as Promise<string>,
+    getPrivateApiBootstrap: () =>
+      ipcRenderer.invoke('get-private-api-bootstrap') as Promise<PrivateApiBootstrap>,
     loadMpcPreferences: () =>
       ipcRenderer.invoke('mpc-preferences:load') as Promise<MpcPreferenceFixture | null>,
     saveMpcPreferences: (fixture: MpcPreferenceFixture) =>

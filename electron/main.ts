@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { randomBytes } from "node:crypto";
 import fs from "fs";
 import pkg from "electron-updater";
-import type { IpcMain } from "electron";
+import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import type { MpcPreferenceFixture } from "./mpc-preferences.js";
 const { autoUpdater } = pkg;
 import {
@@ -49,6 +49,11 @@ type PrivateCredentialVerifier = {
   verifyBearer(bearer: string): unknown;
 };
 
+type DesktopCredentialSession = {
+  bearer: string;
+  verifier: PrivateCredentialVerifier;
+};
+
 type CreateSingleBearerVerifier = (
   bearer: string,
   identity: DesktopPrivateIdentity
@@ -64,13 +69,16 @@ type StartServer = (
 
 function createDesktopCredentialVerifier(
   createSingleBearerVerifier: CreateSingleBearerVerifier
-): PrivateCredentialVerifier {
+): DesktopCredentialSession {
   const bearer = randomBytes(32).toString("base64url");
-  return createSingleBearerVerifier(bearer, {
-    ownerId: "desktop-local",
-    capabilities: new Set(desktopPrivateCapabilities),
-    transport: "desktop-loopback",
-  });
+  return {
+    bearer,
+    verifier: createSingleBearerVerifier(bearer, {
+      ownerId: "desktop-local",
+      capabilities: new Set(desktopPrivateCapabilities),
+      transport: "desktop-loopback",
+    }),
+  };
 }
 
 // Settings file for persistent electron-specific settings
@@ -333,6 +341,36 @@ let mainWindow: BrowserWindow | null = null;
 let serverPort = 3001; // Default port, will be updated if server starts successfully
 let microserviceManager: MicroserviceManager | null = null;
 let microservicePort = 8080;
+let desktopPrivateBootstrap: { baseUrl: string; bearer: string } | null = null;
+
+function getPackagedIndexPath(): string {
+  return path.join(__dirname, "../../client/dist/index.html");
+}
+
+function getExpectedRendererUrl(): string {
+  const rendererUrl = app.isPackaged
+    ? pathToFileURL(getPackagedIndexPath()).href
+    : "http://localhost:5173";
+  const expectedUrl = new URL(rendererUrl);
+  expectedUrl.searchParams.set("serverPort", serverPort.toString());
+  return expectedUrl.href;
+}
+
+function getTrustedPrivateApiBootstrap(
+  event: IpcMainInvokeEvent
+): { baseUrl: string; bearer: string } {
+  if (
+    desktopPrivateBootstrap === null ||
+    mainWindow === null ||
+    event.sender !== mainWindow.webContents ||
+    event.senderFrame !== mainWindow.webContents.mainFrame ||
+    event.senderFrame.url !== getExpectedRendererUrl()
+  ) {
+    throw new Error("Private API bootstrap unavailable");
+  }
+
+  return desktopPrivateBootstrap;
+}
 
 // Auto-updater logging
 autoUpdater.logger = console;
@@ -394,7 +432,7 @@ function createWindow() {
     mainWindow.loadURL(url);
   } else {
     // In prod with asar, __dirname is electron/dist/, need ../../ to reach root
-    const indexPath = path.join(__dirname, "../../client/dist/index.html");
+    const indexPath = getPackagedIndexPath();
     console.log("[Electron] Loading index from:", indexPath);
     mainWindow.loadFile(indexPath, {
       query: { serverPort: serverPort.toString() },
@@ -584,13 +622,18 @@ app.whenReady().then(async () => {
         );
       }
 
-      const privateCredentialVerifier = createDesktopCredentialVerifier(
+      const desktopCredentialSession = createDesktopCredentialVerifier(
         createSingleBearerVerifier as CreateSingleBearerVerifier
       );
+      const privateCredentialVerifier = desktopCredentialSession.verifier;
       serverPort = await (startServer as StartServer)(0, {
         host: "127.0.0.1",
         privateCredentialVerifier,
       }); // 0 = random available port
+      desktopPrivateBootstrap = {
+        baseUrl: `http://127.0.0.1:${serverPort}`,
+        bearer: desktopCredentialSession.bearer,
+      };
       console.log("[Electron] Server started on port:", serverPort);
     } else {
       console.error(
@@ -608,6 +651,9 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle("get-server-url", () => `http://localhost:${serverPort}`);
+  ipcMain.handle("get-private-api-bootstrap", async (event) =>
+    getTrustedPrivateApiBootstrap(event)
+  );
   ipcMain.handle(
     "get-microservice-url",
     () => `http://localhost:${microservicePort}`

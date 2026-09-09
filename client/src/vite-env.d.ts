@@ -43,6 +43,7 @@ type UpdateEventInfo = UpdateInfo | ProgressInfo | string | null;
 interface Window {
   electronAPI?: {
     serverUrl: () => Promise<string>;
+    getPrivateApiBootstrap?: () => Promise<{ baseUrl: string; bearer: string }>;
     loadMpcPreferences?: () => Promise<import('@/types').MpcPreferenceFixture | null>;
     saveMpcPreferences?: (
       fixture: import('@/types').MpcPreferenceFixture
