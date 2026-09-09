@@ -1,134 +1,99 @@
 #!/usr/bin/env node
 /**
- * Bounded export resource probe.
+ * Bounded, real-browser resource probe for the application's high-DPI PDF export.
  *
- * This intentionally does not render the application's 1200-DPI canvas. It creates
- * one physical-Letter, 3x3-card PDF with a reusable 300-DPI synthetic card raster,
- * reads and rewrites it through the repository calibration venv, and records that
- * subprocess's own ru_maxrss. The 1200-DPI surface values in the JSON are arithmetic
- * estimates only; they are not observations of browser GPU/canvas memory.
+ * It retains every fixture, profile, result, and downloaded PDF in a new evidence
+ * directory. It never deletes filesystem content. The one-card workload uses the
+ * real Vite application, its PDF export entrypoint, and one 1200-DPI Letter page:
+ * a physically representative but bounded export (one serialized PDF worker).
  *
  * Usage:
- *   node scripts/export-resource-probe.mjs \
- *     --out-dir .review-artifacts/resource-measurement-01
- *     --python .review-artifacts/resource-runtime-01/bin/python
- *
- * Options:
- *   --out-dir <directory>  Evidence/output directory (required)
- *   --python <path>        Calibration venv Python executable
+ *   node scripts/export-resource-probe.mjs --out-dir .review-artifacts/td-7ac55e-01
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createCanvas } from "canvas";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { chromium } from "playwright";
+
+const clientRequire = createRequire(resolve(process.cwd(), "client/package.json"));
+const { PDFDocument } = clientRequire("pdf-lib");
 
 const MIB = 1024 ** 2;
-const DEFAULT_PYTHON = ".review-artifacts/resource-runtime-01/bin/python";
-const SCRIPT_PATH = fileURLToPath(import.meta.url);
-
-const PYTHON_PROBE = String.raw`
-import json
-import os
-import resource
-import sys
-from io import BytesIO
-from importlib.metadata import version
-
-from PIL import Image, ImageDraw
-from pypdf import PdfReader, PdfWriter
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
-
-pdf_path, rewritten_path = sys.argv[1], sys.argv[2]
-page_width_pt, page_height_pt = 612, 792  # US Letter at 72 points/inch
-card_width_pt = 63 / 25.4 * 72
-card_height_pt = 88 / 25.4 * 72
-sample_width_px, sample_height_px = 744, 1039  # 63 x 88 mm at 300 DPI, rounded down
-
-# One bounded raster is reused for all nine cards. It is deliberately not a 1200-DPI
-# page/card allocation, so this helper is safe on development hosts.
-image = Image.new("RGB", (sample_width_px, sample_height_px), "#18243b")
-draw = ImageDraw.Draw(image)
-for y in range(0, sample_height_px, 32):
-    shade = 35 + (y * 140 // sample_height_px)
-    draw.rectangle((0, y, sample_width_px, min(sample_height_px, y + 32)), fill=(20, shade, 110))
-draw.rectangle((22, 22, sample_width_px - 22, sample_height_px - 22), outline="#f3c969", width=12)
-draw.text((52, 52), "BOUND\nPROBE", fill="#ffffff", spacing=8)
-image_bytes = BytesIO()
-image.save(image_bytes, format="PNG", optimize=False)
-image_bytes.seek(0)
-
-# Physical dimensions and 3 x 3 placement match the default Letter/63x88mm grid.
-pdf = canvas.Canvas(pdf_path, pagesize=(page_width_pt, page_height_pt), pageCompression=1)
-for row in range(3):
-    for column in range(3):
-        x = (page_width_pt - 3 * card_width_pt) / 2 + column * card_width_pt
-        y = (page_height_pt - 3 * card_height_pt) / 2 + (2 - row) * card_height_pt
-        pdf.drawImage(ImageReader(image_bytes), x, y, width=card_width_pt, height=card_height_pt)
-pdf.showPage()
-pdf.save()
-
-# Exercise the actual calibration package dependency's PDF library in a second real
-# PDF read/write phase. This is intentionally a single-page, small-raster fixture.
-reader = PdfReader(pdf_path)
-writer = PdfWriter()
-for page in reader.pages:
-    writer.add_page(page)
-with open(rewritten_path, "wb") as output:
-    writer.write(output)
-
-verified = PdfReader(rewritten_path)
-box = verified.pages[0].mediabox
-peak_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-print(json.dumps({
-    "python_version": sys.version.split()[0],
-    "reportlab_version": version("reportlab"),
-    "pypdf_version": version("pypdf"),
-    "pages": len(verified.pages),
-    "media_box_points": [float(box.left), float(box.bottom), float(box.right), float(box.top)],
-    "card_grid": {"columns": 3, "rows": 3, "card_mm": [63, 88]},
-    "synthetic_raster": {"width_px": sample_width_px, "height_px": sample_height_px, "dpi": 300},
-    "input_pdf_bytes": os.path.getsize(pdf_path),
-    "rewritten_pdf_bytes": os.path.getsize(rewritten_path),
-    "child_ru_maxrss_bytes": peak_kib * 1024,
-    "peak_rss_basis": "Linux resource.getrusage(RUSAGE_SELF).ru_maxrss, KiB converted to bytes",
-}, sort_keys=True))
-`;
+const GIB = 1024 ** 3;
+const PORT = 4175;
+const HIGH_DPI = 1200;
+const VITE_URL = `http://127.0.0.1:${PORT}/`;
+const SCRIPT_RELATIVE_PATH = "scripts/export-resource-probe.mjs";
 
 function usage(message) {
   if (message) process.stderr.write(`${message}\n`);
-  process.stderr.write(
-    "Usage: node scripts/export-resource-probe.mjs --out-dir <directory> [--python <path>]\n",
-  );
+  process.stderr.write("Usage: node scripts/export-resource-probe.mjs --out-dir <directory>\n");
   process.exitCode = 2;
 }
 
 function parseArgs(argv) {
-  const result = { outDir: undefined, python: DEFAULT_PYTHON };
+  let outDir;
   for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--out-dir" || arg === "--python") {
-      const value = argv[index + 1];
-      if (!value || value.startsWith("--")) {
-        throw new Error(`${arg} requires a value`);
-      }
-      result[arg === "--out-dir" ? "outDir" : "python"] = value;
-      index += 1;
-    } else if (arg === "--help" || arg === "-h") {
-      usage();
-      return null;
-    } else {
-      throw new Error(`Unknown option: ${arg}`);
-    }
+    if (argv[index] !== "--out-dir") throw new Error(`Unknown option: ${argv[index]}`);
+    const value = argv[index + 1];
+    if (!value || value.startsWith("--")) throw new Error("--out-dir requires a value");
+    outDir = value;
+    index += 1;
   }
-  if (!result.outDir) throw new Error("--out-dir is required");
-  return result;
+  if (!outDir) throw new Error("--out-dir is required");
+  return { outDir };
 }
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function runCommand(command, args) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(command, args, { cwd: process.cwd(), encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error) {
+        rejectPromise(new Error(`${command} ${args.join(" ")} failed: ${stderr || error.message}`));
+        return;
+      }
+      resolvePromise(stdout);
+    });
+  });
+}
+
+async function readGitProvenance() {
+  const [head, tree, parentResult, indexEntries, stagedRaw, unstagedRaw, status] = await Promise.all([
+    runCommand("git", ["rev-parse", "HEAD"]),
+    runCommand("git", ["rev-parse", "HEAD^{tree}"]),
+    runCommand("git", ["rev-parse", "HEAD^"]).then((value) => ({ status: "present", value })).catch((error) => ({ status: "unavailable", error: error.message })),
+    runCommand("git", ["ls-files", "-s"]),
+    runCommand("git", ["diff", "--cached", "--raw"]),
+    runCommand("git", ["diff", "--raw"]),
+    runCommand("git", ["status", "--porcelain=v1"]),
+  ]);
+  const statusLines = status.split("\n").filter(Boolean);
+  return {
+    source: {
+      head_commit: head.trim(),
+      head_tree: tree.trim(),
+      parent_commit: parentResult.status === "present" ? parentResult.value.trim() : null,
+      parent_status: parentResult.status,
+      parent_error: parentResult.status === "present" ? null : parentResult.error,
+    },
+    index: {
+      index_fingerprint_sha256: sha256(indexEntries),
+      entry_count: indexEntries.split("\n").filter(Boolean).length,
+      staged_raw: stagedRaw.split("\n").filter(Boolean),
+    },
+    dirty_worktree: {
+      is_dirty: statusLines.length > 0,
+      status_porcelain_v1: statusLines,
+      unstaged_raw: unstagedRaw.split("\n").filter(Boolean),
+    },
+  };
 }
 
 function isWithin(parent, candidate) {
@@ -139,9 +104,7 @@ function isWithin(parent, candidate) {
 async function createNewEvidenceDirectory(outDir) {
   const repositoryRoot = resolve(process.cwd());
   const protectedRoots = [".git", ".todos", ".recovery"].map((path) => resolve(repositoryRoot, path));
-  if (!isWithin(repositoryRoot, outDir)) {
-    throw new Error(`--out-dir must stay inside the repository: ${outDir}`);
-  }
+  if (!isWithin(repositoryRoot, outDir)) throw new Error(`--out-dir must stay inside the repository: ${outDir}`);
   if (protectedRoots.some((protectedRoot) => isWithin(protectedRoot, outDir))) {
     throw new Error(`--out-dir is protected and cannot receive new evidence: ${outDir}`);
   }
@@ -154,217 +117,409 @@ async function createNewEvidenceDirectory(outDir) {
   await mkdir(outDir, { recursive: false });
 }
 
-function ceilSurface(name, widthPx, heightPx) {
-  const width = Math.ceil(widthPx);
-  const height = Math.ceil(heightPx);
-  const pixels = width * height;
-  const rgbaBytes = pixels * 4;
-  return {
-    name,
-    source_dimensions_px: { width: widthPx, height: heightPx },
-    conservative_integer_canvas_px: { width, height },
-    pixels,
-    rgba8_bytes: rgbaBytes,
-    rgba8_mib: rgbaBytes / MIB,
-  };
-}
-
-function estimates() {
-  const dpi = 1200;
-  const mmToPx = (mm) => (mm / 25.4) * dpi;
-  const inchToPx = (inches) => inches * dpi;
-  const page = ceilSurface("Letter page 8.5x11in", inchToPx(8.5), inchToPx(11));
-  const card = ceilSurface("Card content 63x88mm", mmToPx(63), mmToPx(88));
-  const cardOneMmBleed = ceilSurface("Card 63x88mm plus 1mm bleed per side", mmToPx(65), mmToPx(90));
-  const cardMpcBleed = ceilSurface("Card 63x88mm plus 3.175mm bleed per side", mmToPx(69.35), mmToPx(94.35));
-  return {
-    basis: {
-      dpi,
-      format: "RGBA8: ceil(width_px) * ceil(height_px) * 4 bytes",
-      source_geometry: "client/src/helpers/pdf.worker.ts:485-488, 540-543; client/src/constants/imageProcessing.ts:34-39",
-      caveat: "These are conservative CPU/canvas byte estimates. Browser canvas backing stores may be CPU, GPU, tiled, compressed, or duplicated by the implementation; no GPU allocation is measured here.",
-    },
-    surfaces: [page, card, cardOneMmBleed, cardMpcBleed],
-    illustrative_compositions: {
-      page_plus_full_page_guides: {
-        count: 2,
-        bytes: page.rgba8_bytes * 2,
-        mib: (page.rgba8_bytes * 2) / MIB,
-        rationale: "pdf.worker creates the page canvas and may create a same-sized full-page guide canvas.",
-      },
-      one_card_decode_effect_final_at_1mm_bleed: {
-        count: 3,
-        bytes: cardOneMmBleed.rgba8_bytes * 3,
-        mib: (cardOneMmBleed.rgba8_bytes * 3) / MIB,
-        rationale: "Illustrative decode/effect/final RGBA8 surfaces; actual effect pipeline may allocate more or fewer intermediates.",
-      },
-      four_active_cards_decode_effect_final_at_1mm_bleed: {
-        count: 12,
-        bytes: cardOneMmBleed.rgba8_bytes * 12,
-        mib: (cardOneMmBleed.rgba8_bytes * 12) / MIB,
-        rationale: "Current pdf.worker source has MAX_CONCURRENT_CARDS = 4; this is an estimate, not a measurement.",
-      },
-    },
-  };
-}
-
-async function readManifestFacts() {
-  // Read dependency manifests before starting the Python process that imports them.
-  const [rootManifest, clientManifest, calibrationManifest, probeSource, pdfWorkerSource] = await Promise.all([
-    readFile("package.json", "utf8"),
-    readFile("client/package.json", "utf8"),
-    readFile("server/vendor/printer-calibration/pyproject.toml", "utf8"),
-    readFile(SCRIPT_PATH, "utf8"),
-    readFile("client/src/helpers/pdf.worker.ts", "utf8"),
-  ]);
+async function readFacts() {
+  const paths = [
+    "package.json",
+    "client/package.json",
+    "client/src/helpers/exportProxyPageToPdf.tsx",
+    "client/src/helpers/pdf.worker.ts",
+    "client/src/helpers/pdfExportResourceBudget.ts",
+    SCRIPT_RELATIVE_PATH,
+  ];
+  const contents = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+  const [rootManifest, clientManifest, exportEntrypoint, worker, admission] = contents;
   const root = JSON.parse(rootManifest);
   const client = JSON.parse(clientManifest);
-  if (client.dependencies?.["pdf-lib"] !== "^1.17.1") {
-    throw new Error("client/package.json does not declare the expected pdf-lib dependency");
-  }
-  if (!calibrationManifest.includes('"pypdf"') || !calibrationManifest.includes('"reportlab"')) {
-    throw new Error("printer-calibration manifest does not declare pypdf and reportlab");
+  if (client.dependencies?.["pdf-lib"] !== "^1.17.1") throw new Error("Unexpected client pdf-lib declaration");
+  if (root.devDependencies?.playwright !== "^1.57.0") throw new Error("Unexpected root Playwright declaration");
+  if (root.dependencies?.canvas !== "^3.2.0") throw new Error("Unexpected root canvas declaration");
+  const workerLimit = /const PDF_WORKERS_MAX = (\d+);/.exec(exportEntrypoint)?.[1];
+  const cacheBudget = /PDF_CANVAS_CACHE_BYTE_BUDGET = (\d+) \* 1024 \* 1024/.exec(worker)?.[1];
+  const admissionBudgetGiB = /PDF_EXPORT_CPU_ADMISSION_BYTE_BUDGET = Math\.floor\(\s*([\d.]+) \* 1024 \* 1024 \* 1024\s*\)/s.exec(admission)?.[1];
+  if (workerLimit !== "1" || cacheBudget !== "128" || admissionBudgetGiB !== "2.25") {
+    throw new Error("Current export resource configuration no longer matches this probe's bounded assumptions");
   }
   return {
-    root_package_name: root.name,
-    root_package_version: root.version,
-    client_pdf_lib: client.dependencies["pdf-lib"],
-    source_sha256: {
-      "package.json": sha256(rootManifest),
-      "client/package.json": sha256(clientManifest),
-      "server/vendor/printer-calibration/pyproject.toml": sha256(calibrationManifest),
-      "scripts/export-resource-probe.mjs": sha256(probeSource),
-      "client/src/helpers/pdf.worker.ts": sha256(pdfWorkerSource),
+    package: { name: root.name, version: root.version },
+    dependencies: {
+      canvas_manifest: root.dependencies.canvas,
+      playwright_manifest: root.devDependencies.playwright,
+      pdf_lib_manifest: client.dependencies["pdf-lib"],
     },
+    configured_budgets: {
+      pdf_workers_max: Number(workerLimit),
+      pdf_canvas_cache_bytes: Number(cacheBudget) * MIB,
+      pdf_export_cpu_admission_bytes: Number(admissionBudgetGiB) * GIB,
+      basis: "Current source constants, not a browser RSS ceiling.",
+    },
+    source_sha256: Object.fromEntries(paths.map((path, index) => [path, sha256(contents[index])])),
   };
 }
 
-async function writeEvidenceFiles(outDir, command, result) {
-  const runtime = [
-    `node=${result.runtime.node}`,
-    `platform=${result.runtime.platform}`,
-    `architecture=${result.runtime.architecture}`,
-    `python=${result.synthetic_pdf.python_version}`,
-    `reportlab=${result.synthetic_pdf.reportlab_version}`,
-    `pypdf=${result.synthetic_pdf.pypdf_version}`,
-    `elapsed_ms=${result.runtime.elapsed_ms}`,
-    `child_ru_maxrss_bytes=${result.measured_rss.child_ru_maxrss_bytes}`,
-    `node_sampled_child_vmrss_peak_bytes=${result.measured_rss.node_sampled_child_vmrss_peak_bytes}`,
-    `orchestrator_ru_maxrss_bytes=${result.runtime.orchestrator_ru_maxrss_bytes}`,
-  ].join("\n");
-  const sourceHashes = Object.entries(result.manifests.source_sha256)
-    .map(([path, hash]) => `${hash}  ${path}`)
-    .join("\n");
-  await Promise.all([
-    writeFile(resolve(outDir, "commands.sh"), `#!/bin/sh\nset -eu\n${command}\n`),
-    writeFile(resolve(outDir, "runtime.txt"), `${runtime}\n`),
-    writeFile(resolve(outDir, "source-hashes.sha256"), `${sourceHashes}\n`),
-  ]);
+async function writeFixture(path) {
+  // 63 x 88 mm at 300 DPI. The application creates the real 1200-DPI export page.
+  const width = 744;
+  const height = 1039;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, "#0f172a");
+  gradient.addColorStop(0.5, "#0e7490");
+  gradient.addColorStop(1, "#164e63");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = "#facc15";
+  ctx.lineWidth = 14;
+  ctx.strokeRect(24, 24, width - 48, height - 48);
+  ctx.fillStyle = "#f8fafc";
+  ctx.font = "bold 52px sans-serif";
+  ctx.fillText("BOUND", 56, 120);
+  ctx.fillText("1200 DPI", 56, 190);
+  ctx.fillStyle = "rgba(255,255,255,0.24)";
+  for (let y = 250; y < height - 40; y += 48) ctx.fillRect(56, y, width - 112, 16);
+  await writeFile(path, canvas.toBuffer("image/png"));
+  return { width_px: width, height_px: height, dpi: 300, sha256: sha256(await readFile(path)) };
 }
 
-async function runChild(python, inputPdf, rewrittenPdf) {
+function waitForProcess(child, timeoutMs = 15_000) {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(python, ["-c", PYTHON_PROBE, inputPdf, rewrittenPdf], {
-      cwd: process.cwd(),
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let sampledPeakRssBytes = 0;
-    const sample = () => {
-      if (!child.pid) return;
-      readFile(`/proc/${child.pid}/status`, "utf8")
-        .then((status) => {
-          const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
-          if (match) sampledPeakRssBytes = Math.max(sampledPeakRssBytes, Number(match[1]) * 1024);
-        })
-        .catch(() => undefined);
+    const timer = setTimeout(() => rejectPromise(new Error(`Vite did not become ready within ${timeoutMs}ms`)), timeoutMs);
+    child.once("error", (error) => { clearTimeout(timer); rejectPromise(error); });
+    const onData = (chunk) => {
+      if (String(chunk).includes("Local:")) {
+        clearTimeout(timer);
+        child.stdout.off("data", onData);
+        resolvePromise();
+      }
     };
-    const timer = setInterval(sample, 5);
-    sample();
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", (error) => {
-      clearInterval(timer);
-      rejectPromise(error);
-    });
-    child.on("close", (code, signal) => {
-      clearInterval(timer);
-      const resultLine = stdout.trim().split("\n").filter(Boolean).at(-1);
-      if (code !== 0 || !resultLine) {
-        rejectPromise(new Error(`Python probe failed (code=${code}, signal=${signal}): ${stderr || stdout}`));
-        return;
-      }
-      try {
-        resolvePromise({
-          child: JSON.parse(resultLine),
-          sampled_peak_rss_bytes: sampledPeakRssBytes,
-          stderr: stderr.trim(),
-        });
-      } catch (error) {
-        rejectPromise(new Error(`Python probe returned invalid JSON: ${error}\n${stdout}`));
-      }
-    });
+    child.stdout.on("data", onData);
   });
 }
 
-async function main() {
-  let options;
+async function startVite() {
+  const child = spawn("npm", ["--prefix", "client", "run", "dev", "--", "--host", "127.0.0.1", "--port", String(PORT), "--strictPort"], {
+    cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], env: process.env,
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
   try {
-    options = parseArgs(process.argv.slice(2));
+    await waitForProcess(child);
   } catch (error) {
-    usage(error.message);
-    return;
+    child.kill("SIGTERM");
+    throw new Error(`${error.message}\n${stderr}`);
   }
-  if (!options) return;
+  return { child, stderr: () => stderr };
+}
 
-  const outDir = resolve(options.outDir);
-  await createNewEvidenceDirectory(outDir);
-  const manifests = await readManifestFacts();
-  const inputPdf = resolve(outDir, "probe-letter-300dpi.pdf");
-  const rewrittenPdf = resolve(outDir, "probe-letter-300dpi-rewritten.pdf");
-  const start = process.hrtime.bigint();
-  const run = await runChild(resolve(options.python), inputPdf, rewrittenPdf);
-  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+function readStatus(pid) {
+  return readFile(`/proc/${pid}/status`, "utf8").then((content) => {
+    const rss = /^VmRSS:\s+(\d+)\s+kB$/m.exec(content);
+    const threads = /^Threads:\s+(\d+)$/m.exec(content);
+    return { rss_bytes: rss ? Number(rss[1]) * 1024 : 0, threads: threads ? Number(threads[1]) : 0 };
+  }).catch(() => null);
+}
 
-  const result = {
-    schema_version: 1,
-    probe_kind: "bounded-synthetic-python-pdf",
-    command: `node scripts/export-resource-probe.mjs --out-dir ${options.outDir} --python ${options.python}`,
-    manifests,
-    runtime: {
-      node: process.version,
-      platform: process.platform,
-      architecture: process.arch,
-      elapsed_ms: elapsedMs,
-      orchestrator_ru_maxrss_bytes: process.resourceUsage().maxRSS * 1024,
-    },
-    measured_rss: {
-      child_ru_maxrss_bytes: run.child.child_ru_maxrss_bytes,
-      child_ru_maxrss_basis: run.child.peak_rss_basis,
-      node_sampled_child_vmrss_peak_bytes: run.sampled_peak_rss_bytes,
-      node_sampled_child_vmrss_basis: "Best-effort /proc/<pid>/status sampling every 5ms; may miss short-lived peaks and is not the child ru_maxrss measurement.",
-      limitation: "These are Linux process RSS measurements from the small Python PDF probe. They do not measure browser JavaScript, OffscreenCanvas backing-store, encoder, driver, or GPU memory.",
-    },
-    synthetic_pdf: run.child,
-    estimated_canvas_bytes: estimates(),
-    limits_decision: {
-      status: "proposed_for_downstream_implementation",
-      pdf_workers_max: 1,
-      high_dpi_card_decode_max: 1,
-      pdf_effect_admission_bytes: 268435456,
-      pdf_canvas_cache_bytes: 134217728,
-      calibration_upload_bytes: 67108864,
-      calibration_aggregate_temp_bytes: 134217728,
-      calibration_subprocesses_max: 1,
-      rationale: "One 1200-DPI Letter page is about 513.6 MiB RGBA8; page plus full-page guides is about 1.0 GiB before card preparation. Do not multiply that uncertain canvas/GPU working set by CPU count. A 256 MiB effect admission admits at most one illustrative 1200-DPI 1mm-bleed decode/effect/final set; cache and calibration limits are conservative provisional controls pending high-DPI photo/browser and calibration-transform measurements.",
-      limitation: "These configuration values are a documented proposal, not implemented behavior. The 64 MiB upload ceiling is not derived from the small synthetic PDF size and must be revalidated with representative high-DPI photographic calibration PDFs before enforcement.",
-    },
+async function descendantPids(rootPid) {
+  const procEntries = await readdir("/proc", { withFileTypes: true });
+  const pids = procEntries.filter((entry) => /^\d+$/.test(entry.name)).map((entry) => Number(entry.name));
+  const pairs = await Promise.all(pids.map(async (pid) => {
+    try {
+      const statLine = await readFile(`/proc/${pid}/stat`, "utf8");
+      const close = statLine.lastIndexOf(")");
+      return { pid, ppid: Number(statLine.slice(close + 2).split(" ")[1]) };
+    } catch { return null; }
+  }));
+  const children = new Map();
+  for (const pair of pairs) {
+    if (!pair || !Number.isInteger(pair.ppid)) continue;
+    const list = children.get(pair.ppid) ?? [];
+    list.push(pair.pid);
+    children.set(pair.ppid, list);
+  }
+  const result = [];
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    result.push(pid);
+    queue.push(...(children.get(pid) ?? []));
+  }
+  return result;
+}
+
+function parseProcessIdentity(pid, cmdline, statLine) {
+  const close = statLine.lastIndexOf(")");
+  const fields = statLine.slice(close + 2).trim().split(" ");
+  return {
+    pid,
+    ppid: Number(fields[1]),
+    start_time_ticks: fields[19] ?? null,
+    argv: cmdline.split("\0").filter(Boolean),
   };
-  await writeFile(resolve(outDir, "resource-probe-result.json"), `${JSON.stringify(result, null, 2)}\n`);
-  await writeEvidenceFiles(outDir, result.command, result);
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function scanProcessByPid(pid) {
+  try {
+    const [cmdline, statLine] = await Promise.all([
+      readFile(`/proc/${pid}/cmdline`, "utf8"),
+      readFile(`/proc/${pid}/stat`, "utf8"),
+    ]);
+    return { status: "present", pid, identity: parseProcessIdentity(pid, cmdline, statLine), errors: [] };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { status: "absent", pid, identity: null, errors: [] };
+    return { status: "unknown", pid, identity: null, errors: [`Could not inspect /proc/${pid}: ${error.message}`] };
+  }
+}
+
+async function scanProcessesForProfile(profileDir) {
+  let procEntries;
+  try {
+    procEntries = await readdir("/proc", { withFileTypes: true });
+  } catch (error) {
+    return { status: "unknown", profile_dir: profileDir, matches: [], errors: [`Could not enumerate /proc: ${error.message}`] };
+  }
+  const matches = [];
+  const errors = [];
+  for (const entry of procEntries) {
+    if (!/^\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    try {
+      const [cmdline, statLine] = await Promise.all([
+        readFile(`/proc/${pid}/cmdline`, "utf8"),
+        readFile(`/proc/${pid}/stat`, "utf8"),
+      ]);
+      if (cmdline.includes(`--user-data-dir=${profileDir}`)) {
+        matches.push(parseProcessIdentity(pid, cmdline, statLine));
+      }
+    } catch (error) {
+      // ENOENT means the target exited between enumeration and inspection. Other
+      // failures leave the scan inconclusive rather than treating it as clean.
+      if (error?.code !== "ENOENT") errors.push(`Could not inspect /proc/${pid}: ${error.message}`);
+    }
+  }
+  return {
+    status: errors.length > 0 ? "unknown" : (matches.length > 0 ? "present" : "absent"),
+    profile_dir: profileDir,
+    matches,
+    errors,
+  };
+}
+
+async function waitForProfileShutdown(profileDir, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  let scan = await scanProcessesForProfile(profileDir);
+  while (scan.status === "present" && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    scan = await scanProcessesForProfile(profileDir);
+  }
+  return scan;
+}
+
+function browserSampler(browserProcess) {
+  let timer;
+  let samples = 0;
+  let peak = { total_rss_bytes: 0, pids: [], per_process: [] };
+  const sample = async () => {
+    if (!browserProcess?.pid) return;
+    const pids = await descendantPids(browserProcess.pid);
+    const perProcess = (await Promise.all(pids.map(async (pid) => ({ pid, ...(await readStatus(pid) ?? { rss_bytes: 0, threads: 0 }) })))).filter((entry) => entry.rss_bytes > 0);
+    const total = perProcess.reduce((sum, entry) => sum + entry.rss_bytes, 0);
+    samples += 1;
+    if (total >= peak.total_rss_bytes) peak = { total_rss_bytes: total, pids, per_process: perProcess };
+  };
+  return {
+    start() { timer = setInterval(() => { void sample(); }, 20); void sample(); },
+    async stop() { if (timer) clearInterval(timer); await sample(); return { samples, sample_interval_ms: 20, peak }; },
+  };
+}
+
+const WORKER_TRACE_INIT_SCRIPT = `(() => {
+  const NativeWorker = window.Worker;
+  const trace = [];
+  class ProbedWorker extends NativeWorker {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener("message", (event) => {
+        const data = event.data || {};
+        if (data.type === "progress" || data.type === "result" || data.error) {
+          trace.push({ direction: "from-worker", type: data.type || "error", pageIndex: data.pageIndex, error: data.error || null, at_ms: performance.now() });
+        }
+      });
+    }
+    postMessage(message, transfer) {
+      if (message && Array.isArray(message.pageCards) && message.settings) {
+        trace.push({ direction: "to-worker", type: "page", pageIndex: message.pageIndex, pageCards: message.pageCards.length, dpi: message.settings.DPI, at_ms: performance.now() });
+      }
+      return transfer === undefined ? super.postMessage(message) : super.postMessage(message, transfer);
+    }
+  }
+  window.Worker = ProbedWorker;
+  window.__td7ac55eWorkerTrace = trace;
+})();`;
+
+async function validatePdf(path) {
+  const bytes = await readFile(path);
+  const pdf = await PDFDocument.load(bytes);
+  return {
+    sha256: sha256(bytes), bytes: bytes.length, page_count: pdf.getPageCount(),
+    media_boxes_points: pdf.getPages().map((page) => { const { width, height } = page.getSize(); return [width, height]; }),
+  };
+}
+
+async function stopChild(child) {
+  if (!child) return { status: "unknown", error: "Vite child was never created" };
+  if (child.exitCode !== null) return { status: "exited", pid: child.pid, exit_code: child.exitCode, signal: child.signalCode };
+  await new Promise((resolvePromise) => {
+    const timer = setTimeout(() => { child.kill("SIGKILL"); resolvePromise(); }, 5_000);
+    child.once("exit", () => { clearTimeout(timer); resolvePromise(); });
+    child.kill("SIGTERM");
+  });
+  return {
+    status: child.exitCode !== null || child.signalCode !== null ? "exited" : "unknown",
+    pid: child.pid,
+    exit_code: child.exitCode,
+    signal: child.signalCode,
+  };
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const outDir = resolve(options.outDir);
+  const gitProvenance = await readGitProvenance();
+  await createNewEvidenceDirectory(outDir);
+  const facts = await readFacts();
+  const fixture = await writeFixture(resolve(outDir, "fixture-card-300dpi.png"));
+  const profileDir = resolve(outDir, "playwright-profile");
+  await mkdir(profileDir);
+  const vite = await startVite();
+  const viteStartupProcScan = await scanProcessByPid(vite.child.pid);
+  let context;
+  let sampling;
+  let browserProfileScan;
+  let result;
+  const started = process.hrtime.bigint();
+  try {
+    context = await chromium.launchPersistentContext(profileDir, { headless: true, acceptDownloads: true });
+    const browser = context.browser();
+    browserProfileScan = await scanProcessesForProfile(profileDir);
+    if (browserProfileScan.status !== "present") {
+      throw new Error(`Could not identify an owned Chromium process from retained profile ${profileDir}: ${JSON.stringify(browserProfileScan)}`);
+    }
+    const profilePids = new Set(browserProfileScan.matches.map((candidate) => candidate.pid));
+    const browserIdentity = browserProfileScan.matches.find((candidate) => !profilePids.has(candidate.ppid));
+    if (!browserIdentity) throw new Error("Could not identify the owned Chromium root PID from its unique retained profile; browser RSS is unavailable");
+    const browserProcess = { pid: browserIdentity.pid };
+    sampling = browserSampler(browserProcess);
+    sampling.start();
+    const page = context.pages()[0] ?? await context.newPage();
+    const consoleErrors = [];
+    page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+    page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${error.message}`));
+    await page.addInitScript({ content: WORKER_TRACE_INIT_SCRIPT });
+    await page.goto(VITE_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.locator("#upload-images-unified").setInputFiles(resolve(outDir, "fixture-card-300dpi.png"));
+    await page.waitForFunction(() => document.querySelectorAll("[data-dnd-sortable-item]").length === 1, undefined, { timeout: 60_000 });
+    const dpiSelect = page.locator("select").filter({ has: page.locator("option[value='1200']") }).first();
+    await dpiSelect.selectOption("1200");
+    await page.waitForFunction(() => document.querySelector("select") !== null, undefined, { timeout: 5_000 });
+    const downloadPromise = page.waitForEvent("download", { timeout: 180_000 });
+    await page.getByRole("button", { name: /Export to PDF/ }).first().click();
+    const download = await downloadPromise;
+    const pdfPath = resolve(outDir, "actual-export-1200dpi-letter.pdf");
+    await download.saveAs(pdfPath);
+    const trace = await page.evaluate(() => (window).__td7ac55eWorkerTrace ?? []);
+    const workerDispatchOrder = trace.filter((event) => event.direction === "to-worker").map((event) => event.pageIndex);
+    const workerCompletionOrder = trace.filter((event) => event.direction === "from-worker" && event.type === "result").map((event) => event.pageIndex);
+    const traceErrors = trace.filter((event) => event.error);
+    const resource = await sampling.stop();
+    const pdf = await validatePdf(pdfPath);
+    result = {
+      schema_version: 3,
+      probe_kind: "bounded-real-browser-high-dpi-export",
+      command: `node ${SCRIPT_RELATIVE_PATH} --out-dir ${options.outDir}`,
+      manifests: facts,
+      provenance: {
+        git_before_evidence_directory: gitProvenance,
+        build: {
+          execution_mode: "Vite development server",
+          command: ["npm", "--prefix", "client", "run", "dev", "--", "--host", "127.0.0.1", "--port", String(PORT), "--strictPort"],
+          production_build: { status: "not_run", reason: "This bounded dev-mode probe does not build or serve client/dist." },
+        },
+      },
+      runtime: {
+        node: process.version, platform: process.platform, architecture: process.arch,
+        browser: {
+          engine: "chromium",
+          version: browser.version(),
+          root_pid: browserProcess.pid,
+          profile_identity: { profile_dir: profileDir, profile_dir_sha256: sha256(profileDir), root_process: browserIdentity, startup_profile_scan: browserProfileScan },
+        },
+        vite: { pid: vite.child.pid, argv: ["npm", "--prefix", "client", "run", "dev", "--", "--host", "127.0.0.1", "--port", String(PORT), "--strictPort"], startup_proc_scan: viteStartupProcScan },
+        elapsed_ms: Number(process.hrtime.bigint() - started) / 1e6,
+        orchestrator_ru_maxrss_bytes: process.resourceUsage().maxRSS * 1024,
+      },
+      fixture,
+      workload: {
+        cards: 1, pages_expected: 1, page: "US Letter 8.5x11in", dpi: HIGH_DPI,
+        grid: "default 3x3; one occupied slot", worker_setting: "actual app setting passed to its real PDF worker",
+        bounded_reason: "One application PDF worker and one occupied page; no parallel pages, profiles, or fixture reuse.",
+      },
+      actual_completion: { worker_dispatch_order: workerDispatchOrder, worker_completion_order: workerCompletionOrder, trace_errors: traceErrors, worker_trace: trace },
+      actual_resources: {
+        browser_process_tree_peak_rss_bytes: resource.peak.total_rss_bytes,
+        browser_process_tree_peak_rss_mib: resource.peak.total_rss_bytes / MIB,
+        peak_sample_pids: resource.peak.pids,
+        peak_sample_processes: resource.peak.per_process,
+        sampling: { samples: resource.samples, sample_interval_ms: resource.sample_interval_ms, basis: "Best-effort sum of Linux /proc/<pid>/status VmRSS for the owned Playwright Chromium root and descendants. Short-lived peaks may be missed." },
+        gpu_allocation: "unavailable: browser GPU/driver allocations are opaque to /proc RSS and were not inferred.",
+      },
+      output_pdf: pdf,
+      configured_budget_comparison: {
+        admission_result: "actual export completed through assertPdfExportCpuAdmission with the current configured source budget",
+        worker_result: `trace recorded ${workerDispatchOrder.length} worker dispatch(es); source config permits at most ${facts.configured_budgets.pdf_workers_max}`,
+        rss_result: "observed browser RSS is recorded beside the CPU RGBA8 admission estimate, but is not directly comparable: RSS includes runtime overhead and excludes opaque driver/GPU allocations.",
+        cache_result: "the 128 MiB worker canvas-cache budget is source configuration; this probe does not expose cache-byte counters from the worker.",
+      },
+      limitations: [
+        "This real export uses one synthetic local card fixture, not a photographic production deck.",
+        "The browser/app path was available; the standalone server was not started, so unrelated builtin-cardback requests may log 500 errors.",
+        "No GPU, browser backing-store, encoder, or driver allocation was measured.",
+      ],
+      console_errors: consoleErrors,
+    };
+  } finally {
+    if (sampling) await sampling.stop().catch(() => undefined);
+    let browserClose = { status: "not_started", error: null };
+    if (context) {
+      try {
+        await context.close();
+        browserClose = { status: "closed", error: null };
+      } catch (error) {
+        browserClose = { status: "failed", error: error.message };
+      }
+    }
+    const postcloseProfileScan = browserProfileScan
+      ? await waitForProfileShutdown(profileDir).catch((error) => ({ status: "unknown", profile_dir: profileDir, matches: [], errors: [error.message] }))
+      : { status: "unknown", profile_dir: profileDir, matches: [], errors: ["Browser profile was never identified"] };
+    const viteShutdown = await stopChild(vite.child).catch((error) => ({ status: "unknown", pid: vite.child.pid, error: error.message }));
+    const postcloseViteProcScan = await scanProcessByPid(vite.child.pid);
+    if (result) {
+      result.runtime.owned_process_shutdown = {
+        browser_context_close: browserClose,
+        postclose_profile_scan: postcloseProfileScan,
+        vite: viteShutdown,
+        postclose_vite_proc_scan: postcloseViteProcScan,
+        status: browserClose.status === "closed" && postcloseProfileScan.status === "absent" && viteShutdown.status === "exited" && postcloseViteProcScan.status === "absent" ? "verified" : "unknown_or_incomplete",
+        basis: "The probe closes only its Playwright context and Vite child, then scans Linux /proc for the exact retained Chromium --user-data-dir profile and the exact Vite child PID. A failed or incomplete scan is recorded as unknown, never as an empty clean result.",
+      };
+      await writeFile(resolve(outDir, "resource-probe-result.json"), `${JSON.stringify(result, null, 2)}\n`);
+      await writeFile(resolve(outDir, "commands.sh"), `#!/bin/sh\nset -eu\n${result.command}\n`);
+      await writeFile(resolve(outDir, "source-hashes.sha256"), `${Object.entries(facts.source_sha256).map(([path, hash]) => `${hash}  ${path}`).join("\n")}\n`);
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      if (result.runtime.owned_process_shutdown.status !== "verified") {
+        throw new Error(`Owned-process shutdown was not verified: ${JSON.stringify(result.runtime.owned_process_shutdown)}`);
+      }
+    }
+  }
 }
 
 main().catch((error) => {
