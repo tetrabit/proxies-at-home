@@ -1,16 +1,41 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+const { effectCacheRecords } = vi.hoisted(() => ({
+    effectCacheRecords: new Map<string, { key: string; blob: Blob; size: number; cachedAt: number }>(),
+}));
+
 vi.mock("../db", () => ({
-    db: { effectCache: { put: vi.fn() } },
+    db: {
+        effectCache: {
+            put: vi.fn(async (entry: { key: string; blob: Blob; size: number; cachedAt: number }) => {
+                effectCacheRecords.set(entry.key, entry);
+            }),
+            orderBy: vi.fn(() => ({
+                reverse: () => ({
+                    each: async (callback: (entry: { key: string; blob: Blob; size: number; cachedAt: number }) => void) => {
+                        [...effectCacheRecords.values()]
+                            .sort((left, right) => right.cachedAt - left.cachedAt)
+                            .forEach(callback);
+                    },
+                }),
+            })),
+            bulkDelete: vi.fn(async (keys: string[]) => {
+                keys.forEach(key => effectCacheRecords.delete(key));
+            }),
+        },
+    },
 }));
 
 vi.mock("./cardCanvasWorker", () => ({
-    hasAdvancedOverrides: () => false,
+    hasAdvancedOverrides: vi.fn(() => false),
     overridesToRenderParams: () => ({}),
     renderCardWithOverridesWorker: vi.fn(),
 }));
 
 vi.mock("./debug", () => ({ debugLog: vi.fn() }));
+
+import { db } from "../db";
+import { hasAdvancedOverrides, renderCardWithOverridesWorker } from "./cardCanvasWorker";
 
 class FakeCanvasContext {
     fillStyle = "";
@@ -175,6 +200,10 @@ async function loadWorker(): Promise<WorkerHarness> {
 
 beforeEach(() => {
     vi.resetModules();
+    vi.clearAllMocks();
+    effectCacheRecords.clear();
+    vi.mocked(hasAdvancedOverrides).mockReset().mockReturnValue(false);
+    vi.mocked(renderCardWithOverridesWorker).mockReset();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     FakeOffscreenCanvas.instances = [];
     FakeOffscreenCanvas.failContextAt = undefined;
@@ -193,6 +222,62 @@ afterEach(() => {
 });
 
 describe("PDF worker canvas lifecycle", () => {
+    test("writes advanced PDF renders through the shared bounded effect-cache policy", async () => {
+        const worker = await loadWorker();
+        const threeGiB = 3 * 1024 * 1024 * 1024;
+        const olderRendered = new Blob(["older rendered"], { type: "image/png" });
+        const newerRendered = new Blob(["newer rendered"], { type: "image/png" });
+        Object.defineProperty(olderRendered, "size", { value: threeGiB });
+        Object.defineProperty(newerRendered, "size", { value: threeGiB });
+        vi.mocked(hasAdvancedOverrides).mockReturnValue(true);
+        vi.mocked(renderCardWithOverridesWorker)
+            .mockResolvedValueOnce(olderRendered)
+            .mockResolvedValueOnce(newerRendered);
+        vi.stubGlobal("createImageBitmap", vi.fn(async () => new FakeImageBitmap(2, 3)));
+        vi.spyOn(Date, "now")
+            .mockReturnValueOnce(1)
+            .mockReturnValueOnce(2);
+        const imagesById = new Map([
+            ["older", {
+                exportBlob: new Blob(["source"], { type: "image/png" }),
+                exportBleedWidth: 0,
+                exportDpi: 1,
+                generatedBleedMode: "none",
+                generatedExistingBleedMm: 0,
+                generatedHasBuiltInBleed: false,
+                generatedRenderVersion: 1,
+            }],
+            ["newer", {
+                exportBlob: new Blob(["source"], { type: "image/png" }),
+                exportBleedWidth: 0,
+                exportDpi: 1,
+                generatedBleedMode: "none",
+                generatedExistingBleedMm: 0,
+                generatedHasBuiltInBleed: false,
+                generatedRenderVersion: 1,
+            }],
+        ]);
+
+        await worker.deliver({
+            pageCards: [{ ...card("older-card", "older"), overrides: { brightness: 1 }}],
+            pageIndex: 5,
+            settings: settings(imagesById),
+        });
+        await vi.waitFor(() => expect(db.effectCache.put).toHaveBeenCalledTimes(1));
+        await worker.deliver({
+            pageCards: [{ ...card("newer-card", "newer"), overrides: { brightness: 1 }}],
+            pageIndex: 6,
+            settings: settings(imagesById),
+        });
+
+        await vi.waitFor(() => expect(db.effectCache.bulkDelete).toHaveBeenCalledWith([
+            expect.stringMatching(/^older:1:/),
+        ]));
+        expect([...effectCacheRecords.values()]).toEqual([
+            expect.objectContaining({ key: expect.stringMatching(/^newer:1:/), size: threeGiB }),
+        ]);
+    });
+
     test("reuses a cached placeholder canvas across worker messages without disposing it before drawing", async () => {
         const worker = await loadWorker();
         const payload = { pageCards: [card("first", "shared")], pageIndex: 0, settings: settings() };

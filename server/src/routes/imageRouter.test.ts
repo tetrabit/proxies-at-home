@@ -456,6 +456,43 @@ describe("getWithRetry logic", () => {
         sendFileSpy.mockRestore();
     });
 
+    it("follows admitted same-origin proxy redirects with a fresh pinned agent and blocks an unadmitted destination", async () => {
+        const resolveAll = vi.fn((_hostname: string, _options: { all: true; verbatim: true }, callback: (error: NodeJS.ErrnoException | null, addresses: Array<{ address: string; family: number }>) => void) => {
+            callback(null, [{ address: "8.8.8.8", family: 4 }]);
+        });
+        __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
+        const initial = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png";
+        const redirected = "https://cards.scryfall.io/png/front/b/a/ba123456-1234-1234-1234-123456789abc.png";
+        mockedAxios.get
+            .mockResolvedValueOnce({ status: 302, data: Buffer.alloc(0), headers: { location: "/png/front/b/a/ba123456-1234-1234-1234-123456789abc.png" } })
+            .mockResolvedValueOnce({ status: 200, data: Buffer.from("image data"), headers: { "content-type": "image/png" } });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/png").send("image data");
+        });
+
+        const accepted = await request(app).get("/images/proxy").query({ url: initial });
+        expect(accepted.status).toBe(200);
+        expect(mockedAxios.get).toHaveBeenNthCalledWith(1, initial, expect.objectContaining({ maxRedirects: 0, proxy: false }));
+        expect(mockedAxios.get).toHaveBeenNthCalledWith(2, redirected, expect.objectContaining({ maxRedirects: 0, proxy: false }));
+        const firstOptions = mockedAxios.get.mock.calls[0][1] as { httpsAgent: { options: { lookup: (hostname: string, options: unknown, callback: (error: NodeJS.ErrnoException | null, address?: string, family?: number) => void) => void } } };
+        const secondOptions = mockedAxios.get.mock.calls[1][1] as typeof firstOptions;
+        expect(firstOptions.httpsAgent).not.toBe(secondOptions.httpsAgent);
+        await Promise.all([firstOptions, secondOptions].map(options => new Promise<void>((resolve, reject) => {
+            options.httpsAgent.options.lookup("cards.scryfall.io", {}, error => error ? reject(error) : resolve());
+        })));
+        expect(resolveAll).toHaveBeenCalledTimes(2);
+        sendFileSpy.mockRestore();
+
+        mockedAxios.get.mockReset().mockResolvedValue({
+            status: 302,
+            data: Buffer.alloc(0),
+            headers: { location: "https://evil.example/image.png" },
+        });
+        const denied = await request(app).get("/images/proxy").query({ url: initial });
+        expect(denied.status).toBe(502);
+        expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    });
+
     it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
         mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: Buffer.from("png") });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -515,6 +552,37 @@ describe("getWithRetry logic", () => {
             expect(duplicateId.status).toBe(400);
             expect(mockedAxios.get).not.toHaveBeenCalled();
             expect(fs.existsSync).not.toHaveBeenCalled();
+        });
+
+        it("follows only same-origin MPC redirects with a fresh pinned agent", async () => {
+            const resolveAll = vi.fn((_hostname: string, _options: { all: true; verbatim: true }, callback: (error: NodeJS.ErrnoException | null, addresses: Array<{ address: string; family: number }>) => void) => {
+                callback(null, [{ address: "1.1.1.1", family: 4 }]);
+            });
+            __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
+            mockedAxios.get
+                .mockResolvedValueOnce({ status: 308, data: Buffer.alloc(0), headers: { location: "/redirect-next-small-google_drive" } })
+                .mockResolvedValueOnce({ status: 200, data: Buffer.from("png"), headers: { "content-type": "image/png" } });
+            const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+                this.type("image/png").send("png");
+            });
+
+            const accepted = await request(app).get("/images/mpc?id=redirected&size=small");
+            expect(accepted.status).toBe(200);
+            expect(mockedAxios.get).toHaveBeenNthCalledWith(1, "https://img.mpcautofill.com/redirected-small-google_drive", expect.objectContaining({ maxRedirects: 0, proxy: false }));
+            expect(mockedAxios.get).toHaveBeenNthCalledWith(2, "https://img.mpcautofill.com/redirect-next-small-google_drive", expect.objectContaining({ maxRedirects: 0, proxy: false }));
+            const firstOptions = mockedAxios.get.mock.calls[0][1] as { httpsAgent: unknown };
+            const secondOptions = mockedAxios.get.mock.calls[1][1] as typeof firstOptions;
+            expect(firstOptions.httpsAgent).not.toBe(secondOptions.httpsAgent);
+            sendFileSpy.mockRestore();
+
+            mockedAxios.get.mockReset().mockResolvedValue({
+                status: 302,
+                data: Buffer.alloc(0),
+                headers: { location: "https://drive.google.com/uc?export=download&id=redirected" },
+            });
+            const denied = await request(app).get("/images/mpc?id=redirected&size=small");
+            expect(denied.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenCalledTimes(1);
         });
 
         it("should proxy image from Google Drive", async () => {

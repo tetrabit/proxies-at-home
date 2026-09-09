@@ -13,6 +13,7 @@ import type { CardOption, TokenPart } from "../../../shared/types";
 import { fetchTokenParts } from "./tokenApi";
 import { db } from "../db";
 import { IMPORT_CONFIG } from "./importConfig";
+import { registerProcessingCancellation } from "./cancellationService";
 
 /**
  * Snapshot of settings used for an import operation.
@@ -127,10 +128,28 @@ export class ImportOrchestrator {
      * Handles intents that have known data (Preloaded or MPC ID).
      * Shows placeholder cards immediately, then updates with images in background.
      */
-    private static async executeDirect(intents: ImportIntent[], projectId: string, signal?: AbortSignal) {
+    private static async executeDirect(intents: ImportIntent[], projectId: string, externalSignal?: AbortSignal) {
         if (intents.length === 0) return;
-        this.throwIfAborted(signal);
-        const ownsDirectImageWrites = () => !signal?.aborted;
+
+        // Direct imports resolve after their placeholders have been persisted. Register a
+        // private controller so clear/switch cancels this deferred persistence even when
+        // the caller did not supply its own signal.
+        const directController = new AbortController();
+        let cancelledByClear = false;
+        const cancelDirect = () => {
+            cancelledByClear = true;
+            directController.abort();
+        };
+        const unregisterCancellation = registerProcessingCancellation(cancelDirect);
+        const signal = externalSignal ?? directController.signal;
+        const throwIfDirectCancelled = () => {
+            if (cancelledByClear) throw new DOMException('The operation was aborted.', 'AbortError');
+            this.throwIfAborted(signal);
+        };
+        const ownsDirectImageWrites = () => !cancelledByClear && !signal.aborted;
+
+        try {
+        throwIfDirectCancelled();
 
         // Step 1: Add placeholder cards IMMEDIATELY (shows loading spinners in UI)
         const placeholderCards = intents.flatMap(intent => {
@@ -156,7 +175,7 @@ export class ImportOrchestrator {
         });
 
         const addedCards = await undoableAddCards(placeholderCards);
-        this.throwIfAborted(signal);
+        throwIfDirectCancelled();
 
         // Step 2: Resolve images and update cards in background (non-blocking)
         const updateCardsWithImages = async () => {
@@ -174,17 +193,17 @@ export class ImportOrchestrator {
 
             // Fetch all metadata in one batch request
             const metadataCache = metadataQueries.length > 0
-                ? signal
+                ? externalSignal
                     ? await fetchCardsMetadataBatch(metadataQueries, signal)
                     : await fetchCardsMetadataBatch(metadataQueries)
                 : new Map();
-            this.throwIfAborted(signal);
+            throwIfDirectCancelled();
 
             // Step 2b: Process each intent using the cached metadata
             let cardIndex = 0;
 
             for (const intent of intents) {
-                this.throwIfAborted(signal);
+                throwIfDirectCancelled();
                 const quantity = intent.quantity ?? 1;
                 const cardUuids = addedCards.slice(cardIndex, cardIndex + quantity).map(c => c.uuid);
                 cardIndex += quantity;
@@ -310,10 +329,12 @@ export class ImportOrchestrator {
                     }
 
                     // Update cards with resolved image data
-                    this.throwIfAborted(signal);
+                    throwIfDirectCancelled();
                     if (imageId || scryfallMetadata) {
                         await db.transaction('rw', db.cards, async () => {
+                            throwIfDirectCancelled();
                             for (const uuid of cardUuids) {
+                                throwIfDirectCancelled();
                                 await db.cards.update(uuid, {
                                     imageId,
                                     hasBuiltInBleed,
@@ -335,10 +356,11 @@ export class ImportOrchestrator {
                                         : (intent.cardOverrides ?? undefined)
                                 });
                             }
+                            throwIfDirectCancelled();
                         });
                     }
 
-                    this.throwIfAborted(signal);
+                    throwIfDirectCancelled();
 
                     // Handle back cards
                     const explicitBackId = intent.linkedBackImageId;
@@ -351,28 +373,30 @@ export class ImportOrchestrator {
                             backImageId = (await addRemoteImage([backUrl], 0, undefined, ownsDirectImageWrites))!;
                         }
 
-                        this.throwIfAborted(signal);
+                        throwIfDirectCancelled();
                         await createLinkedBackCardsBulk(
                             cardUuids.map(uuid => ({
                                 frontUuid: uuid,
                                 backImageId: backImageId,
                                 backName: backName,
                                 options: { hasBuiltInBleed: true, usesDefaultCardback: isCardbackId(backImageId) }
-                            }))
+                            })),
                         );
+                        throwIfDirectCancelled();
                     } else if (dfcBackInfo) {
-                        this.throwIfAborted(signal);
+                        throwIfDirectCancelled();
                         await createLinkedBackCardsBulk(
                             cardUuids.map(uuid => ({
                                 frontUuid: uuid,
                                 backImageId: dfcBackInfo!.imageId,
                                 backName: dfcBackInfo!.name,
                                 options: { hasBuiltInBleed: false }
-                            }))
+                            })),
                         );
+                        throwIfDirectCancelled();
                     }
                 } catch (e) {
-                    if (signal?.aborted) this.throwIfAborted(signal);
+                    if (cancelledByClear || signal.aborted) throwIfDirectCancelled();
                     console.warn(`[ImportOrchestrator] Failed to resolve image for ${intent.name}:`, e);
                     // Mark as error state
                     const { db } = await import('../db');
@@ -391,6 +415,9 @@ export class ImportOrchestrator {
         // Step 2 remains asynchronous relative to placeholder creation, but terminal completion
         // must wait until all resolution and persistence work has settled.
         await updateCardsWithImages();
+        } finally {
+            unregisterCancellation();
+        }
     }
 
     /**

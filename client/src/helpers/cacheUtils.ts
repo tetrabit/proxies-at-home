@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { db, type EffectCacheEntry } from "../db";
 import type { Table } from "dexie";
 import { debugLog } from "./debug";
 
@@ -6,6 +6,7 @@ import { debugLog } from "./debug";
 const IMAGE_CACHE_CAP_BYTES = 5 * 1024 * 1024 * 1024;    // 5GB
 const METADATA_CACHE_CAP_BYTES = 100 * 1024 * 1024;       // 100MB
 const EFFECT_CACHE_CAP_BYTES = 5 * 1024 * 1024 * 1024;   // 5GB
+let effectCacheLimitEnforcement: Promise<void> = Promise.resolve();
 
 /**
  * Generic LRU Enforcer for a Dexie Table.
@@ -75,6 +76,24 @@ export async function enforceMetadataCacheLimits(): Promise<number> {
  */
 export async function enforceEffectCacheLimits(): Promise<number> {
     return enforceGenericLruLimit(db.effectCache, EFFECT_CACHE_CAP_BYTES, "key");
+}
+
+export function enforceEffectCacheLimitsSerially(): Promise<void> {
+    const enforcement = effectCacheLimitEnforcement
+        .then(() => enforceEffectCacheLimits())
+        .then(() => undefined);
+    effectCacheLimitEnforcement = enforcement.catch(() => undefined);
+    return enforcement;
+}
+
+/**
+ * Writes one effect-cache entry, then serializes the shared byte-bounded LRU
+ * policy. This module is safe to import from a dedicated worker: it depends on
+ * Dexie only, not the main-thread effect processor or worker-pool singleton.
+ */
+export async function persistEffectCacheEntryWithBoundedPolicy(entry: EffectCacheEntry): Promise<void> {
+    await db.effectCache.put(entry);
+    await enforceEffectCacheLimitsSerially();
 }
 
 /**

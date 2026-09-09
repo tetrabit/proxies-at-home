@@ -9,6 +9,12 @@ import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
 import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js";
 import { createPinnedHttpsAgent, type ResolveAll } from "./imageConnectionPolicy.js";
+import {
+  fetchWithPolicyCheckedRedirects,
+  ImageRedirectPolicyError,
+  type ImageHttpClient,
+  type RedirectTargetAdmission,
+} from "./imageRedirectPolicy.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,21 +47,80 @@ function connectionTimeRequestOptions(options: AxiosRequestConfig = {}): AxiosRe
   };
 }
 
+function admitProxyRedirect(value: string): string | undefined {
+  const admission = validateProxyTarget(value);
+  return admission.ok ? admission.url : undefined;
+}
+
+function admitMpcRedirect(value: string): string | undefined {
+  if (value.includes("%") || value.includes("\\")) return undefined;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+
+  if (url.protocol !== "https:" || url.port !== "" || url.username !== "" || url.password !== "" || url.hash !== "") {
+    return undefined;
+  }
+
+  if (url.hostname === "drive.google.com" && url.pathname === "/uc") {
+    const entries = [...url.searchParams.entries()];
+    const keys = new Set(entries.map(([key]) => key));
+    const id = url.searchParams.get("id");
+    const exportMode = url.searchParams.get("export");
+    const confirm = url.searchParams.get("confirm");
+    if ((entries.length === 2 || entries.length === 3)
+      && keys.size === entries.length
+      && keys.has("id")
+      && keys.has("export")
+      && (entries.length === 2 || (keys.has("confirm") && confirm === "t"))
+      && /^[A-Za-z0-9_-]{1,200}$/.test(id ?? "")
+      && (exportMode === "download" || exportMode === "view")) {
+      return url.href;
+    }
+  }
+
+  if (url.hostname === "img.mpcautofill.com"
+    && url.search === ""
+    && !url.href.endsWith("?")
+    && /^\/[A-Za-z0-9_-]{1,200}-(?:small|large)-google_drive$/.test(url.pathname)) {
+    return url.href;
+  }
+
+  return undefined;
+}
+
 // Improved retry with exponential backoff (reduced retries for faster failure)
-async function getWithRetry(url: string, opts: AxiosRequestConfig = {}, tries = 2): Promise<AxiosResponse> {
+async function getWithRetry(
+  url: string,
+  opts: AxiosRequestConfig = {},
+  tries = 2,
+  client: ImageHttpClient = AX,
+  admitRedirectTarget: RedirectTargetAdmission = admitProxyRedirect,
+  acceptResponse: (response: AxiosResponse) => boolean = response => response.status >= 200 && response.status < 300,
+): Promise<AxiosResponse> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await AX.get(url, connectionTimeRequestOptions(opts));
+      const res = await fetchWithPolicyCheckedRedirects(
+        url,
+        client,
+        admitRedirectTarget,
+        () => connectionTimeRequestOptions(opts),
+      );
+      if (acceptResponse(res)) return res;
       if (res.status === 429) {
         const wait = Number(res.headers["retry-after"] || 5);
         console.log(`[429] Rate limited. Waiting ${wait}s before retry...`);
         await new Promise(r => setTimeout(r, wait * 1000));
         continue;
       }
-      if (res.status >= 200 && res.status < 300) return res;
       throw new Error(`HTTP ${res.status}`);
     } catch (e) {
+      if (e instanceof ImageRedirectPolicyError) throw e;
       lastErr = e;
       // Exponential backoff: 500ms, 1s (reduced from 1s, 2s, 4s...)
       const backoffMs = Math.min(500 * Math.pow(2, i), 2000);
@@ -610,9 +675,14 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
       for (const url of candidates) {
         try {
           // Use AX_GDRIVE with longer timeout for large Google Drive files
-          const r = await AX_GDRIVE.get(url, connectionTimeRequestOptions({
-            responseType: "arraybuffer",
-          }));
+          const r = await getWithRetry(
+            url,
+            { responseType: "arraybuffer" },
+            1,
+            AX_GDRIVE,
+            admitMpcRedirect,
+            () => true,
+          );
 
           const ct = (r.headers["content-type"] || "").toLowerCase();
           if (!ct.startsWith("image/")) {

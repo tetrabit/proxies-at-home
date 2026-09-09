@@ -9,7 +9,10 @@
 
 import { db, type EffectCacheEntry } from '../db';
 import type { CardOverrides, CardOption } from '../../../shared/types';
-import { enforceEffectCacheLimits } from './cacheUtils';
+import {
+    enforceEffectCacheLimitsSerially,
+    persistEffectCacheEntryWithBoundedPolicy,
+} from './cacheUtils';
 import { hasActiveAdjustments } from './adjustmentUtils';
 import { overridesToRenderParams } from './cardCanvasWorker';
 import type { RenderParams } from '../components/CardCanvas/types';
@@ -570,7 +573,6 @@ function computeCacheKey(imageId: string, overrides: CardOverrides, dpi: number)
     return `${imageId}:${dpi}:${overridesHash}`;
 }
 
-let effectCacheLimitEnforcement: Promise<void> = Promise.resolve();
 
 // Dexie deserializes a Blob for each read, so object identity is not a persisted
 // image revision. Digest the encoded source bytes in fixed-size chunks instead.
@@ -915,13 +917,6 @@ async function getOrCreatePreRender(
     }
 }
 
-function enforceEffectCacheLimitsSerially(): Promise<void> {
-    const enforcement = effectCacheLimitEnforcement
-        .then(() => enforceEffectCacheLimits())
-        .then(() => undefined);
-    effectCacheLimitEnforcement = enforcement.catch(() => undefined);
-    return enforcement;
-}
 
 function isCurrentPersistenceFence(fence: RenditionPersistenceFence, generation: number): boolean {
     return (
@@ -1015,10 +1010,12 @@ async function setEffectCacheEntry(
             entry,
         });
         if (!await persistFencedEffectCacheEntry(entry, fence)) return;
+        // The fence owns the conditional write. Apply the same shared byte
+        // policy without replaying an unrestricted duplicate put.
+        await enforceEffectCacheLimitsSerially();
     } else {
-        await db.effectCache.put(entry);
+        await persistEffectCacheEntryWithBoundedPolicy(entry);
     }
-    await enforceEffectCacheLimitsSerially();
 }
 
 /**
@@ -1038,8 +1035,7 @@ export async function setEffectCacheEntryWithDpi(
         size: blob.size,
         cachedAt: Date.now(),
     };
-    await db.effectCache.put(entry);
-    await enforceEffectCacheLimitsSerially();
+    await persistEffectCacheEntryWithBoundedPolicy(entry);
 }
 
 

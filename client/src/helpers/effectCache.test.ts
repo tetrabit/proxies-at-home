@@ -3,6 +3,12 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 
 import type { RenderParams } from '../components/CardCanvas/types';
 
+const cacheUtilsMocks = vi.hoisted(() => ({
+    enforceEffectCacheLimits: vi.fn().mockResolvedValue(undefined),
+    enforceEffectCacheLimitsSerially: vi.fn(),
+    persistEffectCacheEntryWithBoundedPolicy: vi.fn(),
+}));
+
 // Mock dependencies
 vi.mock('@/store/settings', () => ({
     useSettingsStore: {
@@ -27,7 +33,9 @@ vi.mock('@/db', () => ({
 }));
 
 vi.mock('./cacheUtils', () => ({
-    enforceEffectCacheLimits: vi.fn().mockResolvedValue(undefined),
+    enforceEffectCacheLimits: cacheUtilsMocks.enforceEffectCacheLimits,
+    enforceEffectCacheLimitsSerially: cacheUtilsMocks.enforceEffectCacheLimitsSerially,
+    persistEffectCacheEntryWithBoundedPolicy: cacheUtilsMocks.persistEffectCacheEntryWithBoundedPolicy,
 }));
 
 vi.mock('./cardCanvasWorker', () => ({
@@ -42,6 +50,8 @@ import { enforceEffectCacheLimits } from './cacheUtils';
 import { getEffectCacheEntry, getEffectProcessor, preRenderEffect, queueBulkPreRender, setEffectCacheEntryWithDpi } from './effectCache';
 
 describe('effectCache', () => {
+    let policyEnforcement: Promise<void>;
+
     function pngBlob(width: number, height: number): Blob {
         const header = new Uint8Array([
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -104,6 +114,19 @@ describe('effectCache', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        policyEnforcement = Promise.resolve();
+        cacheUtilsMocks.enforceEffectCacheLimits.mockResolvedValue(undefined);
+        cacheUtilsMocks.enforceEffectCacheLimitsSerially.mockImplementation(() => {
+            const enforcement = policyEnforcement
+                .then(() => cacheUtilsMocks.enforceEffectCacheLimits())
+                .then(() => undefined);
+            policyEnforcement = enforcement.catch(() => undefined);
+            return enforcement;
+        });
+        cacheUtilsMocks.persistEffectCacheEntryWithBoundedPolicy.mockImplementation(async (entry) => {
+            await db.effectCache.put(entry);
+            await cacheUtilsMocks.enforceEffectCacheLimitsSerially();
+        });
         vi.mocked(useSettingsStore.getState).mockReturnValue({ dpi: 300 } as ReturnType<typeof useSettingsStore.getState>);
     });
 

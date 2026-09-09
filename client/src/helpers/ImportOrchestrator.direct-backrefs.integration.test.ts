@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScryfallCard } from "../../../shared/types";
 
 vi.mock("./mpcAutofillApi", () => ({
   getMpcAutofillImageUrl: (id: string) => `https://mpc.example/${id}.jpg`,
@@ -20,6 +21,8 @@ vi.mock("./scryfallApi", () => ({
 }));
 
 import { db } from "../db";
+import { useCardsStore } from "../store/cards";
+import { useProjectStore } from "../store/projectStore";
 import { ImportOrchestrator } from "./ImportOrchestrator";
 
 const settings = {
@@ -82,5 +85,35 @@ describe("ImportOrchestrator direct back image persistence", () => {
       linkedBackImageId: "explicit-back",
       linkedBackName: "Explicit Back",
     });
+  });
+
+  it("does not restore cards, images, links, or refcounts after clear races deferred direct resolution", async () => {
+    const projectId = "direct-clear-persistence-fence";
+    useProjectStore.setState({ currentProjectId: projectId });
+
+    let resolveMetadata!: (value: Map<string, ScryfallCard>) => void;
+    vi.mocked(await import("./scryfallApi")).fetchCardsMetadataBatch.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveMetadata = resolve;
+    }));
+
+    const processing = ImportOrchestrator.process([{
+      name: "Cleared Front",
+      quantity: 1,
+      isToken: false,
+      mpcId: "cleared-front",
+      linkedBackImageId: "cleared-back",
+      linkedBackName: "Cleared Back",
+    }], { settings: { ...settings, projectId } });
+
+    await vi.waitFor(async () => {
+      expect(await db.cards.where("projectId").equals(projectId).count()).toBeGreaterThan(0);
+    });
+
+    await useCardsStore.getState().clearAllCardsAndImages();
+    resolveMetadata(new Map());
+
+    await expect(processing).rejects.toMatchObject({ name: "AbortError" });
+    expect(await db.cards.where("projectId").equals(projectId).count()).toBe(0);
+    expect(await db.images.count()).toBe(0);
   });
 });

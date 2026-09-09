@@ -11,11 +11,12 @@ import { getCardTargetBleed, computeGuideLayouts, computeGridDimensions, usesCar
 import { getEffectiveBleedMode, getEffectiveExistingBleedMm, getHasBuiltInBleed } from "./imageSpecs";
 import { hasAdvancedOverrides, overridesToRenderParams, renderCardWithOverridesWorker } from "./cardCanvasWorker";
 import { generatePerCardGuide, executePathCommands, type GuideStyle } from "./cutGuideUtils";
-import { db, type EffectCacheEntry } from "../db";
+import type { EffectCacheEntry } from "../db";
 import type { CardOption, CardOverrides } from "../../../shared/types";
 import { debugLog } from "./debug";
 import { IMAGE_PROCESSING } from "../constants/imageProcessing";
 import { CanvasLruCache, type CanvasCacheLease } from "./pdfCanvasLruCache";
+import { persistEffectCacheEntryWithBoundedPolicy } from "./cacheUtils";
 
 export { };
 declare const self: DedicatedWorkerGlobalScope;
@@ -140,7 +141,7 @@ async function cacheEffectBlob(imageId: string, overrides: CardOverrides, blob: 
         size: blob.size,
         cachedAt: Date.now(),
     };
-    await db.effectCache.put(entry);
+    await persistEffectCacheEntryWithBoundedPolicy(entry);
 }
 
 
