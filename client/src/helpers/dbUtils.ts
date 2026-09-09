@@ -1107,12 +1107,22 @@ export async function createLinkedBackCard(
   options?: {
     hasBuiltInBleed?: boolean;
     usesDefaultCardback?: boolean;
+    shouldContinue?: () => boolean;
   }
 ): Promise<string> {
   const backUuid = crypto.randomUUID();
+  const writeInvalidated = new Error("Linked back write invalidated");
+  const assertWriteCurrent = () => {
+    if (options?.shouldContinue && !options.shouldContinue()) {
+      throw writeInvalidated;
+    }
+  };
 
-  await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+  try {
+    await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+      assertWriteCurrent();
     const frontCard = await db.cards.get(frontUuid);
+    assertWriteCurrent();
     if (!frontCard) {
       throw new Error(`Front card not found: ${frontUuid}`);
     }
@@ -1133,19 +1143,27 @@ export async function createLinkedBackCard(
     };
 
     await db.cards.add(backCard);
+    assertWriteCurrent();
 
     // Update front card with link to back
     await db.cards.update(frontUuid, { linkedBackId: backUuid });
+    assertWriteCurrent();
 
     // Only increment ref count for custom back images (not cardbacks)
     // Cardbacks don't need ref counting - they're only deleted explicitly
     if (backImageId && !options?.usesDefaultCardback) {
       const image = await db.images.get(backImageId);
+      assertWriteCurrent();
       if (image) {
         await db.images.update(backImageId, { refCount: image.refCount + 1 });
+        assertWriteCurrent();
       }
     }
-  });
+    assertWriteCurrent();
+    });
+  } catch (error) {
+    if (error !== writeInvalidated) throw error;
+  }
 
   return backUuid;
 }
@@ -1516,11 +1534,20 @@ export async function changeCardArtwork(
       | "token_parts"
       | "needs_token"
       | "isToken"
+      | "needsEnrichment"
     >
   >,
-  hasBuiltInBleed?: boolean
+  hasBuiltInBleed?: boolean,
+  shouldContinue?: () => boolean
 ): Promise<void> {
-  await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+  const writeInvalidated = new Error("Artwork write invalidated");
+  const assertWriteCurrent = () => {
+    if (shouldContinue && !shouldContinue()) throw writeInvalidated;
+  };
+
+  try {
+    await db.transaction("rw", db.cards, db.images, db.cardbacks, async () => {
+      assertWriteCurrent();
     if (
       oldImageId === newImageId &&
       !newName &&
@@ -1535,6 +1562,7 @@ export async function changeCardArtwork(
     const cardsToUpdate = applyToAll
       ? await getArtworkApplyAllTargets(cardToUpdate)
       : [cardToUpdate];
+    assertWriteCurrent();
 
     if (cardsToUpdate.length === 0) return;
 
@@ -1553,9 +1581,11 @@ export async function changeCardArtwork(
     let newImageIsCustom = false;
     if (isCardbackId(newImageId)) {
       const cardback = await db.cardbacks.get(newImageId);
+      assertWriteCurrent();
       newImageIsCustom = cardback ? !!cardback.originalBlob : false;
     } else {
       const newImage = await db.images.get(newImageId);
+      assertWriteCurrent();
       newImageIsCustom = isCustomSource(
         getImageSourceSync(newImageId, newImage?.source)
       );
@@ -1583,12 +1613,14 @@ export async function changeCardArtwork(
         changes,
       }))
     );
+    assertWriteCurrent();
 
     // 3. Handle new image ref counting
     // Skip ref counting for cardbacks - they're in db.cardbacks and don't need ref counting
     const newIsCardback = isCardbackId(newImageId);
     if (!newIsCardback) {
       const newImage = await db.images.get(newImageId);
+      assertWriteCurrent();
       if (newImage) {
         const updates: Partial<import("../db").Image> = {
           refCount: newImage.refCount + cardsToUpdate.length,
@@ -1608,10 +1640,12 @@ export async function changeCardArtwork(
           }
         }
         await db.images.update(newImageId, updates);
+        assertWriteCurrent();
       } else {
         const oldImage = oldImageId
           ? await db.images.get(oldImageId)
           : undefined;
+        assertWriteCurrent();
         const isMpcImage = extractMpcIdentifierFromImageId(newImageId) !== null;
         let sourceUrl: string;
         if (isMpcImage) {
@@ -1633,9 +1667,11 @@ export async function changeCardArtwork(
             ? "mpc"
             : (inferSourceFromUrl(sourceUrl) ?? undefined),
         });
+        assertWriteCurrent();
       }
     } else if (hasBuiltInBleed !== undefined && oldImageId !== newImageId) {
       const cardback = await db.cardbacks.get(newImageId);
+      assertWriteCurrent();
       if (cardback && cardback.generatedHasBuiltInBleed !== hasBuiltInBleed) {
         await db.cardbacks.update(newImageId, {
           displayBlob: undefined,
@@ -1652,6 +1688,7 @@ export async function changeCardArtwork(
           generatedBleedMode: undefined,
           generatedExistingBleedMm: undefined,
         });
+        assertWriteCurrent();
       }
     }
 
@@ -1666,6 +1703,7 @@ export async function changeCardArtwork(
       if (imageIdsToCheck.length > 0) {
         // Bulk fetch all old images at once instead of sequential awaits
         const oldImages = await db.images.bulkGet(imageIdsToCheck);
+        assertWriteCurrent();
 
         const imageUpdates: { key: string; changes: { refCount: number } }[] =
           [];
@@ -1691,13 +1729,20 @@ export async function changeCardArtwork(
         // Bulk update and delete
         if (imageUpdates.length > 0) {
           await db.images.bulkUpdate(imageUpdates);
+          assertWriteCurrent();
         }
         if (imagesToDelete.length > 0) {
           await db.images.bulkDelete(imagesToDelete);
+          assertWriteCurrent();
         }
       }
     }
-  });
+    assertWriteCurrent();
+    });
+  } catch (error) {
+    if (error === writeInvalidated) return;
+    throw error;
+  }
 }
 
 /**

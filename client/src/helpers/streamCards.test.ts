@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { streamCards } from "./streamCards";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { undoableAddCards } from "./undoableActions";
@@ -90,6 +90,10 @@ vi.mock("./scryfallApi", () => ({
 // ------------------------------------------------------------------
 
 describe("streamCards", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     (db.cardbacks.toArray as any).mockResolvedValue([]);
@@ -531,6 +535,72 @@ describe("streamCards", () => {
     expect(result).toEqual({
       addedCardUuids: ["placeholder-uuid"],
       totalCardsAdded: 1,
+    });
+    expect(fetchEventSource).not.toHaveBeenCalled();
+  });
+
+  it("enriches 101 distinct MPC cards through the real token helper in capped HTTP requests", async () => {
+    const cards = Array.from({ length: 101 }, (_, index) => ({
+      uuid: `mpc-${index}`,
+      name: `MPC ${index}`,
+      set: "mpc",
+      number: String(index),
+    }));
+    const tokenRequests: Array<Array<{ name: string; set?: string; number?: string }>> = [];
+    const mockHttp = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const requestedCards = JSON.parse(String(init?.body)).cards as Array<{ name: string; set?: string; number?: string }>;
+      tokenRequests.push(requestedCards);
+      return {
+        ok: true,
+        json: async () => requestedCards.map((card) => ({
+          ...card,
+          token_parts: [{ name: `Token for ${card.name}` }],
+        })),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", mockHttp);
+    const actualTokenApi = await vi.importActual<typeof import("./tokenApi")>("./tokenApi");
+    (fetchTokenParts as any).mockImplementation(actualTokenApi.fetchTokenParts);
+    (undoableAddCards as any).mockImplementation(async (cardsToAdd: any[]) => cardsToAdd.map((card) => ({
+      uuid: `mpc-${card.name.slice(4)}`,
+      name: card.name,
+    })));
+    (findBestMpcMatches as any).mockImplementation(async (infos: Array<{ name: string }>) => infos.map((info) => ({
+      info,
+      imageUrl: `http://mpc/${info.name}`,
+      mpcCard: { name: info.name },
+    })));
+    (parseMpcCardLogic as any).mockImplementation((mpcCard: { name: string }) => ({
+      name: mpcCard.name,
+      hasBuiltInBleed: true,
+      needsEnrichment: true,
+    }));
+    (addRemoteImage as any).mockResolvedValue("mpc-image-id");
+    (db.cards.where as any).mockReturnValue({
+      anyOf: vi.fn(() => ({ toArray: vi.fn().mockResolvedValue(cards) })),
+    });
+
+    const result = await streamCards({
+      cardInfos: cards.map(({ name }) => ({ name })),
+      language: "en",
+      importType: "deck" as any,
+      signal: new AbortController().signal,
+      artSource: "mpc",
+    });
+
+    await vi.waitFor(() => expect(tokenRequests.map((request) => request.length)).toEqual([100, 1]));
+    expect(tokenRequests.every((request) => request.length <= 100)).toBe(true);
+    await vi.waitFor(() => {
+      for (const card of cards) {
+        expect(db.cards.update).toHaveBeenCalledWith(card.uuid, expect.objectContaining({
+          token_parts: [{ name: `Token for ${card.name}` }],
+          needs_token: true,
+        }));
+      }
+    });
+    expect(result).toEqual({
+      addedCardUuids: cards.map((card) => card.uuid),
+      totalCardsAdded: cards.length,
     });
     expect(fetchEventSource).not.toHaveBeenCalled();
   });

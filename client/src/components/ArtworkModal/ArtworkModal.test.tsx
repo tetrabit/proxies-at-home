@@ -606,6 +606,13 @@ describe('ArtworkModal', () => {
 
         it('should update an existing linked back card when artwork resolution returns a back task', async () => {
             mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id', linkedBackId: 'back-uuid' };
+            mockDbCards.get.mockImplementation((uuid: string) =>
+                Promise.resolve(
+                    uuid === 'back-uuid'
+                        ? { uuid: 'back-uuid', name: 'Old Back', imageId: 'old-back', linkedFrontId: 'test-uuid' }
+                        : undefined
+                )
+            );
             vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
                 cardsToAdd: [{
                     name: 'Resolved Card',
@@ -623,12 +630,17 @@ describe('ArtworkModal', () => {
             fireEvent.click(screen.getByTestId('select-artwork'));
 
             await waitFor(() => {
-                expect(mockDbCards.update).toHaveBeenCalledWith('back-uuid', {
-                    imageId: 'resolved-back',
-                    name: 'Resolved Back',
-                    hasBuiltInBleed: true,
-                    usesDefaultCardback: false,
-                });
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'old-back',
+                    'resolved-back',
+                    expect.objectContaining({ uuid: 'back-uuid' }),
+                    false,
+                    'Resolved Back',
+                    undefined,
+                    undefined,
+                    true,
+                    expect.any(Function),
+                );
             });
         });
 
@@ -654,7 +666,10 @@ describe('ArtworkModal', () => {
                     'test-uuid',
                     'resolved-back',
                     'Resolved Back',
-                    { hasBuiltInBleed: false }
+                    expect.objectContaining({
+                        hasBuiltInBleed: false,
+                        shouldContinue: expect.any(Function),
+                    })
                 );
             });
         });
@@ -708,6 +723,7 @@ describe('ArtworkModal', () => {
                     undefined,
                     expect.anything(),
                     undefined,
+                    expect.any(Function),
                 );
             });
 
@@ -765,7 +781,17 @@ describe('ArtworkModal', () => {
 
             await waitFor(() => {
                 expect(mockUpdateCard).toHaveBeenCalledWith(updatedCard);
-                expect(mockDbCards.update).toHaveBeenCalledWith('test-uuid', expect.objectContaining({ needsEnrichment: true }));
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'test-image-id',
+                    'resolved-image-id',
+                    expect.objectContaining({ uuid: 'test-uuid' }),
+                    false,
+                    'Resolved Card',
+                    undefined,
+                    expect.objectContaining({ needsEnrichment: true }),
+                    false,
+                    expect.any(Function),
+                );
             });
         });
 
@@ -791,8 +817,16 @@ describe('ArtworkModal', () => {
             fireEvent.click(screen.getByTestId('select-mpc-art'));
 
             await waitFor(() => {
-                expect(mockDbCards.update).toHaveBeenCalledWith('card-1', { needsEnrichment: true });
-                expect(mockDbCards.update).toHaveBeenCalledWith('card-2', { needsEnrichment: true });
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'img-1', 'resolved-mpc', expect.objectContaining({ uuid: 'card-1' }), false,
+                    'Resolved MPC', undefined, expect.objectContaining({ needsEnrichment: true }), false,
+                    expect.any(Function),
+                );
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'img-2', 'resolved-mpc', expect.objectContaining({ uuid: 'card-2' }), false,
+                    'Resolved MPC', undefined, expect.objectContaining({ needsEnrichment: true }), false,
+                    expect.any(Function),
+                );
             });
         });
 
@@ -809,6 +843,13 @@ describe('ArtworkModal', () => {
 
         it('should update an existing linked back card when MPC resolution returns a back task', async () => {
             mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id', linkedBackId: 'back-uuid' };
+            mockDbCards.get.mockImplementation((uuid: string) =>
+                Promise.resolve(
+                    uuid === 'back-uuid'
+                        ? { uuid: 'back-uuid', name: 'Old Back', imageId: 'old-back', linkedFrontId: 'test-uuid' }
+                        : undefined
+                )
+            );
             vi.mocked(ImportOrchestrator.resolve).mockResolvedValueOnce({
                 cardsToAdd: [{
                     name: 'Resolved MPC',
@@ -824,12 +865,17 @@ describe('ArtworkModal', () => {
             fireEvent.click(screen.getByTestId('select-mpc-art'));
 
             await waitFor(() => {
-                expect(mockDbCards.update).toHaveBeenCalledWith('back-uuid', {
-                    imageId: 'mpc-back',
-                    name: 'MPC Back',
-                    hasBuiltInBleed: true,
-                    usesDefaultCardback: false,
-                });
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    'old-back',
+                    'mpc-back',
+                    expect.objectContaining({ uuid: 'back-uuid' }),
+                    false,
+                    'MPC Back',
+                    undefined,
+                    undefined,
+                    true,
+                    expect.any(Function),
+                );
             });
         });
 
@@ -853,7 +899,10 @@ describe('ArtworkModal', () => {
                     'test-uuid',
                     'mpc-back',
                     'MPC Back',
-                    { hasBuiltInBleed: false }
+                    expect.objectContaining({
+                        hasBuiltInBleed: false,
+                        shouldContinue: expect.any(Function),
+                    })
                 );
             });
         });
@@ -926,6 +975,7 @@ describe('ArtworkModal', () => {
                     undefined,
                     expect.anything(),
                     false,
+                    expect.any(Function),
                 );
             });
 
@@ -1509,7 +1559,8 @@ describe('ArtworkModal', () => {
                     'Resolved Card',
                     expect.anything(),
                     expect.anything(),
-                    undefined
+                    undefined,
+                    expect.any(Function),
                 );
             });
 
@@ -1571,7 +1622,8 @@ describe('ArtworkModal', () => {
                     'Resolved Card',  // Now always uses resolved.name from ImportOrchestrator
                     undefined,
                     expect.objectContaining({ set: 'abc', number: '1' }),
-                    undefined
+                    undefined,
+                    expect.any(Function),
                 );
                 expect(mockChangeCardArtwork).toHaveBeenCalledWith(
                     'img-2',
@@ -1581,7 +1633,8 @@ describe('ArtworkModal', () => {
                     'Resolved Card',  // Now always uses resolved.name from ImportOrchestrator
                     undefined,
                     expect.objectContaining({ set: 'abc', number: '1' }),
-                    undefined
+                    undefined,
+                    expect.any(Function),
                 );
             });
         });
@@ -1603,7 +1656,8 @@ describe('ArtworkModal', () => {
                     'Resolved Card', // From ImportOrchestrator mock
                     undefined,
                     expect.objectContaining({ set: 'abc', number: '1' }),
-                    false // hasBuiltInBleed
+                    false, // hasBuiltInBleed
+                    expect.any(Function),
                 );
             });
         });

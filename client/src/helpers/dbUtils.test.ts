@@ -1416,6 +1416,141 @@ describe("dbUtils", () => {
         refCount: 3,
       });
     });
+
+    it("rolls back an invalidated Scryfall artwork write after the card mutation is delayed", async () => {
+      const { changeCardArtwork } = await import("./dbUtils");
+      const oldImageId = "https://cards.scryfall.io/old.jpg";
+      const newImageId = "https://cards.scryfall.io/new.jpg";
+      await db.images.bulkAdd([
+        { id: oldImageId, refCount: 1, source: "scryfall" },
+        { id: newImageId, refCount: 0, source: "scryfall" },
+      ]);
+      await db.cards.add({
+        uuid: "scryfall-front",
+        name: "Scryfall Front",
+        order: 10,
+        imageId: oldImageId,
+        isUserUpload: false,
+        projectId: "project-a",
+      });
+
+      let writeIsCurrent = true;
+      let releaseWrite!: () => void;
+      let enteredWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const writeEntered = new Promise<void>((resolve) => {
+        enteredWrite = resolve;
+      });
+      const originalBulkUpdate = db.cards.bulkUpdate.bind(db.cards);
+      const delayedBulkUpdate = vi
+        .spyOn(db.cards, "bulkUpdate")
+        .mockImplementation(
+          ((async (updates: Parameters<typeof db.cards.bulkUpdate>[0]) => {
+            enteredWrite();
+            await Dexie.waitFor(writeReleased);
+            return originalBulkUpdate(updates);
+          }) as unknown) as typeof db.cards.bulkUpdate
+        );
+
+      try {
+        const selected = await db.cards.get("scryfall-front");
+        if (!selected) throw new Error("Scryfall front missing");
+        const persist = changeCardArtwork(
+          oldImageId,
+          newImageId,
+          selected,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () => writeIsCurrent
+        );
+        await writeEntered;
+        writeIsCurrent = false;
+        releaseWrite();
+        await persist;
+      } finally {
+        delayedBulkUpdate.mockRestore();
+      }
+
+      await expect(db.cards.get("scryfall-front")).resolves.toMatchObject({
+        imageId: oldImageId,
+      });
+      await expect(db.images.get(oldImageId)).resolves.toMatchObject({
+        refCount: 1,
+      });
+      await expect(db.images.get(newImageId)).resolves.toMatchObject({
+        refCount: 0,
+      });
+    });
+
+    it("rolls back an invalidated MPC artwork write after the image mutation is delayed", async () => {
+      const { changeCardArtwork } = await import("./dbUtils");
+      const oldImageId = "https://cards.scryfall.io/old-mpc.jpg";
+      const newImageId = "mpc-new-art";
+      await db.images.add({ id: oldImageId, refCount: 1, source: "scryfall" });
+      await db.cards.add({
+        uuid: "mpc-front",
+        name: "MPC Front",
+        order: 10,
+        imageId: oldImageId,
+        isUserUpload: false,
+        projectId: "project-a",
+      });
+
+      let writeIsCurrent = true;
+      let releaseWrite!: () => void;
+      let enteredWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const writeEntered = new Promise<void>((resolve) => {
+        enteredWrite = resolve;
+      });
+      const originalImagesAdd = db.images.add.bind(db.images);
+      const delayedImagesAdd = vi
+        .spyOn(db.images, "add")
+        .mockImplementation(
+          ((async (image: Parameters<typeof db.images.add>[0]) => {
+            enteredWrite();
+            await Dexie.waitFor(writeReleased);
+            return originalImagesAdd(image);
+          }) as unknown) as typeof db.images.add
+        );
+
+      try {
+        const selected = await db.cards.get("mpc-front");
+        if (!selected) throw new Error("MPC front missing");
+        const persist = changeCardArtwork(
+          oldImageId,
+          newImageId,
+          selected,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () => writeIsCurrent
+        );
+        await writeEntered;
+        writeIsCurrent = false;
+        releaseWrite();
+        await persist;
+      } finally {
+        delayedImagesAdd.mockRestore();
+      }
+
+      await expect(db.cards.get("mpc-front")).resolves.toMatchObject({
+        imageId: oldImageId,
+      });
+      await expect(db.images.get(newImageId)).resolves.toBeUndefined();
+      await expect(db.images.get(oldImageId)).resolves.toMatchObject({
+        refCount: 1,
+      });
+    });
   });
 
   it("duplicateCard should rebalance if orders get too close", async () => {
@@ -1579,6 +1714,61 @@ describe("dbUtils", () => {
 
       const back = await db.cards.get(backId);
       expect(back?.imageId).toBe(backImageId);
+    });
+
+    it("rolls back an invalidated new linked-back write after the card creation is delayed", async () => {
+      const { createLinkedBackCard } = await import("./dbUtils");
+      await db.images.add({ id: "new-back-image", refCount: 0 });
+      await db.cards.add({
+        uuid: "front-for-delayed-back",
+        name: "Front",
+        order: 10,
+        isUserUpload: false,
+        projectId: "project-a",
+      });
+
+      let writeIsCurrent = true;
+      let releaseWrite!: () => void;
+      let enteredWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const writeEntered = new Promise<void>((resolve) => {
+        enteredWrite = resolve;
+      });
+      const originalAdd = db.cards.add.bind(db.cards);
+      const delayedAdd = vi.spyOn(db.cards, "add").mockImplementation(
+        ((async (card: Parameters<typeof db.cards.add>[0]) => {
+          enteredWrite();
+          await Dexie.waitFor(writeReleased);
+          return originalAdd(card);
+        }) as unknown) as typeof db.cards.add
+      );
+
+      try {
+        const options = { shouldContinue: () => writeIsCurrent };
+        const persist = createLinkedBackCard(
+          "front-for-delayed-back",
+          "new-back-image",
+          "Back",
+          options
+        );
+        await writeEntered;
+        writeIsCurrent = false;
+        releaseWrite();
+        await persist;
+      } finally {
+        delayedAdd.mockRestore();
+      }
+
+      const front = await db.cards.get("front-for-delayed-back");
+      expect(front?.linkedBackId).toBeUndefined();
+      await expect(
+        db.cards.where("linkedFrontId").equals("front-for-delayed-back").count()
+      ).resolves.toBe(0);
+      await expect(db.images.get("new-back-image")).resolves.toMatchObject({
+        refCount: 0,
+      });
     });
 
     it("deleteCard should cascade delete linked back card", async () => {

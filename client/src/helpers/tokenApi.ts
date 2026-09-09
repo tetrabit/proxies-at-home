@@ -15,6 +15,16 @@ type TokenResponseItem = {
     token_parts?: TokenPart[];
 };
 
+// Matches the server-side import request limit for /api/cards/images/tokens.
+const tokenRequestCardLimit = 100;
+
+function throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted.', 'AbortError');
+}
+
 /**
  * Result type for token fetching - distinguishes between success, empty result, and error.
  */
@@ -37,32 +47,38 @@ export async function fetchTokenParts(
     }
 
     try {
-        const data = await withRetry(
-            async () => {
-                const response = await fetch(`${API_BASE}/api/cards/images/tokens`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cards }),
-                    signal,
-                });
+        const data: TokenResponseItem[] = [];
+        for (let start = 0; start < cards.length; start += tokenRequestCardLimit) {
+            throwIfAborted(signal);
+            const chunk = cards.slice(start, start + tokenRequestCardLimit);
+            const chunkData = await withRetry(
+                async () => {
+                    const response = await fetch(`${API_BASE}/api/cards/images/tokens`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cards: chunk }),
+                        signal,
+                    });
 
-                if (!response.ok) {
-                    throw new Error(`Token fetch failed: ${response.status}`);
-                }
+                    if (!response.ok) {
+                        throw new Error(`Token fetch failed: ${response.status}`);
+                    }
 
-                return await response.json() as TokenResponseItem[];
-            },
-            API_RETRY_CONFIG,
-            (error) => {
-                // Don't retry aborts or 4xx client errors
-                if (error instanceof Error && error.name === 'AbortError') return false;
-                if (error instanceof Error && error.message.includes('4')) {
-                    const status = parseInt(error.message.match(/\d{3}/)?.[0] || '0');
-                    if (status >= 400 && status < 500 && status !== 429) return false;
+                    return await response.json() as TokenResponseItem[];
+                },
+                API_RETRY_CONFIG,
+                (error) => {
+                    // Don't retry aborts or 4xx client errors
+                    if (error instanceof Error && error.name === 'AbortError') return false;
+                    if (error instanceof Error && error.message.includes('4')) {
+                        const status = parseInt(error.message.match(/\d{3}/)?.[0] || '0');
+                        if (status >= 400 && status < 500 && status !== 429) return false;
+                    }
+                    return isRetryableError(error);
                 }
-                return isRetryableError(error);
-            }
-        );
+            );
+            data.push(...chunkData);
+        }
 
         return { success: true, data };
     } catch (e) {

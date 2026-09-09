@@ -453,6 +453,9 @@ export function ArtworkModal() {
       const targetCard = activeCard;
       /* v8 ignore next -- selection handlers are not exposed without an active card. @preserve */
       if (!targetCard || !shouldContinue()) return;
+      const persistenceMetadata = needsEnrichment
+        ? { ...cardMetadata, needsEnrichment: true }
+        : cardMetadata;
 
       const selectedCards = useSelectionStore.getState().selectedCards;
       const isMultiSelect =
@@ -476,17 +479,11 @@ export function ArtworkModal() {
               false,
               cardName,
               previewImageUrls,
-              cardMetadata,
-              hasBuiltInBleed
+              persistenceMetadata,
+              hasBuiltInBleed,
+              shouldContinue
             );
             if (!shouldContinue()) return;
-
-            if (needsEnrichment) {
-              await db.cards.update(cardToUpdate.uuid, {
-                needsEnrichment: true,
-              });
-              if (!shouldContinue()) return;
-            }
           }
         }
         /* v8 ignore next -- multi-select branch is entered only when modalCard is already selected. @preserve */
@@ -504,15 +501,11 @@ export function ArtworkModal() {
           applyToAll,
           cardName,
           previewImageUrls,
-          cardMetadata,
-          hasBuiltInBleed
+          persistenceMetadata,
+          hasBuiltInBleed,
+          shouldContinue
         );
         if (!shouldContinue()) return;
-
-        if (needsEnrichment) {
-          await db.cards.update(targetCard.uuid, { needsEnrichment: true });
-          if (!shouldContinue()) return;
-        }
 
         /* v8 ignore next -- back-face linked-card store sync is intentionally skipped. @preserve */
         if (selectedFace === "front" || !linkedBackCard) {
@@ -686,15 +679,22 @@ export function ArtworkModal() {
           const backTask = backCardTasks[0];
 
           if (modalCard.linkedBackId) {
-            // Update existing back card's image and name
-            await db.cards.update(modalCard.linkedBackId, {
-              imageId: backTask.backImageId,
-              name: backTask.backName,
-              hasBuiltInBleed:
+            const linkedBack = await db.cards.get(modalCard.linkedBackId);
+            if (!shouldContinue()) return;
+            if (linkedBack) {
+              await changeCardArtwork(
+                linkedBack.imageId,
+                backTask.backImageId,
+                linkedBack,
+                false,
+                backTask.backName,
+                undefined,
+                undefined,
                 /* v8 ignore next -- old resolver payloads may omit hasBleed; current fixtures include it. @preserve */
                 (backTask as { hasBleed?: boolean }).hasBleed ?? false,
-              usesDefaultCardback: false,
-            });
+                shouldContinue
+              );
+            }
             if (!shouldContinue()) return;
           } else {
             // Create new linked back card
@@ -706,6 +706,7 @@ export function ArtworkModal() {
                 hasBuiltInBleed:
                   /* v8 ignore next -- old resolver payloads may omit hasBleed; current fixtures include it. @preserve */
                   (backTask as { hasBleed?: boolean }).hasBleed ?? false,
+                shouldContinue,
               }
             );
             if (!shouldContinue()) return;
@@ -803,15 +804,22 @@ export function ArtworkModal() {
           const backTask = backCardTasks[0];
 
           if (modalCard.linkedBackId) {
-            // Update existing back card's image and name
-            await db.cards.update(modalCard.linkedBackId, {
-              imageId: backTask.backImageId,
-              name: backTask.backName,
-              hasBuiltInBleed:
+            const linkedBack = await db.cards.get(modalCard.linkedBackId);
+            if (!shouldContinue()) return;
+            if (linkedBack) {
+              await changeCardArtwork(
+                linkedBack.imageId,
+                backTask.backImageId,
+                linkedBack,
+                false,
+                backTask.backName,
+                undefined,
+                undefined,
                 /* v8 ignore next -- old resolver payloads may omit hasBleed; current fixtures include it. @preserve */
                 (backTask as { hasBleed?: boolean }).hasBleed ?? false,
-              usesDefaultCardback: false,
-            });
+                shouldContinue
+              );
+            }
             if (!shouldContinue()) return;
           } else {
             // Create new linked back card
@@ -823,6 +831,7 @@ export function ArtworkModal() {
                 hasBuiltInBleed:
                   /* v8 ignore next -- old resolver payloads may omit hasBleed; current fixtures include it. @preserve */
                   (backTask as { hasBleed?: boolean }).hasBleed ?? false,
+                shouldContinue,
               }
             );
             if (!shouldContinue()) return;

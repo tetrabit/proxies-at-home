@@ -29,6 +29,81 @@ describe('tokenApi', () => {
     expect(result).toEqual({ success: true, data: [{ name: 'Card', token_parts: [{ name: 'Token' }] }] });
   });
 
+  it('serially chunks more than 200 token requests at 100 cards and preserves response order and duplicates', async () => {
+    const requests: Array<Array<{ name: string; set?: string; number?: string }>> = [];
+    let releaseFirstRequest!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+
+    vi.mocked(global.fetch).mockImplementation(async (_input, init) => {
+      activeRequests++;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      const cards = JSON.parse(String(init?.body)).cards as Array<{ name: string; set?: string; number?: string }>;
+      requests.push(cards);
+      if (requests.length === 1) await firstRequestStarted;
+      activeRequests--;
+      return {
+        ok: true,
+        json: async () => cards.map((card) => ({ ...card, token_parts: [{ name: `Token for ${card.name}` }] })),
+      } as Response;
+    });
+    const cards = Array.from({ length: 201 }, (_, index) => ({
+      name: index === 200 ? 'Card 0' : `Card ${index}`,
+      set: 'MPC',
+      number: String(index),
+    }));
+
+    const resultPromise = fetchTokenParts(cards);
+
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toEqual(cards.slice(0, 100));
+    releaseFirstRequest();
+
+    await expect(resultPromise).resolves.toEqual({
+      success: true,
+      data: cards.map((card) => ({ ...card, token_parts: [{ name: `Token for ${card.name}` }] })),
+    });
+    expect(requests.map((request) => request.length)).toEqual([100, 100, 1]);
+    expect(maxActiveRequests).toBe(1);
+  });
+
+  it('stops before a later token chunk when the signal is aborted after the first request', async () => {
+    const controller = new AbortController();
+    const abortError = new Error('cancelled between chunks');
+    abortError.name = 'AbortError';
+    let requests = 0;
+
+    vi.mocked(global.fetch).mockImplementation(async () => {
+      requests++;
+      controller.abort(abortError);
+      return { ok: true, json: async () => [] } as Response;
+    });
+
+    await expect(
+      fetchTokenParts(Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` })), controller.signal)
+    ).rejects.toBe(abortError);
+    expect(requests).toBe(1);
+  });
+
+  it('returns the later chunk failure and does not start remaining token requests', async () => {
+    let requests = 0;
+    vi.mocked(global.fetch).mockImplementation(async () => {
+      requests++;
+      return requests === 2
+        ? ({ ok: false, status: 400 } as Response)
+        : ({ ok: true, json: async () => [] } as Response);
+    });
+
+    const result = await fetchTokenParts(Array.from({ length: 201 }, (_, index) => ({ name: `Card ${index}` })));
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toBe('Token fetch failed: 400');
+    expect(requests).toBe(2);
+  });
+
   it('does not retry non-429 4xx responses and wraps the error', async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({ ok: false, status: 404 } as Response);
     const result = await fetchTokenParts([{ name: 'Missing' }]);
