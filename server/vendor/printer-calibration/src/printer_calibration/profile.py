@@ -7,6 +7,8 @@ from typing import BinaryIO, Iterator, Union
 
 import tomli_w
 
+from printer_calibration.validation import validate_finite_offsets
+
 if os.name == "nt":
     import msvcrt
 else:
@@ -47,7 +49,7 @@ def _save(path: Path, data: dict) -> None:
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
         os.replace(temporary_path, path)
-    except BaseException:
+    except Exception:
         if temporary_path is not None:
             try:
                 temporary_path.unlink()
@@ -97,16 +99,21 @@ def set_profile(
     back_y_mm: float,
     profile_file: Union[Path, str, None] = None,
 ) -> None:
+    offsets = validate_finite_offsets(
+        {
+            "front_x_mm": front_x_mm,
+            "front_y_mm": front_y_mm,
+            "back_x_mm": back_x_mm,
+            "back_y_mm": back_y_mm,
+        }
+    )
     path = _resolve_path(profile_file)
     with _profile_lock(path):
         data = _load(path)
         data["profiles"][name] = {
             "paper_size": "letter",
             "duplex_mode": "long-edge",
-            "front_x_mm": float(front_x_mm),
-            "front_y_mm": float(front_y_mm),
-            "back_x_mm": float(back_x_mm),
-            "back_y_mm": float(back_y_mm),
+            **offsets,
         }
         _save(path, data)
 

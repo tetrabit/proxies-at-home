@@ -8,6 +8,7 @@ import pypdf
 from pypdf import PdfReader, PdfWriter, Transformation
 
 from printer_calibration.constants import MM_TO_PT
+from printer_calibration.validation import validate_finite_offsets
 
 
 def apply_profile(
@@ -45,6 +46,8 @@ def apply_profile(
     if page_mode not in {"duplex", "back-only"}:
         raise ValueError("page_mode must be 'duplex' or 'back-only'")
 
+    offsets = validate_finite_offsets(profile)
+
     # --- open & validate -------------------------------------------------------
     try:
         reader = PdfReader(input_path)
@@ -55,10 +58,10 @@ def apply_profile(
         raise ValueError("Input PDF is encrypted and cannot be processed")
 
     # --- extract offsets (mm → pt, keep as float) ------------------------------
-    front_tx: float = float(profile["front_x_mm"]) * MM_TO_PT
-    front_ty: float = float(profile["front_y_mm"]) * MM_TO_PT
-    back_tx: float = float(profile["back_x_mm"]) * MM_TO_PT
-    back_ty: float = float(profile["back_y_mm"]) * MM_TO_PT
+    front_tx = offsets["front_x_mm"] * MM_TO_PT
+    front_ty = offsets["front_y_mm"] * MM_TO_PT
+    back_tx = offsets["back_x_mm"] * MM_TO_PT
+    back_ty = offsets["back_y_mm"] * MM_TO_PT
 
     # --- single-pass transform + write ----------------------------------------
     writer = PdfWriter()

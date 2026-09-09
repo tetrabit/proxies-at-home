@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Mapping
 
 from printer_calibration.constants import CENTER_X_MM, CENTER_Y_MM
 from printer_calibration.profile import (
@@ -20,10 +20,7 @@ from printer_calibration.profile import (
 )
 from printer_calibration.sheet import generate_sheet
 from printer_calibration.transform import apply_profile
-
-
-def _as_float(data: Mapping[str, object], key: str) -> float:
-    return float(cast(float | str, data[key]))
+from printer_calibration.validation import validate_finite_offsets, validate_finite_value
 
 
 def _as_str(data: Mapping[str, object], key: str, default: str) -> str:
@@ -42,6 +39,18 @@ class CalibrationProfile:
     paper_size: str = "letter"
     duplex_mode: str = "long-edge"
 
+    def __post_init__(self) -> None:
+        offsets = validate_finite_offsets(
+            {
+                "front_x_mm": self.front_x_mm,
+                "front_y_mm": self.front_y_mm,
+                "back_x_mm": self.back_x_mm,
+                "back_y_mm": self.back_y_mm,
+            }
+        )
+        for field, value in offsets.items():
+            object.__setattr__(self, field, value)
+
     def to_dict(self) -> dict[str, float | str]:
         """Return the profile in the TOML-compatible shape used internally."""
         return {
@@ -56,11 +65,12 @@ class CalibrationProfile:
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> "CalibrationProfile":
         """Build a typed profile from a mapping-like object."""
+        offsets = validate_finite_offsets(data)
         return cls(
-            front_x_mm=_as_float(data, "front_x_mm"),
-            front_y_mm=_as_float(data, "front_y_mm"),
-            back_x_mm=_as_float(data, "back_x_mm"),
-            back_y_mm=_as_float(data, "back_y_mm"),
+            front_x_mm=offsets["front_x_mm"],
+            front_y_mm=offsets["front_y_mm"],
+            back_x_mm=offsets["back_x_mm"],
+            back_y_mm=offsets["back_y_mm"],
             paper_size=_as_str(data, "paper_size", "letter"),
             duplex_mode=_as_str(data, "duplex_mode", "long-edge"),
         )
@@ -72,7 +82,9 @@ def calculate_axis_offset(expected_mm: float, measured_mm: float) -> float:
     Positive X moves content right. Positive Y moves content up.
     The offset formula is: expected - measured.
     """
-    return float(expected_mm) - float(measured_mm)
+    expected = validate_finite_value(expected_mm, "expected_mm")
+    measured = validate_finite_value(measured_mm, "measured_mm")
+    return validate_finite_value(expected - measured, "calculated_offset_mm")
 
 
 def calculate_profile(
