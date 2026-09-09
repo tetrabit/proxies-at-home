@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
+import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -463,14 +464,12 @@ imageRouter.post("/tokens", async (req: Request<unknown, unknown, TokensRequestB
 
 // -------------------- proxy (cached) --------------------
 imageRouter.get("/proxy", async (req: Request, res: Response) => {
-  const url = req.query.url;
-  if (!url || typeof url !== "string") {
+  const admission = validateProxyTarget(req.query.url);
+  if (!admission.ok) {
     return res.status(400).json({ error: "Missing or invalid ?url" });
   }
 
-  const originalUrl = (() => {
-    try { return decodeURIComponent(url); } catch { return url; }
-  })();
+  const originalUrl = admission.url;
 
   const localPath = cachePathFromUrl(originalUrl);
 
@@ -514,13 +513,8 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     writeInProgress.add(localPath);
 
     try {
-      // Fix for relative URLs (e.g. from client proxying to itself)
-      const fetchUrl = originalUrl.startsWith("/")
-        ? `http://127.0.0.1:${process.env.PORT || 3001}${originalUrl}`
-        : originalUrl;
-
       // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
-      const response = await imageFetchLimit(() => getWithRetry(fetchUrl, { responseType: "arraybuffer" }));
+      const response = await imageFetchLimit(() => getWithRetry(originalUrl, { responseType: "arraybuffer" }));
 
       if (response.status >= 400 || !response.data) {
         return res.status(502).json({ error: "Upstream error", status: response.status });
@@ -554,9 +548,10 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
 // -------------------- MPC Google Drive proxy (cached) --------------------
 
 imageRouter.get("/mpc", async (req: Request, res: Response) => {
-  const id = String(req.query.id || "").trim();
-  const size = String(req.query.size || "full").toLowerCase();
-  if (!id) return res.status(400).send("Missing id");
+  const admission = validateMpcRequest(req.query.id, req.query.size);
+  if (!admission.ok) return res.status(400).send("Missing or invalid MPC image request");
+
+  const { id, size } = admission;
 
   // Use same cache infrastructure as /proxy
   const cacheKey = `gdrive_${id}_${size}`;

@@ -1,4 +1,5 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import 'fake-indexeddb/auto';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as matchers from '@testing-library/jest-dom/matchers';
 expect.extend(matchers);
@@ -11,6 +12,7 @@ import { undoableUpdateCardBleedSettings } from '@/helpers/undoableActions';
 import { getHasBuiltInBleed } from '@/helpers/imageSpecs';
 import { db } from '@/db';
 import type { Mock } from 'vitest';
+import type { CardOption } from '../../../../shared/types';
 
 // Mock dependencies
 vi.mock('@/store/artworkModal');
@@ -70,6 +72,7 @@ describe('ArtworkBleedSettings', () => {
         bleedMode: 'default',
         imageId: 'img-1',
         linkedBackId: 'back-uuid',
+        projectId: 'project-a',
     };
 
     const defaultBackCard = {
@@ -77,6 +80,7 @@ describe('ArtworkBleedSettings', () => {
         name: 'Back Card',
         bleedMode: 'default',
         imageId: 'img-2',
+        projectId: 'project-a',
     };
 
     beforeEach(() => {
@@ -254,14 +258,52 @@ describe('ArtworkBleedSettings', () => {
             });
         });
 
-        it('applies settings to all cards with the same name when checked', async () => {
-            (db.cards.where as Mock).mockReturnValue({
-                equals: vi.fn(() => ({
-                    toArray: vi.fn().mockResolvedValue([
-                        defaultFrontCard,
-                        { ...defaultFrontCard, uuid: 'front-uuid-2' },
-                    ]),
-                })),
+        it('applies named settings only to cards in the active project', async () => {
+            const { ProxxiedDexie } = await vi.importActual<typeof import('@/db')>('@/db');
+            const actualDb = new ProxxiedDexie(`artwork-bleed-project-${crypto.randomUUID()}`);
+            const projectCards: CardOption[] = [
+                { uuid: 'front-uuid', name: 'Front Card', order: 0, isUserUpload: false, projectId: 'project-a' },
+                { uuid: 'front-uuid-2', name: 'Front Card', order: 1, isUserUpload: false, projectId: 'project-a' },
+                { uuid: 'foreign-uuid', name: 'Front Card', order: 0, isUserUpload: false, projectId: 'project-b' },
+            ];
+            await actualDb.cards.bulkAdd(projectCards);
+            const mockedCards = db.cards;
+            db.cards = actualDb.cards;
+
+            try {
+                render(
+                    <ArtworkBleedSettings
+                        selectedFace="front"
+                        applyToAll={true}
+                        setApplyToAll={vi.fn()}
+                        applyToAllCardName="Front Card"
+                    />
+                );
+
+                fireEvent.click(screen.getByText('Save Settings'));
+
+                await waitFor(() => {
+                    expect(undoableUpdateCardBleedSettings).toHaveBeenCalledWith(
+                        ['front-uuid', 'front-uuid-2'],
+                        expect.objectContaining({ hasBuiltInBleed: false }),
+                        { scope: 'selected' }
+                    );
+                });
+            } finally {
+                db.cards = mockedCards;
+                actualDb.close();
+            }
+        });
+
+        it.each([
+            ['missing', undefined],
+            ['blank', '   '],
+        ])('does not apply named settings when the active project is %s', async (_kind, projectId) => {
+            (useArtworkModalStore as unknown as Mock).mockImplementation((selector) => {
+                return selector({
+                    card: { ...defaultFrontCard, projectId },
+                    closeModal: mockCloseModal,
+                });
             });
 
             render(
@@ -274,16 +316,14 @@ describe('ArtworkBleedSettings', () => {
             );
 
             fireEvent.click(screen.getByText('Save Settings'));
-
-            await waitFor(() => {
-                expect(undoableUpdateCardBleedSettings).toHaveBeenCalledWith(
-                    ['front-uuid', 'front-uuid-2'],
-                    expect.objectContaining({
-                        hasBuiltInBleed: false,
-                    }),
-                    { scope: 'selected' }
-                );
+            await act(async () => {
+                await Promise.resolve();
+                await Promise.resolve();
             });
+
+            expect(undoableUpdateCardBleedSettings).not.toHaveBeenCalled();
+            expect(mockCloseModal).not.toHaveBeenCalled();
+            expect(db.cards.where).not.toHaveBeenCalled();
         });
 
         it('opens adjust art modal', async () => {

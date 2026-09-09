@@ -154,13 +154,23 @@ export function ArtworkBleedSettings({
     }
 
     const handleSave = async () => {
+        if (applyToAll && activeCard?.name && !activeCard.projectId?.trim()) return;
+
         let bleedMode: 'generate' | 'none' | undefined;
         let existingBleedMm: number | undefined;
         let generateBleedMm: number | undefined;
-        const getNamedCards = async () =>
-            applyToAll && activeCard?.name
-                ? await db.cards.where('name').equals(activeCard.name).toArray()
-                : [];
+        const getNamedCards = async () => {
+            const cardName = activeCard?.name;
+            const projectId = activeCard?.projectId;
+
+            if (!applyToAll || !cardName || !projectId?.trim()) return [];
+
+            return db.cards
+                .where('projectId')
+                .equals(projectId)
+                .filter((card) => card.name === cardName)
+                .toArray();
+        };
 
         // If "same as front" is checked for back card, copy front card settings
         if (isBackTab && sameAsFront && modalCard) {

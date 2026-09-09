@@ -2,6 +2,7 @@ import { vi, describe, beforeEach, afterEach, it, expect, type Mock } from 'vite
 import request from "supertest";
 import express, { type Express, type Response } from "express";
 import fs from "fs";
+import nodeCrypto from "crypto";
 import axios from "axios";
 import { Writable } from "stream";
 
@@ -52,13 +53,15 @@ vi.mock("fs", () => {
     };
 
     const mocked = {
-        existsSync: vi.fn(),
+        // imageRouter resolves cardbacks at module initialization, before each test
+        // configures this fixture. Present one PNG so that fixture setup is silent.
+        existsSync: vi.fn(() => true),
         createWriteStream: vi.fn(),
         mkdirSync: vi.fn(),
         writeFileSync: vi.fn(),
         readdir: vi.fn(),
         unlink: vi.fn(),
-        readdirSync: vi.fn(),
+        readdirSync: vi.fn(() => ["mtg.png"]),
         statSync: vi.fn(),
         unlinkSync: vi.fn(),
         utimesSync: vi.fn(),
@@ -99,7 +102,7 @@ describe("getWithRetry logic", () => {
     let app: Express;
     let writeStream: Writable;
 
-    const imageUrl = "http://example.com/image.jpg";
+    const imageUrl = "https://cards.scryfall.io/normal/front/a/b/ab123456-1234-1234-1234-123456789abc.jpg";
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -336,13 +339,13 @@ describe("getWithRetry logic", () => {
             headers: { "content-type": "image/jpeg" },
         });
 
-        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/no-data.jpg")}`);
+        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent("https://cards.scryfall.io/normal/front/c/d/cd123456-1234-1234-1234-123456789abc.jpg")}`);
         expect(res.status).toBe(502);
         expect(res.body).toEqual({ error: "Upstream error", status: 200 });
     });
 
     it("serves a proxy request after an in-progress write finishes", async () => {
-        const url = "http://example.com/in-progress.jpg";
+        const url = "https://cards.scryfall.io/normal/front/e/f/ef123456-1234-1234-1234-123456789abc.jpg";
         const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
         __imageRouterTestInternals.writeInProgress.add(localPath);
         let localPathChecks = 0;
@@ -374,11 +377,45 @@ describe("getWithRetry logic", () => {
             this.type("image/jpeg").send("cached image data");
         });
 
-        await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/memory-cache.jpg")}`);
-        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent("http://example.com/memory-cache.jpg")}`);
+        const url = "https://cards.scryfall.io/normal/front/0/1/01234567-1234-1234-1234-123456789abc.jpg";
+        await request(app).get(`/images/proxy?url=${encodeURIComponent(url)}`);
+        const res = await request(app).get(`/images/proxy?url=${encodeURIComponent(url)}`);
 
         expect(res.status).toBe(200);
         expect(sendFileSpy).toHaveBeenCalledTimes(2);
+        sendFileSpy.mockRestore();
+    });
+
+    it("rejects invalid proxy targets before cache or transport and sends admitted targets to transport", async () => {
+        const invalidTargets = [
+            "/relative.png",
+            "https://cards.scryfall.io.evil.example/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png",
+            "https://user@cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png",
+            "https://cards.scryfall.io:444/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png",
+            "https://drive.google.com/thumbnail?id=one&id=two&sz=w400-h400",
+            "https%253A%252F%252Fcards.scryfall.io%252Fpng%252Ffront%252Fa%252Fb%252Fab123456-1234-1234-1234-123456789abc.png",
+        ];
+        for (const target of invalidTargets) {
+            const response = await request(app).get("/images/proxy").query({ url: target });
+            expect(response.status).toBe(400);
+        }
+        expect(mockedAxios.get).not.toHaveBeenCalled();
+        expect(nodeCrypto.createHash).not.toHaveBeenCalled();
+        expect(fs.existsSync).not.toHaveBeenCalled();
+
+        const target = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png?1562820261";
+        mockedAxios.get.mockResolvedValue({
+            status: 200,
+            data: Buffer.from("image data"),
+            headers: { "content-type": "image/png" },
+        });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/png").send("image data");
+        });
+
+        const accepted = await request(app).get("/images/proxy").query({ url: target });
+        expect(accepted.status).toBe(200);
+        expect(mockedAxios.get).toHaveBeenCalledWith(target, expect.any(Object));
         sendFileSpy.mockRestore();
     });
 
@@ -429,6 +466,20 @@ describe("getWithRetry logic", () => {
             expect(res.status).toBe(400);
         });
 
+        it("rejects invalid MPC identifiers and sizes before cache or transport", async () => {
+            for (const query of [
+                { id: "bad/id", size: "full" },
+                { id: "Drive_ID-123", size: "unrecognized" },
+            ]) {
+                const response = await request(app).get("/images/mpc").query(query);
+                expect(response.status).toBe(400);
+            }
+            const duplicateId = await request(app).get("/images/mpc?id=Drive_ID-123&id=second&size=full");
+            expect(duplicateId.status).toBe(400);
+            expect(mockedAxios.get).not.toHaveBeenCalled();
+            expect(fs.existsSync).not.toHaveBeenCalled();
+        });
+
         it("should proxy image from Google Drive", async () => {
             mockedAxios.get.mockResolvedValue({
                 status: 200,
@@ -466,22 +517,67 @@ describe("getWithRetry logic", () => {
         });
 
         it("should skip non-image responses from GDrive", async () => {
+            const candidates = [
+                "https://drive.google.com/uc?export=download&confirm=t&id=123",
+                "https://drive.google.com/uc?export=download&id=123",
+                "https://drive.google.com/uc?export=view&id=123",
+                "https://img.mpcautofill.com/123-large-google_drive",
+            ];
+            // Keep the expected final diagnostic visible while asserting its contents.
+            const consoleErrorSpy = vi.spyOn(console, "error");
             mockedAxios.get
-                .mockResolvedValueOnce({ headers: { "content-type": "text/html" } }) // First candidate
-                .mockResolvedValueOnce({ headers: { "content-type": "text/html" } }) // Second candidate
-                .mockResolvedValueOnce({ headers: { "content-type": "text/html" } }); // Third candidate
+                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("first interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "text/plain" }, data: Buffer.from("second interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "application/pdf" }, data: Buffer.from("third interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "application/octet-stream" }, data: Buffer.from("cdn error page") });
 
             const res = await request(app).get("/images/mpc?id=123");
             expect(res.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
+            for (const [attempt, url] of candidates.entries()) {
+                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, {
+                    responseType: "arraybuffer",
+                    maxRedirects: 5,
+                });
+            }
+            expect(fs.promises.writeFile).not.toHaveBeenCalled();
+            expect(consoleErrorSpy).toHaveBeenCalledWith("MPC image proxy failed:", {
+                id: "123",
+                size: "full",
+                lastError: "Non-image response from https://img.mpcautofill.com/123-large-google_drive: application/octet-stream",
+            });
         });
 
         it("handles missing GDrive content types and non-Error candidate failures", async () => {
+            const candidates = [
+                "https://drive.google.com/uc?export=download&confirm=t&id=plain-gdrive",
+                "https://drive.google.com/uc?export=download&id=plain-gdrive",
+                "https://drive.google.com/uc?export=view&id=plain-gdrive",
+                "https://img.mpcautofill.com/plain-gdrive-large-google_drive",
+            ];
+            // This spy intentionally calls through so expected diagnostics remain observable.
+            const consoleErrorSpy = vi.spyOn(console, "error");
             mockedAxios.get
                 .mockResolvedValueOnce({ headers: {}, data: Buffer.from("html") })
-                .mockRejectedValueOnce("plain gdrive failure");
+                .mockRejectedValueOnce("plain gdrive failure")
+                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("view interstitial") })
+                .mockRejectedValueOnce("plain CDN fallback failure");
 
             const res = await request(app).get("/images/mpc?id=plain-gdrive");
             expect(res.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
+            for (const [attempt, url] of candidates.entries()) {
+                expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, {
+                    responseType: "arraybuffer",
+                    maxRedirects: 5,
+                });
+            }
+            expect(fs.promises.writeFile).not.toHaveBeenCalled();
+            expect(consoleErrorSpy).toHaveBeenCalledWith("MPC image proxy failed:", {
+                id: "plain-gdrive",
+                size: "full",
+                lastError: "Failed to fetch https://img.mpcautofill.com/plain-gdrive-large-google_drive: plain CDN fallback failure",
+            });
         });
     });
 
@@ -490,7 +586,7 @@ describe("getWithRetry logic", () => {
 
     describe("Proxy Error Handling", () => {
         it("should return 502 if upstream returns 404", async () => {
-            const url = "http://example.com/404.png";
+            const url = "https://cards.scryfall.io/png/front/2/3/23456789-1234-1234-1234-123456789abc.png";
             (fs.existsSync as unknown as Mock).mockReturnValue(false);
             mockedAxios.get.mockResolvedValue({ status: 404, data: "Not Found" });
 
@@ -500,7 +596,7 @@ describe("getWithRetry logic", () => {
         });
 
         it("should return 502 if upstream returns non-image", async () => {
-            const url = "http://example.com/text.txt";
+            const url = "https://cards.scryfall.io/png/front/4/5/456789ab-1234-1234-1234-123456789abc.png";
             (fs.existsSync as unknown as Mock).mockReturnValue(false);
             mockedAxios.get.mockResolvedValue({
                 status: 200,
@@ -513,46 +609,17 @@ describe("getWithRetry logic", () => {
             expect(res.body.error).toBe("Upstream not image");
         });
 
-        it("normalizes relative and malformed proxy URLs and surfaces default content-type errors", async () => {
-            process.env.PORT = "4321";
-            mockedAxios.get.mockResolvedValueOnce({
-                status: 200,
-                data: Buffer.from("text data"),
-                headers: {},
-            });
-
+        it("rejects relative and malformed proxy URLs before transport", async () => {
             const relative = await request(app).get("/images/proxy").query({ url: "/cardbacks/mtg.png" });
-            expect(relative.status).toBe(502);
-            expect(mockedAxios.get).toHaveBeenCalledWith(
-                "http://127.0.0.1:4321/cardbacks/mtg.png",
-                expect.any(Object)
-            );
-            expect(relative.body).toEqual({ error: "Upstream not image", ct: "" });
+            expect(relative.status).toBe(400);
 
-            mockedAxios.get.mockResolvedValueOnce({
-                status: 200,
-                data: Buffer.from("text data"),
-                headers: { "content-type": "text/plain" },
-            });
             const malformed = await request(app).get("/images/proxy").query({ url: "%E0%A4%A" });
-            expect(malformed.status).toBe(502);
-            expect(mockedAxios.get).toHaveBeenLastCalledWith("%E0%A4%A", expect.any(Object));
-
-            delete process.env.PORT;
-            mockedAxios.get.mockResolvedValueOnce({
-                status: 200,
-                data: Buffer.from("text data"),
-                headers: {},
-            });
-            await request(app).get("/images/proxy").query({ url: "/cardbacks/proxxied.png" });
-            expect(mockedAxios.get).toHaveBeenLastCalledWith(
-                "http://127.0.0.1:3001/cardbacks/proxxied.png",
-                expect.any(Object)
-            );
+            expect(malformed.status).toBe(400);
+            expect(mockedAxios.get).not.toHaveBeenCalled();
         });
 
         it("continues to fetch when an in-progress write does not produce a cached file", async () => {
-            const url = "http://example.com/race-still-missing.png";
+            const url = "https://cards.scryfall.io/png/front/6/7/6789abcd-1234-1234-1234-123456789abc.png";
             const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
             __imageRouterTestInternals.writeInProgress.add(localPath);
             mockedAxios.get.mockResolvedValue({
@@ -586,7 +653,7 @@ describe("getWithRetry logic", () => {
         });
 
         it("should return 502 if upstream returns 400 with data", async () => {
-            const url = "http://example.com/error.png";
+            const url = "https://cards.scryfall.io/png/front/8/9/89abcdef-1234-1234-1234-123456789abc.png";
             (fs.existsSync as unknown as Mock).mockReturnValue(false);
             mockedAxios.get.mockResolvedValue({
                 status: 400,
@@ -603,7 +670,7 @@ describe("getWithRetry logic", () => {
 
         it("stringifies non-Error proxy failures", async () => {
             mockedAxios.get.mockRejectedValue("plain proxy failure");
-            const res = await request(app).get("/images/proxy").query({ url: "http://example.com/plain-error.png" });
+            const res = await request(app).get("/images/proxy").query({ url: "https://cards.scryfall.io/png/front/a/b/abcdefab-1234-1234-1234-123456789abc.png" });
             expect(res.status).toBe(502);
             expect(res.body.error).toBe("Failed to download image");
         });
