@@ -4,7 +4,7 @@ import fs from "fs";
 import { app } from "electron";
 import http from "http";
 
-interface MicroserviceConfig {
+export interface MicroserviceConfig {
   name: string;
   binaryName: string;
   port: number;
@@ -12,6 +12,19 @@ interface MicroserviceConfig {
   healthCheckInterval: number;
   maxRestarts: number;
   restartDelay: number;
+}
+
+export interface MicroserviceLaunch {
+  command: string;
+  args: string[];
+}
+
+export interface MicroserviceManagerOptions {
+  /**
+   * Supplies a process launch only for an explicitly constructed manager.
+   * Production callers use the default repository/package binary resolution.
+   */
+  resolveLaunch?: () => MicroserviceLaunch;
 }
 
 export class MicroserviceManager {
@@ -24,7 +37,10 @@ export class MicroserviceManager {
   private startPromise: Promise<number> | null = null;
   private isShuttingDown = false;
 
-  constructor(config: MicroserviceConfig) {
+  constructor(
+    config: MicroserviceConfig,
+    private readonly options: MicroserviceManagerOptions = {}
+  ) {
     this.config = config;
   }
 
@@ -56,13 +72,13 @@ export class MicroserviceManager {
   }
 
   private async startInternal(): Promise<number> {
-    const binaryPath = this.getBinaryPath();
+    const launch = this.getLaunch();
 
-    if (!fs.existsSync(binaryPath)) {
-      throw new Error(`${this.config.name} binary not found at: ${binaryPath}`);
+    if (!fs.existsSync(launch.command)) {
+      throw new Error(`${this.config.name} binary not found at: ${launch.command}`);
     }
 
-    console.log(`[${this.config.name}] Starting from: ${binaryPath}`);
+    console.log(`[${this.config.name}] Starting from: ${launch.command}`);
 
     const env = {
       ...process.env,
@@ -71,7 +87,7 @@ export class MicroserviceManager {
       DATABASE_URL: this.getDatabasePath(),
     };
 
-    const childProcess = spawn(binaryPath, [], {
+    const childProcess = spawn(launch.command, launch.args, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -163,7 +179,6 @@ export class MicroserviceManager {
       const timeout = setTimeout(() => {
         console.log(`[${this.config.name}] Force killing after timeout`);
         runningProcess.kill("SIGKILL");
-        resolve();
       }, 5000);
 
       runningProcess.once("exit", () => {
@@ -198,6 +213,14 @@ export class MicroserviceManager {
         `${this.config.binaryName}${ext}`
       );
     }
+  }
+
+  private getLaunch(): MicroserviceLaunch {
+    if (this.options.resolveLaunch) {
+      return this.options.resolveLaunch();
+    }
+
+    return { command: this.getBinaryPath(), args: [] };
   }
 
   private getDatabasePath(): string {

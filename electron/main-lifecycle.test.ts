@@ -433,7 +433,7 @@ describe("electron main lifecycle", () => {
     await appHandlers.get("before-quit")?.(beforeStartupQuit);
     expect(beforeStartupQuit.preventDefault).toHaveBeenCalledOnce();
     expect(microservice.stop).not.toHaveBeenCalled();
-    expect(appMock.quit).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(appMock.quit).toHaveBeenCalledOnce());
 
     await readyCallback?.();
 

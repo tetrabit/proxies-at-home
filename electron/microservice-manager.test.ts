@@ -132,23 +132,33 @@ describe("MicroserviceManager", () => {
     expect(manager.isRunning()).toBe(false);
   });
 
-  it("starts the binary with deterministic environment and stops it cleanly", async () => {
+  it("starts an injected harness launch with deterministic environment and stops it cleanly", async () => {
     const { MicroserviceManager } = await import("./microservice-manager");
-    const manager = new MicroserviceManager({
-      name: "Cache",
-      binaryName: "cache-bin",
-      port: 7777,
-      healthCheckPath: "/health",
-      healthCheckInterval: 60_000,
-      maxRestarts: 1,
-      restartDelay: 10,
-    });
+    const harnessLaunch = {
+      command: process.execPath,
+      args: ["/review-fixture/health-child.cjs"],
+    };
+    existsSyncMock.mockImplementation(
+      (checkedPath: string) => checkedPath === process.execPath
+    );
+    const manager = new MicroserviceManager(
+      {
+        name: "Cache",
+        binaryName: "cache-bin",
+        port: 7777,
+        healthCheckPath: "/health",
+        healthCheckInterval: 60_000,
+        maxRestarts: 1,
+        restartDelay: 10,
+      },
+      { resolveLaunch: () => harnessLaunch }
+    );
 
     await expect(manager.start()).resolves.toBe(7777);
 
     expect(spawnMock).toHaveBeenCalledWith(
-      expect.stringContaining("cache-bin"),
-      [],
+      process.execPath,
+      harnessLaunch.args,
       expect.objectContaining({
         env: expect.objectContaining({
           PORT: "7777",
@@ -379,7 +389,7 @@ describe("MicroserviceManager", () => {
     vi.useRealTimers();
   });
 
-  it("force kills a child process that ignores graceful shutdown", async () => {
+  it("force kills a child process that ignores graceful shutdown and waits for its exit", async () => {
     vi.useFakeTimers();
     const stubbornChild = createChildProcess();
     stubbornChild.kill = vi.fn((signal?: string) => {
@@ -400,11 +410,18 @@ describe("MicroserviceManager", () => {
 
     await manager.start();
     const stopPromise = manager.stop();
+    let stopped = false;
+    void stopPromise.then(() => {
+      stopped = true;
+    });
     await vi.advanceTimersByTimeAsync(5000);
-    await stopPromise;
 
     expect(stubbornChild.kill).toHaveBeenCalledWith("SIGTERM");
     expect(stubbornChild.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(stopped).toBe(false);
+
+    stubbornChild.emit("exit", null, "SIGKILL");
+    await stopPromise;
     vi.useRealTimers();
   });
 
