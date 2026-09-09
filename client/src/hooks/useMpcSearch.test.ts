@@ -1,6 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useMpcSearch } from './useMpcSearch';
+import type { MpcAutofillCard } from '@/helpers/mpcAutofillApi';
 
 // Mock dependencies
 vi.mock('@/helpers/mpcAutofillApi', () => ({
@@ -29,9 +30,47 @@ vi.mock('@/store', () => ({
 
 import { searchMpcAutofill } from '@/helpers/mpcAutofillApi';
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
+function createCard(name: string): MpcAutofillCard {
+    return {
+        identifier: name,
+        name,
+        rawName: name,
+        smallThumbnailUrl: '',
+        mediumThumbnailUrl: '',
+        dpi: 1200,
+        tags: [],
+        sourceName: 'Test Source',
+        source: 'test',
+        extension: 'jpg',
+        size: 1,
+    };
+}
+
+async function advanceSearchDebounce() {
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+    });
+}
+
 describe('useMpcSearch', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
     });
 
     describe('initial state', () => {
@@ -62,11 +101,10 @@ describe('useMpcSearch', () => {
 
             renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(searchMpcAutofill).toHaveBeenCalled();
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
-            expect(searchMpcAutofill).toHaveBeenCalledWith('Sol Ring', 'CARD', true);
+            expect(searchMpcAutofill).toHaveBeenCalled();
+            expect(searchMpcAutofill).toHaveBeenCalledWith('Sol Ring', 'CARD', true, {}, expect.any(AbortSignal));
         });
 
         it('should update cards on successful search', async () => {
@@ -79,10 +117,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             expect(result.current.cards.length).toBe(2);
             expect(result.current.hasResults).toBe(true);
         });
@@ -92,7 +129,7 @@ describe('useMpcSearch', () => {
         it('should not search when autoSearch is false', async () => {
             renderHook(() => useMpcSearch('Sol Ring', { autoSearch: false }));
 
-            await new Promise(r => setTimeout(r, 600));
+            await advanceSearchDebounce();
 
             expect(searchMpcAutofill).not.toHaveBeenCalled();
         });
@@ -109,13 +146,12 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('treasure'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             // Should have called searchMpcAutofill twice - once for CARD, once for TOKEN
-            expect(searchMpcAutofill).toHaveBeenCalledWith('treasure', 'CARD', true);
-            expect(searchMpcAutofill).toHaveBeenCalledWith('treasure', 'TOKEN', true);
+            expect(searchMpcAutofill).toHaveBeenCalledWith('treasure', 'CARD', true, {}, expect.any(AbortSignal));
+            expect(searchMpcAutofill).toHaveBeenCalledWith('treasure', 'TOKEN', true, {}, expect.any(AbortSignal));
         });
 
         it('should merge token and card results for collision names', async () => {
@@ -128,9 +164,7 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('blood'));
 
-            await vi.waitFor(() => {
-                expect(result.current.cards.length).toBe(2);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
             // Should have both results
             expect(result.current.cards.length).toBe(2);
@@ -141,13 +175,12 @@ describe('useMpcSearch', () => {
 
             renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(searchMpcAutofill).toHaveBeenCalled();
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(searchMpcAutofill).toHaveBeenCalled();
             // Should only call once with CARD type
             expect(searchMpcAutofill).toHaveBeenCalledTimes(1);
-            expect(searchMpcAutofill).toHaveBeenCalledWith('Sol Ring', 'CARD', true);
+            expect(searchMpcAutofill).toHaveBeenCalledWith('Sol Ring', 'CARD', true, {}, expect.any(AbortSignal));
         });
     });
 
@@ -163,10 +196,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             // Default minDpi is 800, so Card C (600 dpi) should be filtered out
             expect(result.current.filteredCards.length).toBe(2);
             expect(result.current.filteredCards.map(c => c.name)).not.toContain('Card C');
@@ -177,10 +209,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             // Toggle Source A filter
             act(() => {
                 result.current.toggleSource('Source A');
@@ -196,10 +227,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Sol Ring'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             act(() => {
                 result.current.setMinDpi(1200);
                 result.current.toggleSource('Source A');
@@ -228,10 +258,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Test'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             // Clear DPI filter to see all cards
             act(() => {
                 result.current.setMinDpi(0);
@@ -247,10 +276,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Test'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             act(() => {
                 result.current.setMinDpi(0);
                 result.current.setSortBy('name');
@@ -269,10 +297,9 @@ describe('useMpcSearch', () => {
 
             const { result } = renderHook(() => useMpcSearch('Test'));
 
-            await vi.waitFor(() => {
-                expect(result.current.hasSearched).toBe(true);
-            }, { timeout: 1000 });
+            await advanceSearchDebounce();
 
+            expect(result.current.hasSearched).toBe(true);
             expect(result.current.activeFilterCount).toBe(0);
 
             act(() => {
@@ -283,6 +310,134 @@ describe('useMpcSearch', () => {
 
             // 1 for DPI change + 1 for source + 1 for tag
             expect(result.current.activeFilterCount).toBe(3);
+        });
+    });
+
+    describe('request generation fence', () => {
+        it('keeps B results after B completes before the older A request', async () => {
+            vi.useFakeTimers();
+            const a = createDeferred<MpcAutofillCard[]>();
+            const b = createDeferred<MpcAutofillCard[]>();
+            const signals: (AbortSignal | undefined)[] = [];
+            vi.mocked(searchMpcAutofill)
+                .mockImplementationOnce((_query, _cardType, _fuzzy, _options, signal) => {
+                    signals.push(signal);
+                    return a.promise;
+                })
+                .mockImplementationOnce((_query, _cardType, _fuzzy, _options, signal) => {
+                    signals.push(signal);
+                    return b.promise;
+                });
+
+            const { result, rerender } = renderHook(({ query }) => useMpcSearch(query), {
+                initialProps: { query: 'A' },
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+            rerender({ query: 'B' });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+
+            expect(signals[0]?.aborted).toBe(true);
+
+            await act(async () => {
+                b.resolve([createCard('B')]);
+            });
+            expect(result.current.cards.map(card => card.name)).toEqual(['B']);
+            expect(result.current.isLoading).toBe(false);
+
+            await act(async () => {
+                a.resolve([createCard('A')]);
+            });
+            expect(result.current.cards.map(card => card.name)).toEqual(['B']);
+            expect(result.current.isLoading).toBe(false);
+        });
+
+        it('does not let a stale success or finally clear B loading state', async () => {
+            const a = createDeferred<MpcAutofillCard[]>();
+            const b = createDeferred<MpcAutofillCard[]>();
+            vi.mocked(searchMpcAutofill)
+                .mockImplementationOnce(() => a.promise)
+                .mockImplementationOnce(() => b.promise);
+
+            const { result, rerender } = renderHook(({ query }) => useMpcSearch(query), {
+                initialProps: { query: 'A' },
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+            rerender({ query: 'B' });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+
+            await act(async () => {
+                a.resolve([createCard('A')]);
+            });
+            expect(result.current.cards).toEqual([]);
+            expect(result.current.isLoading).toBe(true);
+
+            await act(async () => {
+                b.resolve([createCard('B')]);
+            });
+            expect(result.current.cards.map(card => card.name)).toEqual(['B']);
+            expect(result.current.isLoading).toBe(false);
+        });
+
+        it('does not let a stale failure clear B results', async () => {
+            const a = createDeferred<MpcAutofillCard[]>();
+            const b = createDeferred<MpcAutofillCard[]>();
+            vi.mocked(searchMpcAutofill)
+                .mockImplementationOnce(() => a.promise)
+                .mockImplementationOnce(() => b.promise);
+
+            const { result, rerender } = renderHook(({ query }) => useMpcSearch(query), {
+                initialProps: { query: 'A' },
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+            rerender({ query: 'B' });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+            await act(async () => {
+                b.resolve([createCard('B')]);
+            });
+
+            await act(async () => {
+                a.reject(new Error('A failed'));
+            });
+            expect(result.current.cards.map(card => card.name)).toEqual(['B']);
+            expect(result.current.isLoading).toBe(false);
+        });
+
+        it('aborts the current request when unmounted', async () => {
+            const pending = createDeferred<MpcAutofillCard[]>();
+            let signal: AbortSignal | undefined;
+            vi.mocked(searchMpcAutofill).mockImplementationOnce((_query, _cardType, _fuzzy, _options, requestSignal) => {
+                signal = requestSignal;
+                return pending.promise;
+            });
+
+            const { unmount } = renderHook(() => useMpcSearch('A'));
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(500);
+            });
+
+            expect(signal?.aborted).toBe(false);
+            unmount();
+            expect(signal?.aborted).toBe(true);
+
+            await act(async () => {
+                pending.resolve([createCard('A')]);
+            });
+            expect(signal?.aborted).toBe(true);
         });
     });
 });

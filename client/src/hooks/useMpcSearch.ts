@@ -98,6 +98,8 @@ export function useMpcSearch(
     // Refs for search deduplication
     const lastSearchParams = useRef<{ name: string; fuzzy: boolean; cardType: MpcCardType; isCollision?: boolean } | null>(null);
     const lastSearchedName = useRef<string>("");
+    const requestGeneration = useRef(0);
+    const activeRequestController = useRef<AbortController | null>(null);
 
     // Search handler
     const performSearch = useCallback(async () => {
@@ -120,6 +122,10 @@ export function useMpcSearch(
 
         lastSearchParams.current = { name: searchQuery, fuzzy: mpcFuzzySearch, cardType: effectiveCardType, isCollision };
         lastSearchedName.current = query;
+        const generation = ++requestGeneration.current;
+        activeRequestController.current?.abort();
+        const controller = new AbortController();
+        activeRequestController.current = controller;
         setIsLoading(true);
         setHasSearched(true);
 
@@ -127,22 +133,37 @@ export function useMpcSearch(
             if (isCollision) {
                 // Dual search: get both regular cards and tokens for collision names
                 const [cardResults, tokenResults] = await Promise.all([
-                    searchMpcAutofill(searchQuery, 'CARD', mpcFuzzySearch),
-                    searchMpcAutofill(searchQuery, 'TOKEN', mpcFuzzySearch),
+                    searchMpcAutofill(searchQuery, 'CARD', mpcFuzzySearch, {}, controller.signal),
+                    searchMpcAutofill(searchQuery, 'TOKEN', mpcFuzzySearch, {}, controller.signal),
                 ]);
                 // Merge results (tokens first, then cards)
-                setCards([...tokenResults, ...cardResults]);
+                if (generation === requestGeneration.current) {
+                    setCards([...tokenResults, ...cardResults]);
+                }
             } else {
-                const results = await searchMpcAutofill(searchQuery, effectiveCardType, mpcFuzzySearch);
-                setCards(results);
+                const results = await searchMpcAutofill(searchQuery, effectiveCardType, mpcFuzzySearch, {}, controller.signal);
+                if (generation === requestGeneration.current) {
+                    setCards(results);
+                }
             }
         } catch (err) {
-            console.error("MPC search error:", err);
-            setCards([]);
+            if (generation === requestGeneration.current) {
+                console.error("MPC search error:", err);
+                setCards([]);
+            }
         } finally {
-            setIsLoading(false);
+            if (generation === requestGeneration.current) {
+                setIsLoading(false);
+                activeRequestController.current = null;
+            }
         }
     }, [query, mpcFuzzySearch, cardData, overrideCardType]);
+
+    useEffect(() => () => {
+        requestGeneration.current += 1;
+        activeRequestController.current?.abort();
+        activeRequestController.current = null;
+    }, []);
 
     // Auto-search effect
     useEffect(() => {

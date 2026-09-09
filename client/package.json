@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "typecheck": "tsc --noEmit --incremental false --project tsconfig.app.json",
     "build:prerender": "react-static-prerender --with-build && sed -i 's|http://localhost:[0-9]\\+/|./|g' static-pages/index.html",
     "lint": "eslint .",
     "test": "vitest run --silent",
