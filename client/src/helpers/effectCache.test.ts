@@ -37,6 +37,16 @@ import { enforceEffectCacheLimits } from './cacheUtils';
 import { getEffectCacheEntry, getEffectProcessor, preRenderEffect, queueBulkPreRender, setEffectCacheEntryWithDpi } from './effectCache';
 
 describe('effectCache', () => {
+    function pngBlob(width: number, height: number): Blob {
+        const header = new Uint8Array([
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+            width >>> 24, width >>> 16, width >>> 8, width,
+            height >>> 24, height >>> 16, height >>> 8, height,
+        ]);
+        return new Blob([header], { type: 'image/png' });
+    }
+
     beforeEach(() => {
         vi.clearAllMocks();
         vi.mocked(useSettingsStore.getState).mockReturnValue({ dpi: 300 } as ReturnType<typeof useSettingsStore.getState>);
@@ -383,7 +393,7 @@ describe('effectCache', () => {
         beforeEach(() => {
             const existingProcessor = getEffectProcessor();
             if (vi.isMockFunction(existingProcessor.process)) {
-                existingProcessor.process.mockRestore();
+                (existingProcessor.process as typeof existingProcessor.process & { mockRestore: () => void }).mockRestore();
             }
             vi.useFakeTimers();
 
@@ -445,7 +455,7 @@ describe('effectCache', () => {
             // but here we just rely on fake timers.
 
             // Start a task
-            const p = processor.process(new Blob(['']), {} as RenderParams);
+            const p = processor.process(pngBlob(1, 1), {} as RenderParams);
 
             // Fast forward processing time
             vi.advanceTimersByTime(100);
@@ -480,7 +490,7 @@ describe('effectCache', () => {
                 });
             } as unknown as typeof Worker;
 
-            const p = processor.process(new Blob(['']), {} as RenderParams);
+            const p = processor.process(pngBlob(1, 1), {} as RenderParams);
 
             vi.advanceTimersByTime(100);
             await expect(p).rejects.toThrow("Worker crashed: Crash!");
@@ -507,10 +517,10 @@ describe('effectCache', () => {
             } as unknown as typeof Worker;
             Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
 
-            const first = processor.process(new Blob(['first']), {} as RenderParams);
-            const second = processor.process(new Blob(['second']), {} as RenderParams);
+            const first = processor.process(pngBlob(1, 1), {} as RenderParams);
+            const second = processor.process(pngBlob(1, 1), {} as RenderParams);
 
-            expect(createImageBitmap).toHaveBeenCalledTimes(1);
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(1));
 
             await Promise.resolve();
             const firstTaskId = workers[0].postMessage.mock.calls[0][0].taskId as string;
@@ -525,37 +535,135 @@ describe('effectCache', () => {
             await expect(second).resolves.toBeInstanceOf(Blob);
         });
 
-        it('releases a worker admission slot after a decode failure', async () => {
+        it('keeps mixed-size decoded reservations within budget even when workers are free', async () => {
             const processor = getEffectProcessor();
-            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
+            const workers: Array<{
+                postMessage: ReturnType<typeof vi.fn>;
+                terminate: ReturnType<typeof vi.fn>;
+                onmessage: ((e: MessageEvent) => void) | null;
+                onerror: ((e: ErrorEvent) => void) | null;
+            }> = [];
+            global.Worker = class {
+                postMessage = vi.fn();
+                terminate = vi.fn();
+                onmessage: ((e: MessageEvent) => void) | null = null;
+                onerror: ((e: ErrorEvent) => void) | null = null;
+                constructor() {
+                    workers.push(this);
+                }
+            } as unknown as typeof Worker;
+            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 4 });
+
+            const large = processor.process(pngBlob(4000, 4000), {} as RenderParams);
+            const firstSmall = processor.process(pngBlob(2000, 2000), {} as RenderParams);
+            const deferredSmall = processor.process(pngBlob(2000, 2000), {} as RenderParams);
+
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(2));
+            expect(workers).toHaveLength(2);
+
+            const largeTaskId = workers[0].postMessage.mock.calls[0][0].taskId as string;
+            workers[0].onmessage?.({ data: { taskId: largeTaskId, blob: new Blob(['large']) } } as MessageEvent);
+            await expect(large).resolves.toBeInstanceOf(Blob);
+
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(3));
+            const firstSmallTaskId = workers[1].postMessage.mock.calls[0][0].taskId as string;
+            workers[1].onmessage?.({ data: { taskId: firstSmallTaskId, blob: new Blob(['small']) } } as MessageEvent);
+            const deferredSmallTaskId = workers[0].postMessage.mock.calls[1][0].taskId as string;
+            workers[0].onmessage?.({ data: { taskId: deferredSmallTaskId, blob: new Blob(['small']) } } as MessageEvent);
+
+            await expect(Promise.all([firstSmall, deferredSmall])).resolves.toEqual([expect.any(Blob), expect.any(Blob)]);
+        });
+
+        it('uses dimensions from a bounded header probe rather than encoded Blob size', async () => {
+            const processor = getEffectProcessor();
+            const source = pngBlob(1, 1);
+            Object.defineProperty(source, 'size', { value: 3 * 1024 * 1024 * 1024 });
+            const slice = vi.spyOn(source, 'slice');
+
+            const rendition = processor.process(source, {} as RenderParams);
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledWith(source));
+            expect(slice).toHaveBeenCalledWith(0, 512 * 1024);
+            await vi.waitFor(() => expect(rendition).resolves.toBeInstanceOf(Blob));
+        });
+
+        it('rejects a single oversized image without blocking later work', async () => {
+            const processor = getEffectProcessor();
+            const workers: Array<{
+                postMessage: ReturnType<typeof vi.fn>;
+                terminate: ReturnType<typeof vi.fn>;
+                onmessage: ((e: MessageEvent) => void) | null;
+                onerror: ((e: ErrorEvent) => void) | null;
+            }> = [];
+            global.Worker = class {
+                postMessage = vi.fn();
+                terminate = vi.fn();
+                onmessage: ((e: MessageEvent) => void) | null = null;
+                onerror: ((e: ErrorEvent) => void) | null = null;
+                constructor() {
+                    workers.push(this);
+                }
+            } as unknown as typeof Worker;
+
+            const oversized = processor.process(pngBlob(5000, 5000), {} as RenderParams);
+            const oversizedError = oversized.then(() => undefined, error => error);
+            const admitted = processor.process(pngBlob(1000, 1000), {} as RenderParams);
+
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(1));
+            await expect(oversizedError).resolves.toMatchObject({
+                message: 'Effect decoded surfaces require 300000000 bytes, exceeding the 268435456-byte admission budget',
+            });
+            expect(workers).toHaveLength(1);
+            const admittedTaskId = workers[0].postMessage.mock.calls[0][0].taskId as string;
+            workers[0].onmessage?.({ data: { taskId: admittedTaskId, blob: new Blob(['small']) } } as MessageEvent);
+            await expect(admitted).resolves.toBeInstanceOf(Blob);
+        });
+
+        it('releases decoded-byte admission after a decode failure', async () => {
+            const processor = getEffectProcessor();
+            Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 2 });
+            let rejectDecode: ((error: Error) => void) | undefined;
             global.createImageBitmap = vi.fn()
-                .mockRejectedValueOnce(new Error('decode failed'))
+                .mockImplementationOnce(() => new Promise<never>((_resolve, reject) => {
+                    rejectDecode = reject;
+                }))
                 .mockResolvedValue({ width: 100, height: 100, close: vi.fn() });
 
-            const first = processor.process(new Blob(['first']), {} as RenderParams);
-            const second = processor.process(new Blob(['second']), {} as RenderParams);
+            const first = processor.process(pngBlob(3400, 3400), {} as RenderParams);
+            const firstError = first.then(() => undefined, error => error);
+            const second = processor.process(pngBlob(3400, 3400), {} as RenderParams);
 
-            await expect(first).rejects.toThrow('decode failed');
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(1));
+            rejectDecode?.(new Error('decode failed'));
+            await expect(firstError).resolves.toMatchObject({ message: 'decode failed' });
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(2));
             await expect(second).resolves.toBeInstanceOf(Blob);
-            expect(createImageBitmap).toHaveBeenCalledTimes(2);
         });
 
         it('cancels queued descriptors without decoding them', async () => {
             const processor = getEffectProcessor();
             Object.defineProperty(processor, 'maxWorkers', { configurable: true, value: 1 });
             let resolveDecode: ((bitmap: ImageBitmap) => void) | undefined;
-            global.createImageBitmap = vi.fn().mockImplementation(() => new Promise(resolve => {
-                resolveDecode = resolve;
-            }));
+            global.createImageBitmap = vi.fn()
+                .mockImplementationOnce(() => new Promise(resolve => {
+                    resolveDecode = resolve;
+                }))
+                .mockResolvedValue({ width: 100, height: 100, close: vi.fn() });
 
-            const active = processor.process(new Blob(['active']), {} as RenderParams);
-            const queued = processor.process(new Blob(['queued']), {} as RenderParams);
+            const active = processor.process(pngBlob(1, 1), {} as RenderParams);
+            const activeError = active.then(() => undefined, error => error);
+            const queued = processor.process(pngBlob(1, 1), {} as RenderParams);
+            const queuedError = queued.then(() => undefined, error => error);
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(1));
             processor.destroy();
             resolveDecode?.({ width: 100, height: 100, close: vi.fn() } as ImageBitmap);
 
-            await expect(active).rejects.toThrow('Effect processor destroyed');
-            await expect(queued).rejects.toThrow('Effect processor destroyed');
-            expect(createImageBitmap).toHaveBeenCalledTimes(1);
+            await expect(activeError).resolves.toMatchObject({ message: 'Effect processor destroyed' });
+            await expect(queuedError).resolves.toMatchObject({ message: 'Effect processor destroyed' });
+
+            const replacement = processor.process(pngBlob(1, 1), {} as RenderParams);
+            await vi.waitFor(() => expect(createImageBitmap).toHaveBeenCalledTimes(2));
+            await vi.waitFor(() => expect(replacement).resolves.toBeInstanceOf(Blob));
+            expect(createImageBitmap).toHaveBeenCalledTimes(2);
         });
     });
 
@@ -579,7 +687,7 @@ describe('effectCache', () => {
         beforeEach(() => {
             const processor = liveGetEffectProcessor();
             if (vi.isMockFunction(processor.process)) {
-                processor.process.mockRestore();
+                (processor.process as typeof processor.process & { mockRestore: () => void }).mockRestore();
             }
             processor.destroy();
         });

@@ -89,6 +89,8 @@ export function ArtworkModal() {
   const [lastOpenCardUuid, setLastOpenCardUuid] = useState<string | undefined>(
     undefined
   );
+  const previewOperationGenerationRef = useRef(0);
+  const isArtworkModalMountedRef = useRef(false);
 
   const isModalOpen = useArtworkModalStore((state) => state.open);
   const modalCard = useArtworkModalStore((state) => state.card);
@@ -142,6 +144,18 @@ export function ArtworkModal() {
   }
 
   useEffect(() => {
+    isArtworkModalMountedRef.current = true;
+    return () => {
+      isArtworkModalMountedRef.current = false;
+      previewOperationGenerationRef.current += 1;
+    };
+  }, []);
+
+  const isCurrentPreviewOperation = (generation: number) =>
+    isArtworkModalMountedRef.current &&
+    previewOperationGenerationRef.current === generation;
+
+  useEffect(() => {
     if (!isModalOpen) {
       setLastOpenCardUuid(undefined);
     }
@@ -183,12 +197,22 @@ export function ArtworkModal() {
   // Auto-apply first print when previewCardData changes (from search)
   // This runs AFTER state has updated, avoiding race condition
   useEffect(() => {
-    if (previewCardData?.imageUrls?.[0] && activeCard) {
+    const operationGeneration = previewOperationGenerationRef.current;
+    if (
+      previewCardData?.imageUrls?.[0] &&
+      activeCard &&
+      isCurrentPreviewOperation(operationGeneration)
+    ) {
       debugLog(
         "[ArtworkModal] auto-apply: previewCardData changed, applying first print:",
         previewCardData.imageUrls[0]?.substring(0, 80)
       );
-      void handleSelectArtwork(previewCardData.imageUrls[0]);
+      void handleSelectArtwork(
+        previewCardData.imageUrls[0],
+        undefined,
+        undefined,
+        operationGeneration
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewCardData]);
@@ -374,6 +398,7 @@ export function ArtworkModal() {
     hasBuiltInBleed?: boolean;
     cardMetadata?: Parameters<typeof changeCardArtwork>[6];
     previewImageUrls?: string[];
+    shouldContinue?: () => boolean;
   };
 
   const applyArtworkToCards = useCallback(
@@ -385,10 +410,11 @@ export function ArtworkModal() {
         hasBuiltInBleed,
         cardMetadata,
         previewImageUrls,
+        shouldContinue = () => true,
       } = config;
       const targetCard = activeCard;
       /* v8 ignore next -- selection handlers are not exposed without an active card. @preserve */
-      if (!targetCard) return;
+      if (!targetCard || !shouldContinue()) return;
 
       const selectedCards = useSelectionStore.getState().selectedCards;
       const isMultiSelect =
@@ -399,8 +425,10 @@ export function ArtworkModal() {
       if (isMultiSelect && selectedFace === "front") {
         const selectedUuids = Array.from(selectedCards);
         const cardsToUpdate = await db.cards.bulkGet(selectedUuids);
+        if (!shouldContinue()) return;
 
         for (const cardToUpdate of cardsToUpdate) {
+          if (!shouldContinue()) return;
           /* v8 ignore next -- bulkGet can include deleted/back cards defensively filtered from selection. @preserve */
           if (cardToUpdate && !cardToUpdate.linkedFrontId) {
             await changeCardArtwork(
@@ -413,17 +441,20 @@ export function ArtworkModal() {
               cardMetadata,
               hasBuiltInBleed
             );
+            if (!shouldContinue()) return;
 
             if (needsEnrichment) {
               await db.cards.update(cardToUpdate.uuid, {
                 needsEnrichment: true,
               });
+              if (!shouldContinue()) return;
             }
           }
         }
         /* v8 ignore next -- multi-select branch is entered only when modalCard is already selected. @preserve */
         if (modalCard && selectedCards.has(modalCard.uuid)) {
           const updated = await db.cards.get(modalCard.uuid);
+          if (!shouldContinue()) return;
           /* v8 ignore next -- db refresh may miss a concurrently deleted modal card. @preserve */
           if (updated) useArtworkModalStore.getState().updateCard(updated);
         }
@@ -438,17 +469,22 @@ export function ArtworkModal() {
           cardMetadata,
           hasBuiltInBleed
         );
+        if (!shouldContinue()) return;
 
         if (needsEnrichment) {
           await db.cards.update(targetCard.uuid, { needsEnrichment: true });
+          if (!shouldContinue()) return;
         }
 
         /* v8 ignore next -- back-face linked-card store sync is intentionally skipped. @preserve */
         if (selectedFace === "front" || !linkedBackCard) {
           const updated = await db.cards.get(targetCard.uuid);
+          if (!shouldContinue()) return;
           if (updated) useArtworkModalStore.getState().updateCard(updated);
         }
       }
+
+      if (!shouldContinue()) return;
 
       /* v8 ignore next -- apply handlers are invoked only from an open modal with a card. @preserve */
       if (modalCard?.uuid) {
@@ -459,6 +495,8 @@ export function ArtworkModal() {
 
       // Check for missing tokens after applying new art/identity
       handleAutoImportTokens({ silent: true });
+
+      if (!shouldContinue()) return;
 
       // Clear preview state so the modal reflects the updated card
       setPreviewCardData(null);
@@ -477,10 +515,14 @@ export function ArtworkModal() {
   async function handleSelectArtwork(
     newImageUrl: string,
     newCardName?: string,
-    specificPrint?: { set: string; number: string }
+    specificPrint?: { set: string; number: string },
+    previewOperationGeneration?: number
   ) {
+    const shouldContinue = () =>
+      previewOperationGeneration === undefined ||
+      isCurrentPreviewOperation(previewOperationGeneration);
     /* v8 ignore next -- artwork buttons are not exposed without an active card. @preserve */
-    if (!activeCard) return;
+    if (!activeCard || !shouldContinue()) return;
 
     debugLog("[ArtworkModal] handleSelectArtwork:", {
       newImageUrl: newImageUrl?.substring(0, 80),
@@ -554,6 +596,7 @@ export function ArtworkModal() {
         intent,
         projectId
       );
+      if (!shouldContinue()) return;
       const resolved = cardsToAdd[0];
 
       /* v8 ignore next -- resolver contract returns a primary card for valid art selections. @preserve */
@@ -582,7 +625,9 @@ export function ArtworkModal() {
           cardMetadata,
           previewImageUrls:
             isReplacing && resolved.imageId ? [resolved.imageId] : undefined,
+          shouldContinue,
         });
+        if (!shouldContinue()) return;
 
         // Handle DFC back face linking
         if (
@@ -603,6 +648,7 @@ export function ArtworkModal() {
                 (backTask as { hasBleed?: boolean }).hasBleed ?? false,
               usesDefaultCardback: false,
             });
+            if (!shouldContinue()) return;
           } else {
             // Create new linked back card
             await createLinkedBackCard(
@@ -615,6 +661,7 @@ export function ArtworkModal() {
                   (backTask as { hasBleed?: boolean }).hasBleed ?? false,
               }
             );
+            if (!shouldContinue()) return;
           }
         }
       }
@@ -753,6 +800,7 @@ export function ArtworkModal() {
       artSource,
     });
 
+    const operationGeneration = ++previewOperationGenerationRef.current;
     setIsSearching(true);
     try {
       let cardWithPrints: ScryfallCard | null = null;
@@ -764,6 +812,7 @@ export function ArtworkModal() {
       } else {
         cardWithPrints = await fetchCardWithPrints(name, exact, true);
       }
+      if (!isCurrentPreviewOperation(operationGeneration)) return;
 
       debugLog("[ArtworkModal] handleSearch result:", {
         name: cardWithPrints?.name,
@@ -782,7 +831,9 @@ export function ArtworkModal() {
     } catch (e) {
       debugLog("Search failed:", e);
     } finally {
-      setIsSearching(false);
+      if (isCurrentPreviewOperation(operationGeneration)) {
+        setIsSearching(false);
+      }
     }
   }
 

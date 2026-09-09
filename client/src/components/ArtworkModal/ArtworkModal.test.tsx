@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ImportOrchestrator } from '@/helpers/ImportOrchestrator';
 
 
@@ -407,6 +407,12 @@ import { isCardbackId } from '@/helpers/cardbackLibrary';
 import { getCurrentCardFace, getFaceNamesFromPrints } from '@/helpers/dfcHelpers';
 
 describe('ArtworkModal', () => {
+    const settleAsyncEffects = async () => {
+        await act(async () => {
+            await Promise.resolve();
+        });
+    };
+
     beforeEach(() => {
         vi.clearAllMocks();
         vi.mocked(useLiveQuery).mockImplementation(() => null);
@@ -489,16 +495,20 @@ describe('ArtworkModal', () => {
             expect(faceToggle.getAttribute('data-value')).toBe('front');
         });
 
-        it('should switch to back face when clicked', () => {
+        it('should switch to back face when clicked', async () => {
             render(<ArtworkModal />);
-            fireEvent.click(screen.getByTestId('toggle-btn-back'));
+            await act(async () => {
+                fireEvent.click(screen.getByTestId('toggle-btn-back'));
+                await Promise.resolve();
+            });
             const faceToggle = screen.getByTestId('toggle-front-back');
             expect(faceToggle.getAttribute('data-value')).toBe('back');
         });
 
-        it('should use initialFace from store', () => {
+        it('should use initialFace from store', async () => {
             mockState.initialFace = 'back';
             render(<ArtworkModal />);
+            await settleAsyncEffects();
             const faceToggle = screen.getByTestId('toggle-front-back');
             expect(faceToggle.getAttribute('data-value')).toBe('back');
         });
@@ -648,7 +658,7 @@ describe('ArtworkModal', () => {
         });
 
         it('should tolerate import resolution failures when selecting artwork', async () => {
-            const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            const errorSpy = vi.spyOn(console, 'error');
             vi.mocked(ImportOrchestrator.resolve).mockRejectedValueOnce(new Error('resolve failed'));
 
             render(<ArtworkModal />);
@@ -1276,10 +1286,11 @@ describe('ArtworkModal', () => {
             mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card', imageId: 'test-image-id' };
         });
 
-        it('should pass selectedFace to ArtworkBleedSettings', () => {
+        it('should pass selectedFace to ArtworkBleedSettings', async () => {
             mockState.initialTab = 'settings';
             mockState.initialFace = 'back';
             render(<ArtworkModal />);
+            await settleAsyncEffects();
 
             const bleedSettings = screen.getByTestId('artwork-bleed-settings');
             expect(bleedSettings.getAttribute('data-selected-face')).toBe('back');
@@ -1308,6 +1319,77 @@ describe('ArtworkModal', () => {
             await waitFor(() => {
                 expect(mockFetchCardWithPrints).toHaveBeenCalledWith('Test Card', false, true);
             });
+        });
+
+        it('keeps the newer manual search preview and automatic first-print application when an older automatic search completes last', async () => {
+            mockState.isModalOpen = true;
+            mockState.modalCard = { uuid: 'test-uuid', name: 'Test Card' };
+
+            let resolveAutomaticSearch!: (value: { name: string; imageUrls: string[] }) => void;
+            let resolveManualSearch!: (value: { name: string; imageUrls: string[] }) => void;
+            const automaticSearch = new Promise<{ name: string; imageUrls: string[] }>((resolve) => {
+                resolveAutomaticSearch = resolve;
+            });
+            const manualSearch = new Promise<{ name: string; imageUrls: string[] }>((resolve) => {
+                resolveManualSearch = resolve;
+            });
+            mockFetchCardWithPrints
+                .mockReturnValueOnce(automaticSearch)
+                .mockReturnValueOnce(manualSearch);
+
+            render(<ArtworkModal />);
+
+            await waitFor(() => {
+                expect(mockFetchCardWithPrints).toHaveBeenCalledWith('Test Card', false, true);
+            });
+
+            fireEvent.click(screen.getByTestId('open-search'));
+            fireEvent.click(screen.getByTestId('select-card'));
+
+            await waitFor(() => {
+                expect(mockFetchCardWithPrints).toHaveBeenCalledWith('Selected Card', true, true);
+            });
+
+            await act(async () => {
+                resolveManualSearch({
+                    name: 'Manual Result',
+                    imageUrls: ['https://example.com/manual-result.jpg'],
+                });
+            });
+
+            await waitFor(() => {
+                expect(mockChangeCardArtwork).toHaveBeenCalledWith(
+                    undefined,
+                    'https://example.com/manual-result.jpg',
+                    expect.objectContaining({ uuid: 'test-uuid' }),
+                    false,
+                    'Resolved Card',
+                    expect.anything(),
+                    expect.anything(),
+                    undefined
+                );
+            });
+
+            await act(async () => {
+                resolveAutomaticSearch({
+                    name: 'Automatic Result',
+                    imageUrls: ['https://example.com/automatic-result.jpg'],
+                });
+            });
+
+            await waitFor(() => {
+                expect(mockChangeCardArtwork).toHaveBeenCalledTimes(1);
+            });
+            expect(mockChangeCardArtwork).not.toHaveBeenCalledWith(
+                expect.anything(),
+                'https://example.com/automatic-result.jpg',
+                expect.anything(),
+                expect.anything(),
+                expect.anything(),
+                expect.anything(),
+                expect.anything(),
+                expect.anything()
+            );
         });
     });
 
@@ -1470,6 +1552,7 @@ describe('ArtworkModal', () => {
             vi.mocked(getFaceNamesFromPrints).mockReturnValue(['Delver of Secrets', 'Insectile Aberration']);
 
             render(<ArtworkModal />);
+            await settleAsyncEffects();
 
             const faceToggle = screen.getByTestId('toggle-front-back');
             expect(faceToggle.getAttribute('data-value')).toBe('back');
@@ -1693,6 +1776,7 @@ describe('ArtworkModal', () => {
 
             mockState.initialFace = 'back';
             render(<ArtworkModal />);
+            await settleAsyncEffects();
 
             const faceToggle = screen.getByTestId('toggle-front-back');
             expect(faceToggle.getAttribute('data-value')).toBe('back');
@@ -1729,13 +1813,20 @@ describe('ArtworkModal', () => {
 
             mockState.initialFace = 'back';
             render(<ArtworkModal />);
+            await settleAsyncEffects();
 
-            fireEvent.click(screen.getByTestId('tab-btn-cardback'));
+            await act(async () => {
+                fireEvent.click(screen.getByTestId('tab-btn-cardback'));
+                await Promise.resolve();
+            });
 
             expect(screen.getByText('Choose Cardback')).toBeDefined();
 
             const header = screen.getByTestId('modal-header');
-            fireEvent.click(header.querySelectorAll('button')[1]);
+            await act(async () => {
+                fireEvent.click(header.querySelectorAll('button')[1]);
+                await Promise.resolve();
+            });
 
             expect(screen.queryByText('Choose Cardback')).toBeNull();
         });
@@ -1857,7 +1948,7 @@ describe('ArtworkModal', () => {
             return event;
         };
 
-        it('should handle two-finger pinch events on modal content', () => {
+        it('should handle two-finger pinch events on modal content', async () => {
             const { unmount } = render(<ArtworkModal />);
             const content = screen.getByTestId('modal-content').firstElementChild!;
             const start = touchEvent('touchstart', [
@@ -1870,8 +1961,11 @@ describe('ArtworkModal', () => {
             ]);
             const preventDefaultSpy = vi.spyOn(move, 'preventDefault');
 
-            content.dispatchEvent(start);
-            content.dispatchEvent(move);
+            await act(async () => {
+                content.dispatchEvent(start);
+                content.dispatchEvent(move);
+                await Promise.resolve();
+            });
 
             expect(preventDefaultSpy).toHaveBeenCalled();
             unmount();

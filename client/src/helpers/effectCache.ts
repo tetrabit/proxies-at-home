@@ -21,14 +21,189 @@ interface IdleWorker {
     timeoutId: ReturnType<typeof setTimeout> | null;
 }
 
+interface ImageDimensions {
+    width: number;
+    height: number;
+}
+
+// The export resource budget documents this as the conservative, provisional
+// CPU-side admission limit. It accounts for decoded input, effect work, and
+// final RGBA8 surfaces (three width × height × four-byte surfaces). This does
+// not measure or reserve browser, driver, or GPU allocations.
+export const EFFECT_DECODE_ADMISSION_BYTES = 256 * 1024 * 1024;
+const RGBA8_BYTES_PER_PIXEL = 4;
+const EFFECT_ADMISSION_SURFACE_COUNT = 3;
+const MAX_IMAGE_HEADER_PROBE_BYTES = 512 * 1024;
+
+function dimensionsOrUndefined(width: number, height: number): ImageDimensions | undefined {
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+        return undefined;
+    }
+    return { width, height };
+}
+
+function readUint16BE(bytes: Uint8Array, offset: number): number | undefined {
+    if (offset + 2 > bytes.length) return undefined;
+    return (bytes[offset] << 8) | bytes[offset + 1];
+}
+
+function readUint16LE(bytes: Uint8Array, offset: number): number | undefined {
+    if (offset + 2 > bytes.length) return undefined;
+    return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function readUint24LE(bytes: Uint8Array, offset: number): number | undefined {
+    if (offset + 3 > bytes.length) return undefined;
+    return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+}
+
+function readUint32LE(bytes: Uint8Array, offset: number): number | undefined {
+    if (offset + 4 > bytes.length) return undefined;
+    return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] * 0x1000000)) >>> 0;
+}
+
+function readInt32LE(bytes: Uint8Array, offset: number): number | undefined {
+    const unsigned = readUint32LE(bytes, offset);
+    if (unsigned === undefined) return undefined;
+    return unsigned > 0x7fffffff ? unsigned - 0x100000000 : unsigned;
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+    return (
+        (marker >= 0xc0 && marker <= 0xc3)
+        || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb)
+        || (marker >= 0xcd && marker <= 0xcf)
+    );
+}
+
+function probeJpegDimensions(bytes: Uint8Array): ImageDimensions | undefined {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
+
+    let offset = 2;
+    while (offset < bytes.length) {
+        while (offset < bytes.length && bytes[offset] === 0xff) offset++;
+        if (offset >= bytes.length) return undefined;
+
+        const marker = bytes[offset++];
+        if (marker === 0xd9 || marker === 0xda) return undefined;
+        if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+
+        const segmentLength = readUint16BE(bytes, offset);
+        if (segmentLength === undefined || segmentLength < 2 || offset + segmentLength > bytes.length) return undefined;
+        if (isJpegStartOfFrame(marker)) {
+            if (segmentLength < 7) return undefined;
+            const height = readUint16BE(bytes, offset + 3);
+            const width = readUint16BE(bytes, offset + 5);
+            return height === undefined || width === undefined ? undefined : dimensionsOrUndefined(width, height);
+        }
+        offset += segmentLength;
+    }
+    return undefined;
+}
+
+function probeWebpDimensions(bytes: Uint8Array): ImageDimensions | undefined {
+    if (
+        bytes.length < 12
+        || bytes[0] !== 0x52 || bytes[1] !== 0x49 || bytes[2] !== 0x46 || bytes[3] !== 0x46
+        || bytes[8] !== 0x57 || bytes[9] !== 0x45 || bytes[10] !== 0x42 || bytes[11] !== 0x50
+    ) return undefined;
+
+    let offset = 12;
+    while (offset + 8 <= bytes.length) {
+        const chunkLength = readUint32LE(bytes, offset + 4);
+        if (chunkLength === undefined) return undefined;
+        const dataOffset = offset + 8;
+        const paddedLength = chunkLength + (chunkLength % 2);
+        if (paddedLength > bytes.length - dataOffset) return undefined;
+
+        const isVp8x = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x58;
+        if (isVp8x && chunkLength >= 10) {
+            const width = readUint24LE(bytes, dataOffset + 4);
+            const height = readUint24LE(bytes, dataOffset + 7);
+            return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width + 1, height + 1);
+        }
+
+        const isVp8l = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x4c;
+        if (isVp8l && chunkLength >= 5 && bytes[dataOffset] === 0x2f) {
+            const width = 1 + (bytes[dataOffset + 1] | ((bytes[dataOffset + 2] & 0x3f) << 8));
+            const height = 1 + ((bytes[dataOffset + 2] >>> 6) | (bytes[dataOffset + 3] << 2) | ((bytes[dataOffset + 4] & 0x0f) << 10));
+            return dimensionsOrUndefined(width, height);
+        }
+
+        const isVp8 = bytes[offset] === 0x56 && bytes[offset + 1] === 0x50 && bytes[offset + 2] === 0x38 && bytes[offset + 3] === 0x20;
+        if (
+            isVp8 && chunkLength >= 10
+            && bytes[dataOffset + 3] === 0x9d && bytes[dataOffset + 4] === 0x01 && bytes[dataOffset + 5] === 0x2a
+        ) {
+            const width = readUint16LE(bytes, dataOffset + 6);
+            const height = readUint16LE(bytes, dataOffset + 8);
+            return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width & 0x3fff, height & 0x3fff);
+        }
+        offset = dataOffset + paddedLength;
+    }
+    return undefined;
+}
+
+function probeImageDimensions(bytes: Uint8Array): ImageDimensions | undefined {
+    if (
+        bytes.length >= 24
+        && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+        && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52
+    ) {
+        const width = (bytes[16] * 0x1000000) + (bytes[17] << 16) + (bytes[18] << 8) + bytes[19];
+        const height = (bytes[20] * 0x1000000) + (bytes[21] << 16) + (bytes[22] << 8) + bytes[23];
+        return dimensionsOrUndefined(width, height);
+    }
+
+    if (
+        bytes.length >= 10
+        && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46
+        && (bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61)
+    ) {
+        const width = readUint16LE(bytes, 6);
+        const height = readUint16LE(bytes, 8);
+        return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(width, height);
+    }
+
+    if (bytes.length >= 26 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+        const width = readInt32LE(bytes, 18);
+        const height = readInt32LE(bytes, 22);
+        return width === undefined || height === undefined ? undefined : dimensionsOrUndefined(Math.abs(width), Math.abs(height));
+    }
+
+    return probeJpegDimensions(bytes) ?? probeWebpDimensions(bytes);
+}
+
+async function probeImageDimensionsFromBlob(exportBlob: Blob): Promise<ImageDimensions> {
+    const probeLength = Math.min(exportBlob.size, MAX_IMAGE_HEADER_PROBE_BYTES);
+    const bytes = new Uint8Array(await exportBlob.slice(0, probeLength).arrayBuffer());
+    const dimensions = probeImageDimensions(bytes);
+    if (!dimensions) {
+        throw new Error(`Unable to determine image dimensions from the first ${MAX_IMAGE_HEADER_PROBE_BYTES} bytes`);
+    }
+    return dimensions;
+}
+
+function decodedReservationBytes({ width, height }: ImageDimensions): number {
+    const pixels = width * height;
+    const bytes = pixels * RGBA8_BYTES_PER_PIXEL * EFFECT_ADMISSION_SURFACE_COUNT;
+    if (!Number.isSafeInteger(pixels) || !Number.isSafeInteger(bytes)) {
+        throw new Error('Image dimensions exceed safe decoded-surface accounting');
+    }
+    return bytes;
+}
+
 // --- Worker Pool for Effect Processing ---
 interface EffectTask {
     taskId: string;
     exportBlob: Blob;
     params: RenderParams;
+    decodedBytes: number;
     resolve: (blob: Blob) => void;
     reject: (error: Error) => void;
     active: boolean;
+    reservationHeld: boolean;
 }
 
 export type ActivityCallback = (isActive: boolean) => void;
@@ -41,6 +216,8 @@ class EffectProcessor {
     private taskQueue: EffectTask[] = [];
     private taskIdCounter = 0;
     private readonly maxWorkers: number;
+    private readonly decodedByteBudget = EFFECT_DECODE_ADMISSION_BYTES;
+    private decodedBytesInFlight = 0;
     // Track which task is assigned to which worker for error handling
     private workerToTaskId: Map<Worker, string> = new Map();
 
@@ -121,8 +298,28 @@ class EffectProcessor {
         return worker;
     }
 
+    private takeNextAdmissibleTask(): EffectTask | undefined {
+        for (let index = 0; index < this.taskQueue.length;) {
+            const task = this.taskQueue[index];
+            if (task.decodedBytes > this.decodedByteBudget) {
+                this.taskQueue.splice(index, 1);
+                this.settleTask(
+                    task.taskId,
+                    new Error(`Effect decoded surfaces require ${task.decodedBytes} bytes, exceeding the ${this.decodedByteBudget}-byte admission budget`)
+                );
+                continue;
+            }
+            if (task.decodedBytes <= this.decodedByteBudget - this.decodedBytesInFlight) {
+                return this.taskQueue.splice(index, 1)[0];
+            }
+            index++;
+        }
+        return undefined;
+    }
+
     private processNextTask() {
-        if (this.taskQueue.length === 0) return;
+        const task = this.takeNextAdmissibleTask();
+        if (!task) return;
 
         let worker: Worker | null = null;
 
@@ -134,14 +331,24 @@ class EffectProcessor {
             worker = this.createWorker();
         }
 
-        if (worker) {
-            const task = this.taskQueue.shift()!;
-            task.active = true;
-            this.taskStarted();
-            // Track which task this worker is processing
-            this.workerToTaskId.set(worker, task.taskId);
-            void this.decodeAndDispatch(worker, task);
+        if (!worker) {
+            this.taskQueue.unshift(task);
+            return;
         }
+
+        task.active = true;
+        task.reservationHeld = true;
+        this.decodedBytesInFlight += task.decodedBytes;
+        this.taskStarted();
+        // Track which task is assigned to which worker for error handling
+        this.workerToTaskId.set(worker, task.taskId);
+        void this.decodeAndDispatch(worker, task);
+    }
+
+    private releaseDecodedReservation(task: EffectTask): void {
+        if (!task.reservationHeld) return;
+        task.reservationHeld = false;
+        this.decodedBytesInFlight = Math.max(0, this.decodedBytesInFlight - task.decodedBytes);
     }
 
     private settleTask(taskId: string, error?: Error, blob?: Blob): void {
@@ -149,7 +356,11 @@ class EffectProcessor {
         if (!task) return;
 
         this.pendingTasks.delete(taskId);
-        if (task.active) this.taskCompleted();
+        if (task.active) {
+            task.active = false;
+            this.taskCompleted();
+        }
+        this.releaseDecodedReservation(task);
         if (error) {
             task.reject(error);
         } else if (blob) {
@@ -218,9 +429,24 @@ class EffectProcessor {
         params: RenderParams
     ): Promise<Blob> {
         const taskId = `task-${++this.taskIdCounter}`;
+        const generation = effectProcessorGeneration;
+        const dimensions = await probeImageDimensionsFromBlob(exportBlob);
+        if (generation !== effectProcessorGeneration) {
+            throw new Error('Effect processor destroyed');
+        }
+        const decodedBytes = decodedReservationBytes(dimensions);
 
         return new Promise<Blob>((resolve, reject) => {
-            const task: EffectTask = { taskId, exportBlob, params, resolve, reject, active: false };
+            const task: EffectTask = {
+                taskId,
+                exportBlob,
+                params,
+                decodedBytes,
+                resolve,
+                reject,
+                active: false,
+                reservationHeld: false,
+            };
             this.pendingTasks.set(taskId, task);
             this.taskQueue.push(task);
             this.processNextTask();
@@ -242,10 +468,15 @@ class EffectProcessor {
         this.taskQueue = [];
         const destructionError = new Error('Effect processor destroyed');
         this.pendingTasks.forEach(task => {
-            if (task.active) this.taskCompleted();
+            if (task.active) {
+                task.active = false;
+                this.taskCompleted();
+            }
+            this.releaseDecodedReservation(task);
             task.reject(destructionError);
         });
         this.pendingTasks.clear();
+        this.decodedBytesInFlight = 0;
         if (this.activeTaskCount > 0) {
             this.activeTaskCount = 0;
             this.notifyActivityChange(false);
