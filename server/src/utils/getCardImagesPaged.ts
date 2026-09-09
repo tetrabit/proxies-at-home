@@ -15,8 +15,19 @@ const AX = axios.create({
   headers: { "User-Agent": "Proxxied/1.0 (contact: your-email@example.com)" },
 });
 
-function requestFromScryfall<T>(operation: () => Promise<T>): Promise<T> {
-  return scryfallRequestBroker.enqueue(() => operation());
+function requestFromScryfall<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  return scryfallRequestBroker.enqueue(operation, { signal });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error("Scryfall request was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
 }
 
 // In-flight request cache to deduplicate concurrent identical requests
@@ -128,7 +139,8 @@ interface ScryfallResponse {
  */
 async function fetchAllPages<T>(
   query: string,
-  extractor: (card: ScryfallApiCard) => T[]
+  extractor: (card: ScryfallApiCard) => T[],
+  signal?: AbortSignal
 ): Promise<T[]> {
   const encodedUrl = `${SCRYFALL_API}?q=${encodeURIComponent(query)}`;
   debugLog(`[Scryfall] fetchAllPages URL: ${encodedUrl}`);
@@ -137,11 +149,13 @@ async function fetchAllPages<T>(
 
   try {
     while (next) {
+      throwIfAborted(signal);
       const pageUrl = next;
       // Explicitly cast the response to avoid circular inference issues with 'next'
       const resp: AxiosResponse<ScryfallResponse> =
         await requestFromScryfall<AxiosResponse<ScryfallResponse>>(
-          () => AX.get<ScryfallResponse>(pageUrl)
+          (requestSignal) => AX.get<ScryfallResponse>(pageUrl, { signal: requestSignal }),
+          signal
         );
       const { data, has_more, next_page } = resp.data;
 
@@ -159,6 +173,7 @@ async function fetchAllPages<T>(
       next = has_more ? next_page : null;
     }
   } catch (err: unknown) {
+    if (signal?.aborted) throw err;
     /* v8 ignore next -- direct Scryfall callers reject with Error objects in supported runtimes. @preserve */
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[Scryfall] Query failed:", query, msg);
@@ -168,7 +183,7 @@ async function fetchAllPages<T>(
 }
 
 /** Run a Scryfall search and collect PNGs (handles DFC). Paginates. */
-async function fetchPngsByQuery(query: string): Promise<string[]> {
+async function fetchPngsByQuery(query: string, signal?: AbortSignal): Promise<string[]> {
   return fetchAllPages(query, (card) => {
     const pngs: string[] = [];
     /* v8 ignore else -- card image payload fallbacks are exercised through DFC and empty-image tests. @preserve */
@@ -182,11 +197,11 @@ async function fetchPngsByQuery(query: string): Promise<string[]> {
       }
     }
     return pngs;
-  });
+  }, signal);
 }
 
-async function fetchCardsByQuery(query: string): Promise<ScryfallApiCard[]> {
-  return fetchAllPages(query, (card) => [card]);
+async function fetchCardsByQuery(query: string, signal?: AbortSignal): Promise<ScryfallApiCard[]> {
+  return fetchAllPages(query, (card) => [card], signal);
 }
 
 /** Split array into chunks of given size */
@@ -211,9 +226,11 @@ interface CollectionResponse {
 /* v8 ignore start -- behavior is covered by focused batchFetchCards tests; V8 branch counters overcount external Scryfall payload-shape fallbacks. @preserve */
 export async function batchFetchCards(
   cardInfos: CardInfo[],
-  language: string = "en"
+  language: string = "en",
+  signal?: AbortSignal
 ): Promise<Map<string, ScryfallApiCard>> {
   const results = new Map<string, ScryfallApiCard>();
+  throwIfAborted(signal);
   if (!cardInfos || cardInfos.length === 0) return results;
 
   const lang = language.toLowerCase();
@@ -318,12 +335,13 @@ export async function batchFetchCards(
           `[batchFetchCards] Token batch query (${batch.length} tokens): ${q.substring(0, 100)}...`
         );
 
-        const response = await requestFromScryfall(() => AX.get<ScryfallResponse>(
+        const response = await requestFromScryfall((requestSignal) => AX.get<ScryfallResponse>(
           "https://api.scryfall.com/cards/search",
           {
             params: { q, unique: "prints" },
+            signal: requestSignal,
           }
-        ));
+        ), signal);
 
         /* v8 ignore else -- successful token search responses include a data array; empty payload is a defensive no-op. @preserve */
         if (response.data?.data) {
@@ -348,6 +366,7 @@ export async function batchFetchCards(
           }
         }
       } catch (err: unknown) {
+        if (signal?.aborted) throw err;
         /* v8 ignore next -- token batch callers reject with Error objects in supported runtimes. @preserve */
         const msg = err instanceof Error ? err.message : String(err);
         debugLog(`[batchFetchCards] Token batch search failed: ${msg}`);
@@ -361,12 +380,13 @@ export async function batchFetchCards(
           for (const ci of batch) {
             try {
               const q = `!"${ci.name}" type:token include:extras`;
-              const response = await requestFromScryfall(() => AX.get<ScryfallResponse>(
+              const response = await requestFromScryfall((requestSignal) => AX.get<ScryfallResponse>(
                 "https://api.scryfall.com/cards/search",
                 {
                   params: { q, unique: "prints" },
+                  signal: requestSignal,
                 }
-              ));
+              ), signal);
               /* v8 ignore else -- individual token fallback may legitimately miss. @preserve */
               if (response.data?.data?.[0]) {
                 const card = response.data.data[0];
@@ -382,6 +402,7 @@ export async function batchFetchCards(
                 }
               }
             } catch {
+              if (signal?.aborted) throwIfAborted(signal);
               debugLog(
                 `[batchFetchCards] Individual token search also failed for "${ci.name}"`
               );
@@ -393,6 +414,7 @@ export async function batchFetchCards(
 
     // Process token batches sequentially (each batch is one API call)
     for (const batch of tokenBatches) {
+      throwIfAborted(signal);
       await fetchTokenBatch(batch);
     }
   }
@@ -402,6 +424,7 @@ export async function batchFetchCards(
     const batches = chunkArray(regularCards, 75);
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      throwIfAborted(signal);
       const batch = batches[batchIdx];
 
         const identifiers = batch.map((ci) => {
@@ -421,10 +444,11 @@ export async function batchFetchCards(
       });
 
       try {
-        const response = await requestFromScryfall(() => AX.post<CollectionResponse>(
+        const response = await requestFromScryfall((requestSignal) => AX.post<CollectionResponse>(
           "https://api.scryfall.com/cards/collection",
-          { identifiers }
-        ));
+          { identifiers },
+          { signal: requestSignal }
+        ), signal);
 
         /* v8 ignore else -- collection responses include data arrays; missing data is a defensive no-op. @preserve */
         if (response.data?.data) {
@@ -473,6 +497,7 @@ export async function batchFetchCards(
           }
         }
       } catch (err: unknown) {
+        if (signal?.aborted) throw err;
         /* v8 ignore next -- collection callers reject with Error objects in supported runtimes. @preserve */
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Scryfall Batch] Batch ${batchIdx + 1} failed:`, msg);
@@ -505,7 +530,7 @@ export async function batchFetchCards(
 
       try {
         const url = `https://api.scryfall.com/cards/${card.set}/${card.collector_number}/${lang}`;
-        const response = await requestFromScryfall(() => AX.get<ScryfallApiCard>(url));
+        const response = await requestFromScryfall((requestSignal) => AX.get<ScryfallApiCard>(url, { signal: requestSignal }), signal);
 
         /* v8 ignore else -- missing localized PNG keeps English aliases and is covered by fallback tests. @preserve */
         if (response.data && response.data.image_uris?.png) {
@@ -522,6 +547,7 @@ export async function batchFetchCards(
           insertOrUpdateCard(response.data);
         }
       } catch {
+        if (signal?.aborted) throwIfAborted(signal);
         // Localized version not available, keep English
       }
     }
@@ -584,21 +610,23 @@ export function lookupCardFromBatch(
  * @param fallbackToEnglish Whether to fallback to English if the preferred language fails.
  */
 async function searchScryfallWithFallback<T>(
-  searchFn: (query: string) => Promise<T[]>,
+  searchFn: (query: string, signal?: AbortSignal) => Promise<T[]>,
   queryBuilder: (lang: string) => string,
   language: string,
-  fallbackToEnglish: boolean
+  fallbackToEnglish: boolean,
+  signal?: AbortSignal
 ): Promise<T[]> {
   const lang = language.toLowerCase();
   const q = queryBuilder(lang);
   debugLog(`[Scryfall] Query: ${q}`);
-  let results = await searchFn(q);
+  let results = await searchFn(q, signal);
   debugLog(`[Scryfall] Results: ${results.length}`);
 
   if (!results.length && fallbackToEnglish && lang !== "en") {
+    throwIfAborted(signal);
     const qEn = queryBuilder("en");
     debugLog(`[Scryfall] Fallback query: ${qEn}`);
-    results = await searchFn(qEn);
+    results = await searchFn(qEn, signal);
   }
 
   return results;
@@ -685,7 +713,8 @@ export async function getCardsWithImagesForCardInfo(
   cardInfo: CardInfo,
   unique = "art",
   language = "en",
-  fallbackToEnglish = true
+  fallbackToEnglish = true,
+  signal?: AbortSignal
 ): Promise<ScryfallApiCard[]> {
   /* v8 ignore next -- callers pass CardInfo objects for collection data lookups. @preserve */
   const { name, set, number, isToken, scryfallId } = cardInfo || {};
@@ -694,7 +723,8 @@ export async function getCardsWithImagesForCardInfo(
   /* v8 ignore next -- cache-key fallbacks normalize optional CardInfo fields and are behavior-neutral. @preserve */
   const cacheKey = `cards:${name}:${set || ""}:${number || ""}:${scryfallId || ""}:${unique}:${language}:${isToken || false}`;
 
-  return deduplicatedSearch(cacheKey, async () => {
+  const search = async () => {
+    throwIfAborted(signal);
     // Add type:token filter for explicit token searches
     const typeFilter = isToken ? " type:token" : "";
 
@@ -703,19 +733,22 @@ export async function getCardsWithImagesForCardInfo(
         fetchCardsByQuery,
         queryTemplate,
         language,
-        fallbackToEnglish
+        fallbackToEnglish,
+        signal
       );
     };
 
     // 0) Exact Scryfall print id
     if (scryfallId) {
       try {
-        const byId = await requestFromScryfall(() => AX.get<ScryfallApiCard>(
-          `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`
-        ));
+        const byId = await requestFromScryfall((requestSignal) => AX.get<ScryfallApiCard>(
+          `https://api.scryfall.com/cards/${encodeURIComponent(scryfallId)}`,
+          { signal: requestSignal }
+        ), signal);
         /* v8 ignore else -- axios success responses contain data; catch path covers request failure. @preserve */
         if (byId.data) return [byId.data];
       } catch {
+        if (signal?.aborted) throwIfAborted(signal);
         // Fall through to query-based strategies
       }
     }
@@ -792,7 +825,12 @@ export async function getCardsWithImagesForCardInfo(
     );
 
     return results;
-  });
+  };
+
+  // A disconnected SSE subscriber must not abort a shared in-flight lookup
+  // that belongs to another stream. Cancellable callers therefore own their
+  // resolver and broker queue entry instead of joining the deduplication map.
+  return signal ? search() : deduplicatedSearch(cacheKey, search);
 }
 
 /**

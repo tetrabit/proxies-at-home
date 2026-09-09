@@ -13,7 +13,11 @@ const processListenerEvents = [
   "unhandledRejection",
 ] as const;
 type ProcessListenerEvent = (typeof processListenerEvents)[number];
-const lifecycleFixtureParent = path.resolve(process.cwd(), ".review-artifacts");
+const lifecycleFixtureParent = path.resolve(
+  process.cwd(),
+  ".review-artifacts",
+  "electron-async-settings-01"
+);
 let lifecycleFixtureDirectory = "";
 let processListenerBaseline = new Map<ProcessListenerEvent, Function[]>();
 
@@ -151,7 +155,7 @@ describe("electron main lifecycle", () => {
   beforeEach(async () => {
     await fs.promises.mkdir(lifecycleFixtureParent, { recursive: true });
     lifecycleFixtureDirectory = await fs.promises.mkdtemp(
-      path.join(lifecycleFixtureParent, "electron-listener-fixture-01-")
+      path.join(lifecycleFixtureParent, "electron-settings-fixture-")
     );
     processListenerBaseline = new Map(
       processListenerEvents.map(
@@ -285,11 +289,17 @@ describe("electron main lifecycle", () => {
     );
     expect(ipcHandlers.get("get-app-version")?.()).toBe("9.8.7");
     expect(ipcHandlers.get("get-update-channel")?.()).toBe("latest");
-    expect(ipcHandlers.get("set-update-channel")?.({}, "beta")).toBe(false);
-    expect(ipcHandlers.get("set-update-channel")?.({}, "stable")).toBe(true);
+    await expect(ipcHandlers.get("set-update-channel")?.({}, "beta")).resolves.toBe(
+      false
+    );
+    await expect(
+      ipcHandlers.get("set-update-channel")?.({}, "stable")
+    ).resolves.toBe(true);
     expect(autoUpdaterMock.channel).toBe("stable");
     expect(ipcHandlers.get("get-auto-update-enabled")?.()).toBe(true);
-    expect(ipcHandlers.get("set-auto-update-enabled")?.({}, false)).toBe(true);
+    await expect(
+      ipcHandlers.get("set-auto-update-enabled")?.({}, false)
+    ).resolves.toBe(true);
     expect(ipcHandlers.get("get-auto-update-enabled")?.()).toBe(false);
 
     netMock.fetch.mockResolvedValueOnce(
@@ -369,7 +379,7 @@ describe("electron main lifecycle", () => {
     );
   });
 
-  it("uses default packaged update settings, tolerates settings save errors, and starts the embedded server", async () => {
+  it("uses default packaged update settings, surfaces settings save errors, and starts the embedded server", async () => {
     appMock.isPackaged = true;
     Object.defineProperty(process, "resourcesPath", {
       configurable: true,
@@ -399,7 +409,64 @@ describe("electron main lifecycle", () => {
     expect(ipcHandlers.get("get-server-url")?.()).toBe("http://localhost:4555");
 
     appMock.getPath.mockReturnValueOnce("/proc/proxxied-unwritable");
-    expect(ipcHandlers.get("set-auto-update-enabled")?.({}, true)).toBe(true);
+    await expect(
+      ipcHandlers.get("set-auto-update-enabled")?.({}, true)
+    ).rejects.toThrow("ENOENT");
+  });
+
+  it("serializes concurrent update settings IPC writes without synchronous settings I/O", async () => {
+    await importAndRunReady();
+
+    const writeFileSyncSpy = vi.spyOn(fs, "writeFileSync");
+    const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
+    const existsSyncSpy = vi.spyOn(fs, "existsSync");
+    const setUpdateChannel = ipcHandlers.get("set-update-channel");
+    const setAutoUpdateEnabled = ipcHandlers.get("set-auto-update-enabled");
+
+    await expect(
+      Promise.all([
+        setUpdateChannel?.({}, "stable"),
+        setAutoUpdateEnabled?.({}, false),
+      ])
+    ).resolves.toEqual([true, true]);
+
+    await expect(
+      fs.promises
+        .readFile(path.join(lifecycleFixtureDirectory, "electron-settings.json"), "utf8")
+        .then(JSON.parse)
+    ).resolves.toEqual({ updateChannel: "stable", autoUpdateEnabled: false });
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+    expect(readFileSyncSpy).not.toHaveBeenCalled();
+    expect(existsSyncSpy).not.toHaveBeenCalled();
+
+    writeFileSyncSpy.mockRestore();
+    readFileSyncSpy.mockRestore();
+    existsSyncSpy.mockRestore();
+  });
+
+  it("surfaces failed settings writes and preserves the prior complete JSON", async () => {
+    await importAndRunReady();
+
+    const filePath = path.join(lifecycleFixtureDirectory, "electron-settings.json");
+    const setUpdateChannel = ipcHandlers.get("set-update-channel");
+    const setAutoUpdateEnabled = ipcHandlers.get("set-auto-update-enabled");
+    await expect(setUpdateChannel?.({}, "stable")).resolves.toBe(true);
+    const lastCompletePayload = await fs.promises.readFile(filePath, "utf8");
+    const writeSpy = vi
+      .spyOn(fs.promises, "writeFile")
+      .mockRejectedValueOnce(new Error("settings write failed"));
+
+    await expect(setAutoUpdateEnabled?.({}, false)).rejects.toThrow(
+      "settings write failed"
+    );
+    await expect(fs.promises.readFile(filePath, "utf8")).resolves.toBe(
+      lastCompletePayload
+    );
+    await expect(
+      fs.promises.readFile(filePath, "utf8").then(JSON.parse)
+    ).resolves.toEqual({ updateChannel: "stable" });
+
+    writeSpy.mockRestore();
   });
 
   it("starts the desktop server with a launch-only loopback credential verifier", async () => {

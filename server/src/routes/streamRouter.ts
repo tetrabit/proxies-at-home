@@ -159,14 +159,18 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
 
   // 2. Keep-alive pings to prevent timeouts (10s for slow networks)
   const keepAliveInterval = setInterval(() => {
-    res.write(":keep-alive\n\n");
+    if (!isClosed) res.write(":keep-alive\n\n");
   }, 10000);
 
-  // 3. Cleanup when the client disconnects
+  // 3. Cancel resolver work only when this response is disconnected early.
+  // Request `close` is not a disconnect signal here: it can occur after Express
+  // has consumed the request body while the SSE response is still active.
   let isClosed = false;
+  const abortController = new AbortController();
   res.on("close", () => {
     isClosed = true;
     clearInterval(keepAliveInterval);
+    if (!res.writableEnded) abortController.abort();
   });
 
   try {
@@ -200,7 +204,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
         processed++;
 
         try {
-          const allPrints = await getCardsWithImagesForCardInfo(ci, "prints", language, true);
+          const allPrints = await getCardsWithImagesForCardInfo(ci, "prints", language, true, abortController.signal);
 
           // Stream each print as it's found
           for (const card of allPrints) {
@@ -211,8 +215,11 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
           }
 
           // Send progress after all prints for this card
-          res.write(`event: progress\ndata: ${JSON.stringify({ processed, total, printsFound: allPrints.length })}\n\n`);
+          if (!isClosed) {
+            res.write(`event: progress\ndata: ${JSON.stringify({ processed, total, printsFound: allPrints.length })}\n\n`);
+          }
         } catch (e: unknown) {
+          if (isClosed) break;
           const msg = e instanceof Error ? e.message : String(e);
           console.error(`[STREAM] Error for ${ci.name}:`, msg);
           res.write(`event: card-error\ndata: ${JSON.stringify({ query: ci, error: msg })}\n\n`);
@@ -220,7 +227,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
       }
     } else {
       // Art mode: Batch fetch for speed (original behavior)
-      const batchResults = await batchFetchCards(cardQueries, language);
+      const batchResults = await batchFetchCards(cardQueries, language, abortController.signal);
 
       let processed = 0;
       for (const ci of cardQueries) {
@@ -235,7 +242,7 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
           // Fallback to search API if batch lookup failed
           if (!card) {
             debugLog(`[STREAM] Fallback search for "${ci.name}"...`);
-            const searchResults = await getCardsWithImagesForCardInfo(ci, "art", language, true);
+            const searchResults = await getCardsWithImagesForCardInfo(ci, "art", language, true, abortController.signal);
             debugLog(`[STREAM] Search returned ${searchResults.length} results:`, searchResults.map(c => c.name));
             if (searchResults.length > 0) {
               card = searchResults[0];
@@ -266,21 +273,24 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
             throw new Error("Card not found on Scryfall.");
           }
         } catch (e: unknown) {
+          if (isClosed) break;
           const msg = e instanceof Error ? e.message : String(e);
           console.error(`[STREAM] Error for ${ci.name}:`, msg);
           res.write(`event: card-error\ndata: ${JSON.stringify({ query: ci, error: msg })}\n\n`);
         } finally {
-          res.write(`event: progress\ndata: ${JSON.stringify({ processed, total })}\n\n`);
+          if (!isClosed) res.write(`event: progress\ndata: ${JSON.stringify({ processed, total })}\n\n`);
         }
       }
     }
 
     // 7. Signal completion and clean up
+    if (isClosed) return;
     res.write("event: done\ndata: {}\n\n");
     clearInterval(keepAliveInterval);
     res.end();
 
   } catch (error: unknown) {
+    if (isClosed) return;
     console.error("[STREAM] A fatal error occurred:", error);
     res.write(`event: fatal-error\ndata: ${JSON.stringify({ message: "An unexpected server error occurred." })}\n\n`);
     clearInterval(keepAliveInterval);

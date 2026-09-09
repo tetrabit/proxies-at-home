@@ -825,6 +825,46 @@ exit 1
     expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("back-only");
   });
 
+  it("passes grouped-duplex ordering and front-page count to the apply command", async () => {
+    const response = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .field("pageMode", "grouped-duplex")
+      .field("frontPageCount", "2")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(response.status).toBe(200);
+    expect(applyInvocations).toHaveLength(1);
+    expect(applyInvocations[0]).toContain("--page-mode");
+    expect(applyInvocations[0][applyInvocations[0].indexOf("--page-mode") + 1]).toBe("grouped-duplex");
+    expect(applyInvocations[0]).toContain("--front-page-count");
+    expect(applyInvocations[0][applyInvocations[0].indexOf("--front-page-count") + 1]).toBe("2");
+  });
+
+  it("rejects invalid grouped-duplex front-page counts before invoking the runner", async () => {
+    for (const frontPageCount of ["0", "-1", "1.5", "Infinity"]) {
+      const response = await request(app)
+        .post("/api/printer-calibration/apply")
+        .field("profileName", "office")
+        .field("pageMode", "grouped-duplex")
+        .field("frontPageCount", frontPageCount)
+        .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe("Invalid frontPageCount. Expected a positive integer.");
+    }
+
+    const missingCount = await request(app)
+      .post("/api/printer-calibration/apply")
+      .field("profileName", "office")
+      .field("pageMode", "grouped-duplex")
+      .attach("file", Buffer.from("%PDF-1.4\ninput\n"), "input.pdf");
+
+    expect(missingCount.status).toBe(400);
+    expect(missingCount.body.error).toBe("Invalid frontPageCount. Expected a positive integer.");
+    expect(applyInvocations).toEqual([]);
+  });
+
   it("rejects invalid page modes", async () => {
     const response = await request(app)
       .post("/api/printer-calibration/apply")

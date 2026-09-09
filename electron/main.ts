@@ -81,40 +81,68 @@ function createDesktopCredentialVerifier(
   };
 }
 
+type ElectronSettings = {
+  autoUpdateEnabled?: boolean;
+  updateChannel?: string;
+};
+
+let electronSettings: ElectronSettings = {};
+let pendingElectronSettingsWrite: Promise<void> = Promise.resolve();
+
 // Settings file for persistent electron-specific settings
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "electron-settings.json");
 }
 
-function loadElectronSettings(): {
-  autoUpdateEnabled?: boolean;
-  updateChannel?: string;
-} {
+async function loadElectronSettingsFromDisk(
+  settingsPath: string = getSettingsPath()
+): Promise<ElectronSettings> {
   try {
-    const settingsPath = getSettingsPath();
-    if (fs.existsSync(settingsPath)) {
-      return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const payload = await fs.promises.readFile(settingsPath, "utf8");
+    const parsed: unknown = JSON.parse(payload);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error("Settings file must contain a JSON object");
     }
+    return parsed as ElectronSettings;
   } catch (e) {
-    console.error("[Electron] Failed to load settings:", e);
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") {
+      return {};
+    }
+    throw e;
   }
-  return {};
 }
 
-function saveElectronSettings(settings: {
-  autoUpdateEnabled?: boolean;
-  updateChannel?: string;
-}) {
-  try {
-    const settingsPath = getSettingsPath();
-    const existing = loadElectronSettings();
-    fs.writeFileSync(
-      settingsPath,
-      JSON.stringify({ ...existing, ...settings }, null, 2)
-    );
-  } catch (e) {
-    console.error("[Electron] Failed to save settings:", e);
-  }
+async function initializeElectronSettings(): Promise<void> {
+  electronSettings = await loadElectronSettingsFromDisk();
+}
+
+async function writeElectronSettingsAtomically(
+  settingsPath: string,
+  settings: ElectronSettings
+): Promise<void> {
+  const tempPath = path.join(
+    path.dirname(settingsPath),
+    `.${path.basename(settingsPath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+  );
+  const payload = `${JSON.stringify(settings, null, 2)}\n`;
+
+  await fs.promises.writeFile(tempPath, payload, "utf8");
+  await fs.promises.rename(tempPath, settingsPath);
+}
+
+function saveElectronSettings(settings: ElectronSettings): Promise<void> {
+  const writeOperation = pendingElectronSettingsWrite.then(async () => {
+    const nextSettings = { ...electronSettings, ...settings };
+    await writeElectronSettingsAtomically(getSettingsPath(), nextSettings);
+    electronSettings = nextSettings;
+  });
+
+  pendingElectronSettingsWrite = writeOperation.catch(() => undefined);
+  return writeOperation;
 }
 
 const MPC_PREFERENCES_FILENAME = "mpc-preferences.user.json";
@@ -378,16 +406,14 @@ autoUpdater.logger = console;
 // Configure update channel based on user preference or version
 // Users can choose: 'latest' (all updates) or 'stable' (major versions only)
 function configureUpdateChannel() {
-  const settings = loadElectronSettings();
-
   // Check if user has set a specific channel
   if (
-    settings.updateChannel === "stable" ||
-    settings.updateChannel === "latest"
+    electronSettings.updateChannel === "stable" ||
+    electronSettings.updateChannel === "latest"
   ) {
-    autoUpdater.channel = settings.updateChannel;
+    autoUpdater.channel = electronSettings.updateChannel;
     console.log(
-      `[Electron] Update channel: ${settings.updateChannel} (user preference)`
+      `[Electron] Update channel: ${electronSettings.updateChannel} (user preference)`
     );
     return;
   }
@@ -501,8 +527,7 @@ function createWindow() {
   // Check for updates on startup (if enabled)
   if (app.isPackaged) {
     configureUpdateChannel();
-    const settings = loadElectronSettings();
-    if (settings.autoUpdateEnabled !== false) {
+    if (electronSettings.autoUpdateEnabled !== false) {
       // Default to enabled
       autoUpdater.checkForUpdatesAndNotify();
     } else {
@@ -558,6 +583,13 @@ autoUpdater.on("update-downloaded", (info: unknown) => {
 
 app.whenReady().then(async () => {
   const isDev = !app.isPackaged;
+
+  try {
+    await initializeElectronSettings();
+  } catch (error) {
+    electronSettings = {};
+    console.error("[Electron] Failed to load settings:", error);
+  }
 
   // Start Scryfall microservice first
   try {
@@ -660,21 +692,20 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle("get-app-version", () => app.getVersion());
   ipcMain.handle("get-update-channel", () => autoUpdater.channel || "latest");
-  ipcMain.handle("set-update-channel", (_event, channel: string) => {
+  ipcMain.handle("set-update-channel", async (_event, channel: string) => {
     if (channel === "stable" || channel === "latest") {
+      await saveElectronSettings({ updateChannel: channel });
       autoUpdater.channel = channel;
-      saveElectronSettings({ updateChannel: channel });
       console.log(`[Electron] Update channel changed to: ${channel}`);
       return true;
     }
     return false;
   });
   ipcMain.handle("get-auto-update-enabled", () => {
-    const settings = loadElectronSettings();
-    return settings.autoUpdateEnabled !== false; // Default to true
+    return electronSettings.autoUpdateEnabled !== false; // Default to true
   });
-  ipcMain.handle("set-auto-update-enabled", (_event, enabled: boolean) => {
-    saveElectronSettings({ autoUpdateEnabled: enabled });
+  ipcMain.handle("set-auto-update-enabled", async (_event, enabled: boolean) => {
+    await saveElectronSettings({ autoUpdateEnabled: enabled });
     console.log(`[Electron] Auto-update enabled: ${enabled}`);
     return true;
   });

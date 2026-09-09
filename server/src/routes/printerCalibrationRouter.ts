@@ -19,7 +19,7 @@ export type PrinterCalibrationProfile = {
   duplex_mode?: string;
 };
 
-type CalibrationPageMode = "duplex" | "back-only";
+type CalibrationPageMode = "duplex" | "back-only" | "grouped-duplex";
 
 type PrinterCalibrationRunner =
   | {
@@ -361,10 +361,25 @@ function buildTempFilePath(prefix: string, originalName: string): string {
 
 function parsePageMode(value: unknown): CalibrationPageMode {
   const mode = String(value || "duplex").trim();
-  if (mode === "duplex" || mode === "back-only") {
+  if (mode === "duplex" || mode === "back-only" || mode === "grouped-duplex") {
     return mode;
   }
-  throw new Error("Invalid pageMode. Expected 'duplex' or 'back-only'.");
+  throw new Error("Invalid pageMode. Expected 'duplex', 'back-only', or 'grouped-duplex'.");
+}
+
+function parseGroupedDuplexFrontPageCount(value: unknown): string {
+  const raw = typeof value === "string" ? value : typeof value === "number" ? String(value) : "";
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  if (
+    !/^\+?\d+$/.test(trimmed) ||
+    !Number.isFinite(parsed) ||
+    !Number.isSafeInteger(parsed) ||
+    parsed <= 0
+  ) {
+    throw new Error("Invalid frontPageCount. Expected a positive integer.");
+  }
+  return raw;
 }
 
 function unlinkQuiet(filePath: string | null | undefined) {
@@ -730,6 +745,7 @@ export function createPrinterCalibrationRouter(
       const file = req.file;
       const profileName = String(req.body.profileName || "").trim();
       let pageMode: CalibrationPageMode;
+      let frontPageCount: string | undefined;
       if (!file) {
         return res.status(400).json({ error: "Missing file upload." });
       }
@@ -738,9 +754,12 @@ export function createPrinterCalibrationRouter(
       }
       try {
         pageMode = parsePageMode(req.body.pageMode);
+        if (pageMode === "grouped-duplex") {
+          frontPageCount = parseGroupedDuplexFrontPageCount(req.body.frontPageCount);
+        }
       } catch (error: unknown) {
         return res.status(400).json({
-          /* v8 ignore next -- parsePageMode throws Error instances; fallback is defensive for future validators. @preserve */
+          /* v8 ignore next -- route validators throw Error instances; fallback is defensive for future validators. @preserve */
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -762,6 +781,7 @@ export function createPrinterCalibrationRouter(
           outputPath,
           "--page-mode",
           pageMode,
+          ...(frontPageCount === undefined ? [] : ["--front-page-count", frontPageCount]),
           "--profile-file",
           profilesPath,
         ]);

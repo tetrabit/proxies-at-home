@@ -1,4 +1,5 @@
 import { vi, describe, beforeEach, afterEach, it, expect } from 'vitest';
+import { createServer, request as httpRequest } from "node:http";
 import request from "supertest";
 import express, { type Express, json } from "express";
 import { streamRouter } from "./streamRouter";
@@ -32,6 +33,76 @@ describe("Stream Router", () => {
         vi.useRealTimers();
     });
 
+    it("aborts only the disconnected SSE request and releases the next queued resolver", async () => {
+        const server = createServer(app);
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Expected a TCP test server");
+
+        const active: Array<{ name: string; resolve: (value: Map<string, never>) => void; signal: AbortSignal }> = [];
+        const queued: Array<{ name: string; resolve: (value: Map<string, never>) => void; signal: AbortSignal }> = [];
+        const aborts: string[] = [];
+
+        const startNext = () => {
+            const next = queued.shift();
+            if (next) active.push(next);
+        };
+        const release = (entry: { name: string }) => {
+            const index = active.indexOf(entry as typeof active[number]);
+            if (index >= 0) active.splice(index, 1);
+            startNext();
+        };
+
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockImplementation((queries, _language, signal) => {
+            const name = queries[0]!.name;
+            return new Promise<Map<string, never>>((resolve, reject) => {
+                expect(signal).toBeInstanceOf(AbortSignal);
+                const entry = { name, resolve, signal: signal!, };
+                const abort = () => {
+                    aborts.push(name);
+                    const queuedIndex = queued.indexOf(entry);
+                    if (queuedIndex >= 0) queued.splice(queuedIndex, 1);
+                    release(entry);
+                    reject(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+                };
+                signal!.addEventListener("abort", abort, { once: true });
+                if (active.length === 0) active.push(entry);
+                else queued.push(entry);
+            }) as ReturnType<typeof getCardImagesPaged.batchFetchCards>;
+        });
+
+        const openStream = (name: string) => new Promise<{ request: ReturnType<typeof httpRequest>; response: import("node:http").IncomingMessage }>((resolve, reject) => {
+            const client = httpRequest({
+                host: "127.0.0.1",
+                port: address.port,
+                path: "/stream/cards",
+                method: "POST",
+                headers: { "content-type": "application/json" },
+            });
+            client.once("error", reject);
+            client.once("response", (response) => resolve({ request: client, response }));
+            client.end(JSON.stringify({ cardQueries: [{ name }] }));
+        });
+
+        try {
+            const first = await openStream("First");
+            await vi.waitFor(() => expect(active.map((entry) => entry.name)).toEqual(["First"]));
+            const second = await openStream("Second");
+            await vi.waitFor(() => expect(queued.map((entry) => entry.name)).toEqual(["Second"]));
+
+            first.response.destroy();
+            await vi.waitFor(() => {
+                expect(aborts).toEqual(["First"]);
+                expect(active.map((entry) => entry.name)).toEqual(["Second"]);
+            });
+
+            second.response.destroy();
+            await vi.waitFor(() => expect(aborts).toEqual(["First", "Second"]));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
     it("should stream card data correctly on happy path", async () => {
         // Mock batch returns a Map with the card data
         const mockBatchResults = new Map();
@@ -45,7 +116,11 @@ describe("Stream Router", () => {
             set: "cmd",
             collector_number: "123"
         });
-        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(mockBatchResults);
+        const resolverSignals: AbortSignal[] = [];
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockImplementation((_queries, _language, signal) => {
+            resolverSignals.push(signal!);
+            return Promise.resolve(mockBatchResults);
+        });
 
         const cardQueries: CardInfo[] = [{ name: "Sol Ring" }];
 
@@ -70,6 +145,8 @@ describe("Stream Router", () => {
 
         // done
         expect(events[3]).toBe("event: done\ndata: {}");
+        expect(resolverSignals).toHaveLength(1);
+        expect(resolverSignals[0]!.aborted).toBe(false);
     });
 
     it("should handle card-error events gracefully", async () => {
