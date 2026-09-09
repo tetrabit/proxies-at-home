@@ -1,9 +1,7 @@
-import { apiUrl } from '@/constants';
+import { privateFetch } from './privateTransport';
 import type { MpcPreferenceFixture, PreferenceSyncTarget } from '@/types';
 
 type JsonRecord = Record<string, unknown>;
-
-const PREFERENCES_API_URL = apiUrl('/api/preferences');
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -31,7 +29,7 @@ function validateLoadedFixture(data: unknown): MpcPreferenceFixture {
 
 export const serverPreferenceSyncTarget: PreferenceSyncTarget = {
   async load(): Promise<MpcPreferenceFixture | null> {
-    const response = await fetch(PREFERENCES_API_URL);
+    const response = await privateFetch('/api/preferences');
 
     if (response.status === 404) {
       return null;
@@ -47,7 +45,7 @@ export const serverPreferenceSyncTarget: PreferenceSyncTarget = {
   },
 
   async write(fixture: MpcPreferenceFixture): Promise<void> {
-    const response = await fetch(PREFERENCES_API_URL, {
+    const response = await privateFetch('/api/preferences', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

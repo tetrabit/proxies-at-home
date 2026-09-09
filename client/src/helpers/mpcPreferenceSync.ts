@@ -1,4 +1,3 @@
-import { apiUrl } from '@/constants';
 import type {
   MpcPreferenceCase,
   MpcPreferenceFixture,
@@ -15,9 +14,9 @@ import {
 import {
   listDefaultMpcCalibrationCases,
 } from './mpcCalibrationStorage';
+import { privateFetch } from './privateTransport';
 import { serverPreferenceSyncTarget } from './serverPreferenceSyncTarget';
 
-const PREFERENCES_API_URL = apiUrl('/api/preferences');
 const DEBOUNCE_MS = 2000;
 
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,7 +76,7 @@ export async function serializeCurrentPreferenceFixture(): Promise<MpcPreference
 
 export async function isServerPreferenceSyncAvailable(): Promise<boolean> {
   try {
-    const response = await fetch(PREFERENCES_API_URL, { method: 'GET' });
+    const response = await privateFetch('/api/preferences', { method: 'GET' });
     return response.ok || response.status === 404;
   } catch {
     return false;

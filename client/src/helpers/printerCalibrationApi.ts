@@ -1,4 +1,5 @@
-import { apiUrl } from "@/constants";
+import { PrivateApiIdentityUnavailableError } from './privateApi';
+import { privateFetch } from './privateTransport';
 
 export interface PrinterCalibrationProfile {
   name: string;
@@ -58,6 +59,9 @@ async function withCalibrationNetworkGuard<T>(
   try {
     return await fn();
   } catch (err: unknown) {
+    if (err instanceof PrivateApiIdentityUnavailableError) {
+      throw err;
+    }
     if (isNetworkError(err)) {
       throw new CalibrationApiUnavailableError(
         `Printer calibration service is unavailable (${operation}). ` +
@@ -82,7 +86,7 @@ async function readErrorMessage(
 
 export const getPrinterProfiles = async (): Promise<Record<string, PrinterCalibrationProfile>> => {
   return withCalibrationNetworkGuard("getPrinterProfiles", async () => {
-    const res = await fetch(apiUrl('/api/printer-calibration/profiles'));
+    const res = await privateFetch('/api/printer-calibration/profiles');
     if (!res.ok) {
       throw new Error(await readErrorMessage(res, 'Failed to fetch printer profiles'));
     }
@@ -92,7 +96,7 @@ export const getPrinterProfiles = async (): Promise<Record<string, PrinterCalibr
 
 export const createPrinterProfile = async (name: string, profile: PrinterCalibrationProfile): Promise<void> => {
   return withCalibrationNetworkGuard("createPrinterProfile", async () => {
-    const res = await fetch(apiUrl(`/api/printer-calibration/profiles/${encodeURIComponent(name)}`), {
+    const res = await privateFetch(`/api/printer-calibration/profiles/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(profile),
@@ -105,7 +109,7 @@ export const createPrinterProfile = async (name: string, profile: PrinterCalibra
 
 export const deletePrinterProfile = async (name: string): Promise<void> => {
   return withCalibrationNetworkGuard("deletePrinterProfile", async () => {
-    const res = await fetch(apiUrl(`/api/printer-calibration/profiles/${encodeURIComponent(name)}`), {
+    const res = await privateFetch(`/api/printer-calibration/profiles/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     });
     if (!res.ok) {
@@ -116,7 +120,7 @@ export const deletePrinterProfile = async (name: string): Promise<void> => {
 
 export const calculateProfile = async (req: CalculateProfileRequest): Promise<CalculatedPrinterCalibrationProfile> => {
   return withCalibrationNetworkGuard("calculateProfile", async () => {
-    const res = await fetch(apiUrl('/api/printer-calibration/calculate'), {
+    const res = await privateFetch('/api/printer-calibration/calculate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -130,7 +134,7 @@ export const calculateProfile = async (req: CalculateProfileRequest): Promise<Ca
 
 export const generateCalibrationSheet = async (): Promise<Blob> => {
   return withCalibrationNetworkGuard("generateCalibrationSheet", async () => {
-    const res = await fetch(apiUrl('/api/printer-calibration/sheet'));
+    const res = await privateFetch('/api/printer-calibration/sheet');
     if (!res.ok) {
       throw new Error(await readErrorMessage(res, 'Failed to generate calibration sheet'));
     }
@@ -141,7 +145,7 @@ export const generateCalibrationSheet = async (): Promise<Blob> => {
 export const applyCalibration = async (
   pdfBlob: Blob,
   profileName: string,
-  options?: { pageMode?: CalibrationPageMode }
+  options?: { pageMode?: CalibrationPageMode; signal?: AbortSignal }
 ): Promise<Blob> => {
   return withCalibrationNetworkGuard("applyCalibration", async () => {
     const formData = new FormData();
@@ -151,9 +155,10 @@ export const applyCalibration = async (
       formData.append('pageMode', options.pageMode);
     }
 
-    const res = await fetch(apiUrl('/api/printer-calibration/apply'), {
+    const res = await privateFetch('/api/printer-calibration/apply', {
       method: 'POST',
       body: formData,
+      signal: options?.signal,
     });
     if (!res.ok) {
       throw new Error(await readErrorMessage(res, 'Failed to apply printer calibration'));

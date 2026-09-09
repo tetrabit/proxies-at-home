@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MpcPreferenceFixture } from '@/types';
+import { PrivateApiIdentityUnavailableError } from './privateApi';
 import { serverPreferenceSyncTarget } from './serverPreferenceSyncTarget';
 
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
 
 const fixture: MpcPreferenceFixture = {
   version: 1,
@@ -14,6 +14,26 @@ const fixture: MpcPreferenceFixture = {
 describe('serverPreferenceSyncTarget', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
+    vi.stubGlobal('electronAPI', {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: 'http://127.0.0.1:4555',
+        bearer: 'preference-test-bearer',
+      }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fails locally with a typed identity error when no private identity is configured', async () => {
+    vi.stubGlobal('electronAPI', undefined);
+
+    await expect(serverPreferenceSyncTarget.load()).rejects.toBeInstanceOf(
+      PrivateApiIdentityUnavailableError
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('returns null when the server reports no preference file', async () => {
@@ -24,7 +44,11 @@ describe('serverPreferenceSyncTarget', () => {
     });
 
     await expect(serverPreferenceSyncTarget.load()).resolves.toBeNull();
-    expect(mockFetch).toHaveBeenCalledWith('/api/preferences');
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('http://127.0.0.1:4555/api/preferences');
+    const options = mockFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(options).toMatchObject({ credentials: 'omit', redirect: 'error' });
+    expect(new Headers(options.headers).get('Authorization')).toBe('Bearer preference-test-bearer');
   });
 
   it('loads a fixture from the server', async () => {
@@ -81,13 +105,17 @@ describe('serverPreferenceSyncTarget', () => {
     });
 
     await expect(serverPreferenceSyncTarget.write(fixture)).resolves.toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledWith('/api/preferences', {
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('http://127.0.0.1:4555/api/preferences');
+    const options = mockFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(options).toMatchObject({
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify(fixture),
+      credentials: 'omit',
+      redirect: 'error',
     });
+    expect(new Headers(options.headers).get('Content-Type')).toBe('application/json');
+    expect(new Headers(options.headers).get('Authorization')).toBe('Bearer preference-test-bearer');
   });
 
   it('throws on failed writes', async () => {

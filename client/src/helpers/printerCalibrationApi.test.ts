@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import {
   getPrinterProfiles,
   createPrinterProfile,
@@ -8,13 +8,9 @@ import {
   deletePrinterProfile,
   CalibrationApiUnavailableError,
 } from "./printerCalibrationApi";
-
-vi.mock("@/constants", () => ({
-  apiUrl: (path: string) => path,
-}));
+import { PrivateApiIdentityUnavailableError } from './privateApi';
 
 const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
 
 function makeOkJsonResponse(body: unknown): Response {
   return {
@@ -35,6 +31,26 @@ function makeErrorResponse(status: number, body: { error?: string }): Response {
 describe("printerCalibrationApi – network error normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
+    vi.stubGlobal('electronAPI', {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: 'http://127.0.0.1:4555',
+        bearer: 'calibration-test-bearer',
+      }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fails locally with a typed identity error without treating it as an unavailable network service', async () => {
+    vi.stubGlobal('electronAPI', undefined);
+
+    const error = await getPrinterProfiles().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(PrivateApiIdentityUnavailableError);
+    expect(error).not.toBeInstanceOf(CalibrationApiUnavailableError);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   describe("getPrinterProfiles", () => {
@@ -43,6 +59,13 @@ describe("printerCalibrationApi – network error normalization", () => {
       mockFetch.mockResolvedValueOnce(makeOkJsonResponse(profiles));
       const result = await getPrinterProfiles();
       expect(result).toEqual(profiles);
+      expect(mockFetch).toHaveBeenCalledOnce();
+      expect(mockFetch.mock.calls[0]?.[0]).toBe(
+        'http://127.0.0.1:4555/api/printer-calibration/profiles'
+      );
+      const options = mockFetch.mock.calls[0]?.[1] as RequestInit;
+      expect(options).toMatchObject({ credentials: 'omit', redirect: 'error' });
+      expect(new Headers(options.headers).get('Authorization')).toBe('Bearer calibration-test-bearer');
     });
 
     it("throws CalibrationApiUnavailableError on TypeError (network failure)", async () => {
@@ -148,16 +171,22 @@ describe("printerCalibrationApi – network error normalization", () => {
       expect((err as Error).message).toBe("invalid profile");
     });
 
-    it("includes pageMode in form data when provided", async () => {
+    it("preserves FormData, pageMode, and an AbortSignal through the private adapter", async () => {
       mockFetch.mockResolvedValueOnce(makeOkJsonResponse({ ok: true }));
+      const controller = new AbortController();
       await applyCalibration(new Blob(["input"]), "myProfile", {
         pageMode: "back-only",
+        signal: controller.signal,
       });
 
       const fetchArgs = mockFetch.mock.calls[0];
-      const request = fetchArgs[1] as { body: FormData };
+      expect(fetchArgs?.[0]).toBe('http://127.0.0.1:4555/api/printer-calibration/apply');
+      const request = fetchArgs?.[1] as { body: FormData; signal?: AbortSignal; headers?: HeadersInit };
+      expect(request.body).toBeInstanceOf(FormData);
       expect(request.body.get("profileName")).toBe("myProfile");
       expect(request.body.get("pageMode")).toBe("back-only");
+      expect(request.signal).toBe(controller.signal);
+      expect(new Headers(request.headers).get('Authorization')).toBe('Bearer calibration-test-bearer');
     });
 
     it("omits pageMode when not provided", async () => {

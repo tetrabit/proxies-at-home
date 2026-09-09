@@ -15,9 +15,20 @@ import {
   subscribeToMpcPreferenceSyncStatus,
 } from './mpcPreferenceSync';
 
+const mockFetch = vi.fn();
+
 describe('mpcPreferenceSync', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
+    vi.stubGlobal('electronAPI', {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: 'http://127.0.0.1:4555',
+        bearer: 'mpc-preference-sync-test-bearer',
+      }),
+    });
     vi.useRealTimers();
     resetMpcPreferenceSyncForTests();
   });
@@ -48,12 +59,30 @@ describe('mpcPreferenceSync', () => {
     );
   });
 
-  it('treats 404 from the preferences route as a reachable server target', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(
+  it('treats a private 404 from the preferences route as a reachable server target', async () => {
+    mockFetch.mockResolvedValue(
       new Response(null, { status: 404, statusText: 'Not Found' })
     );
 
     await expect(isServerPreferenceSyncAvailable()).resolves.toBe(true);
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('http://127.0.0.1:4555/api/preferences');
+    const options = mockFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(options).toMatchObject({ method: 'GET', credentials: 'omit', redirect: 'error' });
+    expect(new Headers(options.headers).get('Authorization')).toBe(
+      'Bearer mpc-preference-sync-test-bearer'
+    );
+  });
+
+  it('reports the server unavailable without fetching when private identity is missing', async () => {
+    vi.stubGlobal('electronAPI', undefined);
+    vi.resetModules();
+    const { isServerPreferenceSyncAvailable: isFreshServerPreferenceSyncAvailable } = await import(
+      './mpcPreferenceSync'
+    );
+
+    await expect(isFreshServerPreferenceSyncAvailable()).resolves.toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('reports the server target unavailable for unsupported responses and fetch failures', async () => {
@@ -78,13 +107,14 @@ describe('mpcPreferenceSync', () => {
 
   it('falls back to the server target when Electron is unavailable and the route responds', async () => {
     vi.spyOn(electronPreferenceSyncTargetModule, 'isElectronPreferenceSyncAvailable').mockReturnValue(false);
-    vi.spyOn(global, 'fetch').mockResolvedValue(
+    mockFetch.mockResolvedValue(
       new Response(null, { status: 404, statusText: 'Not Found' })
     );
 
     await expect(getActivePreferenceSyncTarget()).resolves.toBe(
       serverPreferenceSyncTargetModule.serverPreferenceSyncTarget
     );
+    expect(mockFetch.mock.calls[0]?.[0]).toBe('http://127.0.0.1:4555/api/preferences');
   });
 
   it('falls back to FS access when Electron and server targets are unavailable', async () => {
