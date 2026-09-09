@@ -197,21 +197,70 @@ export class MicroserviceManager {
     const isDev = !app.isPackaged;
 
     if (isDev) {
-      const ext = process.platform === "win32" ? ".exe" : "";
-      return path.join(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "../../..",
-        "scryfall-cache-microservice",
-        "target",
-        "release",
-        `${this.config.binaryName}${ext}`
-      );
+      return this.getDevelopmentBinaryPath();
     } else {
       const ext = process.platform === "win32" ? ".exe" : "";
       return path.join(
         process.resourcesPath,
         "microservices",
         `${this.config.binaryName}${ext}`
+      );
+    }
+  }
+
+  private getDevelopmentBinaryPath(): string {
+    const manifestPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "microservice-artifact.json"
+    );
+
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
+      if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        Array.isArray(manifest)
+      ) {
+        throw new Error("manifest must be an object");
+      }
+
+      const { schemaVersion, binaryPath, platform, profile } = manifest as Record<
+        string,
+        unknown
+      >;
+      const extension = process.platform === "win32" ? ".exe" : "";
+      if (schemaVersion !== 1) {
+        throw new Error("unsupported schema version");
+      }
+      if (
+        typeof binaryPath !== "string" ||
+        binaryPath.length === 0 ||
+        !path.isAbsolute(binaryPath)
+      ) {
+        throw new Error("binary path must be a nonempty absolute string");
+      }
+      if (
+        typeof platform !== "string" ||
+        !["linux", "darwin", "win32"].includes(platform) ||
+        platform !== process.platform
+      ) {
+        throw new Error("platform is unsupported or incompatible");
+      }
+      if (
+        typeof profile !== "string" ||
+        !["release", "dev", "debug"].includes(profile)
+      ) {
+        throw new Error("profile is invalid");
+      }
+      if (path.basename(binaryPath) !== `${this.config.binaryName}${extension}`) {
+        throw new Error("binary path has an unexpected basename");
+      }
+
+      return binaryPath;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown error";
+      throw new Error(
+        `Unable to resolve microservice artifact manifest at ${manifestPath}: ${reason}`
       );
     }
   }

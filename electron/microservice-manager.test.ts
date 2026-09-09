@@ -7,12 +7,6 @@ const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
-const emittedEsmFixtureDirectory = path.join(
-  repositoryRoot,
-  ".review-artifacts",
-  "electron-esm-path-01"
-);
-
 const appMock = {
   isPackaged: false,
   getPath: vi.fn(() => "/tmp/proxxied-user-data"),
@@ -20,6 +14,7 @@ const appMock = {
 
 const existsSyncMock = vi.fn();
 const mkdirSyncMock = vi.fn();
+const readFileSyncMock = vi.fn();
 const spawnMock = vi.fn();
 const httpRequestMock = vi.fn();
 let connectMode:
@@ -50,6 +45,7 @@ vi.mock("fs", () => ({
   default: {
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
+    readFileSync: readFileSyncMock,
   },
 }));
 vi.mock("child_process", () => ({ spawn: spawnMock }));
@@ -74,6 +70,19 @@ function createChildProcess() {
   return child;
 }
 
+function createManifest(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    binaryPath:
+      process.platform === "win32"
+        ? "/custom-target/debug/cache-bin.exe"
+        : "/custom-target/debug/cache-bin",
+    platform: process.platform,
+    profile: "debug",
+    ...overrides,
+  });
+}
+
 describe("MicroserviceManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,6 +90,7 @@ describe("MicroserviceManager", () => {
       checkedPath.includes("cache-bin")
     );
     mkdirSyncMock.mockReturnValue(undefined);
+    readFileSyncMock.mockImplementation(() => createManifest());
     connectMode = "success";
     pendingHealthCallbacks = [];
     lastChildProcess = null;
@@ -144,62 +154,141 @@ describe("MicroserviceManager", () => {
     expect(manager.isRunning()).toBe(false);
   });
 
-  it("resolves the development binary from its emitted ESM module URL", async () => {
+  it("proves default emitted development manifest selection with a real Node health fixture", () => {
     const childProcess = process.getBuiltinModule("node:child_process");
-    const fsPromises = process.getBuiltinModule("node:fs/promises");
-    if (!childProcess || !fsPromises) {
-      throw new Error("Node built-in modules are unavailable for the emitted ESM probe");
+    if (!childProcess) {
+      throw new Error("Node child-process APIs are unavailable for the manifest probe");
     }
-    const { execFileSync } = childProcess;
-    const { mkdir, writeFile } = fsPromises;
-    await mkdir(emittedEsmFixtureDirectory, { recursive: true });
-    const electronStub = path.join(emittedEsmFixtureDirectory, "electron-stub.mjs");
-    const loader = path.join(emittedEsmFixtureDirectory, "electron-loader.mjs");
-    const probe = path.join(emittedEsmFixtureDirectory, "emitted-esm-probe.mjs");
-    await writeFile(
-      electronStub,
-      'export const app = { isPackaged: false, getPath: () => "" };\n'
-    );
-    await writeFile(
-      loader,
-      `const electronStub = new URL("./electron-stub.mjs", import.meta.url).href;
-export async function resolve(specifier, context, nextResolve) {
-  if (specifier === "electron") {
-    return { url: electronStub, shortCircuit: true };
-  }
-  return nextResolve(specifier, context);
-}
-`
-    );
-    await writeFile(
-      probe,
-      `import { MicroserviceManager } from "../../electron/dist/microservice-manager.js";
-const config = { binaryName: "cache-bin" };
-console.log(MicroserviceManager.prototype.getBinaryPath.call({ config }));
-`
-    );
 
-    execFileSync(
-      path.join(repositoryRoot, "node_modules", ".bin", "tsc"),
-      ["-p", "electron/tsconfig.json"],
-      { cwd: repositoryRoot, stdio: "pipe" }
-    );
-    const emittedPath = execFileSync(
+    const output = childProcess.execFileSync(
       process.execPath,
-      ["--experimental-loader", loader, probe],
-      { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
-    ).trim();
-
-    expect(emittedPath).toBe(
-      path.join(
-        repositoryRoot,
-        "..",
-        "scryfall-cache-microservice",
-        "target",
-        "release",
-        "cache-bin"
-      )
+      ["scripts/probe-development-manifest.mjs"],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }
     );
+    const result = JSON.parse(output.trim()) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      selectedPath: expect.stringContaining("scryfall-cache"),
+      fixturePid: expect.any(Number),
+      port: expect.any(Number),
+      databaseUrl: expect.stringContaining("scryfall-cache.db"),
+      rustLog: "info",
+      exitCode: 0,
+      exitSignal: "SIGTERM",
+      orphaned: false,
+    });
+  });
+
+  it("starts the existing custom development manifest binary", async () => {
+    const customTarget = "/custom-target/debug/cache-bin";
+    readFileSyncMock.mockReturnValue(createManifest({ binaryPath: customTarget }));
+    existsSyncMock.mockImplementation((checkedPath: string) =>
+      checkedPath === customTarget || checkedPath.endsWith("databases")
+    );
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+
+    await expect(manager.start()).resolves.toBe(7777);
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(customTarget);
+    await manager.stop();
+  });
+
+  it("selects a Windows executable path from a compatible development manifest", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "win32",
+    });
+    const customTarget = "/custom-target/debug/cache-bin.exe";
+    readFileSyncMock.mockReturnValue(
+      createManifest({ binaryPath: customTarget, platform: "win32" })
+    );
+    existsSyncMock.mockImplementation((checkedPath: string) =>
+      checkedPath === customTarget || checkedPath.endsWith("databases")
+    );
+
+    try {
+      const { MicroserviceManager } = await import("./microservice-manager");
+      const manager = new MicroserviceManager({
+        name: "Cache",
+        binaryName: "cache-bin",
+        port: 7777,
+        healthCheckPath: "/health",
+        healthCheckInterval: 60_000,
+        maxRestarts: 1,
+        restartDelay: 10,
+      });
+
+      await expect(manager.start()).resolves.toBe(7777);
+      expect(spawnMock.mock.calls[0]?.[0]).toBe(customTarget);
+      await manager.stop();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+    }
+  });
+
+  it.each([
+    ["an unreadable manifest", () => { throw new Error("ENOENT"); }],
+    ["malformed JSON", () => "{"],
+    ["a null manifest", () => "null"],
+    ["an array manifest", () => "[]"],
+    ["an unsupported schema", () => createManifest({ schemaVersion: 2 })],
+    ["an empty binary path", () => createManifest({ binaryPath: "" })],
+    ["a relative binary path", () => createManifest({ binaryPath: "cache-bin" })],
+    ["a mismatched binary basename", () => createManifest({ binaryPath: "/custom-target/debug/other-bin" })],
+    ["an invalid profile", () => createManifest({ profile: "staging" })],
+    ["an unsupported platform", () => createManifest({ platform: "freebsd" })],
+    ["a mismatched platform", () => createManifest({ platform: "darwin" })],
+  ])("fails closed before spawn for %s", async (_caseName, manifest) => {
+    readFileSyncMock.mockImplementation(manifest);
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+
+    await expect(manager.start()).rejects.toThrow("microservice artifact manifest");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing manifest binary before spawn", async () => {
+    const customTarget = "/custom-target/debug/cache-bin";
+    readFileSyncMock.mockReturnValue(createManifest({ binaryPath: customTarget }));
+    existsSyncMock.mockReturnValue(false);
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager({
+      name: "Cache",
+      binaryName: "cache-bin",
+      port: 7777,
+      healthCheckPath: "/health",
+      healthCheckInterval: 60_000,
+      maxRestarts: 1,
+      restartDelay: 10,
+    });
+
+    await expect(manager.start()).rejects.toThrow(
+      `Cache binary not found at: ${customTarget}`
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("starts an injected harness launch with deterministic environment and stops it cleanly", async () => {
@@ -249,6 +338,7 @@ console.log(MicroserviceManager.prototype.getBinaryPath.call({ config }));
     await manager.stop();
 
     expect(manager.isRunning()).toBe(false);
+    expect(readFileSyncMock).not.toHaveBeenCalled();
   });
 
   it("returns the configured port when start is called while already running", async () => {
@@ -296,6 +386,7 @@ console.log(MicroserviceManager.prototype.getBinaryPath.call({ config }));
       expect.any(Object)
     );
     expect(mkdirSyncMock).not.toHaveBeenCalled();
+    expect(readFileSyncMock).not.toHaveBeenCalled();
     await manager.stop();
   });
 
