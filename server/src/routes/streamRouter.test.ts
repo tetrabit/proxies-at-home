@@ -261,34 +261,24 @@ describe("Stream Router", () => {
         consoleErrorSpy.mockRestore();
     });
 
-    it("should handle invalid body", async () => {
+    it("rejects a missing cardQueries list before opening an SSE stream", async () => {
         const res = await request(app)
             .post("/stream/cards")
-            .send({}) // Invalid body, missing cardQueries
-            .expect(200);
+            .send({})
+            .expect(400);
 
-        const events = res.text.split("\n\n").filter(Boolean);
-        expect(events[0]).toBe('event: handshake\ndata: {"total":0,"cardArt":"art"}');
-        expect(events[1]).toBe("event: done\ndata: {}");
+        expect(res.body).toEqual({ error: "Invalid import request" });
+        expect(res.headers["content-type"]).not.toContain("text/event-stream");
     });
 
-    it("should emit fatal-error on unexpected failure", async () => {
-        const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => { });
+    it("rejects a malformed top-level language before opening an SSE stream", async () => {
         const res = await request(app)
             .post("/stream/cards")
-            .send({ cardQueries: [{ name: "Test" }], language: { invalid: true } }) // Invalid language type
-            .expect(200);
+            .send({ cardQueries: [{ name: "Test" }], language: { invalid: true } })
+            .expect(400);
 
-        const events = res.text.split("\n\n").filter(Boolean);
-
-        const fatalError = events.find((e: string) => e.startsWith("event: fatal-error"));
-        expect(fatalError).toBe("event: fatal-error\ndata: {\"message\":\"An unexpected server error occurred.\"}");
-
-        // The 'done' event should not be emitted
-        const doneEvent = events.find((e: string) => e.startsWith("event: done"));
-        expect(doneEvent).toBeUndefined();
-
-        consoleErrorSpy.mockRestore();
+        expect(res.body).toEqual({ error: "Invalid import request" });
+        expect(res.headers["content-type"]).not.toContain("text/event-stream");
     });
 
     it("should handle empty image array as card not found", async () => {
@@ -428,8 +418,8 @@ describe("Stream Router", () => {
         const empty = await request(app).post("/stream/metadata").send({ cardQueries: [] }).expect(200);
         expect(empty.body).toEqual({ results: [] });
 
-        const invalidBody = await request(app).post("/stream/metadata").send({ cardQueries: "not-array" }).expect(200);
-        expect(invalidBody.body).toEqual({ results: [] });
+        const invalidBody = await request(app).post("/stream/metadata").send({ cardQueries: "not-array" }).expect(400);
+        expect(invalidBody.body).toEqual({ error: "Invalid import request" });
 
         vi.mocked(getCardImagesPaged.batchFetchCards).mockRejectedValueOnce(new Error("batch fatal"));
         const failed = await request(app).post("/stream/metadata").send({ cardQueries: [{ name: "Boom" }] });
@@ -450,6 +440,40 @@ describe("Stream Router", () => {
     });
 
 
+
+    it("rejects malformed and oversized stream requests before resolver work", async () => {
+        const oversized = Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` }));
+
+        for (const [path, body] of [
+            ["/stream/cards", { cardQueries: oversized }],
+            ["/stream/cards", { cardQueries: [{ name: "Card", language: { code: "en" } }] }],
+            ["/stream/metadata", { cardQueries: "not-an-array" }],
+            ["/stream/metadata", { cardQueries: [{ name: "Card", quantity: Number.MAX_SAFE_INTEGER + 1 }] }],
+        ] as const) {
+            const response = await request(app).post(path).send(body).expect(400);
+            expect(response.body).toEqual({ error: "Invalid import request" });
+            expect(response.headers["content-type"]).not.toContain("text/event-stream");
+        }
+
+        expect(getCardImagesPaged.batchFetchCards).not.toHaveBeenCalled();
+        expect(getCardImagesPaged.getCardsWithImagesForCardInfo).not.toHaveBeenCalled();
+    });
+
+    it("accepts the existing 100-card import boundary", async () => {
+        vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(new Map());
+        vi.mocked(getCardImagesPaged.getCardsWithImagesForCardInfo).mockResolvedValue([]);
+        const cardQueries = Array.from({ length: 100 }, (_, index) => ({ name: `Card ${index}` }));
+
+        const metadata = await request(app)
+            .post("/stream/metadata")
+            .send({ cardQueries })
+            .expect(200);
+
+        expect(metadata.body.results).toHaveLength(100);
+        expect(getCardImagesPaged.batchFetchCards).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(getCardImagesPaged.batchFetchCards).mock.calls[0]?.[0]).toHaveLength(100);
+        expect(vi.mocked(getCardImagesPaged.batchFetchCards).mock.calls[0]?.[1]).toBe("en");
+    });
 
     it("falls back to individual art search when batch lookup misses", async () => {
         vi.mocked(getCardImagesPaged.batchFetchCards).mockResolvedValue(new Map());

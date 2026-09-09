@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
+import { validateImportCardRequest } from "../utils/importRequestValidation.js";
 import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js";
 import { createPinnedHttpsAgent, type ResolveAll } from "./imageConnectionPolicy.js";
 import {
@@ -348,14 +349,15 @@ function extractEnrichedCard(
 }
 
 imageRouter.post("/enrich", async (req: Request<unknown, unknown, EnrichRequestBody>, res: Response) => {
-  const cards = Array.isArray(req.body.cards) ? req.body.cards : [];
+  const validation = validateImportCardRequest(req.body, "cards");
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  const cards = req.body.cards;
 
   if (cards.length === 0) {
     return res.json([]);
-  }
-
-  if (cards.length > 100) {
-    return res.status(400).json({ error: "Maximum 100 cards per batch" });
   }
 
   try {
@@ -477,14 +479,15 @@ interface CardTokenResponse {
 }
 
 imageRouter.post("/tokens", async (req: Request<unknown, unknown, TokensRequestBody>, res: Response) => {
-  const cards = Array.isArray(req.body.cards) ? req.body.cards : [];
+  const validation = validateImportCardRequest(req.body, "cards");
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  const cards = req.body.cards;
 
   if (cards.length === 0) {
     return res.json([]);
-  }
-
-  if (cards.length > 100) {
-    return res.status(400).json({ error: "Maximum 100 cards per batch" });
   }
 
   try {

@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from "express";
 import { batchFetchCards, lookupCardFromBatch, getCardsWithImagesForCardInfo, type ScryfallApiCard } from "../utils/getCardImagesPaged.js";
 import { normalizeCardInfos } from "../utils/cardUtils.js";
+import { validateImportCardRequest } from "../utils/importRequestValidation.js";
 import { debugLog } from "../utils/debug.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { type ScryfallCard } from "../../../shared/types.js";
@@ -145,6 +146,11 @@ function buildCardResponse(
 }
 
 streamRouter.post("/cards", async (req: Request, res: Response) => {
+  const validation = validateImportCardRequest(req.body, "cardQueries", { validateCardArt: true });
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+
   // 1. Set SSE headers for a persistent connection
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -289,6 +295,11 @@ streamRouter.post("/cards", async (req: Request, res: Response) => {
  * Response: { results: Array<{ query: CardInfo, card: ScryfallCard | null, error?: string }> }
  */
 streamRouter.post("/metadata", async (req: Request, res: Response) => {
+  const validation = validateImportCardRequest(req.body, "cardQueries");
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+
   try {
     const language = (req.body.language || "en").toLowerCase();
     const cardQueries = normalizeCardInfos(

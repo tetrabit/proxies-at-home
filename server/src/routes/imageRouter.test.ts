@@ -786,13 +786,44 @@ describe("getWithRetry logic", () => {
     });
 
     describe("enrichment, token, and cardback routes", () => {
-        it("returns [] for empty enrich and tokens requests and rejects overlarge batches", async () => {
+        it("returns [] for empty enrich and tokens requests and rejects malformed or overlarge batches", async () => {
             expect((await request(app).post("/images/enrich").send({ cards: [] })).body).toEqual([]);
             expect((await request(app).post("/images/tokens").send({ cards: [] })).body).toEqual([]);
-            expect((await request(app).post("/images/enrich").send({ cards: "not-array" })).body).toEqual([]);
-            expect((await request(app).post("/images/tokens").send({ cards: "not-array" })).body).toEqual([]);
+            expect((await request(app).post("/images/enrich").send({ cards: "not-array" })).status).toBe(400);
+            expect((await request(app).post("/images/tokens").send({ cards: "not-array" })).status).toBe(400);
             expect((await request(app).post("/images/enrich").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
             expect((await request(app).post("/images/tokens").send({ cards: Array.from({ length: 101 }, (_, i) => ({ name: `C${i}` })) })).status).toBe(400);
+        });
+
+        it("rejects malformed and oversized enrichment requests before lookup work", async () => {
+            const oversized = Array.from({ length: 101 }, (_, index) => ({ name: `Card ${index}` }));
+
+            for (const [path, body] of [
+                ["/images/enrich", { cards: oversized }],
+                ["/images/enrich", { cards: [{ name: 42 }] }],
+                ["/images/tokens", { cards: "not-an-array" }],
+                ["/images/tokens", { cards: [{ name: "Card", number: { value: "1" } }] }],
+            ] as const) {
+                const response = await request(app).post(path).send(body).expect(400);
+                expect(response.body).toEqual({ error: "Invalid import request" });
+            }
+
+            expect(routeMocks.batchFetchCards).not.toHaveBeenCalled();
+            expect(routeMocks.getCardDataForCardInfo).not.toHaveBeenCalled();
+            expect(routeMocks.fetchCardsForTokenLookup).not.toHaveBeenCalled();
+            expect(routeMocks.resolveLatestTokenParts).not.toHaveBeenCalled();
+        });
+
+        it("accepts the existing 100-card enrichment boundary", async () => {
+            const cards = Array.from({ length: 100 }, (_, index) => ({ name: `Card ${index}` }));
+            routeMocks.batchFetchCards.mockResolvedValue(new Map());
+            routeMocks.getCardDataForCardInfo.mockResolvedValue(null);
+
+            const response = await request(app).post("/images/enrich").send({ cards }).expect(200);
+
+            expect(response.body).toHaveLength(100);
+            expect(routeMocks.batchFetchCards).toHaveBeenCalledTimes(1);
+            expect(routeMocks.batchFetchCards.mock.calls[0]?.[0]).toHaveLength(100);
         });
 
         it("enriches batch hits by set/number and name, and falls back for misses", async () => {
