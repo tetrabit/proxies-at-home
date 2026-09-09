@@ -64,6 +64,94 @@ describe("dbUtils", () => {
       expect(cards[1].name).toBe("Card 2");
       expect(cards[1].order).toBeGreaterThan(cards[0].order);
     });
+
+    it("appends within a project without using another project's distant order", async () => {
+      await db.cards.bulkAdd([
+        {
+          uuid: "project-a-existing",
+          name: "Existing A",
+          order: 20,
+          isUserUpload: false,
+          projectId: "project-a",
+        },
+        {
+          uuid: "project-b-distant",
+          name: "Existing B",
+          order: 100_000,
+          isUserUpload: false,
+          projectId: "project-b",
+        },
+      ]);
+
+      const [added] = await addCards([
+        { name: "Added A", isUserUpload: false, projectId: "project-a" },
+      ]);
+
+      expect(added.order).toBe(30);
+      await expect(db.cards.get(added.uuid)).resolves.toMatchObject({
+        projectId: "project-a",
+        order: 30,
+      });
+    });
+
+    it("starts an empty project at the default order despite another project's cards", async () => {
+      await db.cards.add({
+        uuid: "project-b-distant",
+        name: "Existing B",
+        order: 100_000,
+        isUserUpload: false,
+        projectId: "project-b",
+      });
+
+      const [added] = await addCards([
+        { name: "Added A", isUserUpload: false, projectId: "project-a" },
+      ]);
+
+      expect(added.order).toBe(10);
+    });
+
+    it("preserves explicit orders, including zero, and an explicit startOrder", async () => {
+      const explicit = await addCards(
+        [
+          { name: "Zero", isUserUpload: false, projectId: "project-a", order: 0 },
+          { name: "Nonzero", isUserUpload: false, projectId: "project-a", order: 37 },
+        ],
+        { startOrder: 500 }
+      );
+      const sequential = await addCards(
+        [
+          { name: "First", isUserUpload: false, projectId: "project-a" },
+          { name: "Second", isUserUpload: false, projectId: "project-a" },
+        ],
+        { startOrder: 0 }
+      );
+
+      expect(explicit.map((card) => card.order)).toEqual([0, 37]);
+      expect(sequential.map((card) => card.order)).toEqual([0, 10]);
+    });
+
+    it("keeps legacy cards without a project on the existing global append path", async () => {
+      await db.cards.bulkAdd([
+        {
+          uuid: "legacy-card",
+          name: "Legacy",
+          order: 40,
+          isUserUpload: false,
+        },
+        {
+          uuid: "project-card",
+          name: "Project card",
+          order: 100_000,
+          isUserUpload: false,
+          projectId: "project-a",
+        },
+      ]);
+
+      const [added] = await addCards([{ name: "Legacy added", isUserUpload: false }]);
+
+      expect(added.order).toBe(100_010);
+      expect(added.projectId).toBeUndefined();
+    });
   });
 
   describe("resetCardsToOriginalImages", () => {

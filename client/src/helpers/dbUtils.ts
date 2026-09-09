@@ -1,4 +1,5 @@
 /* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
+import Dexie from "dexie";
 import { db, type Image } from "@/db";
 import type { CardOption, PrintInfo } from "../../../shared/types";
 import { parseImageIdFromUrl } from "./imageHelper";
@@ -417,10 +418,20 @@ export async function addCards(
   >,
   options?: { startOrder?: number }
 ): Promise<CardOption[]> {
-  // Use explicit startOrder if provided, otherwise append after all existing cards
-  const startOrder =
-    options?.startOrder ??
-    ((await db.cards.orderBy("order").last())?.order ?? 0) + 10;
+  // Use explicit startOrder if provided. Otherwise, append within the input
+  // project's order space; legacy cards without a project retain global ordering.
+  const projectId = cardsData[0]?.projectId;
+  const lastCard =
+    projectId === undefined
+      ? await db.cards.orderBy("order").last()
+      : await db.cards
+          .where("[projectId+order]")
+          .between(
+            [projectId, Dexie.minKey],
+            [projectId, Dexie.maxKey]
+          )
+          .last();
+  const startOrder = options?.startOrder ?? (lastCard?.order ?? 0) + 10;
 
   const newCards: CardOption[] = cardsData.map((cardData, i) => ({
     ...cardData,
