@@ -255,7 +255,10 @@ export function CalibrationModal() {
 
             const harvested = await harvestSourcePreferenceCandidates(
               BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-              async (name) => searchMpcAutofill(name, "CARD", true)
+              async (name, operationAbortSignal) =>
+                searchMpcAutofill(name, "CARD", true, {}, operationAbortSignal),
+              undefined,
+              signal
             );
             if (signal.aborted) return;
 

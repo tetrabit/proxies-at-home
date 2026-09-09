@@ -570,6 +570,55 @@ describe("mpcPreferenceBootstrap", () => {
     expect(harvested[0]?.candidates[0]?.rawName).toBe("Windborn Muse");
   });
 
+  it("rejects a pre-aborted seed harvest before admitting transport", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("seed harvest stopped", "AbortError"));
+    const search = vi.fn(async () => []);
+
+    await expect(
+      harvestSourcePreferenceCandidates(
+        ["First Seed"],
+        search,
+        BOOTSTRAP_PREFERENCE_SOURCES,
+        controller.signal
+      )
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("stops queued seed transport after an in-flight request is aborted", async () => {
+    let resolveFirst!: (value: []) => void;
+    const firstRequest = new Promise<[]>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const controller = new AbortController();
+    const signals: Array<AbortSignal | undefined> = [];
+    const search = vi.fn((name: string, signal?: AbortSignal) => {
+      signals.push(signal);
+      if (name === "First Seed") {
+        return firstRequest;
+      }
+      return Promise.resolve([]);
+    });
+
+    const harvesting = harvestSourcePreferenceCandidates(
+      ["First Seed", "Queued Seed"],
+      search,
+      BOOTSTRAP_PREFERENCE_SOURCES,
+      controller.signal
+    );
+    await Promise.resolve();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(signals).toEqual([controller.signal]);
+
+    controller.abort(new DOMException("seed harvest stopped", "AbortError"));
+    resolveFirst([]);
+
+    await expect(harvesting).rejects.toMatchObject({ name: "AbortError" });
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves the legacy bootstrap helper as a compatibility wrapper", async () => {
     await ensureBootstrapPreferenceDataset();
 

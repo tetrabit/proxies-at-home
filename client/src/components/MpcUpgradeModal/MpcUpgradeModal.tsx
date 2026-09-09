@@ -232,16 +232,29 @@ export function MpcUpgradeModal() {
               );
               const harvested = await harvestSourcePreferenceCandidates(
                 BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                async (name) => searchMpcAutofill(name, "CARD", true),
-                ["Hathwellcrisping", "Chilli_Axe"]
+                async (name, operationAbortSignal) =>
+                  searchMpcAutofill(
+                    name,
+                    "CARD",
+                    true,
+                    {},
+                    operationAbortSignal
+                  ),
+                ["Hathwellcrisping", "Chilli_Axe"],
+                signal
               );
+              if (signal.aborted) return undefined;
+
               const profiles = await buildMpcSourceVisualProfiles(harvested);
+              if (signal.aborted) return undefined;
+
               const visualScores = await buildMpcVisualPreferenceScoreMap(
                 exactMatches,
                 profiles,
                 model,
                 signal
               );
+              if (signal.aborted) return undefined;
 
               return Object.fromEntries(
                 exactMatches.map((candidate) => [
@@ -251,6 +264,8 @@ export function MpcUpgradeModal() {
                 ])
               );
             })();
+      if (signal.aborted) return;
+
       const ranked = await rankCandidates({
         candidates: exactMatches,
         set,

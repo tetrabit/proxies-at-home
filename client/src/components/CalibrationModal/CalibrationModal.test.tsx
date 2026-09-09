@@ -22,6 +22,10 @@ const {
   mockImportFixture,
   mockValidateFixture,
   mockDbImagesGet,
+  mockTrainMpcPreferenceModel,
+  mockHarvestSourcePreferenceCandidates,
+  mockBuildMpcSourceVisualProfiles,
+  mockBuildMpcVisualPreferenceScoreMap,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
     open: true,
@@ -56,6 +60,10 @@ const {
   mockImportFixture: vi.fn(),
   mockValidateFixture: vi.fn(),
   mockDbImagesGet: vi.fn(),
+  mockTrainMpcPreferenceModel: vi.fn(() => null),
+  mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+  mockBuildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
+  mockBuildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@/store", () => ({
@@ -92,18 +100,18 @@ vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
 
 vi.mock("@/helpers/mpcPreferenceModel", () => ({
   buildMpcPreferenceScoreMap: vi.fn(() => ({})),
-  trainMpcPreferenceModel: vi.fn(() => null),
+  trainMpcPreferenceModel: mockTrainMpcPreferenceModel,
 }));
 
 vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: [],
-  harvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+  harvestSourcePreferenceCandidates: mockHarvestSourcePreferenceCandidates,
   hydrateMpcPreferences: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/helpers/mpcVisualPreference", () => ({
-  buildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
-  buildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
+  buildMpcSourceVisualProfiles: mockBuildMpcSourceVisualProfiles,
+  buildMpcVisualPreferenceScoreMap: mockBuildMpcVisualPreferenceScoreMap,
 }));
 
 vi.mock("@/helpers/mpcCalibrationCapture", () => ({
@@ -450,5 +458,48 @@ describe("CalibrationModal", () => {
     expect(closeButton.className).toContain("top-4");
     fireEvent.click(closeButton);
     expect(mockCalibrationState.closeModal).toHaveBeenCalled();
+  });
+
+  it("aborts queued seed transport during harvest without publishing profiles", async () => {
+    mockTrainMpcPreferenceModel.mockReturnValue({} as never);
+    let releaseHarvest!: () => void;
+    const deferredHarvest = new Promise<void>((resolve) => {
+      releaseHarvest = resolve;
+    });
+    mockHarvestSourcePreferenceCandidates.mockImplementation(
+      async (_seedNames, search, _targetSources, signal) => {
+        await search("Seed card", signal);
+        await deferredHarvest;
+        return [];
+      }
+    );
+    mockSearchMpcAutofill
+      .mockResolvedValueOnce(mockFilterByExactName())
+      .mockResolvedValueOnce([]);
+
+    const view = render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockSearchMpcAutofill).toHaveBeenLastCalledWith(
+        "Seed card",
+        "CARD",
+        true,
+        {},
+        expect.any(AbortSignal)
+      );
+    });
+
+    mockCalibrationState.open = false;
+    view.rerender(<CalibrationModal />);
+
+    await waitFor(() => {
+      const seedSignal = mockSearchMpcAutofill.mock.calls[1]?.[4] as AbortSignal;
+      expect(seedSignal.aborted).toBe(true);
+    });
+    releaseHarvest();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockBuildMpcSourceVisualProfiles).not.toHaveBeenCalled();
+    expect(mockBuildMpcVisualPreferenceScoreMap).not.toHaveBeenCalled();
   });
 });

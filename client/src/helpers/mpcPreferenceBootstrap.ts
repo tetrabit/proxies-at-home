@@ -350,16 +350,25 @@ export async function ensureBootstrapPreferenceDataset(): Promise<void> {
   await hydrateMpcPreferences();
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+  }
+}
+
 export async function harvestSourcePreferenceCandidates(
   seedCardNames: string[],
-  search: (name: string) => Promise<MpcAutofillCard[]>,
-  targetSources: string[] = BOOTSTRAP_PREFERENCE_SOURCES
+  search: (name: string, signal?: AbortSignal) => Promise<MpcAutofillCard[]>,
+  targetSources: string[] = BOOTSTRAP_PREFERENCE_SOURCES,
+  signal?: AbortSignal
 ): Promise<MpcHarvestedSourceExample[]> {
   const targetSet = new Set(targetSources);
   const harvested: MpcHarvestedSourceExample[] = [];
 
   for (const seedCardName of seedCardNames) {
-    const candidates = await search(seedCardName);
+    throwIfAborted(signal);
+    const candidates = await search(seedCardName, signal);
+    throwIfAborted(signal);
     if (candidates.length === 0) continue;
 
     for (const sourceName of targetSources) {

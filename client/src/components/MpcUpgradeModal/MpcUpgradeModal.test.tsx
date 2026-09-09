@@ -922,6 +922,99 @@ describe("MpcUpgradeModal", () => {
     expect(unseenPreferenceScores?.["visual-pick"]).toBeGreaterThan(4.2);
   });
 
+  it("aborts queued seed transport during deferred harvest without publishing profiles", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const candidate = makeMpcCard({
+      identifier: "seed-abort-pick",
+      name: TEST_CARD.name,
+      sourceName: "Hathwellcrisping",
+    });
+    let releaseHarvest!: () => void;
+    const deferredHarvest = new Promise<void>((resolve) => {
+      releaseHarvest = resolve;
+    });
+
+    mockSearchMpcAutofill
+      .mockResolvedValueOnce([candidate])
+      .mockResolvedValueOnce([]);
+    mockFilterByExactName.mockReturnValueOnce([candidate]);
+    mockListDefaultCalibrationCases.mockResolvedValue([
+      {
+        id: "case-1",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Windborn Muse" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-1", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "seed-abort-pick",
+      },
+      {
+        id: "case-2",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Talrand, Sky Summoner" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-2", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "seed-abort-pick",
+      },
+      {
+        id: "case-3",
+        datasetId: "dataset-1",
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Thassa, Deep-Dwelling" },
+        candidates: [
+          candidate,
+          { ...candidate, identifier: "other-3", sourceName: "Chilli_Axe" },
+        ],
+        expectedIdentifier: "seed-abort-pick",
+      },
+    ]);
+    mockHarvestSourcePreferenceCandidates.mockImplementation(
+      async (_seedNames, search, _targetSources, signal) => {
+        await search("Seed card", signal);
+        await deferredHarvest;
+        return [];
+      }
+    );
+
+    const view = render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockSearchMpcAutofill).toHaveBeenLastCalledWith(
+        "Seed card",
+        "CARD",
+        true,
+        {},
+        expect.any(AbortSignal)
+      );
+    });
+
+    mockModalState.open = false;
+    view.rerender(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      const seedSignal = mockSearchMpcAutofill.mock.calls[1]?.[4] as AbortSignal;
+      expect(seedSignal.aborted).toBe(true);
+    });
+    releaseHarvest();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockBuildSourceVisualProfiles).not.toHaveBeenCalled();
+    expect(mockBuildVisualPreferenceScoreMap).not.toHaveBeenCalled();
+    expect(mockRankCandidates).not.toHaveBeenCalled();
+    expect(mockAddToast).not.toHaveBeenCalled();
+  });
+
   it("shows copyable source card and candidate identifier details", async () => {
     mockModalState.open = true;
     mockModalState.card = TEST_CARD;
