@@ -210,6 +210,16 @@ describe("importProject atomic persistence", () => {
     const originalExistingImage = await db.user_images.get(existingHash);
     const originalCacheImage = await db.images.get(cacheImageId);
 
+    // Force primary-key order to differ from backup order. The projectId query
+    // has no explicit order, so its same-project records resolve by primary key;
+    // the previous positional assertion would deterministically read Existing,
+    // Duplicate, First here.
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000000")
+      .mockReturnValueOnce("ffffffff-ffff-4fff-8fff-ffffffffffff")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("80000000-0000-4000-8000-000000000002");
+
     const projectId = await importProject(backup);
 
     expect(bulkGet).toHaveBeenCalledTimes(1);
@@ -232,10 +242,14 @@ describe("importProject atomic persistence", () => {
     expect(await db.images.get(cacheImageId)).toEqual(originalCacheImage);
 
     const importedCards = await db.cards.where("projectId").equals(projectId).toArray();
-    expect(importedCards.map((card) => card.imageId)).toEqual([
-      firstNewHash,
-      existingHash,
-      firstNewHash,
+    expect(
+      importedCards
+        .map((card) => ({ name: card.name, imageId: card.imageId }))
+        .sort((left, right) => left.name.localeCompare(right.name))
+    ).toEqual([
+      { name: "Duplicate", imageId: firstNewHash },
+      { name: "Existing", imageId: existingHash },
+      { name: "First", imageId: firstNewHash },
     ]);
   });
 });
