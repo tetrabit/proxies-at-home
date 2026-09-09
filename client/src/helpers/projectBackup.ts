@@ -20,6 +20,13 @@ import { inferImageSource } from './imageSourceUtils';
 /** Bump when the backup format changes in a breaking way */
 const BACKUP_VERSION = 1;
 
+/**
+ * Cap decoded custom-image content in one import at 64 MiB. Exports keep their
+ * raw FileReader base64 payloads, so this guard uses an encoded-length estimate
+ * before decoding any image data into an atob string, Uint8Array, or Blob.
+ */
+export const MAX_TOTAL_BACKUP_IMAGE_BYTES = 64 * 1024 * 1024;
+
 /** Serialised card — CardOption minus ephemeral/runtime fields */
 interface BackupCard {
   /** Original UUID (used only for DFC link resolution during import) */
@@ -269,6 +276,10 @@ export function validateBackup(data: unknown): ProjectBackup {
     throw new Error('Invalid backup: missing cards array');
   }
 
+  if (!Array.isArray(obj.userImages)) {
+    throw new Error('Invalid backup: missing user images array');
+  }
+
   const cardsByUuid = new Map<string, Record<string, unknown>>();
   for (const card of obj.cards) {
     if (
@@ -316,7 +327,63 @@ export function validateBackup(data: unknown): ProjectBackup {
     }
   }
 
+  let totalImageBytes = 0;
+  for (const image of obj.userImages) {
+    if (
+      !isRecord(image) ||
+      typeof image.hash !== 'string' ||
+      typeof image.type !== 'string' ||
+      typeof image.data !== 'string'
+    ) {
+      throw new Error('Invalid backup: invalid user image record');
+    }
+
+    const decodedBytes = validateBase64ImageData(image.data);
+    if (decodedBytes > MAX_TOTAL_BACKUP_IMAGE_BYTES - totalImageBytes) {
+      throw new Error('Invalid backup: total decoded image bytes exceed 64 MiB');
+    }
+    totalImageBytes += decodedBytes;
+  }
+
   return data as ProjectBackup;
+}
+
+/**
+ * Backup images store the padded base64 payload from FileReader's data URL;
+ * the MIME type is stored separately. Validate that exact, canonical encoding
+ * before calling atob so malformed data cannot allocate decoded image buffers.
+ */
+function validateBase64ImageData(data: string): number {
+  if (data.length === 0) return 0;
+
+  if (
+    data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+  ) {
+    throw new Error('Invalid backup: invalid image base64');
+  }
+
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  const finalCharacter = data.charCodeAt(data.length - padding - 1);
+  const finalValue =
+    finalCharacter >= 65 && finalCharacter <= 90
+      ? finalCharacter - 65
+      : finalCharacter >= 97 && finalCharacter <= 122
+        ? finalCharacter - 71
+        : finalCharacter >= 48 && finalCharacter <= 57
+          ? finalCharacter + 4
+          : finalCharacter === 43
+            ? 62
+            : 63;
+
+  if (
+    (padding === 1 && (finalValue & 0b11) !== 0) ||
+    (padding === 2 && (finalValue & 0b1111) !== 0)
+  ) {
+    throw new Error('Invalid backup: invalid image base64');
+  }
+
+  return (data.length / 4) * 3 - padding;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

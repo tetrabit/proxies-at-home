@@ -49,7 +49,6 @@ const validBackup: ProjectBackup = {
   userImages: [],
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("projectBackup", () => {
   beforeEach(() => {
@@ -190,6 +189,115 @@ describe("projectBackup", () => {
         expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
         expect(mocks.transaction).not.toHaveBeenCalled();
       }
+    });
+
+    it("rejects a missing user-images collection before import persistence", async () => {
+      const blobSpy = vi.fn();
+      vi.stubGlobal("Blob", blobSpy);
+      const atobSpy = vi.spyOn(globalThis, "atob");
+      const { userImages: _userImages, ...missingUserImages } = validBackup;
+
+      await expect(importProject(missingUserImages as ProjectBackup)).rejects.toThrow(
+        "missing user images array"
+      );
+      expect(atobSpy).not.toHaveBeenCalled();
+      expect(blobSpy).not.toHaveBeenCalled();
+      expect(mocks.userImagesGet).not.toHaveBeenCalled();
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects invalid image base64 before Blob allocation or image persistence", async () => {
+      const blobSpy = vi.fn();
+      vi.stubGlobal("Blob", blobSpy);
+      const atobSpy = vi.spyOn(globalThis, "atob");
+      const backup = {
+        ...validBackup,
+        userImages: [{ hash: "image", type: "text/plain", data: "not base64!" }],
+      };
+
+      await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+        "invalid image base64"
+      );
+      expect(atobSpy).not.toHaveBeenCalled();
+      expect(blobSpy).not.toHaveBeenCalled();
+      expect(mocks.userImagesGet).not.toHaveBeenCalled();
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects aggregate decoded image content before Blob allocation or persistence", async () => {
+      const blobSpy = vi.fn();
+      vi.stubGlobal("Blob", blobSpy);
+      const atobSpy = vi.spyOn(globalThis, "atob");
+      // Reuse one 1 MiB encoded string so this boundary test does not allocate
+      // an enormous synthetic payload while its declared decoded total is >64 MiB.
+      const encodedImage = "AAAA".repeat(256 * 1024);
+      const backup = {
+        ...validBackup,
+        userImages: Array.from({ length: 86 }, (_, index) => ({
+          hash: `image-${index}`,
+          type: "text/plain",
+          data: encodedImage,
+        })),
+      };
+
+      await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+        "total decoded image bytes"
+      );
+      expect(atobSpy).not.toHaveBeenCalled();
+      expect(blobSpy).not.toHaveBeenCalled();
+      expect(mocks.userImagesGet).not.toHaveBeenCalled();
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("accepts canonical padded image base64 at decoded-byte boundaries", () => {
+      const backup = {
+        ...validBackup,
+        userImages: [
+          { hash: "empty", type: "text/plain", data: "" },
+          { hash: "one-byte", type: "text/plain", data: "TQ==" },
+          { hash: "two-bytes", type: "text/plain", data: "TWE=" },
+          { hash: "three-bytes", type: "text/plain", data: "TWFu" },
+        ],
+      };
+
+      expect(() => validateBackup(backup)).not.toThrow();
+    });
+
+    it("rejects malformed, truncated, and noncanonical image base64 before decoding any entry", async () => {
+      const blobSpy = vi.fn();
+      vi.stubGlobal("Blob", blobSpy);
+      const atobSpy = vi.spyOn(globalThis, "atob");
+
+      for (const data of ["TQ=", "TR==", "TQ=?"]) {
+        const backup = {
+          ...validBackup,
+          userImages: [
+            { hash: "valid-first", type: "text/plain", data: "TQ==" },
+            { hash: "invalid-second", type: "text/plain", data },
+          ],
+        };
+
+        await expect(importProject(backup as ProjectBackup)).rejects.toThrow(
+          "invalid image base64"
+        );
+      }
+
+      expect(atobSpy).not.toHaveBeenCalled();
+      expect(blobSpy).not.toHaveBeenCalled();
+      expect(mocks.userImagesGet).not.toHaveBeenCalled();
+      expect(mocks.userImagesPut).not.toHaveBeenCalled();
+      expect(mocks.projectsAdd).not.toHaveBeenCalled();
+      expect(mocks.cardsBulkAdd).not.toHaveBeenCalled();
+      expect(mocks.transaction).not.toHaveBeenCalled();
     });
 
     it("rejects invalid envelopes", () => {
@@ -444,6 +552,23 @@ describe("projectBackup", () => {
         needsEnrichment: false,
       }),
     ]);
+  });
+
+  it("imports same-size legacy padded image data", async () => {
+    mocks.userImagesGet.mockResolvedValue(undefined);
+    const backup = {
+      ...validBackup,
+      userImages: [{ hash: "legacy", type: "text/plain", data: "TWE=" }],
+    };
+
+    await expect(importProject(backup)).resolves.toBe("project-new");
+    expect(mocks.userImagesPut).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hash: "legacy",
+        type: "text/plain",
+        data: expect.objectContaining({ size: 2 }),
+      })
+    );
   });
 
   it("imports projects with an explicit name", async () => {
