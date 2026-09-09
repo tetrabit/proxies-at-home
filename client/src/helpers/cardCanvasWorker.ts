@@ -34,6 +34,7 @@ function trackContextCreation(source: string): number {
 class WebGLContextManager {
     private canvas: OffscreenCanvas | null = null;
     private gl: WebGL2RenderingContext | null = null;
+    private pipeline: ImmutablePipeline | null = null;
     private isContextLost = false;
     private contextId = 0;
     private readonly purpose: string;
@@ -52,7 +53,7 @@ class WebGLContextManager {
             // Additional check: verify context wasn't silently lost by the browser
             if (this.gl.isContextLost()) {
                 webglLog(`Context for ${this.purpose} was silently lost, recreating...`);
-                this.isContextLost = true;
+                this.invalidate();
             } else {
                 // Context is valid, resize if needed
                 if (this.canvas.width !== width || this.canvas.height !== height) {
@@ -80,7 +81,7 @@ class WebGLContextManager {
         this.canvas.addEventListener('webglcontextlost', (e) => {
             e.preventDefault();
             webglLog(`Context lost event for ${this.purpose}`);
-            this.isContextLost = true;
+            this.invalidate();
         });
 
         this.isContextLost = false;
@@ -90,15 +91,40 @@ class WebGLContextManager {
         return { canvas: this.canvas, gl: this.gl, isNew: true };
     }
 
+    getPipeline(gl: WebGL2RenderingContext): ImmutablePipeline {
+        if (this.pipeline?.gl === gl) return this.pipeline;
+        if (this.pipeline) this.disposePipeline();
+
+        const pipeline = createImmutablePipeline(gl);
+        this.pipeline = pipeline;
+        return pipeline;
+    }
+
+    private disposePipeline() {
+        const pipeline = this.pipeline;
+        this.pipeline = null;
+        if (!pipeline) return;
+
+        pipeline.gl.deleteBuffer(pipeline.positionBuffer);
+        pipeline.gl.deleteVertexArray(pipeline.vao);
+        pipeline.gl.deleteProgram(pipeline.program);
+    }
+
+    private invalidate() {
+        this.disposePipeline();
+        this.gl = null;
+        this.canvas = null;
+        this.isContextLost = true;
+        this.contextId = 0;
+    }
+
     /**
      * Reset the context manager state (for testing).
      * Forces the next getContext call to create a new context.
      */
     reset() {
-        this.gl = null;
-        this.canvas = null;
+        this.invalidate();
         this.isContextLost = false;
-        this.contextId = 0;
     }
 }
 
@@ -185,6 +211,106 @@ export interface UniformLocations {
     u_vignetteAmount: WebGLUniformLocation | null;
     u_vignetteSize: WebGLUniformLocation | null;
     u_vignetteFeather: WebGLUniformLocation | null;
+}
+
+interface ImmutablePipeline {
+    gl: WebGL2RenderingContext;
+    program: WebGLProgram;
+    uniforms: UniformLocations;
+    vao: WebGLVertexArrayObject;
+    positionBuffer: WebGLBuffer;
+}
+
+function createImmutablePipeline(gl: WebGL2RenderingContext): ImmutablePipeline {
+    let vertexShader: WebGLShader | null = null;
+    let fragmentShader: WebGLShader | null = null;
+    let program: WebGLProgram | null = null;
+    let vao: WebGLVertexArrayObject | null = null;
+    let positionBuffer: WebGLBuffer | null = null;
+
+    try {
+        vertexShader = createShader(gl, gl.VERTEX_SHADER, VS_CARD_CANVAS);
+        fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, FS_CARD_CANVAS);
+        program = createProgram(gl, vertexShader, fragmentShader);
+        gl.deleteShader(vertexShader);
+        vertexShader = null;
+        gl.deleteShader(fragmentShader);
+        fragmentShader = null;
+
+        const uniforms: UniformLocations = {
+            u_baseTexture: gl.getUniformLocation(program, 'u_baseTexture'),
+            u_resolution: gl.getUniformLocation(program, 'u_resolution'),
+            u_brightness: gl.getUniformLocation(program, 'u_brightness'),
+            u_contrast: gl.getUniformLocation(program, 'u_contrast'),
+            u_saturation: gl.getUniformLocation(program, 'u_saturation'),
+            u_sharpness: gl.getUniformLocation(program, 'u_sharpness'),
+            u_pop: gl.getUniformLocation(program, 'u_pop'),
+            u_hueShift: gl.getUniformLocation(program, 'u_hueShift'),
+            u_sepia: gl.getUniformLocation(program, 'u_sepia'),
+            u_tintColor: gl.getUniformLocation(program, 'u_tintColor'),
+            u_tintAmount: gl.getUniformLocation(program, 'u_tintAmount'),
+            u_redBalance: gl.getUniformLocation(program, 'u_redBalance'),
+            u_greenBalance: gl.getUniformLocation(program, 'u_greenBalance'),
+            u_blueBalance: gl.getUniformLocation(program, 'u_blueBalance'),
+            u_cyanBalance: gl.getUniformLocation(program, 'u_cyanBalance'),
+            u_magentaBalance: gl.getUniformLocation(program, 'u_magentaBalance'),
+            u_yellowBalance: gl.getUniformLocation(program, 'u_yellowBalance'),
+            u_blackBalance: gl.getUniformLocation(program, 'u_blackBalance'),
+            u_shadowsIntensity: gl.getUniformLocation(program, 'u_shadowsIntensity'),
+            u_midtonesIntensity: gl.getUniformLocation(program, 'u_midtonesIntensity'),
+            u_highlightsIntensity: gl.getUniformLocation(program, 'u_highlightsIntensity'),
+            u_noiseReduction: gl.getUniformLocation(program, 'u_noiseReduction'),
+            u_cmykPreview: gl.getUniformLocation(program, 'u_cmykPreview'),
+            u_holoEffect: gl.getUniformLocation(program, 'u_holoEffect'),
+            u_holoStrength: gl.getUniformLocation(program, 'u_holoStrength'),
+            u_holoAreaMode: gl.getUniformLocation(program, 'u_holoAreaMode'),
+            u_holoAreaThreshold: gl.getUniformLocation(program, 'u_holoAreaThreshold'),
+            u_holoAngle: gl.getUniformLocation(program, 'u_holoAngle'),
+            u_holoSweepWidth: gl.getUniformLocation(program, 'u_holoSweepWidth'),
+            u_holoStarSize: gl.getUniformLocation(program, 'u_holoStarSize'),
+            u_holoStarVariety: gl.getUniformLocation(program, 'u_holoStarVariety'),
+            u_holoBlur: gl.getUniformLocation(program, 'u_holoBlur'),
+            u_holoProbability: gl.getUniformLocation(program, 'u_holoProbability'),
+            u_holoUvOffset: gl.getUniformLocation(program, 'u_holoUvOffset'),
+            u_holoUvScale: gl.getUniformLocation(program, 'u_holoUvScale'),
+            u_colorReplaceEnabled: gl.getUniformLocation(program, 'u_colorReplaceEnabled'),
+            u_colorReplaceSource: gl.getUniformLocation(program, 'u_colorReplaceSource'),
+            u_colorReplaceTarget: gl.getUniformLocation(program, 'u_colorReplaceTarget'),
+            u_colorReplaceThreshold: gl.getUniformLocation(program, 'u_colorReplaceThreshold'),
+            u_gamma: gl.getUniformLocation(program, 'u_gamma'),
+            u_vignetteAmount: gl.getUniformLocation(program, 'u_vignetteAmount'),
+            u_vignetteSize: gl.getUniformLocation(program, 'u_vignetteSize'),
+            u_vignetteFeather: gl.getUniformLocation(program, 'u_vignetteFeather'),
+        };
+
+        vao = gl.createVertexArray();
+        if (!vao) throw new Error('Failed to create VAO');
+        gl.bindVertexArray(vao);
+
+        positionBuffer = gl.createBuffer();
+        if (!positionBuffer) throw new Error('Failed to create position buffer');
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1,
+            1, -1,
+            -1, 1,
+            1, 1,
+        ]), gl.STATIC_DRAW);
+
+        const positionLoc = gl.getAttribLocation(program, 'a_position');
+        gl.enableVertexAttribArray(positionLoc);
+        gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+
+        return { gl, program, uniforms, vao, positionBuffer };
+    } catch (error) {
+        if (positionBuffer) gl.deleteBuffer(positionBuffer);
+        if (vao) gl.deleteVertexArray(vao);
+        if (program) gl.deleteProgram(program);
+        if (fragmentShader) gl.deleteShader(fragmentShader);
+        if (vertexShader) gl.deleteShader(vertexShader);
+        throw error;
+    }
 }
 
 /**
@@ -466,90 +592,7 @@ export async function renderCardWithOverridesWorker(
 
     webglLog(`Rendering: ${width}x${height}, reused=${!isNew}`);
 
-    // Create shaders and program
-    const vs = createShader(gl, gl.VERTEX_SHADER, VS_CARD_CANVAS);
-    const fs = createShader(gl, gl.FRAGMENT_SHADER, FS_CARD_CANVAS);
-    const program = createProgram(gl, vs, fs);
-
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-
-    // Get uniform locations for all effects
-    const uniforms: UniformLocations = {
-        u_baseTexture: gl.getUniformLocation(program, 'u_baseTexture'),
-        u_resolution: gl.getUniformLocation(program, 'u_resolution'),
-        // Basic adjustments
-        u_brightness: gl.getUniformLocation(program, 'u_brightness'),
-        u_contrast: gl.getUniformLocation(program, 'u_contrast'),
-        u_saturation: gl.getUniformLocation(program, 'u_saturation'),
-        u_sharpness: gl.getUniformLocation(program, 'u_sharpness'),
-        u_pop: gl.getUniformLocation(program, 'u_pop'),
-        // Color effects
-        u_hueShift: gl.getUniformLocation(program, 'u_hueShift'),
-        u_sepia: gl.getUniformLocation(program, 'u_sepia'),
-        u_tintColor: gl.getUniformLocation(program, 'u_tintColor'),
-        u_tintAmount: gl.getUniformLocation(program, 'u_tintAmount'),
-        // RGB Balance
-        u_redBalance: gl.getUniformLocation(program, 'u_redBalance'),
-        u_greenBalance: gl.getUniformLocation(program, 'u_greenBalance'),
-        u_blueBalance: gl.getUniformLocation(program, 'u_blueBalance'),
-        // CMYK Balance
-        u_cyanBalance: gl.getUniformLocation(program, 'u_cyanBalance'),
-        u_magentaBalance: gl.getUniformLocation(program, 'u_magentaBalance'),
-        u_yellowBalance: gl.getUniformLocation(program, 'u_yellowBalance'),
-        u_blackBalance: gl.getUniformLocation(program, 'u_blackBalance'),
-        // Color Balance (Shadows/Midtones/Highlights)
-        u_shadowsIntensity: gl.getUniformLocation(program, 'u_shadowsIntensity'),
-        u_midtonesIntensity: gl.getUniformLocation(program, 'u_midtonesIntensity'),
-        u_highlightsIntensity: gl.getUniformLocation(program, 'u_highlightsIntensity'),
-        // Noise Reduction & Preview
-        u_noiseReduction: gl.getUniformLocation(program, 'u_noiseReduction'),
-        u_cmykPreview: gl.getUniformLocation(program, 'u_cmykPreview'),
-        // Holographic Effect
-        u_holoEffect: gl.getUniformLocation(program, 'u_holoEffect'),
-        u_holoStrength: gl.getUniformLocation(program, 'u_holoStrength'),
-        u_holoAreaMode: gl.getUniformLocation(program, 'u_holoAreaMode'),
-        u_holoAreaThreshold: gl.getUniformLocation(program, 'u_holoAreaThreshold'),
-        u_holoAngle: gl.getUniformLocation(program, 'u_holoAngle'),
-        u_holoSweepWidth: gl.getUniformLocation(program, 'u_holoSweepWidth'),
-        u_holoStarSize: gl.getUniformLocation(program, 'u_holoStarSize'),
-        u_holoStarVariety: gl.getUniformLocation(program, 'u_holoStarVariety'),
-        u_holoBlur: gl.getUniformLocation(program, 'u_holoBlur'),
-        u_holoProbability: gl.getUniformLocation(program, 'u_holoProbability'),
-        u_holoUvOffset: gl.getUniformLocation(program, 'u_holoUvOffset'),
-        u_holoUvScale: gl.getUniformLocation(program, 'u_holoUvScale'),
-        // Color Replace
-        u_colorReplaceEnabled: gl.getUniformLocation(program, 'u_colorReplaceEnabled'),
-        u_colorReplaceSource: gl.getUniformLocation(program, 'u_colorReplaceSource'),
-        u_colorReplaceTarget: gl.getUniformLocation(program, 'u_colorReplaceTarget'),
-        u_colorReplaceThreshold: gl.getUniformLocation(program, 'u_colorReplaceThreshold'),
-        // Gamma & Vignette
-        u_gamma: gl.getUniformLocation(program, 'u_gamma'),
-        u_vignetteAmount: gl.getUniformLocation(program, 'u_vignetteAmount'),
-        u_vignetteSize: gl.getUniformLocation(program, 'u_vignetteSize'),
-        u_vignetteFeather: gl.getUniformLocation(program, 'u_vignetteFeather'),
-    };
-
-    // Create quad VAO
-    const vao = gl.createVertexArray();
-    if (!vao) throw new Error('Failed to create VAO');
-
-    gl.bindVertexArray(vao);
-
-    const positionBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        -1, -1,
-        1, -1,
-        -1, 1,
-        1, 1,
-    ]), gl.STATIC_DRAW);
-
-    const positionLoc = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(positionLoc);
-    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
-
-    gl.bindVertexArray(null);
+    const pipeline = effectContextManager.getPipeline(gl);
 
     let baseTex: WebGLTexture | null = null;
     try {
@@ -561,36 +604,28 @@ export async function renderCardWithOverridesWorker(
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
-        gl.useProgram(program);
+        gl.useProgram(pipeline.program);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, baseTex);
-        gl.uniform1i(uniforms.u_baseTexture, 0);
+        gl.uniform1i(pipeline.uniforms.u_baseTexture, 0);
 
-        updateUniforms(gl, uniforms, params, width, height);
+        updateUniforms(gl, pipeline.uniforms, params, width, height);
 
-        gl.bindVertexArray(vao);
+        gl.bindVertexArray(pipeline.vao);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.bindVertexArray(null);
 
         // Get blob from OffscreenCanvas
         const blob = await canvas.convertToBlob({ type: 'image/png' });
 
-        // Cleanup per-render resources only - keep context alive for next render
+        // Cleanup per-render resources only - keep immutable pipeline/context for next render
         gl.deleteTexture(baseTex);
-        gl.deleteBuffer(positionBuffer);
-        gl.deleteVertexArray(vao);
-        gl.deleteProgram(program);
-        // Do NOT release context - it will be reused for the next render
 
         return blob;
     } catch (err) {
-        // Cleanup on error - release per-render resources but keep context
+        // Cleanup per-render resources but keep immutable pipeline/context
         if (baseTex) gl.deleteTexture(baseTex);
-        gl.deleteBuffer(positionBuffer);
-        gl.deleteVertexArray(vao);
-        gl.deleteProgram(program);
-        // Do NOT release context on error - it can still be reused
         throw err;
     }
 }

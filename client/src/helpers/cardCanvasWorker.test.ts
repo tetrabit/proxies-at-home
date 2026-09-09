@@ -551,6 +551,61 @@ describe("cardCanvasWorker", () => {
             expect(mockGl.viewport).toHaveBeenCalledWith(0, 0, 120, 80);
         });
 
+        it("should retain one immutable pipeline per context and dispose it exactly once after loss", async () => {
+            const glMock = mockGl as unknown as {
+                createShader: ReturnType<typeof vi.fn>;
+                createProgram: ReturnType<typeof vi.fn>;
+                createVertexArray: ReturnType<typeof vi.fn>;
+                createBuffer: ReturnType<typeof vi.fn>;
+                createTexture: ReturnType<typeof vi.fn>;
+                deleteShader: ReturnType<typeof vi.fn>;
+                deleteProgram: ReturnType<typeof vi.fn>;
+                deleteVertexArray: ReturnType<typeof vi.fn>;
+                deleteBuffer: ReturnType<typeof vi.fn>;
+                deleteTexture: ReturnType<typeof vi.fn>;
+            };
+
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            const [vertexShader, fragmentShader] = glMock.createShader.mock.results.map(({ value }) => value);
+            const firstProgram = glMock.createProgram.mock.results[0].value;
+            const firstVao = glMock.createVertexArray.mock.results[0].value;
+            const firstBuffer = glMock.createBuffer.mock.results[0].value;
+            const firstTextures = glMock.createTexture.mock.results.map(({ value }) => value);
+
+            expect(glMock.createShader).toHaveBeenCalledTimes(2);
+            expect(glMock.createProgram).toHaveBeenCalledTimes(1);
+            expect(glMock.createVertexArray).toHaveBeenCalledTimes(1);
+            expect(glMock.createBuffer).toHaveBeenCalledTimes(1);
+            expect(glMock.deleteShader.mock.calls).toEqual([[vertexShader], [fragmentShader]]);
+            expect(glMock.deleteTexture.mock.calls).toEqual(firstTextures.map((texture) => [texture]));
+            expect(glMock.deleteProgram).not.toHaveBeenCalled();
+            expect(glMock.deleteVertexArray).not.toHaveBeenCalled();
+            expect(glMock.deleteBuffer).not.toHaveBeenCalled();
+
+            const lostHandler = mockCanvasInstances[0].addEventListener.mock.calls
+                .find(([eventName]) => eventName === "webglcontextlost")?.[1] as ((event: Event) => void);
+            const event = { preventDefault: vi.fn() } as unknown as Event;
+            lostHandler(event);
+            lostHandler(event);
+
+            expect(event.preventDefault).toHaveBeenCalledTimes(2);
+            expect(glMock.deleteProgram.mock.calls).toEqual([[firstProgram]]);
+            expect(glMock.deleteVertexArray.mock.calls).toEqual([[firstVao]]);
+            expect(glMock.deleteBuffer.mock.calls).toEqual([[firstBuffer]]);
+            expect(glMock.deleteShader.mock.calls).toEqual([[vertexShader], [fragmentShader]]);
+            expect(glMock.deleteTexture.mock.calls).toEqual(firstTextures.map((texture) => [texture]));
+
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            expect(mockCanvasInstances).toHaveLength(2);
+            expect(glMock.createShader).toHaveBeenCalledTimes(4);
+            expect(glMock.createProgram).toHaveBeenCalledTimes(2);
+            expect(glMock.createVertexArray).toHaveBeenCalledTimes(2);
+            expect(glMock.createBuffer).toHaveBeenCalledTimes(2);
+        });
+
         it("should recreate the context after a silent context loss", async () => {
             await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
             (mockGl.isContextLost as ReturnType<typeof vi.fn>).mockReturnValueOnce(true);
@@ -571,6 +626,28 @@ describe("cardCanvasWorker", () => {
 
             expect(event.preventDefault).toHaveBeenCalled();
             expect(mockCanvasInstances).toHaveLength(2);
+        });
+
+        it("should dispose a retained pipeline exactly once when reset repeatedly", async () => {
+            const glMock = mockGl as unknown as {
+                createProgram: ReturnType<typeof vi.fn>;
+                createVertexArray: ReturnType<typeof vi.fn>;
+                createBuffer: ReturnType<typeof vi.fn>;
+                deleteProgram: ReturnType<typeof vi.fn>;
+                deleteVertexArray: ReturnType<typeof vi.fn>;
+                deleteBuffer: ReturnType<typeof vi.fn>;
+            };
+            await renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS);
+
+            const program = glMock.createProgram.mock.results[0].value;
+            const vao = glMock.createVertexArray.mock.results[0].value;
+            const buffer = glMock.createBuffer.mock.results[0].value;
+            resetEffectContextManager();
+            resetEffectContextManager();
+
+            expect(glMock.deleteProgram.mock.calls).toEqual([[program]]);
+            expect(glMock.deleteVertexArray.mock.calls).toEqual([[vao]]);
+            expect(glMock.deleteBuffer.mock.calls).toEqual([[buffer]]);
         });
 
         it("should call uniform1f for rendering parameters", async () => {
@@ -621,18 +698,35 @@ describe("cardCanvasWorker", () => {
 
             await expect(renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS))
                 .rejects.toThrow("Failed to create VAO");
+
+            expect(mockGl.deleteProgram).toHaveBeenCalledTimes(1);
+            expect(mockGl.deleteVertexArray).not.toHaveBeenCalled();
+            expect(mockGl.deleteBuffer).not.toHaveBeenCalled();
+            expect(mockGl.deleteShader).toHaveBeenCalledTimes(2);
         });
 
-        it("should clean up WebGL resources after rendering", async () => {
+        it("should clean up created pipeline resources when position-buffer construction fails", async () => {
+            (mockGl.createBuffer as ReturnType<typeof vi.fn>).mockReturnValue(null);
+
+            await expect(renderCardWithOverridesWorker({ width: 100, height: 100 } as ImageBitmap, DEFAULT_RENDER_PARAMS))
+                .rejects.toThrow("Failed to create position buffer");
+
+            expect(mockGl.deleteProgram).toHaveBeenCalledTimes(1);
+            expect(mockGl.deleteVertexArray).toHaveBeenCalledTimes(1);
+            expect(mockGl.deleteBuffer).not.toHaveBeenCalled();
+            expect(mockGl.deleteShader).toHaveBeenCalledTimes(2);
+        });
+
+        it("should clean up only the per-render texture after rendering", async () => {
             const mockBitmap = { width: 100, height: 100 } as ImageBitmap;
 
             await renderCardWithOverridesWorker(mockBitmap, DEFAULT_RENDER_PARAMS);
 
             const glMock = mockGl as unknown as { deleteTexture: ReturnType<typeof vi.fn>; deleteBuffer: ReturnType<typeof vi.fn>; deleteVertexArray: ReturnType<typeof vi.fn>; deleteProgram: ReturnType<typeof vi.fn> };
             expect(glMock.deleteTexture).toHaveBeenCalled();
-            expect(glMock.deleteBuffer).toHaveBeenCalled();
-            expect(glMock.deleteVertexArray).toHaveBeenCalled();
-            expect(glMock.deleteProgram).toHaveBeenCalled();
+            expect(glMock.deleteBuffer).not.toHaveBeenCalled();
+            expect(glMock.deleteVertexArray).not.toHaveBeenCalled();
+            expect(glMock.deleteProgram).not.toHaveBeenCalled();
         });
 
         it("should apply brightness adjustment", async () => {
@@ -698,9 +792,10 @@ describe("cardCanvasWorker", () => {
             await expect(renderCardWithOverridesWorker(mockBitmap, DEFAULT_RENDER_PARAMS))
                 .rejects.toThrow("Failed to create texture");
 
-            // Verify cleanup was called
-            expect(errorGl.deleteVertexArray).toHaveBeenCalled();
-            expect(errorGl.deleteProgram).toHaveBeenCalled();
+            // The immutable pipeline remains owned by its valid context.
+            expect(errorGl.deleteTexture).not.toHaveBeenCalled();
+            expect(errorGl.deleteVertexArray).not.toHaveBeenCalled();
+            expect(errorGl.deleteProgram).not.toHaveBeenCalled();
         });
 
         it("should delete the base texture when canvas blob conversion fails", async () => {
@@ -711,9 +806,9 @@ describe("cardCanvasWorker", () => {
                 .rejects.toThrow("blob failed");
 
             expect(mockGl.deleteTexture).toHaveBeenCalled();
-            expect(mockGl.deleteBuffer).toHaveBeenCalled();
-            expect(mockGl.deleteVertexArray).toHaveBeenCalled();
-            expect(mockGl.deleteProgram).toHaveBeenCalled();
+            expect(mockGl.deleteBuffer).not.toHaveBeenCalled();
+            expect(mockGl.deleteVertexArray).not.toHaveBeenCalled();
+            expect(mockGl.deleteProgram).not.toHaveBeenCalled();
         });
     });
 });
