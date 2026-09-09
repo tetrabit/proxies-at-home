@@ -5,36 +5,57 @@ import path from "node:path";
 const repoRoot = process.cwd();
 const pkgDir = path.join(repoRoot, "shared", "scryfall-client");
 const distDir = path.join(pkgDir, "dist");
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
-function hasBuiltArtifacts() {
-  return (
-    fs.existsSync(path.join(distDir, "index.js")) &&
-    fs.existsSync(path.join(distDir, "index.d.ts"))
-  );
+// These are the package manifest/lockfile plus every compiler input named by
+// shared/scryfall-client/tsconfig.build.json. The lockfile pins the TypeScript
+// compiler, so a compiler upgrade also invalidates a prior dist build.
+const buildInputs = [
+  "package.json",
+  "package-lock.json",
+  "tsconfig.build.json",
+  "index.ts",
+  "schema.d.ts",
+].map((relativePath) => path.join(pkgDir, relativePath));
+const buildArtifacts = ["index.js", "index.d.ts", "schema.d.ts"].map((relativePath) =>
+  path.join(distDir, relativePath),
+);
+
+function allExist(filePaths) {
+  return filePaths.every((filePath) => fs.existsSync(filePath));
+}
+
+function hasCurrentBuild() {
+  if (!allExist(buildArtifacts)) {
+    return false;
+  }
+
+  const newestInput = Math.max(...buildInputs.map((filePath) => fs.statSync(filePath).mtimeMs));
+  const oldestArtifact = Math.min(...buildArtifacts.map((filePath) => fs.statSync(filePath).mtimeMs));
+  return newestInput <= oldestArtifact;
 }
 
 function run(cmd, args) {
   execFileSync(cmd, args, { stdio: "inherit" });
 }
 
-if (!fs.existsSync(path.join(pkgDir, "package.json"))) {
-  console.error("[ensure-scryfall-client-built] Missing shared/scryfall-client/package.json");
+if (!allExist(buildInputs)) {
+  console.error("[ensure-scryfall-client-built] Missing shared/scryfall-client build input.");
   process.exit(1);
 }
 
-if (hasBuiltArtifacts()) {
+if (hasCurrentBuild()) {
   process.exit(0);
 }
 
-console.log("[ensure-scryfall-client-built] Building shared/scryfall-client (dist missing)...");
+console.log("[ensure-scryfall-client-built] Building shared/scryfall-client (dist missing or stale)...");
 
-// This package is a local file: dependency for client/server. Its dist must exist
-// so TS + bundlers can resolve the package's exports/types.
-run("npm", ["ci", "--prefix", pkgDir]);
-run("npm", ["run", "build", "--prefix", pkgDir]);
+// This package is a local file: dependency for client/server. Its dist must be
+// current so TypeScript + bundlers can resolve the package's exports/types.
+run(npmCommand, ["run", "build", "--prefix", pkgDir]);
 
-if (!hasBuiltArtifacts()) {
-  console.error("[ensure-scryfall-client-built] Build completed but dist artifacts are still missing.");
+if (!hasCurrentBuild()) {
+  console.error("[ensure-scryfall-client-built] Build completed but dist artifacts are still missing or stale.");
   process.exit(1);
 }
 
