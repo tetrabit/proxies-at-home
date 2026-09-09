@@ -1,10 +1,11 @@
 // @vitest-environment node
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { atomicallyReplace } from "./promote-preferences.ts";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "../..");
@@ -19,7 +20,7 @@ async function createExclusiveArtifactDirectory(): Promise<string> {
   for (let id = 1; ; id += 1) {
     const candidate = path.join(
       artifactRoot,
-      `preference-promotion-validation-${String(id).padStart(2, "0")}`
+      `promotion-atomic-failure-${String(id).padStart(2, "0")}`
     );
 
     try {
@@ -76,6 +77,89 @@ afterAll(() => {
 });
 
 describe("preference promotion CLI", { retry: 0 }, () => {
+  it("cleans only its generated temporary target after a partial write failure", async () => {
+    const destinationPath = path.join(artifactDirectory, "partial-write-destination.json");
+    const priorBytes = "retained-partial-write-destination\n";
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    const diskFullError = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    const writeTemporaryFile = vi.fn().mockRejectedValue(diskFullError);
+    const removeTemporaryFile = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile,
+        renameTemporaryFile: vi.fn(),
+        removeTemporaryFile,
+      })
+    ).rejects.toBe(diskFullError);
+
+    const temporaryPath = writeTemporaryFile.mock.calls[0]?.[0];
+    expect(temporaryPath).toMatch(
+      new RegExp(`^${path.dirname(destinationPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.${path.basename(destinationPath)}\\.[0-9a-f-]{36}\\.tmp$`)
+    );
+    expect(removeTemporaryFile).toHaveBeenCalledExactlyOnceWith(temporaryPath);
+    expect(removeTemporaryFile).not.toHaveBeenCalledWith(destinationPath);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("reports a cleanup failure instead of silently retaining its temporary target", async () => {
+    const destinationPath = path.join(artifactDirectory, "cleanup-failure-destination.json");
+    const writeError = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    const cleanupError = new Error("cleanup failed");
+    const writeTemporaryFile = vi.fn().mockRejectedValue(writeError);
+    const removeTemporaryFile = vi.fn().mockRejectedValue(cleanupError);
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile,
+        renameTemporaryFile: vi.fn(),
+        removeTemporaryFile,
+      })
+    ).rejects.toBe(cleanupError);
+
+    expect(removeTemporaryFile).toHaveBeenCalledExactlyOnceWith(
+      writeTemporaryFile.mock.calls[0]?.[0]
+    );
+  });
+
+  it("cleans only its generated temporary target after a rename failure", async () => {
+    const destinationPath = path.join(artifactDirectory, "rename-failure-destination.json");
+    const priorBytes = "retained-rename-failure-destination\n";
+    await writeFile(destinationPath, priorBytes, "utf8");
+
+    const renameError = Object.assign(new Error("rename failed"), { code: "EEXIST" });
+    const writeTemporaryFile = vi.fn().mockResolvedValue(undefined);
+    const renameTemporaryFile = vi.fn().mockRejectedValue(renameError);
+    const removeTemporaryFile = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      atomicallyReplace(destinationPath, "replacement\n", {
+        writeTemporaryFile,
+        renameTemporaryFile,
+        removeTemporaryFile,
+      })
+    ).rejects.toBe(renameError);
+
+    const temporaryPath = writeTemporaryFile.mock.calls[0]?.[0];
+    expect(renameTemporaryFile).toHaveBeenCalledExactlyOnceWith(temporaryPath, destinationPath);
+    expect(removeTemporaryFile).toHaveBeenCalledExactlyOnceWith(temporaryPath);
+    expect(removeTemporaryFile).not.toHaveBeenCalledWith(destinationPath);
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(priorBytes);
+  });
+
+  it("writes through an exclusive UUID temporary file and reads back the promoted bytes", async () => {
+    const destinationPath = path.join(artifactDirectory, "success-readback-destination.json");
+    const promotedBytes = "promoted-success-readback\n";
+
+    await atomicallyReplace(destinationPath, promotedBytes);
+
+    await expect(readFile(destinationPath, "utf8")).resolves.toBe(promotedBytes);
+    await expect(readdir(artifactDirectory)).resolves.not.toContain(
+      expect.stringMatching(/^\.success-readback-destination\.json\.[0-9a-f-]{36}\.tmp$/)
+    );
+  });
+
   it.each([
     [
       "versioned",
