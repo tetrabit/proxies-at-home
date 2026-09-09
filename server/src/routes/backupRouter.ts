@@ -1,15 +1,10 @@
 /**
- * Backup Router — automatic project backup endpoints
- *
- * PUT  /api/backup/:projectId  — Upsert a project backup (gzipped)
- * GET  /api/backup/:projectId  — Retrieve a project backup
- * GET  /api/backup             — List all backups (metadata only)
- * DELETE /api/backup/:projectId — Delete a backup
+ * Backup Router — automatic project backup endpoints.
  */
 
-import { Router, type RequestHandler } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { createPrivateRouteAuth, type PrivateCapability } from '../auth/privateRouteAuth.js';
-import { getDatabase } from '../db/db.js';
+import { getDatabase, LEGACY_UNASSIGNED_OWNER_ID } from '../db/db.js';
 import { gzipSync, gunzipSync } from 'zlib';
 
 type PrivateRouteAuth = {
@@ -24,17 +19,23 @@ const denyAllPrivateRouteAuth = createPrivateRouteAuth({
     verifyBearer: () => null,
 });
 
+function getBackupOwnerId(req: Request, res: Response): string | null {
+    const ownerId = req.privateIdentity?.ownerId;
+    if (!ownerId || ownerId === LEGACY_UNASSIGNED_OWNER_ID) {
+        res.status(403).json({ error: 'forbidden' });
+        return null;
+    }
+    return ownerId;
+}
+
 export function createBackupRouter(options: BackupRouterOptions = {}) {
     const router = Router();
     const privateRouteAuth = options.privateRouteAuth ?? denyAllPrivateRouteAuth;
 
-    /**
-     * PUT /api/backup/:projectId
-     * Create or update a project backup.
-     * Body: { data: ProjectBackup object, projectName: string, cardCount: number }
-     */
     router.put('/:projectId', privateRouteAuth.private('backup:write'), (req, res) => {
         try {
+            const ownerId = getBackupOwnerId(req, res);
+            if (ownerId === null) return;
             const { projectId } = req.params;
             const { data, projectName, cardCount } = req.body;
 
@@ -42,84 +43,64 @@ export function createBackupRouter(options: BackupRouterOptions = {}) {
                 res.status(400).json({ error: 'Invalid project ID' });
                 return;
             }
-
             if (!data || typeof data !== 'object') {
                 res.status(400).json({ error: 'Missing or invalid backup data' });
                 return;
             }
 
-            const db = getDatabase();
             const now = Date.now();
-
-            // Serialize and compress
-            const jsonStr = JSON.stringify(data);
-            const compressed = gzipSync(Buffer.from(jsonStr, 'utf-8'));
-
+            const compressed = gzipSync(Buffer.from(JSON.stringify(data), 'utf-8'));
             const name = projectName || data.project?.name || 'Unknown Project';
             const count = typeof cardCount === 'number' ? cardCount : 0;
+            const db = getDatabase();
+            const existing = db.prepare(
+                'SELECT project_id FROM backups WHERE owner_id = ? AND project_id = ?',
+            ).get(ownerId, projectId);
 
-            // UPSERT
-            const existing = db.prepare('SELECT project_id FROM backups WHERE project_id = ?').get(projectId);
-            if (existing) {
-                db.prepare(
-                    'UPDATE backups SET project_name = ?, data = ?, card_count = ?, updated_at = ? WHERE project_id = ?'
-                ).run(name, compressed, count, now, projectId);
-                console.log(`[Backup] Updated backup for "${name}" (${(compressed.length / 1024).toFixed(1)} KB)`);
-            } else {
-                db.prepare(
-                    'INSERT INTO backups (project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-                ).run(projectId, name, compressed, count, now, now);
-                console.log(`[Backup] Created backup for "${name}" (${(compressed.length / 1024).toFixed(1)} KB)`);
-            }
+            db.prepare(
+                `INSERT INTO backups (owner_id, project_id, project_name, data, card_count, updated_at, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(owner_id, project_id) DO UPDATE SET
+                   project_name = excluded.project_name,
+                   data = excluded.data,
+                   card_count = excluded.card_count,
+                   updated_at = excluded.updated_at`,
+            ).run(ownerId, projectId, name, compressed, count, now, now);
+            console.log(`[Backup] ${existing ? 'Updated' : 'Created'} backup for "${name}" (${(compressed.length / 1024).toFixed(1)} KB)`);
 
-            res.json({
-                projectId,
-                projectName: name,
-                cardCount: count,
-                updatedAt: now,
-                sizeBytes: compressed.length,
-            });
+            res.json({ projectId, projectName: name, cardCount: count, updatedAt: now, sizeBytes: compressed.length });
         } catch (error) {
             console.error('[Backup] Error saving backup:', error);
             res.status(500).json({ error: 'Failed to save backup' });
         }
     });
 
-    /**
-     * GET /api/backup/:projectId
-     * Retrieve a project backup.
-     */
     router.get('/:projectId', privateRouteAuth.private('backup:read'), (req, res) => {
         try {
+            const ownerId = getBackupOwnerId(req, res);
+            if (ownerId === null) return;
             const { projectId } = req.params;
-
             if (!projectId || projectId.length < 8) {
                 res.status(400).json({ error: 'Invalid project ID' });
                 return;
             }
 
-            const db = getDatabase();
-            const row = db.prepare(
-                'SELECT data, project_name, card_count, updated_at, created_at FROM backups WHERE project_id = ?'
-            ).get(projectId) as {
+            const row = getDatabase().prepare(
+                'SELECT data, project_name, card_count, updated_at, created_at FROM backups WHERE owner_id = ? AND project_id = ?',
+            ).get(ownerId, projectId) as {
                 data: Buffer;
                 project_name: string;
                 card_count: number;
                 updated_at: number;
                 created_at: number;
             } | undefined;
-
             if (!row) {
-                res.status(404).json({ error: 'Backup not found' });
+                res.status(404).json({ error: 'not_found' });
                 return;
             }
 
-            // Decompress and parse
-            const decompressed = gunzipSync(row.data).toString('utf-8');
-            const data = JSON.parse(decompressed);
-
             res.json({
-                data,
+                data: JSON.parse(gunzipSync(row.data).toString('utf-8')),
                 projectName: row.project_name,
                 cardCount: row.card_count,
                 updatedAt: row.updated_at,
@@ -131,16 +112,13 @@ export function createBackupRouter(options: BackupRouterOptions = {}) {
         }
     });
 
-    /**
-     * GET /api/backup
-     * List all backups (metadata only, no data payload).
-     */
-    router.get('/', privateRouteAuth.private('backup:read'), (_req, res) => {
+    router.get('/', privateRouteAuth.private('backup:read'), (req, res) => {
         try {
-            const db = getDatabase();
-            const rows = db.prepare(
-                'SELECT project_id, project_name, card_count, updated_at, created_at, length(data) as size_bytes FROM backups ORDER BY updated_at DESC'
-            ).all() as Array<{
+            const ownerId = getBackupOwnerId(req, res);
+            if (ownerId === null) return;
+            const rows = getDatabase().prepare(
+                'SELECT project_id, project_name, card_count, updated_at, created_at, length(data) as size_bytes FROM backups WHERE owner_id = ? ORDER BY updated_at DESC',
+            ).all(ownerId) as Array<{
                 project_id: string;
                 project_name: string;
                 card_count: number;
@@ -148,9 +126,8 @@ export function createBackupRouter(options: BackupRouterOptions = {}) {
                 created_at: number;
                 size_bytes: number;
             }>;
-
             res.json({
-                backups: rows.map(row => ({
+                backups: rows.map((row) => ({
                     projectId: row.project_id,
                     projectName: row.project_name,
                     cardCount: row.card_count,
@@ -165,27 +142,23 @@ export function createBackupRouter(options: BackupRouterOptions = {}) {
         }
     });
 
-    /**
-     * DELETE /api/backup/:projectId
-     * Delete a backup.
-     */
     router.delete('/:projectId', privateRouteAuth.private('backup:write'), (req, res) => {
         try {
+            const ownerId = getBackupOwnerId(req, res);
+            if (ownerId === null) return;
             const { projectId } = req.params;
-
             if (!projectId || projectId.length < 8) {
                 res.status(400).json({ error: 'Invalid project ID' });
                 return;
             }
 
-            const db = getDatabase();
-            const result = db.prepare('DELETE FROM backups WHERE project_id = ?').run(projectId);
-
+            const result = getDatabase().prepare(
+                'DELETE FROM backups WHERE owner_id = ? AND project_id = ?',
+            ).run(ownerId, projectId);
             if (result.changes === 0) {
-                res.status(404).json({ error: 'Backup not found' });
+                res.status(404).json({ error: 'not_found' });
                 return;
             }
-
             console.log(`[Backup] Deleted backup for project ${projectId}`);
             res.json({ deleted: true });
         } catch (error) {

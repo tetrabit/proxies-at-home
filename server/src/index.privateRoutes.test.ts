@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
 vi.mock('./db/db.js', () => ({
   initDatabase: vi.fn(),
   getDatabase: state.getDatabase,
+  LEGACY_UNASSIGNED_OWNER_ID: 'legacy-unassigned',
 }));
 vi.mock('./services/importScheduler.js', () => ({ startImportScheduler: vi.fn() }));
 vi.mock('./utils/scryfallCatalog.js', () => ({ initCatalogs: vi.fn() }));

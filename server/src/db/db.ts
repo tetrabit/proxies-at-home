@@ -8,7 +8,8 @@ fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
 const DB_PATH = path.join(DATA_DIRECTORY, 'proxxied-cards.db');
 
 // Current schema version - increment when adding migrations
-const CURRENT_DB_VERSION = 6;
+const CURRENT_DB_VERSION = 7;
+export const LEGACY_UNASSIGNED_OWNER_ID = 'legacy-unassigned';
 
 // Migration definitions - each entry upgrades from (version-1) to (version)
 // Add new migrations to the end of this array
@@ -122,6 +123,28 @@ const migrations: Migration[] = [
         updated_at INTEGER NOT NULL,     -- Last backup timestamp
         created_at INTEGER NOT NULL      -- First backup timestamp
       );`,
+    ],
+  },
+  {
+    version: 7,
+    description: 'Scope backups by owner while retaining unassigned legacy backups',
+    up: [
+      `CREATE TABLE backups_owner_scoped (
+        owner_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        data BLOB NOT NULL,
+        card_count INTEGER DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_id, project_id)
+      );`,
+      `INSERT INTO backups_owner_scoped (owner_id, project_id, project_name, data, card_count, updated_at, created_at)
+       SELECT '${LEGACY_UNASSIGNED_OWNER_ID}', project_id, project_name, data, card_count, updated_at, created_at
+       FROM backups;`,
+      'DROP TABLE backups;',
+      'ALTER TABLE backups_owner_scoped RENAME TO backups;',
+      'CREATE INDEX idx_backups_owner_updated_at ON backups(owner_id, updated_at DESC);',
     ],
   },
 ];
@@ -263,12 +286,14 @@ export function initDatabase(): Database.Database {
     );
 
     CREATE TABLE IF NOT EXISTS backups (
-      project_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
       project_name TEXT NOT NULL,
       data BLOB NOT NULL,
       card_count INTEGER DEFAULT 0,
       updated_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (owner_id, project_id)
     );
   `);
 
@@ -288,6 +313,7 @@ export function initDatabase(): Database.Database {
 
   // Run any pending migrations
   runMigrations(db);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_backups_owner_updated_at ON backups(owner_id, updated_at DESC);');
 
   console.log('[DB] SQLite database initialized at', DB_PATH);
   return db;
