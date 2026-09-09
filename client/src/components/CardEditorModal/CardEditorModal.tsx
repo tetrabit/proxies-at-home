@@ -64,7 +64,7 @@ interface Props {
     /** Which face to show initially */
     initialFace?: 'front' | 'back';
     onApply: (cardUuid: string, overrides: CardOption['overrides'], customBlob?: Blob) => Promise<void>;
-    onApplyToAll: (overrides: CardOption['overrides']) => void;
+    onApplyToAll: (overrides: CardOption['overrides']) => Promise<void>;
     /** Apply overrides to all selected cards (for multi-select edit mode) */
     onApplyToSelected?: (selectedUuids: string[], overrides: CardOption['overrides']) => Promise<void>;
     /** List of selected card UUIDs (for multi-select edit mode) */
@@ -395,11 +395,20 @@ export function CardEditorModal({
         }
     }, [card.uuid, backCard, frontParams, backParams, onApply, onApplyToSelected, selectedCardUuids, onClose]);
 
-    const handleApplyToAll = useCallback(() => {
-        // Use current face's params for "Apply to All"
-        const overrides = paramsToOverrides(params);
-        onApplyToAll(overrides);
-        onClose();
+    const handleApplyToAll = useCallback(async () => {
+        setIsApplying(true);
+        setApplyError(null);
+        try {
+            // Use current face's params for "Apply to All".
+            const overrides = paramsToOverrides(params);
+            await onApplyToAll(overrides);
+            onClose();
+        } catch (err) {
+            console.error('[CardEditorModal] Apply to all failed:', err);
+            setApplyError(err instanceof Error ? err.message : 'Unable to apply overrides to all cards');
+        } finally {
+            setIsApplying(false);
+        }
     }, [params, onApplyToAll, onClose]);
 
     const handleReset = useCallback(async () => {
@@ -764,6 +773,7 @@ export function CardEditorModal({
                         <Button
                             color="light"
                             onClick={handleApplyToAll}
+                            disabled={isApplying}
                         >
                             Apply to All
                         </Button>

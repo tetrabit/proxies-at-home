@@ -12,7 +12,7 @@ import type { CardOption } from '../../../../shared/types';
 
 type MockModalProps = {
     onApply: (uuid: string, overrides: unknown) => Promise<void>;
-    onApplyToAll: (overrides: unknown) => void;
+    onApplyToAll: (overrides: unknown) => Promise<void>;
     onApplyToSelected: (uuids: string[], overrides: unknown) => Promise<void>;
     onClose: () => void;
     card: { uuid: string };
@@ -207,6 +207,25 @@ describe('CardEditorModalWrapper', () => {
         // Wait for setTimeout
         await new Promise(resolve => setTimeout(resolve, 10));
         expect(effectCache.queueBulkPreRender).toHaveBeenCalled();
+    });
+
+    it('rejects apply-all without an editor project before any project query', async () => {
+        mockLiveQuery
+            .mockReturnValueOnce({ uuid: 'test-uuid', imageId: 'test-img' })
+            .mockReturnValueOnce({ id: 'test-img' })
+            .mockReturnValueOnce(undefined)
+            .mockReturnValueOnce(undefined);
+
+        render(<CardEditorModalWrapper />);
+
+        const applyToAll = latestModalProps?.onApplyToAll;
+        if (!applyToAll) throw new Error('Expected apply-all callback');
+
+        await expect(applyToAll({ brightness: 1.5 }))
+            .rejects.toThrow('Cannot apply overrides without an editor project');
+        expect(db.cards.where).not.toHaveBeenCalled();
+        expect(db.cards.bulkPut).not.toHaveBeenCalled();
+        expect(effectCache.queueBulkPreRender).not.toHaveBeenCalled();
     });
 
     it('applies all overrides and queues pre-renders only for the captured card project', async () => {

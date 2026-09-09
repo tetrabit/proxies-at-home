@@ -25,12 +25,12 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/db';
-import { API_BASE } from '@/constants';
 import { useProjectStore } from '@/store';
 import { exportProject } from '@/helpers/projectBackup';
 import { inferImageSource } from '@/helpers/imageSourceUtils';
 import { backupContentDigest } from '@/helpers/backupContentDigest';
 import { debugLog } from '@/helpers/debug';
+import { privateFetch } from '@/helpers/privateTransport';
 
 /** Debounce delay — how long to wait after the last change before backing up */
 const DEBOUNCE_MS = 30_000; // 30 seconds
@@ -71,7 +71,7 @@ async function uploadBackup(
     const mainCards = backup.cards.filter((c) => !c.linkedFrontId);
     if (mainCards.length === 0) return true; // Not an error, just nothing to save
 
-    const response = await fetch(`${API_BASE}/api/backup/${projectId}`, {
+    const response = await privateFetch(`/api/backup/${encodeURIComponent(projectId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -350,26 +350,4 @@ export function useAutoBackup(): void {
     return () => clearInterval(interval);
   }, []);
 
-  // Backup on page unload (best-effort, may not complete)
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (!currentProjectId || inFlight.current) return;
-      // Use sendBeacon for fire-and-forget on unload
-      // Note: sendBeacon has a 64KB limit, so this may fail for large projects
-      // That's fine — the debounced timer will have already saved recent changes
-      try {
-        // We can't use exportProject here (async), but we can signal the server
-        // to keep the last backup. This is just a best-effort marker.
-        navigator.sendBeacon(
-          `${API_BASE}/api/backup/${currentProjectId}`,
-          new Blob([], { type: 'application/json' })
-        );
-      } catch {
-        // Ignore — best effort
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [currentProjectId]);
 }

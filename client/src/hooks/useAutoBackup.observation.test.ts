@@ -8,10 +8,6 @@ const mockFetch = vi.hoisted(() => vi.fn());
 const mockUseProjectStore = vi.hoisted(() => vi.fn());
 let currentProjectId = 'project-observation';
 
-vi.mock('@/constants', () => ({
-  API_BASE: 'http://example.test',
-}));
-
 vi.mock('@/store', () => ({
   useProjectStore: mockUseProjectStore,
 }));
@@ -70,6 +66,12 @@ describe('useAutoBackup Dexie observation', () => {
     mockUseProjectStore.mockImplementation((selector) => selector({ currentProjectId }));
     mockFetch.mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', mockFetch);
+    vi.stubGlobal('electronAPI', {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: 'http://127.0.0.1:4555',
+        bearer: 'auto-backup-observation-test-bearer',
+      }),
+    });
   });
 
   afterEach(async () => {

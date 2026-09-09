@@ -1068,6 +1068,41 @@ describe('effectCache', () => {
             resolveRenders.forEach(resolve => resolve(new Blob(['rendered'])));
             await expect(renders).resolves.toEqual([undefined, undefined]);
         });
+
+        it('keeps the newer persisted rendition when an obsolete render settles last', async () => {
+            const imageId = 'td-48e40b-superseded-rendition-generation';
+            const processor = liveGetEffectProcessor();
+            const resolveRenders: Array<(blob: Blob) => void> = [];
+            const render = vi.spyOn(processor, 'process').mockImplementation(() => new Promise(resolve => {
+                resolveRenders.push(resolve);
+            }));
+            const card = {
+                name: 'Adjusted',
+                order: 0,
+                isUserUpload: false,
+                imageId,
+                overrides: { brightness: 1 },
+            };
+
+            const obsolete = livePreRenderEffect({ ...card, uuid: 'td-48e40b-obsolete' }, new Blob(['old source revision'], { type: 'image/png' }));
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(1));
+            const current = livePreRenderEffect({ ...card, uuid: 'td-48e40b-current' }, new Blob(['new source revision'], { type: 'image/png' }));
+            await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(2));
+
+            const currentRendered = new Blob(['new rendered revision'], { type: 'image/png' });
+            const obsoleteRendered = new Blob(['old'], { type: 'image/png' });
+            expect(currentRendered.size).not.toBe(obsoleteRendered.size);
+            resolveRenders[1](currentRendered);
+            await expect(current).resolves.toBeUndefined();
+            const persistedAfterCurrent = await liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).first();
+            expect(persistedAfterCurrent).toMatchObject({ size: currentRendered.size });
+
+            resolveRenders[0](obsoleteRendered);
+            await expect(obsolete).resolves.toBeUndefined();
+            const persistedAfterObsolete = await liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).first();
+            expect(persistedAfterObsolete).toMatchObject({ size: currentRendered.size });
+            await expect(liveDb.effectCache.filter(entry => entry.key.startsWith(`${imageId}:300:`)).count()).resolves.toBe(1);
+        });
     });
 
     describe('explicit-DPI persistence', () => {

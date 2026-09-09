@@ -12,6 +12,7 @@
 import { db, type Project } from '../db';
 import type { CardOption } from '@/types';
 import { inferImageSource } from './imageSourceUtils';
+import { privateFetch } from './privateTransport';
 
 // ============================================================================
 // Schema
@@ -552,8 +553,6 @@ export function pickBackupFile(): Promise<ProjectBackup | null> {
 // Server backup API helpers
 // ============================================================================
 
-import { API_BASE } from '@/constants';
-
 /** Metadata for a server-side backup (no data payload) */
 export interface BackupMeta {
   projectId: string;
@@ -568,7 +567,7 @@ export interface BackupMeta {
  * List all backups stored on the server (metadata only).
  */
 export async function listServerBackups(): Promise<BackupMeta[]> {
-  const response = await fetch(`${API_BASE}/api/backup`);
+  const response = await privateFetch('/api/backup');
   if (!response.ok) {
     throw new Error('Failed to list server backups');
   }
@@ -580,7 +579,7 @@ export async function listServerBackups(): Promise<BackupMeta[]> {
  * Fetch a full backup from the server by project ID.
  */
 export async function fetchServerBackup(projectId: string): Promise<ProjectBackup> {
-  const response = await fetch(`${API_BASE}/api/backup/${projectId}`);
+  const response = await privateFetch(`/api/backup/${encodeURIComponent(projectId)}`);
   if (!response.ok) {
     if (response.status === 404) {
       throw new Error('Backup not found on server');
@@ -595,7 +594,7 @@ export async function fetchServerBackup(projectId: string): Promise<ProjectBacku
  * Delete a backup from the server.
  */
 export async function deleteServerBackup(projectId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/backup/${projectId}`, {
+  const response = await privateFetch(`/api/backup/${encodeURIComponent(projectId)}`, {
     method: 'DELETE',
   });
   if (!response.ok && response.status !== 404) {

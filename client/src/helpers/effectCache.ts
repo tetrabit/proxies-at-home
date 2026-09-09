@@ -759,9 +759,49 @@ function destroyContentDigestQueue(): void {
     activeContentDigestTasks.forEach(task => settleContentDigestTask(task, destructionError));
 }
 
+interface RenditionGeneration {
+    value: number;
+}
+
+interface InFlightRendition {
+    completion: Promise<void>;
+    cacheEntryKey: string;
+    generation: RenditionGeneration;
+}
+
 const exportBlobContentDigests = new WeakMap<Blob, Promise<string>>();
-const inFlightRenditions = new Map<string, Promise<void>>();
+const inFlightRenditions = new Map<string, InFlightRendition>();
+// A cache key has no persisted source revision, so retain the latest requested
+// rendition generation in-memory. A stale renderer may finish normally, but it
+// must not replace the newer source revision at that key.
+const latestRenditionGenerationByCacheKey = new Map<string, number>();
+const pendingRenditionRequestsByCacheKey = new Map<string, number>();
+let nextRenditionGeneration = 0;
 let effectProcessorGeneration = 0;
+
+function advanceRenditionGeneration(cacheEntryKey: string): number {
+    const generation = ++nextRenditionGeneration;
+    latestRenditionGenerationByCacheKey.set(cacheEntryKey, generation);
+    pendingRenditionRequestsByCacheKey.set(
+        cacheEntryKey,
+        (pendingRenditionRequestsByCacheKey.get(cacheEntryKey) ?? 0) + 1
+    );
+    return generation;
+}
+
+function releaseRenditionGeneration(cacheEntryKey: string): void {
+    const pending = (pendingRenditionRequestsByCacheKey.get(cacheEntryKey) ?? 1) - 1;
+    if (pending > 0) {
+        pendingRenditionRequestsByCacheKey.set(cacheEntryKey, pending);
+        return;
+    }
+    pendingRenditionRequestsByCacheKey.delete(cacheEntryKey);
+    latestRenditionGenerationByCacheKey.delete(cacheEntryKey);
+}
+
+function isCurrentRenditionGeneration(cacheEntryKey: string, generation: number): boolean {
+    return latestRenditionGenerationByCacheKey.get(cacheEntryKey) === generation;
+}
 
 function getExportBlobContentDigest(exportBlob: Blob): Promise<string> {
     const existing = exportBlobContentDigests.get(exportBlob);
@@ -802,30 +842,53 @@ async function getOrCreatePreRender(
     overrides: CardOverrides,
     dpi: number
 ): Promise<void> {
-    const generation = effectProcessorGeneration;
-    const key = await computeInFlightRenditionKey(imageId, exportBlob, overrides, dpi);
-    if (generation !== effectProcessorGeneration) {
-        throw new Error('Effect processor destroyed');
-    }
-    const existing = inFlightRenditions.get(key);
-    if (existing) return existing;
-
-    const rendition = (async () => {
-        const params = overridesToRenderParams(overrides);
-        const renderedBlob = await EffectProcessor.getInstance().process(exportBlob, params);
-        await setEffectCacheEntry(imageId, overrides, renderedBlob, dpi);
-    })();
-
-    inFlightRenditions.set(key, rendition);
-    void rendition.then(
-        () => {
-            if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
-        },
-        () => {
-            if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
+    const processorGeneration = effectProcessorGeneration;
+    const cacheEntryKey = computeCacheKey(imageId, overrides, dpi);
+    const renditionGeneration = advanceRenditionGeneration(cacheEntryKey);
+    try {
+        const key = await computeInFlightRenditionKey(imageId, exportBlob, overrides, dpi);
+        if (processorGeneration !== effectProcessorGeneration) {
+            throw new Error('Effect processor destroyed');
         }
-    );
-    return rendition;
+        const existing = inFlightRenditions.get(key);
+        if (existing) {
+            // Equivalent source bytes share a renderer, but the newest request owns
+            // the target cache generation that its shared result may persist into.
+            existing.generation.value = renditionGeneration;
+            return existing.completion;
+        }
+
+        const generation = { value: renditionGeneration };
+        const completion = (async () => {
+            const params = overridesToRenderParams(overrides);
+            const renderedBlob = await EffectProcessor.getInstance().process(exportBlob, params);
+            if (
+                processorGeneration !== effectProcessorGeneration
+                || !isCurrentRenditionGeneration(cacheEntryKey, generation.value)
+            ) {
+                return;
+            }
+            await setEffectCacheEntry(imageId, overrides, renderedBlob, dpi);
+        })();
+        const rendition: InFlightRendition = {
+            cacheEntryKey,
+            generation,
+            completion,
+        };
+
+        inFlightRenditions.set(key, rendition);
+        void rendition.completion.then(
+            () => {
+                if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
+            },
+            () => {
+                if (inFlightRenditions.get(key) === rendition) inFlightRenditions.delete(key);
+            }
+        );
+        return await rendition.completion;
+    } finally {
+        releaseRenditionGeneration(cacheEntryKey);
+    }
 }
 
 function enforceEffectCacheLimitsSerially(): Promise<void> {

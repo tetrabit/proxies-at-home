@@ -15,10 +15,6 @@ vi.mock('@/helpers/projectBackup', async (importOriginal) => ({
   exportProject: mockExportProject,
 }));
 
-vi.mock('@/constants', () => ({
-  API_BASE: 'http://example.test',
-}));
-
 vi.mock('dexie-react-hooks', () => ({
   useLiveQuery: mockUseLiveQuery,
 }));
@@ -72,6 +68,12 @@ describe('useAutoBackup', () => {
     mockUseProjectStore.mockImplementation((selector) => selector({ currentProjectId }));
     mockUseLiveQuery.mockReturnValue(null);
     vi.stubGlobal('fetch', mockFetch);
+    vi.stubGlobal('electronAPI', {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: 'http://127.0.0.1:4555',
+        bearer: 'auto-backup-test-bearer',
+      }),
+    });
   });
 
   afterEach(async () => {
@@ -301,16 +303,20 @@ describe('useAutoBackup', () => {
   });
 
   it('backs up a project directly', async () => {
+    const projectId = 'project id';
     mockExportProject.mockResolvedValue({
       project: { name: 'Project 1' },
       cards: [{ linkedFrontId: null }],
     });
     mockFetch.mockResolvedValue({ ok: true });
 
-    await expect(backupProject('project-1')).resolves.toBe(true);
+    await expect(backupProject(projectId)).resolves.toBe(true);
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://example.test/api/backup/project-1',
-      expect.objectContaining({ method: 'PUT' })
+      'http://127.0.0.1:4555/api/backup/project%20id',
+      expect.objectContaining({ method: 'PUT', credentials: 'omit', redirect: 'error' })
+    );
+    expect(new Headers(mockFetch.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe(
+      'Bearer auto-backup-test-bearer'
     );
   });
 
@@ -363,7 +369,7 @@ describe('useAutoBackup', () => {
     expect(mockExportProject).not.toHaveBeenCalledWith('project-empty');
   });
 
-  it('sends a beacon on page unload when a project is active', () => {
+  it('does not send an unauthenticated beacon on page unload', () => {
     const sendBeacon = vi.fn();
     vi.stubGlobal('navigator', { sendBeacon });
 
@@ -371,10 +377,7 @@ describe('useAutoBackup', () => {
 
     window.dispatchEvent(new Event('beforeunload'));
 
-    expect(sendBeacon).toHaveBeenCalledWith(
-      'http://example.test/api/backup/project-1',
-      expect.any(Blob)
-    );
+    expect(sendBeacon).not.toHaveBeenCalled();
   });
 
   it('skips the scheduled backup when the last backup was too recent', async () => {

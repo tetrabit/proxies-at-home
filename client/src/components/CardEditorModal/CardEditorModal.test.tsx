@@ -319,6 +319,87 @@ describe('CardEditorModal', () => {
             expect(mockOnApplyToSelected).toHaveBeenCalledWith(['1', '2'], expect.any(Object));
         });
 
+        it('keeps the modal open while apply-all persistence is pending', async () => {
+            let resolvePersistence: (() => void) | undefined;
+            const pendingApplyToAll = vi.fn(() => new Promise<void>((resolve) => {
+                resolvePersistence = resolve;
+            }));
+            render(<CardEditorModal {...defaultProps} onApplyToAll={pendingApplyToAll} />);
+
+            await act(async () => {
+                fireEvent.click(screen.getByText('Apply to All'));
+                await Promise.resolve();
+            });
+
+            expect(pendingApplyToAll).toHaveBeenCalledWith(expect.any(Object));
+            expect(mockOnClose).not.toHaveBeenCalled();
+            expect(screen.getByText('Applying...')).toBeInTheDocument();
+
+            await act(async () => {
+                resolvePersistence?.();
+                await Promise.resolve();
+            });
+
+            expect(mockOnClose).toHaveBeenCalledTimes(1);
+        });
+
+        it('closes selected apply only after persistence succeeds', async () => {
+            let resolvePersistence: (() => void) | undefined;
+            const pendingApplyToSelected = vi.fn(() => new Promise<void>((resolve) => {
+                resolvePersistence = resolve;
+            }));
+            render(
+                <CardEditorModal
+                    {...defaultProps}
+                    selectedCardUuids={['1', '2']}
+                    selectedCount={2}
+                    onApplyToSelected={pendingApplyToSelected}
+                />
+            );
+
+            await act(async () => {
+                fireEvent.click(screen.getByText('Apply to 2 & Close'));
+                await Promise.resolve();
+            });
+
+            expect(pendingApplyToSelected).toHaveBeenCalledWith(['1', '2'], expect.any(Object));
+            expect(mockOnClose).not.toHaveBeenCalled();
+            expect(screen.getByText('Applying...')).toBeInTheDocument();
+
+            await act(async () => {
+                resolvePersistence?.();
+                await Promise.resolve();
+            });
+
+            expect(mockOnClose).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps the actual modal open and shows an error when apply-all rejects', async () => {
+            const expectedApplicationError = new Error('Project persistence failed');
+            const rejectedApplyToAll = vi.fn().mockRejectedValue(expectedApplicationError);
+            const errorSpy = vi.spyOn(console, 'error');
+            try {
+                render(<CardEditorModal {...defaultProps} onApplyToAll={rejectedApplyToAll} />);
+
+                await act(async () => {
+                    fireEvent.click(screen.getByText('Apply to All'));
+                    await Promise.resolve();
+                });
+
+                expect(rejectedApplyToAll).toHaveBeenCalledWith(expect.any(Object));
+                expect(mockOnClose).not.toHaveBeenCalled();
+                expect(await screen.findByRole('alert')).toHaveTextContent('Project persistence failed');
+                expect(screen.getByText('Apply to All')).toBeInTheDocument();
+                expect(errorSpy).toHaveBeenCalledTimes(1);
+                expect(errorSpy.mock.calls).toEqual([[
+                    '[CardEditorModal] Apply to all failed:',
+                    expectedApplicationError,
+                ]]);
+            } finally {
+                errorSpy.mockRestore();
+            }
+        });
+
         it('closes only after a single-card apply persists', async () => {
             let resolvePersistence: (() => void) | undefined;
             const pendingApply = vi.fn(() => new Promise<void>((resolve) => {

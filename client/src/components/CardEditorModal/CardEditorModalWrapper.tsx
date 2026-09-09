@@ -149,7 +149,9 @@ export function CardEditorModalWrapper() {
     const editorProjectId = card?.projectId;
 
     const handleApplyToAll = useCallback(async (overrides: CardOverrides | undefined) => {
-        if (!editorProjectId) return;
+        if (!editorProjectId?.trim()) {
+            throw new Error('Cannot apply overrides without an editor project');
+        }
 
         // Apply to this editor card's project in a single transaction to avoid cascading re-renders.
         const allCards = await db.transaction('rw', db.cards, async () => {

@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   inferImageSource: vi.fn(),
 }));
 
-vi.mock("@/constants", () => ({ API_BASE: "http://api.test" }));
 vi.mock("../db", () => ({
   db: {
     projects: { get: mocks.projectsGet, add: mocks.projectsAdd },
@@ -73,6 +72,12 @@ describe("projectBackup", () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:backup");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("electronAPI", {
+      getPrivateApiBootstrap: vi.fn().mockResolvedValue({
+        baseUrl: "http://127.0.0.1:4555",
+        bearer: "backup-private-test-bearer",
+      }),
+    });
     vi.spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("project-new")
       .mockReturnValueOnce("front-new")
@@ -743,7 +748,8 @@ describe("projectBackup", () => {
   });
 
   describe("server backup API helpers", () => {
-    it("lists, fetches, and deletes server backups on successful responses", async () => {
+    it("uses the authenticated private transport for list, encoded read, and delete", async () => {
+      const projectId = "project id";
       vi.mocked(fetch)
         .mockResolvedValueOnce({
           ok: true,
@@ -757,16 +763,29 @@ describe("projectBackup", () => {
         .mockResolvedValueOnce({ ok: false, status: 404 } as Response);
 
       await expect(listServerBackups()).resolves.toEqual([{ projectId: "p1" }]);
-      await expect(fetchServerBackup("p1")).resolves.toEqual(validBackup);
-      await expect(deleteServerBackup("p1")).resolves.toBeUndefined();
+      await expect(fetchServerBackup(projectId)).resolves.toEqual(validBackup);
+      await expect(deleteServerBackup(projectId)).resolves.toBeUndefined();
       await expect(deleteServerBackup("missing")).resolves.toBeUndefined();
-      expect(fetch).toHaveBeenNthCalledWith(1, "http://api.test/api/backup");
-      expect(fetch).toHaveBeenNthCalledWith(2, "http://api.test/api/backup/p1");
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "http://127.0.0.1:4555/api/backup",
+        expect.objectContaining({ credentials: "omit", redirect: "error" })
+      );
+      expect(fetch).toHaveBeenNthCalledWith(
+        2,
+        "http://127.0.0.1:4555/api/backup/project%20id",
+        expect.objectContaining({ credentials: "omit", redirect: "error" })
+      );
       expect(fetch).toHaveBeenNthCalledWith(
         3,
-        "http://api.test/api/backup/p1",
-        { method: "DELETE" }
+        "http://127.0.0.1:4555/api/backup/project%20id",
+        expect.objectContaining({ method: "DELETE", credentials: "omit", redirect: "error" })
       );
+      for (const [, init] of vi.mocked(fetch).mock.calls) {
+        expect(new Headers((init as RequestInit).headers).get("Authorization")).toBe(
+          "Bearer backup-private-test-bearer"
+        );
+      }
     });
 
     it("throws helpful server API errors", async () => {
@@ -788,6 +807,18 @@ describe("projectBackup", () => {
       await expect(deleteServerBackup("p1")).rejects.toThrow(
         "Failed to delete backup"
       );
+    });
+
+    it("fails closed without a private identity and never sends an anonymous backup request", async () => {
+      vi.stubGlobal("electronAPI", undefined);
+      vi.resetModules();
+      const [{ listServerBackups: listWithoutIdentity }, { PrivateApiIdentityUnavailableError }] =
+        await Promise.all([import("./projectBackup"), import("./privateApi")]);
+
+      await expect(listWithoutIdentity()).rejects.toBeInstanceOf(
+        PrivateApiIdentityUnavailableError
+      );
+      expect(fetch).not.toHaveBeenCalled();
     });
   });
 });
