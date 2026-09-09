@@ -214,7 +214,7 @@ export class ImportOrchestrator {
                                 };
 
                                 // Handle DFC Back Face
-                                if (scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
+                                if (!intent.linkedBackImageId && scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
                                     const backFace = scryfallCard.card_faces[1];
 
                                     // 1. Try to find MPC image for the back face first
@@ -231,7 +231,9 @@ export class ImportOrchestrator {
                                         const mpcMatches = await findBestMpcMatches([backInfo]);
                                         if (mpcMatches.length > 0 && mpcMatches[0].imageUrl) {
                                             const match = mpcMatches[0];
-                                            backImageId = await addRemoteImage([match.imageUrl], quantity);
+                                            // createLinkedBackCardsBulk accounts for each linked card.
+                                            // Reserve no extra reference for this cached image.
+                                            backImageId = await addRemoteImage([match.imageUrl], 0);
                                             if (backImageId) {
                                                 console.debug(`[ImportOrchestrator] Found MPC back face for ${intent.name}: ${backFace.name}`);
                                                 dfcBackInfo = { imageId: backImageId, name: backFace.name };
@@ -243,7 +245,7 @@ export class ImportOrchestrator {
 
                                     // 2. Fallback to Scryfall image if no MPC image found
                                     if (!backImageId && backFace.imageUrl) {
-                                        backImageId = await addRemoteImage([backFace.imageUrl], quantity);
+                                        backImageId = await addRemoteImage([backFace.imageUrl], 0);
                                         if (backImageId) {
                                             dfcBackInfo = { imageId: backImageId, name: backFace.name };
                                         }
@@ -275,10 +277,10 @@ export class ImportOrchestrator {
                                     token_parts: scryfallCard.token_parts,
                                 };
 
-                                if (scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
+                                if (!intent.linkedBackImageId && scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
                                     const backFace = scryfallCard.card_faces[1];
                                     if (backFace.imageUrl) {
-                                        const backId = await addRemoteImage([backFace.imageUrl], quantity);
+                                        const backId = await addRemoteImage([backFace.imageUrl], 0);
                                         if (backId) {
                                             dfcBackInfo = { imageId: backId, name: backFace.name };
                                         }
@@ -329,7 +331,7 @@ export class ImportOrchestrator {
 
                         if (!isCardbackId(backImageId)) {
                             const backUrl = getMpcAutofillImageUrl(backImageId);
-                            backImageId = (await addRemoteImage([backUrl], quantity))!;
+                            backImageId = (await addRemoteImage([backUrl], 0))!;
                         }
 
                         await createLinkedBackCardsBulk(
@@ -461,7 +463,7 @@ export class ImportOrchestrator {
 
                 // Fetch back face image
                 if (backFace.imageUrl) {
-                    backImageId = await addRemoteImage([backFace.imageUrl], quantity);
+                    backImageId = await addRemoteImage([backFace.imageUrl], 0);
                 }
             }
 
@@ -570,7 +572,7 @@ export class ImportOrchestrator {
                     } else if (scryfallCard.card_faces && scryfallCard.card_faces.length > 1) {
                         const backFace = scryfallCard.card_faces[1];
                         if (backFace.imageUrl) {
-                            const backId = await addRemoteImage([backFace.imageUrl], quantity);
+                            const backId = await addRemoteImage([backFace.imageUrl], 0);
                             if (backId) {
                                 for (let i = 0; i < quantity; i++) {
                                     backCardTasks.push({
@@ -598,7 +600,7 @@ export class ImportOrchestrator {
 
                 if (!isCardbackId(backImageId)) {
                     const backUrl = getMpcAutofillImageUrl(backImageId);
-                    backImageId = (await addRemoteImage([backUrl], quantity))!;
+                    backImageId = (await addRemoteImage([backUrl], 0))!;
                 }
 
                 for (let i = 0; i < quantity; i++) {

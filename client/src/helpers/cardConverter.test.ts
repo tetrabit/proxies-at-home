@@ -112,7 +112,7 @@ describe("convertScryfallToCardOptions", () => {
     expect(hoisted.addRemoteImage).toHaveBeenNthCalledWith(
       1,
       ["https://img/back-face.jpg"],
-      1
+      0
     );
     expect(hoisted.addRemoteImage).toHaveBeenNthCalledWith(
       2,

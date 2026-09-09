@@ -36,12 +36,10 @@ export async function convertScryfallToCardOptions(
         backFaceName = backFace.name;
         frontImageUrl = frontFace.imageUrl;
 
-        // Fetch back face image with refCount=1.
-        // NOTE: All quantity copies of this DFC will share the SAME back image entry.
-        // The image entry is created once, and each card's back card links to it.
-        // createLinkedBackCardsBulk handles ref counting when linking individual back cards.
+        // Cache the back face without reserving a reference. Each linked back
+        // increments the shared image when createLinkedBackCardsBulk attaches it.
         if (backFace.imageUrl) {
-            backImageId = await addRemoteImage([backFace.imageUrl], 1);
+            backImageId = await addRemoteImage([backFace.imageUrl], 0);
         }
     }
 

@@ -346,7 +346,7 @@ describe('ImportOrchestrator', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc-front.jpg'], 1);
-        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/custom-back.jpg'], 1);
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/custom-back.jpg'], 0);
         expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
             expect.objectContaining({
                 frontUuid: 'mpc-uuid',
@@ -354,6 +354,73 @@ describe('ImportOrchestrator', () => {
                 backName: 'Custom Back',
                 options: expect.objectContaining({ hasBuiltInBleed: true, usesDefaultCardback: false }),
             }),
+        ]);
+    });
+
+    it('reserves no duplicate DFC back reference before persisting four direct MPC fallback backs', async () => {
+        vi.spyOn(mpcAutofillApiModule, 'getMpcAutofillImageUrl').mockImplementation((id: string) => `https://mpc.example/${id}.jpg`);
+        vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([
+            { uuid: 'mpc-direct-1', order: 1 } as CardOption,
+            { uuid: 'mpc-direct-2', order: 2 } as CardOption,
+            { uuid: 'mpc-direct-3', order: 3 } as CardOption,
+            { uuid: 'mpc-direct-4', order: 4 } as CardOption,
+        ]);
+        vi.mocked(scryfallApiModule.fetchCardsMetadataBatch).mockResolvedValue(new Map([
+            ['direct fallback', {
+                name: 'Direct Fallback // Fallback Back',
+                card_faces: [
+                    { name: 'Direct Fallback' },
+                    { name: 'Fallback Back', imageUrl: 'https://scryfall.example/fallback-back.jpg' },
+                ],
+            } as ScryfallCard],
+        ]));
+
+        await ImportOrchestrator.process([{
+            name: 'Direct Fallback',
+            quantity: 4,
+            isToken: false,
+            mpcId: 'direct-fallback-front',
+        }]);
+
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(
+            ['https://scryfall.example/fallback-back.jpg'],
+            0,
+        );
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
+            expect.objectContaining({ frontUuid: 'mpc-direct-1', backImageId: 'https://scryfall.example/fallback-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'mpc-direct-2', backImageId: 'https://scryfall.example/fallback-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'mpc-direct-3', backImageId: 'https://scryfall.example/fallback-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'mpc-direct-4', backImageId: 'https://scryfall.example/fallback-back.jpg' }),
+        ]);
+    });
+
+    it('reserves no duplicate explicit-back reference before persisting four direct MPC backs', async () => {
+        vi.spyOn(mpcAutofillApiModule, 'getMpcAutofillImageUrl').mockImplementation((id: string) => `https://mpc.example/${id}.jpg`);
+        vi.spyOn(undoableActionsModule, 'undoableAddCards').mockResolvedValue([
+            { uuid: 'explicit-direct-1', order: 1 } as CardOption,
+            { uuid: 'explicit-direct-2', order: 2 } as CardOption,
+            { uuid: 'explicit-direct-3', order: 3 } as CardOption,
+            { uuid: 'explicit-direct-4', order: 4 } as CardOption,
+        ]);
+
+        await ImportOrchestrator.process([{
+            name: 'Explicit Back',
+            quantity: 4,
+            isToken: false,
+            mpcId: 'explicit-front',
+            linkedBackImageId: 'explicit-back',
+            linkedBackName: 'Explicit Back Face',
+        }]);
+
+        expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(
+            ['https://mpc.example/explicit-back.jpg'],
+            0,
+        );
+        expect(vi.mocked(dbUtilsModule.createLinkedBackCardsBulk)).toHaveBeenCalledWith([
+            expect.objectContaining({ frontUuid: 'explicit-direct-1', backImageId: 'https://mpc.example/explicit-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'explicit-direct-2', backImageId: 'https://mpc.example/explicit-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'explicit-direct-3', backImageId: 'https://mpc.example/explicit-back.jpg' }),
+            expect.objectContaining({ frontUuid: 'explicit-direct-4', backImageId: 'https://mpc.example/explicit-back.jpg' }),
         ]);
     });
 
@@ -572,7 +639,7 @@ describe('ImportOrchestrator', () => {
             const result = await ImportOrchestrator.resolve(intent, 'test-project');
 
             expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc_front.jpg'], 1);
-            expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc_back.jpg'], 1);
+            expect(vi.mocked(dbUtilsModule.addRemoteImage)).toHaveBeenCalledWith(['https://mpc.example/mpc_back.jpg'], 0);
             expect(result.backCardTasks).toEqual([
                 expect.objectContaining({
                     frontIndex: 0,
