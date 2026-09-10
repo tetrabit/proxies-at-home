@@ -807,6 +807,30 @@ describe("electron main lifecycle", () => {
     );
   });
 
+  it("awaits exactly one owned microservice stop before completing a server-startup failure", async () => {
+    const stop = createDeferred<undefined>();
+    microservice.stop.mockImplementationOnce(() => stop.promise);
+    const mainModule = await import("./main.ts");
+    mainModule.electronMainRuntime.importServerModule = vi.fn(async () => {
+      throw new Error("embedded server failed");
+    });
+
+    const startup = readyCallback?.();
+    try {
+      await vi.waitFor(() => expect(microservice.stop).toHaveBeenCalledOnce());
+      let completed = false;
+      void startup?.then(() => { completed = true; });
+      await Promise.resolve();
+      expect(completed).toBe(false);
+      stop.resolve(undefined);
+      await startup;
+      expect(dialogMock.showErrorBox).toHaveBeenCalledWith("Server Error", expect.stringContaining("embedded server failed"));
+    } finally {
+      stop.resolve(undefined);
+      await startup;
+    }
+  });
+
   it("reports when an embedded server module omits startServer", async () => {
     const errorSpy = vi
       .spyOn(console, "error")

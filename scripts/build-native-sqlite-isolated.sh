@@ -7,6 +7,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 readonly expected_source_sha256='e7b959549f88943dabb242ec6e50788b06e4876e61a0bb6e0fa38c99103f4c16'
 readonly expected_lock_sha256='976bab6b945b691bb24abd693541f80aebb01c9e0ee530cc8c5167bf44bf5aed'
+readonly expected_patch_sha256='cfdae2db9613af918e3aced537de532b728f718f4e28d71833e2b8e8cc19e6a7'
 readonly source_commit='dcb2825257e196be190d3739560eb92a64db0e8b'
 readonly source_tree='dc8dbfb8b8a3dbd8453e99ef3b03d0c1f75dcdf1'
 readonly default_source_archive="$repo_root/.review-artifacts/td-994223-native-build-dcb2825257e1/source.tar"
@@ -37,6 +38,11 @@ actual_lock_sha256=$(sha256sum "$source_lock" | awk '{print $1}')
   printf 'source lock SHA-256 mismatch: expected %s, got %s\n' "$expected_lock_sha256" "$actual_lock_sha256" >&2
   exit 65
 }
+actual_patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')
+[[ "$actual_patch_sha256" == "$expected_patch_sha256" ]] || {
+  printf 'patch SHA-256 mismatch: expected %s, got %s\n' "$expected_patch_sha256" "$actual_patch_sha256" >&2
+  exit 65
+}
 
 mkdir -p "$build_root/source.unpatched"
 cp --reflink=auto -- "$source_archive" "$build_root/source.tar"
@@ -60,7 +66,7 @@ if [[ -d "${CARGO_HOME:-$HOME/.cargo}/git" ]]; then
   cp -a --reflink=auto "${CARGO_HOME:-$HOME/.cargo}/git" "$build_root/cargo-home/git"
 fi
 
-patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')
+patch_sha256=$actual_patch_sha256
 {
   printf 'source_commit=%s\n' "$source_commit"
   printf 'source_tree=%s\n' "$source_tree"
@@ -84,6 +90,17 @@ cargo build --manifest-path "$build_root/source/Cargo.toml" --locked --release -
 
 binary="$build_root/target/release/scryfall-cache"
 [[ -x "$binary" ]] || { printf 'expected release binary is missing: %s\n' "$binary" >&2; exit 69; }
+case "$(uname -s)" in
+  Linux) artifact_platform='linux' ;;
+  Darwin) artifact_platform='darwin' ;;
+  MINGW*|MSYS*|CYGWIN*) artifact_platform='win32' ;;
+  *) printf 'unsupported native artifact platform: %s\n' "$(uname -s)" >&2; exit 69 ;;
+esac
+if [[ "$artifact_platform" == 'win32' ]]; then binary_file_name='scryfall-cache.exe'; else binary_file_name='scryfall-cache'; fi
+binary_sha256=$(sha256sum "$binary" | awk '{print $1}')
+printf '{"schemaVersion":2,"runtime":"desktopSQLite","backend":"sqlite","platform":"%s","profile":"release","binary":{"sourcePath":"%s","fileName":"%s","sha256":"%s"},"sourceBuild":{"kind":"nativeSqliteIsolated","sourceCommit":"%s","sourceTree":"%s","sourceArchiveSha256":"%s","sourceLockSha256":"%s","patchSha256":"%s"}}\n' \
+  "$artifact_platform" "$binary" "$binary_file_name" "$binary_sha256" "$source_commit" "$source_tree" "$expected_source_sha256" "$expected_lock_sha256" "$expected_patch_sha256" \
+  > "$build_root/microservice-artifact.json"
 {
   sha256sum "$build_root/source.tar" "$patch_file" "$build_root/source/Cargo.toml" "$build_root/source/Cargo.lock" "$binary"
   file "$binary"

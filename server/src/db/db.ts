@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { reconcileImageCacheMetadataSync } from './imageCacheMetadata.js';
 
 // Database file location (persists in server/data directory)
 const DATA_DIRECTORY = path.resolve(process.env.SERVER_DATA_DIR ?? path.join(process.cwd(), 'data'));
@@ -8,7 +9,7 @@ fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
 const DB_PATH = path.join(DATA_DIRECTORY, 'proxxied-cards.db');
 
 // Current schema version - increment when adding migrations
-const CURRENT_DB_VERSION = 7;
+const CURRENT_DB_VERSION = 8;
 export const LEGACY_UNASSIGNED_OWNER_ID = 'legacy-unassigned';
 
 // Migration definitions - each entry upgrades from (version-1) to (version)
@@ -147,6 +148,18 @@ const migrations: Migration[] = [
       'CREATE INDEX idx_backups_owner_updated_at ON backups(owner_id, updated_at DESC);',
     ],
   },
+  {
+    version: 8,
+    description: 'Add persistent image cache size and access metadata',
+    up: [
+      `CREATE TABLE IF NOT EXISTS image_cache_metadata (
+        basename TEXT PRIMARY KEY,
+        size INTEGER NOT NULL,
+        last_access INTEGER NOT NULL
+      );`,
+      'CREATE INDEX IF NOT EXISTS idx_image_cache_metadata_last_access ON image_cache_metadata(last_access ASC);',
+    ],
+  },
 ];
 
 let db: Database.Database | null = null;
@@ -157,13 +170,13 @@ let db: Database.Database | null = null;
 function runMigrations(database: Database.Database): void {
   // Get current version from metadata table
   const row = database.prepare('SELECT value FROM metadata WHERE key = ?').get('schema_version') as { value: string } | undefined;
-  const currentVersion = row ? parseInt(row.value, 10) : 0;
+  let currentVersion = row ? parseInt(row.value, 10) : 0;
 
   if (currentVersion === 0) {
-    // Fresh database - set to current version (no migrations needed)
-    database.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('schema_version', CURRENT_DB_VERSION.toString());
-    console.log(`[DB] Initialized schema version ${CURRENT_DB_VERSION}`);
-    return;
+    // initDatabase creates the complete v7 baseline. Keep v8 separate so its
+    // schema objects and version advancement share the migration transaction.
+    database.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('schema_version', '7');
+    currentVersion = 7;
   }
 
   if (currentVersion === CURRENT_DB_VERSION) {
@@ -295,6 +308,7 @@ export function initDatabase(): Database.Database {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (owner_id, project_id)
     );
+
   `);
 
   // Create indexes (IF NOT EXISTS for idempotency)
@@ -314,6 +328,9 @@ export function initDatabase(): Database.Database {
   // Run any pending migrations
   runMigrations(db);
   db.exec('CREATE INDEX IF NOT EXISTS idx_backups_owner_updated_at ON backups(owner_id, updated_at DESC);');
+  // A complete scan is the repair boundary for advisory cache metadata. Scan
+  // failures leave every old row untouched rather than inventing deletions.
+  reconcileImageCacheMetadataSync(path.join(DATA_DIRECTORY, 'cached-images'));
 
   console.log('[DB] SQLite database initialized at', DB_PATH);
   return db;

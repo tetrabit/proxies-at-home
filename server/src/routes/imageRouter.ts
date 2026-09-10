@@ -24,6 +24,11 @@ import {
   createProxyDownloadCleanupReconciler,
   type ProxyDownloadReservation,
 } from "./proxyDownloadAdmission.js";
+import {
+  recordImageCachePublication,
+  removeImageCacheMetadata,
+  touchImageCacheMetadata,
+} from "../db/imageCacheMetadata.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -290,6 +295,7 @@ async function checkAndCleanCache() {
         if (writeInProgress.has(file.path)) continue;
         try {
           await fs.promises.unlink(file.path);
+          removeImageCacheMetadata(path.basename(file.path), true);
           removedSize += file.size;
           removedCount++;
         } catch (err: unknown) {
@@ -382,6 +388,9 @@ async function streamImageResponseToFile(
 
     await fs.promises.rename(tempPath, finalPath);
     published = true;
+    // The rename is the publication point. Metadata is advisory and must not
+    // make a successfully published image unavailable if SQLite is unhealthy.
+    recordImageCachePublication(path.basename(finalPath), seen);
     return { contentType };
   } finally {
     if (published) {
@@ -777,19 +786,14 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     // Fast path: check in-memory cache first to avoid fs.existsSync syscall
     const cachedPath = urlPathCache.get(originalUrl);
     if (cachedPath && fs.existsSync(cachedPath)) {
-      const now = new Date();
-      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
-      fs.promises.utimes(cachedPath, now, now).catch(() => { /* ignore */ });
+      touchImageCacheMetadata(path.basename(cachedPath));
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(cachedPath);
     }
 
     // Fallback to disk check
     if (fs.existsSync(localPath)) {
-      // Update access time for LRU (fire-and-forget, don't block response)
-      const now = new Date();
-      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
-      fs.promises.utimes(localPath, now, now).catch(() => { /* ignore */ });
+      touchImageCacheMetadata(path.basename(localPath));
       urlPathCache.set(originalUrl, localPath); // Add to in-memory cache
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
@@ -844,9 +848,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   // Check cache first
   try {
     if (fs.existsSync(localPath)) {
-      const now = new Date();
-      /* v8 ignore next -- fire-and-forget access-time refresh failures do not affect cached image serving. @preserve */
-      fs.promises.utimes(localPath, now, now).catch(() => { /* ignore */ });
+      touchImageCacheMetadata(path.basename(localPath));
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
     }

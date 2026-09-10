@@ -12,6 +12,9 @@ const routeMocks = vi.hoisted(() => ({
     fetchCardsForTokenLookup: vi.fn(),
     resolveLatestTokenParts: vi.fn(),
     extractTokenParts: vi.fn(),
+    recordImageCachePublication: vi.fn(),
+    removeImageCacheMetadata: vi.fn(),
+    touchImageCacheMetadata: vi.fn(),
 }));
 
 vi.mock("../utils/getCardImagesPaged.js", () => ({
@@ -26,6 +29,12 @@ vi.mock("../utils/tokenLookup.js", () => ({
 
 vi.mock("../utils/tokenUtils.js", () => ({
     extractTokenParts: routeMocks.extractTokenParts,
+}));
+
+vi.mock("../db/imageCacheMetadata.js", () => ({
+    recordImageCachePublication: routeMocks.recordImageCachePublication,
+    removeImageCacheMetadata: routeMocks.removeImageCacheMetadata,
+    touchImageCacheMetadata: routeMocks.touchImageCacheMetadata,
 }));
 import { imageRouter, __imageRouterTestInternals } from "./imageRouter";
 
@@ -156,7 +165,7 @@ describe("getWithRetry logic", () => {
         const res = await request(app).get(`/images/proxy?url=${encodeURIComponent(imageUrl)}`);
         expect(res.status).toBe(200);
         expect(res.body.toString()).toBe("cached image data");
-        expect(fs.promises.utimes).toHaveBeenCalled();
+        expect(routeMocks.touchImageCacheMetadata).toHaveBeenCalledWith('fake-hash.jpg');
         sendFileSpy.mockRestore();
     });
 
@@ -587,7 +596,7 @@ describe("getWithRetry logic", () => {
             const res = await request(app).get("/images/mpc?id=cached-id&size=small");
             expect(res.status).toBe(200);
             expect(mockedAxios.get).not.toHaveBeenCalled();
-            expect(fs.promises.utimes).toHaveBeenCalled();
+            expect(routeMocks.touchImageCacheMetadata).toHaveBeenCalledWith('gdrive_cached-id_small');
             sendFileSpy.mockRestore();
         });
 

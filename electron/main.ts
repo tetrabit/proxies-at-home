@@ -558,6 +558,32 @@ function checkForStartupUpdates(): void {
   }
 }
 
+function stopMicroserviceAfterServerStartupFailure(): Promise<void> {
+  const manager = microserviceManager;
+  if (manager === null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.error("[Electron] Timed out stopping Scryfall microservice after server startup failure.");
+      resolve();
+    }, 5000);
+
+    manager.stop().then(
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      (error) => {
+        clearTimeout(timeout);
+        console.error("[Electron] Failed to stop Scryfall microservice after server startup failure:", error);
+        resolve();
+      }
+    );
+  });
+}
+
 function loadTrustedRenderer(): void {
   if (mainWindow === null || desktopServiceReadiness !== "ready") {
     return;
@@ -738,6 +764,7 @@ app.whenReady().then(async () => {
       "Server Error",
       `Failed to start server:\n${errorMessage}`
     );
+    await stopMicroserviceAfterServerStartupFailure();
     desktopServiceReadiness = "failed";
     showStartupShell("failed");
     return;

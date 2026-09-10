@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from "child_process";
+import { createHash } from "crypto";
 import path from "path";
 import fs from "fs";
 import { app } from "electron";
@@ -15,22 +16,43 @@ export interface MicroserviceConfig {
   restartDelay: number;
 }
 
-export interface MicroserviceLaunch {
-  command: string;
-  args: string[];
+export interface MicroserviceLaunch { command: string; args: string[]; }
+export interface MicroserviceManagerOptions {
+  /** Lifecycle-test seam; production callers resolve only the staged v2 artifact. */
+  resolveLaunch?: () => MicroserviceLaunch;
 }
 
-export interface MicroserviceManagerOptions {
-  /**
-   * Supplies a process launch only for an explicitly constructed manager.
-   * Production callers use the default repository/package binary resolution.
-   */
-  resolveLaunch?: () => MicroserviceLaunch;
+const SUPPORTED_PLATFORMS = new Set(["linux", "darwin", "win32"]);
+const TOP_LEVEL_KEYS = ["backend", "binary", "platform", "profile", "runtime", "schemaVersion", "sourceBuild"];
+const BINARY_KEYS = ["fileName", "sha256", "sourcePath"];
+const SOURCE_BUILD_KEYS = ["kind", "patchSha256", "sourceArchiveSha256", "sourceCommit", "sourceLockSha256", "sourceTree"];
+const SOURCE_BUILD = {
+  kind: "nativeSqliteIsolated",
+  sourceCommit: "dcb2825257e196be190d3739560eb92a64db0e8b",
+  sourceTree: "dc8dbfb8b8a3dbd8453e99ef3b03d0c1f75dcdf1",
+  sourceArchiveSha256: "e7b959549f88943dabb242ec6e50788b06e4876e61a0bb6e0fa38c99103f4c16",
+  sourceLockSha256: "976bab6b945b691bb24abd693541f80aebb01c9e0ee530cc8c5167bf44bf5aed",
+  patchSha256: "cfdae2db9613af918e3aced537de532b728f718f4e28d71833e2b8e8cc19e6a7",
+} as const;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function binaryNameFor(platform: string): string {
+  return platform === "win32" ? "scryfall-cache.exe" : "scryfall-cache";
+}
+
+function exactKeys(value: unknown, expected: string[], label: string): asserts value is Record<string, unknown> {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new Error(`${label} must be an object`);
+  }
+  const keys = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (keys.length !== wanted.length || keys.some((key, index) => key !== wanted[index])) {
+    throw new Error(`${label} has missing or extra keys`);
+  }
 }
 
 export class MicroserviceManager {
   private process: ChildProcess | null = null;
-  private config: MicroserviceConfig;
   private restartCount = 0;
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
@@ -39,54 +61,37 @@ export class MicroserviceManager {
   private isShuttingDown = false;
 
   constructor(
-    config: MicroserviceConfig,
+    private readonly config: MicroserviceConfig,
     private readonly options: MicroserviceManagerOptions = {}
-  ) {
-    this.config = config;
-  }
+  ) {}
 
   start(): Promise<number> {
-    if (this.startPromise) {
-      return this.startPromise;
-    }
+    if (this.startPromise) return this.startPromise;
+    if (this.process) return Promise.resolve(this.config.port);
 
-    if (this.process) {
-      console.log(`[${this.config.name}] Already running`);
-      return Promise.resolve(this.config.port);
-    }
-
-    const startPromise = this.startInternal();
-    this.startPromise = startPromise;
-    void startPromise.then(
-      () => {
-        if (this.startPromise === startPromise) {
-          this.startPromise = null;
-        }
-      },
-      () => {
-        if (this.startPromise === startPromise) {
-          this.startPromise = null;
-        }
-      }
+    // A caller may deliberately start again after a completed stop. Restart callbacks
+    // never reach this point while shutdown is active because stop clears their timer.
+    this.isShuttingDown = false;
+    const promise = this.startInternal();
+    this.startPromise = promise;
+    void promise.then(
+      () => { if (this.startPromise === promise) this.startPromise = null; },
+      () => { if (this.startPromise === promise) this.startPromise = null; }
     );
-    return startPromise;
+    return promise;
   }
 
   private async startInternal(): Promise<number> {
     const launch = this.getLaunch();
-
-    if (!fs.existsSync(launch.command)) {
-      throw new Error(`${this.config.name} binary not found at: ${launch.command}`);
-    }
-
-    console.log(`[${this.config.name}] Starting from: ${launch.command}`);
-
-    const env = {
-      ...process.env,
-      PORT: this.config.port.toString(),
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    delete env.DATABASE_URL;
+    delete env.PORT;
+    Object.assign(env, {
+      API_HOST: "127.0.0.1",
+      API_PORT: String(this.config.port),
+      SQLITE_PATH: this.getDatabasePath(),
       RUST_LOG: "info",
-      DATABASE_URL: this.getDatabasePath(),
-    };
+    });
 
     const childProcess = spawn(launch.command, launch.args, {
       env,
@@ -95,218 +100,150 @@ export class MicroserviceManager {
     this.process = childProcess;
 
     let rejectSpawnError: (error: Error) => void = () => undefined;
-    const spawnError = new Promise<never>((_, reject) => {
-      rejectSpawnError = reject;
-    });
+    const spawnError = new Promise<never>((_, reject) => { rejectSpawnError = reject; });
+    let rejectStartupExit: (error: Error) => void = () => undefined;
+    const startupExit = new Promise<never>((_, reject) => { rejectStartupExit = reject; });
+    let startupSettled = false;
 
     childProcess.on("error", (error) => {
-      if (this.process === childProcess) {
-        this.process = null;
-      }
-      rejectSpawnError(error);
+      if (this.process === childProcess) this.process = null;
+      if (!startupSettled) rejectSpawnError(error);
     });
-
-    childProcess.stdout?.on("data", (data) => {
-      console.log(`[${this.config.name}] ${data.toString().trim()}`);
-    });
-
-    childProcess.stderr?.on("data", (data) => {
-      console.error(`[${this.config.name}] ERROR: ${data.toString().trim()}`);
-    });
-
+    childProcess.stdout?.on("data", (data) => console.log(`[${this.config.name}] ${data.toString().trim()}`));
+    childProcess.stderr?.on("data", (data) => console.error(`[${this.config.name}] ERROR: ${data.toString().trim()}`));
     childProcess.on("exit", (code, signal) => {
-      console.log(
-        `[${this.config.name}] Exited with code ${code}, signal ${signal}`
-      );
-      if (this.process !== childProcess) {
-        return;
-      }
+      console.log(`[${this.config.name}] Exited with code ${code}, signal ${signal}`);
+      if (this.process !== childProcess) return;
+
       this.process = null;
-      if (
-        this.healthySince !== null &&
-        Date.now() - this.healthySince >= this.config.healthCheckInterval
-      ) {
+      this.clearHealthCheck();
+      if (!startupSettled) {
+        rejectStartupExit(new Error(`${this.config.name} exited before becoming healthy`));
+      }
+      if (this.healthySince !== null && Date.now() - this.healthySince >= this.config.healthCheckInterval) {
         this.restartCount = 0;
       }
       this.healthySince = null;
-
       if (!this.isShuttingDown && this.restartCount < this.config.maxRestarts) {
-        this.restartCount++;
-        console.log(
-          `[${this.config.name}] Attempting restart ${this.restartCount}/${this.config.maxRestarts}`
-        );
+        this.restartCount += 1;
+        console.log(`[${this.config.name}] Attempting restart ${this.restartCount}/${this.config.maxRestarts}`);
         this.restartTimer = setTimeout(() => {
           this.restartTimer = null;
-          this.start().catch((err) => {
-            console.error(`[${this.config.name}] Restart failed:`, err);
-          });
+          this.start().catch((error) => console.error(`[${this.config.name}] Restart failed:`, error));
         }, this.config.restartDelay);
       }
     });
 
-    await Promise.race([this.waitForHealthy(), spawnError]);
-    this.startHealthCheck();
-    this.healthySince = Date.now();
-
-    console.log(
-      `[${this.config.name}] Started successfully on port ${this.config.port}`
-    );
-    return this.config.port;
+    try {
+      await Promise.race([this.waitForHealthy(), spawnError, startupExit]);
+      startupSettled = true;
+      if (this.process !== childProcess) {
+        throw new Error(`${this.config.name} exited before becoming healthy`);
+      }
+      this.startHealthCheck(childProcess);
+      this.healthySince = Date.now();
+      console.log(`[${this.config.name}] Started successfully on port ${this.config.port}`);
+      return this.config.port;
+    } catch (error) {
+      startupSettled = true;
+      // A failed readiness attempt must not retain a live child or turn into an
+      // unobserved restart after the caller has received the startup failure.
+      if (this.process === childProcess) {
+        this.process = null;
+        this.clearHealthCheck();
+        childProcess.kill("SIGTERM");
+      }
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
-
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
-
+    this.clearHealthCheck();
     this.healthySince = null;
+    if (!this.process) return;
 
-    if (!this.process) {
-      return;
-    }
-
-    console.log(`[${this.config.name}] Stopping...`);
     const runningProcess = this.process;
-
+    console.log(`[${this.config.name}] Stopping...`);
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         console.log(`[${this.config.name}] Force killing after timeout`);
         runningProcess.kill("SIGKILL");
       }, 5000);
-
       runningProcess.once("exit", () => {
         clearTimeout(timeout);
-        this.process = null;
+        if (this.process === runningProcess) this.process = null;
         console.log(`[${this.config.name}] Stopped`);
         resolve();
       });
-
       runningProcess.kill("SIGTERM");
     });
   }
 
-  private getBinaryPath(): string {
-    const isDev = !app.isPackaged;
-
-    if (isDev) {
-      return this.getDevelopmentBinaryPath();
-    } else {
-      const ext = process.platform === "win32" ? ".exe" : "";
-      return path.join(
-        process.resourcesPath,
-        "microservices",
-        `${this.config.binaryName}${ext}`
-      );
-    }
+  private artifactRoot(): string {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, "microservices")
+      : path.join(path.dirname(fileURLToPath(import.meta.url)), "microservice-package");
   }
 
-  private getDevelopmentBinaryPath(): string {
-    const manifestPath = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "microservice-artifact.json"
-    );
-
+  private resolveArtifact(): MicroserviceLaunch {
+    const root = this.artifactRoot();
+    const manifestPath = path.join(root, "microservice-artifact.json");
     try {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
-      if (
-        typeof manifest !== "object" ||
-        manifest === null ||
-        Array.isArray(manifest)
-      ) {
-        throw new Error("manifest must be an object");
+      const manifest: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      exactKeys(manifest, TOP_LEVEL_KEYS, "manifest");
+      if (manifest.schemaVersion !== 2 || manifest.runtime !== "desktopSQLite" || manifest.backend !== "sqlite" || manifest.profile !== "release") {
+        throw new Error("invalid desktop SQLite discriminators");
       }
-
-      const { schemaVersion, binaryPath, platform, profile } = manifest as Record<
-        string,
-        unknown
-      >;
-      const extension = process.platform === "win32" ? ".exe" : "";
-      if (schemaVersion !== 1) {
-        throw new Error("unsupported schema version");
+      if (typeof manifest.platform !== "string" || !SUPPORTED_PLATFORMS.has(manifest.platform) || manifest.platform !== process.platform) {
+        throw new Error("incompatible platform");
       }
-      if (
-        typeof binaryPath !== "string" ||
-        binaryPath.length === 0 ||
-        !path.isAbsolute(binaryPath)
-      ) {
-        throw new Error("binary path must be a nonempty absolute string");
+      exactKeys(manifest.binary, BINARY_KEYS, "binary");
+      if (typeof manifest.binary.sourcePath !== "string" || manifest.binary.sourcePath.length === 0 || typeof manifest.binary.fileName !== "string" || typeof manifest.binary.sha256 !== "string") {
+        throw new Error("invalid binary metadata");
       }
-      if (
-        typeof platform !== "string" ||
-        !["linux", "darwin", "win32"].includes(platform) ||
-        platform !== process.platform
-      ) {
-        throw new Error("platform is unsupported or incompatible");
+      if (!SHA256.test(manifest.binary.sha256) || manifest.binary.fileName !== binaryNameFor(manifest.platform) || path.basename(manifest.binary.fileName) !== manifest.binary.fileName) {
+        throw new Error("invalid canonical binary metadata");
       }
-      if (
-        typeof profile !== "string" ||
-        !["release", "dev", "debug"].includes(profile)
-      ) {
-        throw new Error("profile is invalid");
+      exactKeys(manifest.sourceBuild, SOURCE_BUILD_KEYS, "sourceBuild");
+      for (const [key, expected] of Object.entries(SOURCE_BUILD)) {
+        if (manifest.sourceBuild[key] !== expected) throw new Error(`invalid source provenance ${key}`);
       }
-      if (path.basename(binaryPath) !== `${this.config.binaryName}${extension}`) {
-        throw new Error("binary path has an unexpected basename");
-      }
-
-      return binaryPath;
+      const binaryPath = path.join(root, manifest.binary.fileName);
+      if (path.dirname(binaryPath) !== root) throw new Error("binary path escaped trusted artifact root");
+      if (!fs.lstatSync(binaryPath).isFile()) throw new Error("staged binary is not a regular file");
+      const actualHash = createHash("sha256").update(fs.readFileSync(binaryPath)).digest("hex");
+      if (actualHash !== manifest.binary.sha256) throw new Error("staged binary SHA-256 does not match manifest");
+      return { command: binaryPath, args: [] };
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown error";
-      throw new Error(
-        `Unable to resolve microservice artifact manifest at ${manifestPath}: ${reason}`
-      );
+      throw new Error(`Unable to resolve microservice artifact manifest at ${manifestPath}: ${reason}`);
     }
   }
 
   private getLaunch(): MicroserviceLaunch {
-    if (this.options.resolveLaunch) {
-      return this.options.resolveLaunch();
-    }
-
-    return { command: this.getBinaryPath(), args: [] };
+    return this.options.resolveLaunch ? this.options.resolveLaunch() : this.resolveArtifact();
   }
 
   private getDatabasePath(): string {
-    const userDataPath = app.getPath("userData");
-    const dbDir = path.join(userDataPath, "databases");
-
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
-    }
-
+    const dbDir = path.join(app.getPath("userData"), "databases");
+    if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
     return path.join(dbDir, "scryfall-cache.db");
   }
 
   private async waitForHealthy(timeout = 30000): Promise<void> {
     const deadline = Date.now() + timeout;
-
-    while (true) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        break;
-      }
-
-      if (await this.checkHealth(Math.min(2000, remaining))) {
-        return;
-      }
-
-      const retryDelay = Math.min(500, deadline - Date.now());
-      if (retryDelay <= 0) {
-        break;
-      }
-      await this.sleep(retryDelay);
+    while (Date.now() < deadline) {
+      if (await this.checkHealth(Math.min(2000, deadline - Date.now()))) return;
+      const delay = Math.min(500, deadline - Date.now());
+      if (delay <= 0) break;
+      await this.sleep(delay);
     }
-
-    throw new Error(
-      `${this.config.name} failed to become healthy within ${timeout}ms`
-    );
+    throw new Error(`${this.config.name} failed to become healthy within ${timeout}ms`);
   }
 
   private async checkHealth(timeout = 2000): Promise<boolean> {
@@ -314,82 +251,52 @@ export class MicroserviceManager {
       let settled = false;
       let timer: NodeJS.Timeout | null = null;
       const finish = (healthy: boolean) => {
-        if (settled) {
-          return;
-        }
+        if (settled) return;
         settled = true;
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
+        if (timer) clearTimeout(timer);
         resolve(healthy);
       };
-
-      const request = http.request(
-        {
-          hostname: "localhost",
-          port: this.config.port,
-          path: this.config.healthCheckPath,
-          method: "GET",
-          headers: { Accept: "application/json" },
-        },
-        (response) => {
-          let body = "";
-          response.on("data", (chunk) => {
-            body += chunk.toString();
-          });
-          response.on("end", () => {
-            if (response.statusCode !== 200) {
-              finish(false);
-              return;
-            }
-
-            try {
-              const health = JSON.parse(body) as {
-                service?: unknown;
-                status?: unknown;
-                version?: unknown;
-              };
-              finish(
-                health.service === "scryfall-cache" &&
-                  health.status === "healthy" &&
-                  typeof health.version === "string"
-              );
-            } catch {
-              finish(false);
-            }
-          });
-        }
-      );
-
-      timer = setTimeout(() => {
-        request.destroy();
-        finish(false);
-      }, timeout);
-      if (settled && timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-
+      const request = http.request({
+        hostname: "127.0.0.1",
+        port: this.config.port,
+        path: this.config.healthCheckPath,
+        method: "GET",
+        headers: { Accept: "application/json" },
+      }, (response) => {
+        let body = "";
+        response.on("data", (chunk) => { body += chunk.toString(); });
+        response.on("end", () => {
+          try {
+            const health = JSON.parse(body) as { service?: unknown; status?: unknown; version?: unknown };
+            finish(response.statusCode === 200 && health.service === "scryfall-cache" && health.status === "healthy" && typeof health.version === "string");
+          } catch {
+            finish(false);
+          }
+        });
+      });
+      timer = setTimeout(() => { request.destroy(); finish(false); }, timeout);
       request.on("error", () => finish(false));
       request.end();
     });
   }
 
-  private startHealthCheck(): void {
+  private clearHealthCheck(): void {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
     }
+  }
 
+  private startHealthCheck(childProcess: ChildProcess): void {
+    this.clearHealthCheck();
     this.healthCheckTimer = setInterval(async () => {
-      if (!(await this.checkHealth())) {
+      // The process identity fence prevents a probe begun for an old generation
+      // from terminating a successfully restarted child on the same port.
+      if (this.process !== childProcess || this.isShuttingDown) return;
+      const healthy = await this.checkHealth();
+      if (!healthy && this.process === childProcess && !this.isShuttingDown && this.restartCount < this.config.maxRestarts) {
         console.error(`[${this.config.name}] Health check failed`);
-        if (this.process && this.restartCount < this.config.maxRestarts) {
-          console.log(
-            `[${this.config.name}] Restarting due to failed health check`
-          );
-          this.process.kill("SIGTERM");
-        }
+        childProcess.kill("SIGTERM");
       }
     }, this.config.healthCheckInterval);
   }
@@ -398,13 +305,8 @@ export class MicroserviceManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  isRunning(): boolean {
-    return this.process !== null && !this.process.killed;
-  }
-
-  getPort(): number {
-    return this.config.port;
-  }
+  isRunning(): boolean { return this.process !== null && !this.process.killed; }
+  getPort(): number { return this.config.port; }
 }
 
 export function createScryfallMicroservice(port = 8080): MicroserviceManager {

@@ -1,0 +1,32 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { app, BrowserWindow, ipcMain } from "electron";
+
+const options = new Map(process.argv.slice(2).map((argument) => { const [key, ...value] = argument.replace(/^--/, "").split("="); return [key, value.join("=")]; }));
+const preload = options.get("preload"); const managerPath = options.get("manager"); const quitGatePath = options.get("quit-gate"); const userData = options.get("user-data"); const reportFile = options.get("report-file"); const port = Number(options.get("port"));
+if (![preload, managerPath, quitGatePath, userData, reportFile].every(Boolean) || !Number.isInteger(port) || port <= 0) throw new Error("invalid lifecycle harness arguments");
+const report = (value) => { mkdirSync(path.dirname(reportFile), { recursive: true }); writeFileSync(reportFile, `${JSON.stringify(value, null, 2)}\n`); };
+const fail = (error) => error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+app.setPath("userData", userData); app.on("window-all-closed", () => {});
+const { createScryfallMicroservice } = await import(`file://${managerPath}`);
+const { registerMicroserviceQuitGate } = await import(`file://${quitGatePath}`);
+let manager; let bridge; let runtime; let stopCalls = 0; let failure = null;
+app.on("will-quit", () => { report({ schema: "td-4496de-electron-native-lifecycle/v2", status: failure ? "FAIL" : "PASS", failure, bridge, runtime, stopCalls, userData }); app.exit(failure ? 2 : 0); });
+app.whenReady().then(async () => {
+  ipcMain.handle("get-microservice-url", () => `http://127.0.0.1:${port}`);
+  const window = new BrowserWindow({ show: false, webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  await window.loadURL("data:text/html,<title>desktop sqlite lifecycle</title>");
+  bridge = JSON.parse(await window.webContents.executeJavaScript(`JSON.stringify({api: typeof window.electronAPI, url: typeof window.electronAPI?.getMicroserviceUrl, process: typeof window.process, require: typeof window.require})`));
+  if (bridge.api !== "object" || bridge.url !== "function" || bridge.process !== "undefined" || bridge.require !== "undefined") throw new Error("sandboxed preload bridge contract failed");
+  window.destroy();
+  manager = createScryfallMicroservice(port);
+  registerMicroserviceQuitGate(app, async () => { stopCalls += 1; await manager.stop(); }, { timeoutMs: 7000 });
+  await manager.start();
+  const [healthResponse, readyResponse] = await Promise.all([fetch(`http://127.0.0.1:${port}/health`), fetch(`http://127.0.0.1:${port}/health/ready`)]);
+  const health = await healthResponse.json(); const ready = await readyResponse.json();
+  const expectedPath = path.join(userData, "databases", "scryfall-cache.db");
+  if (health?.environment?.database?.backend !== "sqlite" || health?.environment?.database?.path !== expectedPath) throw new Error("native health did not report owned SQLite path");
+  if (ready?.status !== "ready" || ready?.checks?.database !== "ok") throw new Error("native readiness database check failed");
+  runtime = { health, ready, expectedPath, managerRunning: manager.isRunning() }; app.quit();
+}).catch(async (error) => { failure = fail(error); await manager?.stop().catch(() => undefined); report({ schema: "td-4496de-electron-native-lifecycle/v2", status: "FAIL", failure, bridge, runtime, stopCalls, userData }); app.exit(2); });

@@ -39,6 +39,7 @@ describe("image proxy stream cache publication", () => {
   let cacheDirectory: string;
   let app: Express;
   let internals: typeof import("./imageRouter.js").__imageRouterTestInternals;
+  let dbModule: typeof import("../db/db.js");
 
   beforeEach(async () => {
     vi.resetModules();
@@ -46,6 +47,8 @@ describe("image proxy stream cache publication", () => {
     fs.mkdirSync(fixtureRoot, { recursive: true });
     fixtureDirectory = fs.mkdtempSync(path.join(fixtureRoot, "fixture-"));
     process.env.SERVER_DATA_DIR = path.join(fixtureDirectory, "data");
+    dbModule = await import("../db/db.js");
+    dbModule.initDatabase();
     const imageModule = await import("./imageRouter.js");
     internals = imageModule.__imageRouterTestInternals;
     app = express();
@@ -55,6 +58,7 @@ describe("image proxy stream cache publication", () => {
   });
 
   afterEach(async () => {
+    dbModule.closeDatabase();
     if (originalServerDataDir === undefined) delete process.env.SERVER_DATA_DIR;
     else process.env.SERVER_DATA_DIR = originalServerDataDir;
     vi.resetModules();
@@ -89,6 +93,55 @@ describe("image proxy stream cache publication", () => {
     await expect(fs.promises.readFile(path.join(cacheDirectory, entries[0]))).resolves.toEqual(Buffer.concat(chunks));
     await expect(fs.promises.stat(path.join(cacheDirectory, entries[0]))).resolves.toMatchObject({ mode: expect.any(Number) });
     expect((await fs.promises.stat(path.join(cacheDirectory, entries[0]))).mode & 0o777).toBe(0o600);
+    expect(dbModule.getDatabase().prepare(
+      'SELECT basename, size, last_access FROM image_cache_metadata',
+    ).all()).toEqual([{
+      basename: entries[0],
+      size: Buffer.concat(chunks).byteLength,
+      last_access: expect.any(Number),
+    }]);
+  });
+
+  it("touches only the access timestamp for memory and disk proxy cache hits", async () => {
+    const localPath = internals.cachePathFromUrl(imageUrl);
+    await fs.promises.writeFile(localPath, "cached");
+    dbModule.getDatabase().prepare(
+      'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
+    ).run(path.basename(localPath), 6, 1);
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
+
+    expect((await request(app).get("/images/proxy").query({ url: imageUrl })).status).toBe(200);
+    now.mockReturnValue(3_000);
+    expect((await request(app).get("/images/proxy").query({ url: imageUrl })).status).toBe(200);
+    sendFileSpy.mockRestore();
+    now.mockRestore();
+
+    expect(dbModule.getDatabase().prepare(
+      'SELECT size, last_access FROM image_cache_metadata WHERE basename = ?',
+    ).get(path.basename(localPath))).toEqual({ size: 6, last_access: 3_000 });
+  });
+
+  it("touches only the access timestamp for MPC cache hits", async () => {
+    const basename = "gdrive_cached-mpc_small";
+    await fs.promises.writeFile(path.join(cacheDirectory, basename), "mpc");
+    dbModule.getDatabase().prepare(
+      'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
+    ).run(basename, 3, 1);
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    const now = vi.spyOn(Date, "now").mockReturnValue(4_000);
+
+    expect((await request(app).get("/images/mpc").query({ id: "cached-mpc", size: "small" })).status).toBe(200);
+    sendFileSpy.mockRestore();
+    now.mockRestore();
+
+    expect(dbModule.getDatabase().prepare(
+      'SELECT size, last_access FROM image_cache_metadata WHERE basename = ?',
+    ).get(basename)).toEqual({ size: 3, last_access: 4_000 });
   });
 
   it("destroys a cap-plus-one stream before a trailing sentinel and removes only its temp", async () => {
@@ -254,6 +307,28 @@ describe("image proxy stream cache publication", () => {
     rename.mockRestore();
 
     expect(await fs.promises.readdir(cacheDirectory)).toEqual([]);
+  });
+
+  it("keeps an atomically published image when metadata recording fails", async () => {
+    const finalPath = path.join(cacheDirectory, "metadata-failure.png");
+    const database = dbModule.getDatabase();
+    const prepare = database.prepare.bind(database);
+    const metadataFailure = vi.spyOn(database, "prepare").mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO image_cache_metadata')) throw new Error('metadata unavailable');
+      return prepare(sql);
+    });
+
+    await expect(internals.streamImageResponseToFile(
+      { status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("published")]) } as never,
+      finalPath,
+      new AbortController().signal,
+    )).resolves.toEqual({ contentType: "image/png" });
+    metadataFailure.mockRestore();
+
+    await expect(fs.promises.readFile(finalPath)).resolves.toEqual(Buffer.from("published"));
+    expect(database.prepare(
+      'SELECT * FROM image_cache_metadata WHERE basename = ?',
+    ).get(path.basename(finalPath))).toBeUndefined();
   });
 
   it("gives concurrent readers complete old and new snapshots around a paused replacement publication", async () => {
@@ -474,12 +549,43 @@ describe("image proxy stream cache publication", () => {
       size: 7 * gib,
     }) as never);
     const unlink = vi.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
+    dbModule.getDatabase().prepare(
+      'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
+    ).run('evictable.png', 7 * gib, 1);
 
     await internals.checkAndCleanCache();
 
     expect(unlink).toHaveBeenCalledTimes(1);
     expect(unlink).toHaveBeenCalledWith(evictable);
+    expect(dbModule.getDatabase().prepare(
+      'SELECT * FROM image_cache_metadata WHERE basename = ?',
+    ).get('evictable.png')).toBeUndefined();
     internals.writeInProgress.delete(activeTemp);
+    readdir.mockRestore();
+    stat.mockRestore();
+    unlink.mockRestore();
+  });
+
+  it("retains metadata when cache eviction unlink fails", async () => {
+    const gib = 1024 * 1024 * 1024;
+    const retained = path.join(cacheDirectory, "retained.png");
+    const readdir = vi.spyOn(fs.promises, "readdir").mockResolvedValue(["retained.png"] as never);
+    const stat = vi.spyOn(fs.promises, "stat").mockResolvedValue({
+      isFile: () => true,
+      atimeMs: 1,
+      size: 13 * gib,
+    } as never);
+    const unlink = vi.spyOn(fs.promises, "unlink").mockRejectedValueOnce(new Error("EBUSY"));
+    dbModule.getDatabase().prepare(
+      'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
+    ).run('retained.png', 13 * gib, 1);
+
+    await internals.checkAndCleanCache();
+
+    expect(unlink).toHaveBeenCalledWith(retained);
+    expect(dbModule.getDatabase().prepare(
+      'SELECT basename, size, last_access FROM image_cache_metadata WHERE basename = ?',
+    ).get('retained.png')).toEqual({ basename: 'retained.png', size: 13 * gib, last_access: 1 });
     readdir.mockRestore();
     stat.mockRestore();
     unlink.mockRestore();

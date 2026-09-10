@@ -227,6 +227,44 @@ describe('Database module lifecycle and migrations', () => {
     legacyDatabase.close();
   }
 
+  function createV7Database(): Database.Database {
+    const legacyDatabase = new Database(path.join(artifactDirectory, 'proxxied-cards.db'));
+    legacyDatabase.exec(`
+      CREATE TABLE cards (
+        id TEXT PRIMARY KEY,
+        oracle_id TEXT,
+        name TEXT NOT NULL,
+        set_code TEXT,
+        collector_number TEXT,
+        lang TEXT DEFAULT 'en',
+        colors TEXT,
+        mana_cost TEXT,
+        cmc REAL,
+        type_line TEXT,
+        rarity TEXT,
+        layout TEXT,
+        image_uris TEXT,
+        card_faces TEXT,
+        all_parts TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE backups (
+        owner_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        data BLOB NOT NULL,
+        card_count INTEGER DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_id, project_id)
+      );
+      CREATE INDEX idx_backups_owner_updated_at ON backups(owner_id, updated_at DESC);
+      INSERT INTO metadata (key, value) VALUES ('schema_version', '7');
+    `);
+    return legacyDatabase;
+  }
+
   beforeEach(() => {
     artifactDirectory = createExclusiveArtifactDirectory();
     vi.restoreAllMocks();
@@ -253,7 +291,13 @@ describe('Database module lifecycle and migrations', () => {
     const schemaVersion = initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as { value: string };
     initialized.prepare('INSERT INTO cards (id, name) VALUES (?, ?)').run('card-id', 'Sol Ring');
 
-    expect(schemaVersion.value).toBe('7');
+    expect(schemaVersion.value).toBe('8');
+    expect(initialized.prepare("PRAGMA table_info('image_cache_metadata')").all().map((column: { name: string }) => column.name)).toEqual([
+      'basename', 'size', 'last_access',
+    ]);
+    expect(initialized.prepare("PRAGMA index_list('image_cache_metadata')").all().map((index: { name: string }) => index.name)).toContain(
+      'idx_image_cache_metadata_last_access',
+    );
     expect(dbModule.getDatabase()).toBe(initialized);
     expect(dbModule.clearCardsCache()).toBe(1);
 
@@ -264,12 +308,19 @@ describe('Database module lifecycle and migrations', () => {
 
   it('recognizes an up-to-date existing schema without running migrations', async () => {
     const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    createLegacyDatabase('7');
+    createLegacyDatabase('8', `
+      CREATE TABLE image_cache_metadata (
+        basename TEXT PRIMARY KEY,
+        size INTEGER NOT NULL,
+        last_access INTEGER NOT NULL
+      );
+      CREATE INDEX idx_image_cache_metadata_last_access ON image_cache_metadata(last_access ASC);
+    `);
     dbModule = await importDbModule();
     const initialized = dbModule.initDatabase();
 
-    expect(consoleLogSpy).toHaveBeenCalledWith('[DB] Schema is up to date (version 7)');
-    expect(initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '7' });
+    expect(consoleLogSpy).toHaveBeenCalledWith('[DB] Schema is up to date (version 8)');
+    expect(initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '8' });
   });
 
   it('warns and keeps newer database schemas untouched', async () => {
@@ -278,7 +329,7 @@ describe('Database module lifecycle and migrations', () => {
     dbModule = await importDbModule();
     const initialized = dbModule.initDatabase();
 
-    expect(consoleWarnSpy).toHaveBeenCalledWith('[DB] Warning: Database schema version 99 is newer than code version 7. This may cause issues.');
+    expect(consoleWarnSpy).toHaveBeenCalledWith('[DB] Warning: Database schema version 99 is newer than code version 8. This may cause issues.');
     expect(initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '99' });
   });
 
@@ -290,9 +341,86 @@ describe('Database module lifecycle and migrations', () => {
     const schemaVersion = initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get();
     const backupTable = initialized.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'backups'").get();
 
-    expect(schemaVersion).toEqual({ value: '7' });
+    expect(schemaVersion).toEqual({ value: '8' });
     expect(backupTable).toBeDefined();
-    expect(consoleLogSpy).toHaveBeenCalledWith('[DB] All migrations complete. Now at version 7');
+    expect(consoleLogSpy).toHaveBeenCalledWith('[DB] All migrations complete. Now at version 8');
+  });
+
+  it('migrates real v7 composite-owner backup BLOBs unchanged while adding image cache metadata', async () => {
+    const v7Database = createV7Database();
+    const ownerABlob = Buffer.from([0, 1, 2, 255]);
+    const ownerBBlob = Buffer.from([255, 2, 1, 0]);
+    const insertBackup = v7Database.prepare(
+      'INSERT INTO backups (owner_id, project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    insertBackup.run('owner-a', 'shared-project', 'Owner A', ownerABlob, 3, 1700000000001, 1600000000001);
+    insertBackup.run('owner-b', 'shared-project', 'Owner B', ownerBBlob, 4, 1700000000002, 1600000000002);
+    const beforeUpgrade = v7Database.prepare(
+      'SELECT owner_id, project_id, project_name, data, card_count, updated_at, created_at FROM backups ORDER BY owner_id',
+    ).all();
+    v7Database.close();
+    const cacheDirectory = path.join(artifactDirectory, 'cached-images');
+    fs.mkdirSync(cacheDirectory);
+    fs.writeFileSync(path.join(cacheDirectory, 'published.png'), 'exact');
+    fs.writeFileSync(path.join(cacheDirectory, 'partial.tmp'), 'partial');
+    fs.mkdirSync(path.join(cacheDirectory, 'nested'));
+    dbModule = await importDbModule();
+    const initialized = dbModule.initDatabase();
+
+    expect(initialized.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '8' });
+    const columns = initialized.prepare("PRAGMA table_info('image_cache_metadata')").all() as Array<{ name: string; pk: number }>;
+    const indexes = initialized.prepare("PRAGMA index_list('image_cache_metadata')").all() as Array<{ name: string }>;
+    expect(columns.map(({ name, pk }) => ({ name, pk }))).toEqual([
+      { name: 'basename', pk: 1 },
+      { name: 'size', pk: 0 },
+      { name: 'last_access', pk: 0 },
+    ]);
+    expect(indexes.map(({ name }) => name)).toContain('idx_image_cache_metadata_last_access');
+    expect(initialized.prepare(
+      'SELECT owner_id, project_id, project_name, data, card_count, updated_at, created_at FROM backups ORDER BY owner_id',
+    ).all()).toEqual(beforeUpgrade);
+    expect(initialized.prepare('SELECT basename, size FROM image_cache_metadata').all()).toEqual([
+      { basename: 'published.png', size: Buffer.byteLength('exact') },
+    ]);
+  });
+
+  it('rolls back every v8 artifact and preserves v7 backup bytes when v8 index creation fails', async () => {
+    const v7Database = createV7Database();
+    const backupBytes = Buffer.from([7, 8, 9, 255]);
+    v7Database.prepare(
+      'INSERT INTO backups (owner_id, project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('owner-a', 'project-a', 'Atomic backup', backupBytes, 9, 20, 10);
+    const beforeUpgrade = v7Database.prepare(
+      'SELECT owner_id, project_id, project_name, data, card_count, updated_at, created_at FROM backups',
+    ).all();
+    v7Database.close();
+
+    const originalExec = Database.prototype.exec;
+    vi.spyOn(Database.prototype, 'exec').mockImplementation(function (this: Database.Database, sql: string) {
+      if (sql.includes('CREATE INDEX IF NOT EXISTS idx_image_cache_metadata_last_access')) {
+        throw new Error('forced v8 index failure');
+      }
+      return originalExec.call(this, sql);
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbModule = await importDbModule();
+
+    expect(() => dbModule?.initDatabase()).toThrow('forced v8 index failure');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[DB] Migration 8 failed:', expect.any(Error));
+    dbModule.closeDatabase();
+
+    const inspected = new Database(path.join(artifactDirectory, 'proxxied-cards.db'));
+    expect(inspected.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '7' });
+    expect(inspected.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_cache_metadata'",
+    ).get()).toBeUndefined();
+    expect(inspected.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_image_cache_metadata_last_access'",
+    ).get()).toBeUndefined();
+    expect(inspected.prepare(
+      'SELECT owner_id, project_id, project_name, data, card_count, updated_at, created_at FROM backups',
+    ).all()).toEqual(beforeUpgrade);
+    inspected.close();
   });
 
   it('logs and rethrows migration failures', async () => {
@@ -335,7 +463,7 @@ describe('Database backup owner migration', () => {
     }
   });
 
-  it('creates a fresh v7 owner-scoped backups table with the owner update index', async () => {
+  it('creates a fresh v8 owner-scoped backups table with the owner update index', async () => {
     dbModule = await importDbModule();
     const database = dbModule.initDatabase();
 
@@ -350,7 +478,7 @@ describe('Database backup owner migration', () => {
       'INSERT INTO backups (owner_id, project_id, project_name, data, card_count, updated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run('owner-b', 'shared-project', 'B', Buffer.from('b'), 2, 4, 3);
 
-    expect(schemaVersion.value).toBe('7');
+    expect(schemaVersion.value).toBe('8');
     expect(columns.filter((column) => column.pk > 0).map(({ name, pk }) => ({ name, pk }))).toEqual([
       { name: 'owner_id', pk: 1 },
       { name: 'project_id', pk: 2 },
@@ -402,7 +530,7 @@ describe('Database backup owner migration', () => {
     dbModule = await importDbModule();
     const restarted = dbModule.initDatabase();
     expect(restarted.prepare('SELECT COUNT(*) AS count FROM backups').get()).toEqual({ count: 1 });
-    expect(restarted.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '7' });
+    expect(restarted.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '8' });
   });
 
   it('rolls back a failed v7 migration and leaves the v6 backup intact', async () => {
