@@ -1,106 +1,70 @@
-# Build Speed Notes
+# Build Behavior and Iteration
 
-## Parallel Build
+This is the current build contract. It describes commands and artifact state; it does **not** claim benchmark times or speedups. See [measurement guidance](BUILD_PERFORMANCE.md) when collecting local timings.
 
-The fastest way to build the JS/TS parts of the repo is:
+Sources of truth: root [package scripts](../package.json), [aggregate helper](../scripts/build-parallel.mjs), [server build helper](../server/scripts/server-build.mjs), and [Electron prerequisite helper](../scripts/build-electron-prerequisites.mjs).
 
-```bash
-npm run build:parallel
-```
+## Choose the command
 
-This includes a quick prerequisite step to ensure the local workspace dependency
-`shared/scryfall-client` has its `dist/` built (required for client/server builds).
+| Goal | Command | What it does |
+| --- | --- | --- |
+| Build all JavaScript/TypeScript outputs | `npm run build:parallel` | Builds the shared client once, then builds client, server, and Electron TypeScript concurrently. |
+| Build the server during normal iteration | `npm run build --prefix server` | Runs the standalone server prerequisite, then preserves `server/dist` and `server/.tsbuildinfo` for incremental compilation. |
+| Recover server output after deleting or renaming server source | `npm run build:clean --prefix server` | Removes only the server's generated `dist` and `.tsbuildinfo`, then rebuilds them. Use this when stale emitted files for removed source must disappear. |
+| Build the client bundle | `npm run build --prefix client` | Runs Vite's production bundler. |
+| Type-check the client separately | `npm run typecheck --prefix client` | Runs the client `tsc --noEmit` check; it is not part of the Vite bundle command. |
+| Compile Electron TypeScript | `npm run build:electron:ts` | Preserves `electron/.tsbuildinfo` and compiles the configured Electron entrypoints to `electron/dist`. |
+| Create a desktop package | `npm run electron:build` | Joins the Rust and JavaScript prerequisites, stages the validated Rust binary, then invokes `electron-builder`. |
 
-This runs, in parallel:
-- `npm run build --prefix client` (Vite build)
-- `npm run build --prefix server` (TypeScript compile to `server/dist`)
-- `tsc -p electron/tsconfig.json` (TypeScript compile to `electron/dist`)
+## Aggregate JavaScript build order
 
-## Incremental TypeScript Builds
+`npm run build:parallel` has one sequential prerequisite and three concurrent consumers:
 
-TypeScript incremental compilation is enabled for:
-- `server/tsconfig.build.json` (build info at `server/.tsbuildinfo/tsconfig.build.tsbuildinfo`)
-- `electron/tsconfig.json` (build info at `electron/.tsbuildinfo/tsconfig.tsbuildinfo`)
+1. `npm run build:shared-client` builds `shared/scryfall-client`.
+2. After that succeeds, it starts all of the following together:
+   - `npm run build:client` — `vite build` in `client`.
+   - `npm run build:server` — the server build with `--ignore-scripts`.
+   - `npm run build:electron:ts` — `tsc -p electron/tsconfig.json`.
 
-These build-info files are intentionally not committed and are safe to delete if you need a clean rebuild.
+The shared client's own build recreates `shared/scryfall-client/dist`. Building it before the consumers and using `--ignore-scripts` for the aggregate server build prevents the server's standalone `prebuild` hook from rebuilding that shared output while the client consumes it. The aggregate path therefore builds the shared client once per invocation.
 
-## Electron Packaging
+A standalone `npm run build --prefix server` intentionally behaves differently: npm runs the server `prebuild` hook, which builds the shared client before the server compiler runs. Use that command when the server is the only consumer being built.
 
-Electron packaging still needs prerequisites first (microservice + build outputs). Use:
+## Incremental and clean server builds
 
-```bash
-npm run electron:build
-```
+The normal server build calls [the server build helper](../server/scripts/server-build.mjs) without first cleaning. The helper retains `server/dist` and `server/.tsbuildinfo`; the server TypeScript configuration enables incremental compilation and stores its build info at `.tsbuildinfo/tsconfig.build.tsbuildinfo`.
 
-This runs microservice build first, then `npm run build:parallel`, then `electron-builder`.
+`npm run build:clean --prefix server` is the explicit recovery path. It removes only those two generated server directories, then runs the usual build. This matters after a server source file is deleted: a normal incremental build can leave its old emitted JavaScript in `server/dist`, while the clean recovery rebuild emits only remaining source. It also recreates the incremental build-info file. The helper rejects a generated path that is a symlink or not a real directory rather than following it during a build.
 
-## Rust/Cargo (Microservice) Build Speed
+Do not delete source files or manually remove generated directories merely to obtain a routine incremental build. Use `build:clean` only when a clean server artifact is needed, especially after source removal or suspected stale output.
 
-The Electron build expects a sibling checkout of the Rust microservice at `../scryfall-cache-microservice`
-and a release binary at `../scryfall-cache-microservice/target/release/scryfall-cache`.
+## TypeScript and Vite boundaries
 
-### Faster Local Iteration (Dev Profile + Incremental)
+- **Server:** the build is `tsc -p server/tsconfig.build.json`; incremental state is enabled and retained by a normal server build.
+- **Electron:** `npm run build:electron:ts` runs `tsc -p electron/tsconfig.json`; incremental state is enabled at `electron/.tsbuildinfo/tsconfig.tsbuildinfo` and is retained between normal Electron TypeScript builds.
+- **Client:** `npm run build --prefix client` is `vite build`, which bundles the application and produces `client/dist`. It is not a `tsc` compilation command and must not be described as one. The separate client `typecheck` command uses `tsc --noEmit --incremental false`.
 
-For faster repeated builds while iterating locally:
+## Electron packaging order
+
+`npm run electron:build` is a serial package pipeline with a bounded concurrent prerequisite stage:
+
+1. `npm run build:electron:prerequisites` starts exactly two branches at once:
+   - `bash scripts/build-microservice.sh` for the Rust microservice.
+   - `npm run build:parallel` for the JavaScript aggregate build.
+2. The helper waits until **both** branches settle successfully. If either fails, it terminates an unfinished sibling and does not continue.
+3. `node scripts/prepare-microservice-package.mjs` reads and validates the Rust artifact manifest, requires a release-profile binary for the package target, and stages that binary under `electron/dist/microservice-package`.
+4. `electron-builder` runs only after staging succeeds.
+
+The Rust and JavaScript branches are concurrent only within step 1; staging and `electron-builder` are ordered after their join. The Rust script defaults to a release profile for packaging. It can use dev/debug profiles for local Rust iteration, but the packaging stage rejects a non-release manifest.
+
+`npm run electron:build:win` follows the same prerequisite join and staging order, then fetches the Windows Electron-native `better-sqlite3` prebuild before running `electron-builder --win`.
+
+## Rust microservice iteration
+
+The microservice helper defaults to the sibling checkout at `../scryfall-cache-microservice` and accepts `MICROSERVICE_DIR` to select another checkout. Its default profile is `release`; release defaults to `CARGO_INCREMENTAL=0`. For local Rust-only iteration, a developer may select a dev/debug profile, which defaults to `CARGO_INCREMENTAL=1`:
 
 ```bash
 MICROSERVICE_PROFILE=dev bash scripts/build-microservice.sh
 ```
 
-This enables Cargo incremental compilation by default for `dev`/`debug` builds.
-
-### Mold (Optional)
-
-If `mold` is installed, `scripts/build-microservice.sh` will automatically use it for linking on Linux.
-To disable mold explicitly:
-
-```bash
-MICROSERVICE_NO_MOLD=1 bash scripts/build-microservice.sh
-```
-
-### Jobs / Parallelism
-
-The script builds with `-j <cores>` by default. You can override:
-
-```bash
-MICROSERVICE_JOBS=8 bash scripts/build-microservice.sh
-```
-
-### Clean Build (For Timing/Debugging)
-
-To clean before building:
-
-```bash
-MICROSERVICE_CLEAN=1 bash scripts/build-microservice.sh
-```
-
-Measured on 2026-02-10 (Linux, 16 cores, mold 2.37.1):
-- `MICROSERVICE_PROFILE=dev MICROSERVICE_CLEAN=1` real: ~59s
-- `MICROSERVICE_PROFILE=dev` (immediate rebuild) real: ~0.2s
-
-### Release Builds
-
-The script defaults to `MICROSERVICE_PROFILE=release` to match packaging needs.
-Release builds default to `CARGO_INCREMENTAL=0` (can be overridden with `MICROSERVICE_INCREMENTAL=1`).
-
-## Docker Build Speed
-
-Docker image builds use BuildKit-only cache mounts for npm, pip, and apk package
-caches. Install the Buildx CLI plugin once if `docker buildx version` is not
-available:
-
-```bash
-bash scripts/install-docker-buildx.sh
-```
-
-Then build normally with Compose:
-
-```bash
-docker compose build
-```
-
-The first build still downloads packages, but repeated builds reuse BuildKit
-cache mounts for:
-- npm package tarballs in the client, server, and shared client stages
-- apk package indexes/packages for Node native build tooling and runtime Python/reportlab packages
-- pip downloads for pypdf, tomli-w, and the vendored printer calibration package
+`MICROSERVICE_CLEAN=1` runs `cargo clean` before the Rust build. It is a Rust clean build control, separate from the server `build:clean` recovery command. The helper chooses a job count from `MICROSERVICE_JOBS` or the available processor count and uses `mold` on Linux when available unless `MICROSERVICE_NO_MOLD=1`.

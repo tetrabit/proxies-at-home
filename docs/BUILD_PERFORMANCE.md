@@ -1,97 +1,59 @@
-# Build Performance Documentation
+# Build Performance Measurement
 
-This document records build timing measurements for the MTG Proxy Builder project.
+No current build duration, total, or speedup is claimed in this document. Build duration depends on the checkout, dependency state, CPU, storage, available memory, Rust cache state, and whether the command packages native artifacts. For the command graph and cache behavior, see [Build Behavior and Iteration](BUILD_SPEED.md).
 
-## Build Timing Summary
+## What to measure
 
-All timings measured on: $(uname -a)
-Date: $(date)
+Measure comparable commands for the question being answered:
 
-### Component Build Times (Clean Build)
+| Question | Command | Comparison notes |
+| --- | --- | --- |
+| Aggregate JavaScript/TypeScript build | `npm run build:parallel` | Includes one shared-client build followed by concurrent client, server, and Electron TypeScript consumers. |
+| Normal server incremental build | `npm run build --prefix server` | Retains server output and TypeScript build info; compare unchanged and changed-source runs separately. |
+| Server stale-output recovery | `npm run build:clean --prefix server` | Removes generated server `dist` and `.tsbuildinfo` before rebuilding; do not compare it as though it were a warm incremental run. |
+| Client production bundle | `npm run build --prefix client` | Measures Vite bundling, not a TypeScript type check. |
+| Client type check | `npm run typecheck --prefix client` | Measures the separate `tsc --noEmit --incremental false` command. |
+| Electron TypeScript compilation | `npm run build:electron:ts` | Retains Electron TypeScript build info between normal runs. |
+| Desktop packaging | `npm run electron:build` | Includes a bounded Rust-plus-JavaScript prerequisite join, Rust staging, and `electron-builder`. |
 
-| Component | Time (real) | Notes |
-|-----------|-------------|-------|
-| Client | ~34s | Vite build with PWA generation |
-| Server | ~4s | TypeScript compilation |
-| Electron | ~11s | TypeScript compilation |
-| **Total Sequential** | ~49s | Sum of all components |
+## Reproducible local measurement
 
-### Client Build
-- **Time**: 33.732s (real), 40.684s (user), 11.114s (sys)
-- **Tool**: Vite 7.3.0
-- **Output**: ~2.7 MB precache (31 entries)
-- **Command**: `npm run build --prefix client`
+Record the machine and tool versions beside every result. For example:
 
-### Server Build  
-- **Time**: 4.059s (real), 5.663s (user), 0.785s (sys)
-- **Tool**: TypeScript compiler (tsc)
-- **Command**: `npm run build --prefix server`
-- **Note**: Requires clean .tsbuildinfo cache for consistent results
-
-### Electron Build
-- **Time**: 10.804s (real), 8.160s (user), 2.820s (sys)
-- **Tool**: TypeScript compiler (tsc)
-- **Command**: `npm run build:electron:ts`
-
-## Recommended Build Commands
-
-### Development
 ```bash
-# Run all services in dev mode with hot reload
-npm run dev
+node --version
+npm --version
 ```
 
-### Production Build
-```bash
-# Build all components in parallel (recommended)
-npm run build:parallel
+On a Unix-like host, record operating-system and processor information with the platform utilities available there (for example, `uname -a` and `getconf _NPROCESSORS_ONLN`). Use an equivalent timing utility on other platforms, and identify the exact command in the record. A Unix-like example is:
 
-# Or build individually:
-npm run build:client
-npm run build:server  
-npm run build:electron:ts
+```bash
+time -p npm run build:parallel
+time -p npm run build --prefix server
+time -p npm run build:clean --prefix server
+time -p npm run build --prefix client
+time -p npm run electron:build
 ```
 
-### Clean Build
-```bash
-# If experiencing build cache issues:
-cd server && rm -rf .tsbuildinfo dist && cd ..
-npm run build:parallel
-```
+For each command, report at least:
 
-## Build Optimization Notes
+- the command exactly as executed and whether it completed successfully;
+- the measurement date and the checkout/revision being measured;
+- operating system, CPU count, memory pressure or competing workloads, and storage conditions when known;
+- Node, npm, TypeScript, Vite, Electron, and Rust/Cargo versions that can affect the result;
+- relevant state: first run, unchanged repeat, source change, explicit server clean recovery, or Rust cache/profile state;
+- wall-clock time, plus user/system CPU time when the timing utility provides them.
 
-### Current Optimizations
-1. **Incremental compilation** enabled for TypeScript (tsBuildInfoFile)
-2. **Code splitting** in Vite for client bundle
-3. **Tree shaking** and minification in production
-4. **Parallel builds** via concurrently for independent components
+Do not present an unchanged repeat as a clean build, or a clean recovery as an incremental result. Report failed commands separately rather than treating their elapsed time as a successful build measurement.
 
-### Potential Future Optimizations
-- **SWC/esbuild**: Could replace tsc for faster transpilation
-- **Turbopack**: Alternative to Vite for faster bundling
-- **Build caching**: Implement persistent caching for CI/CD
+## Interpreting results
 
-## Troubleshooting
+The aggregate build has an intentional dependency boundary: it builds `shared/scryfall-client` once, then starts client Vite bundling, server compilation, and Electron TypeScript compilation concurrently. Its wall-clock time is therefore not the sum of the component durations.
 
-### Server Build Failing with "No such file or directory"
-**Symptom**: `cp: cannot create directory 'dist/server/': No such file or directory`
+Server and Electron TypeScript builds retain their configured build-info state during normal commands. The server `build:clean` command is intentionally different: it deletes generated server output and build info so that output for deleted source is removed before rebuilding. Client production builds should be described as Vite bundle measurements; Vite's bundle command is not the client `tsc` type-check command.
 
-**Cause**: Stale incremental build cache preventing TypeScript emission
+Desktop packaging first waits for both the Rust microservice build and the aggregate JavaScript build, then stages a validated release Rust binary, then invokes `electron-builder`. A package timing consequently includes work not represented by an Electron TypeScript-only timing.
 
-**Solution**:
-```bash
-cd server
-rm -rf .tsbuildinfo dist
-npm run build
-```
+## Publication rule
 
-### Inconsistent Build Times
-- First build after cache clear will be slower
-- Subsequent incremental builds should be faster
-- Warm vs cold builds can vary by 2-3x
-
-## Local Development Recommendations
-- Use `npm run dev` for development (hot reload)
-- Only run full production builds when testing deployment
-- Clean builds recommended after major dependency updates
+Publish a timing only with its recorded environment and command state. Do not extrapolate a local result into a general speedup, CI expectation, or release-time guarantee without a repeatable benchmark record.
