@@ -346,32 +346,6 @@ describe("getWithRetry logic", () => {
         expect(res.body).toEqual({ error: "Upstream error", status: 200 });
     });
 
-    it("serves a proxy request after an in-progress write finishes", async () => {
-        const url = "https://cards.scryfall.io/normal/front/e/f/ef123456-1234-1234-1234-123456789abc.jpg";
-        const localPath = __imageRouterTestInternals.cachePathFromUrl(url);
-        __imageRouterTestInternals.writeInProgress.add(localPath);
-        let localPathChecks = 0;
-        (fs.existsSync as unknown as Mock).mockImplementation((filePath: string) => {
-            if (filePath === localPath) {
-                localPathChecks++;
-                return localPathChecks >= 2;
-            }
-            return false;
-        });
-        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
-            this.type("image/jpeg").send("in-progress cached image");
-        });
-
-        const responsePromise = request(app).get("/images/proxy").query({ url });
-        await new Promise(resolve => setTimeout(resolve, 150));
-        const res = await responsePromise;
-
-        expect(res.status).toBe(200);
-        expect(sendFileSpy).toHaveBeenCalledWith(localPath);
-        sendFileSpy.mockRestore();
-    });
-
-
 
     it("serves subsequent proxy requests from the in-memory path cache", async () => {
         (fs.existsSync as unknown as Mock).mockReturnValue(true);

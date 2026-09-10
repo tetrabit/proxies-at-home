@@ -59,7 +59,6 @@ describe("image proxy stream cache publication", () => {
     else process.env.SERVER_DATA_DIR = originalServerDataDir;
     vi.resetModules();
     expect(path.relative(fixtureRoot, fixtureDirectory)).not.toMatch(/^\.\.(?:[\\/]|$)/);
-    await fs.promises.rm(fixtureDirectory, { recursive: true, force: true });
   });
 
   it("streams a chunked image under the fixed cap to one atomically published final file", async () => {
@@ -218,6 +217,225 @@ describe("image proxy stream cache publication", () => {
     rename.mockRestore();
 
     expect(await fs.promises.readdir(cacheDirectory)).toEqual([]);
+  });
+
+  it("deduplicates concurrent same-key proxy misses until one complete file is published", async () => {
+    const body = Buffer.from("deduplicated-png");
+    let resolveUpstream: (response: { status: number; headers: { "content-type": string }; data: Readable }) => void;
+    const upstream = new Promise<{ status: number; headers: { "content-type": string }; data: Readable }>(resolve => {
+      resolveUpstream = resolve;
+    });
+    let sharedSignal: AbortSignal | undefined;
+    axiosMock.get.mockImplementation((_url: string, config: { signal: AbortSignal }) => {
+      sharedSignal = config.signal;
+      return upstream;
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const first = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(1));
+    const second = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+
+    await new Promise<void>(resolve => setTimeout(resolve, 125));
+    const upstreamCalls = axiosMock.get.mock.calls.length;
+    resolveUpstream!({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: lazyChunks([body]),
+    });
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    expect(upstreamCalls).toBe(1);
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(firstResponse.body).toEqual(body);
+    expect(secondResponse.body).toEqual(body);
+    expect(sharedSignal?.aborted).toBe(false);
+    await expect(fs.promises.readFile(internals.cachePathFromUrl(imageUrl))).resolves.toEqual(body);
+    sendFileSpy.mockRestore();
+  });
+
+  it("shares one terminally rejected owner between concurrent subscribers before permitting a fresh owner", async () => {
+    let rejectFirstOwner: (reason: unknown) => void;
+    const firstOwner = new Promise<never>((_resolve, reject) => {
+      rejectFirstOwner = reject;
+    });
+    const ownerSignals: AbortSignal[] = [];
+    axiosMock.get.mockImplementation((_url: string, config: { signal: AbortSignal }) => {
+      ownerSignals.push(config.signal);
+      return firstOwner;
+    });
+
+    const first = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(1));
+    const second = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+
+    // Leave the physical owner pending long enough for the second request to
+    // subscribe. A duplicate owner would call axios a second time here.
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(axiosMock.get).toHaveBeenCalledTimes(1);
+    rejectFirstOwner!(new Error("shared upstream failure"));
+
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    expect(firstResponse.status).toBe(502);
+    expect(secondResponse.status).toBe(502);
+    expect(firstResponse.body).toEqual(secondResponse.body);
+    expect(axiosMock.get).toHaveBeenCalledTimes(2); // getWithRetry permits two physical attempts per owner.
+    expect(ownerSignals).toHaveLength(2);
+    expect(ownerSignals[0]).toBe(ownerSignals[1]);
+
+    const body = Buffer.from("fresh-owner-png");
+    axiosMock.get.mockReset().mockImplementation((_url: string, config: { signal: AbortSignal }) => {
+      ownerSignals.push(config.signal);
+      return Promise.resolve({
+        status: 200,
+        headers: { "content-type": "image/png" },
+        data: lazyChunks([body]),
+      });
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    const freshResponse = await request(app).get("/images/proxy").query({ url: imageUrl });
+    sendFileSpy.mockRestore();
+
+    expect(freshResponse.status).toBe(200);
+    expect(freshResponse.body).toEqual(body);
+    expect(axiosMock.get).toHaveBeenCalledTimes(1);
+    expect(ownerSignals).toHaveLength(3);
+    expect(ownerSignals[2]).not.toBe(ownerSignals[0]);
+  });
+
+  it("keeps a shared download alive when its first subscriber disconnects", async () => {
+    const body = Buffer.from("surviving-subscriber-png");
+    let resolveUpstream: (response: { status: number; headers: { "content-type": string }; data: Readable }) => void;
+    const upstream = new Promise<{ status: number; headers: { "content-type": string }; data: Readable }>(resolve => {
+      resolveUpstream = resolve;
+    });
+    let sharedSignal: AbortSignal | undefined;
+    axiosMock.get.mockImplementation((_url: string, config: { signal: AbortSignal }) => {
+      sharedSignal = config.signal;
+      return upstream;
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const first = request(app).get("/images/proxy").query({ url: imageUrl });
+    first.end(() => undefined);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(1));
+    const survivor = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    first.abort();
+    expect(sharedSignal?.aborted).toBe(false);
+
+    resolveUpstream!({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: lazyChunks([body]),
+    });
+    const response = await survivor;
+    sendFileSpy.mockRestore();
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(body);
+    expect(axiosMock.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new owner after a shared download failure", async () => {
+    axiosMock.get.mockRejectedValue(new Error("first owner failed"));
+    const failed = await request(app).get("/images/proxy").query({ url: imageUrl });
+    expect(failed.status).toBe(502);
+
+    const body = Buffer.from("replacement-owner-png");
+    axiosMock.get.mockReset().mockResolvedValue({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: lazyChunks([body]),
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    const retry = await request(app).get("/images/proxy").query({ url: imageUrl });
+    sendFileSpy.mockRestore();
+
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual(body);
+    expect(axiosMock.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not evict an active owned temp path during a cache sweep", async () => {
+    const gib = 1024 * 1024 * 1024;
+    const activeTemp = path.join(cacheDirectory, "active-owner.tmp");
+    const evictable = path.join(cacheDirectory, "evictable.png");
+    internals.writeInProgress.add(activeTemp);
+    const readdir = vi.spyOn(fs.promises, "readdir").mockResolvedValue(["active-owner.tmp", "evictable.png"] as never);
+    const stat = vi.spyOn(fs.promises, "stat").mockImplementation(async filePath => ({
+      isFile: () => true,
+      atimeMs: String(filePath).endsWith("active-owner.tmp") ? 1 : 2,
+      size: 7 * gib,
+    }) as never);
+    const unlink = vi.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
+
+    await internals.checkAndCleanCache();
+
+    expect(unlink).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(evictable);
+    internals.writeInProgress.delete(activeTemp);
+    readdir.mockRestore();
+    stat.mockRestore();
+    unlink.mockRestore();
+  });
+
+  it("aborts a shared download only when its last subscriber disconnects, then permits a retry", async () => {
+    let emitted = false;
+    const source = new Readable({
+      read() {
+        if (emitted) return;
+        emitted = true;
+        this.push(Buffer.from("partial"));
+      },
+    });
+    axiosMock.get.mockResolvedValueOnce({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: source,
+    });
+
+    const first = request(app).get("/images/proxy").query({ url: imageUrl });
+    first.end(() => undefined);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(1));
+
+    const second = request(app).get("/images/proxy").query({ url: imageUrl });
+    second.end(() => undefined);
+    await vi.waitFor(async () => expect((await fs.promises.readdir(cacheDirectory)).some(entry => entry.endsWith(".tmp"))).toBe(true));
+
+    first.abort();
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(source.destroyed).toBe(false);
+
+    second.abort();
+    await vi.waitFor(() => expect(source.destroyed).toBe(true));
+    await vi.waitFor(async () => expect(await fs.promises.readdir(cacheDirectory)).toEqual([]));
+
+    const retryBody = Buffer.from("retry-png");
+    axiosMock.get.mockResolvedValueOnce({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: lazyChunks([retryBody]),
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    const retry = await request(app).get("/images/proxy").query({ url: imageUrl });
+    sendFileSpy.mockRestore();
+
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual(retryBody);
+    expect(axiosMock.get).toHaveBeenCalledTimes(2);
+    await expect(fs.promises.readFile(internals.cachePathFromUrl(imageUrl))).resolves.toEqual(retryBody);
   });
 
   it("disposes an invalid MPC candidate before streaming a later candidate to its cache key", async () => {

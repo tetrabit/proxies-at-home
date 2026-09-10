@@ -7,6 +7,7 @@ from pathlib import Path
 import pypdf
 from pypdf import PdfReader, PdfWriter, Transformation
 
+from printer_calibration.bounded_output import BoundedBinaryWriter, validate_max_output_bytes
 from printer_calibration.constants import MM_TO_PT
 from printer_calibration.validation import validate_finite_offsets, validate_profile_metadata
 
@@ -17,6 +18,7 @@ def apply_profile(
     profile: dict,
     page_mode: str = "duplex",
     front_page_count: int | None = None,
+    max_output_bytes: int | None = None,
 ) -> None:
     """Apply calibration offsets from *profile* to every page of *input_path*.
 
@@ -43,6 +45,8 @@ def apply_profile(
             front group followed by a back group.
         front_page_count: Required only for ``grouped-duplex``. The explicit
             number of leading front pages; it must leave at least one back page.
+        max_output_bytes: Optional cap enforced before any serializer write that
+            would grow the output past this many bytes.
 
     Raises:
         ValueError: If the input file cannot be opened, is not a valid PDF,
@@ -50,6 +54,7 @@ def apply_profile(
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
+    max_output_bytes = validate_max_output_bytes(max_output_bytes)
     if page_mode not in {"duplex", "back-only", "grouped-duplex"}:
         raise ValueError(
             "page_mode must be 'duplex', 'back-only', or 'grouped-duplex'"
@@ -107,4 +112,9 @@ def apply_profile(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as fh:
-        writer.write(fh)
+        output = (
+            fh
+            if max_output_bytes is None
+            else BoundedBinaryWriter(fh, max_bytes=max_output_bytes)
+        )
+        writer.write(output)

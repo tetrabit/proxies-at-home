@@ -8,6 +8,13 @@ import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import type { PrivateCapability } from "../auth/privateRouteAuth.js";
 import { createCalibrationProcessAdmission } from "./calibrationProcessAdmission.js";
+import {
+  CalibrationTemporaryFileQuotaError,
+  createCalibrationTemporaryFileCleanupReconciler,
+  createCalibrationTemporaryFileAdmission,
+  type CalibrationTemporaryFileCleanupReconciler,
+  type CalibrationTemporaryFileReservation,
+} from "./calibrationTemporaryFileAdmission.js";
 
 export type PrinterCalibrationProfile = {
   name: string;
@@ -32,6 +39,11 @@ type PrinterCalibrationRunner =
 
 type CliResult = { stdout: string; stderr: string };
 type CliRunner = (args: string[], options?: { signal?: AbortSignal }) => Promise<CliResult>;
+type CalibrationTemporaryFileAdmission = ReturnType<typeof createCalibrationTemporaryFileAdmission>;
+type StoredCalibrationUpload = Express.Multer.File & {
+  calibrationInputTemporaryFileReservation?: CalibrationTemporaryFileReservation;
+  calibrationOutputTemporaryFileReservation?: CalibrationTemporaryFileReservation;
+};
 type PrivateRouteAuth = {
   private(capability: PrivateCapability): RequestHandler;
 };
@@ -42,6 +54,8 @@ interface PrinterCalibrationRouterOptions {
   configuredProfilesPath?: string;
   runCli?: CliRunner;
   privateRouteAuth?: PrivateRouteAuth;
+  temporaryFileAdmission?: CalibrationTemporaryFileAdmission;
+  temporaryFileCleanup?: CalibrationTemporaryFileCleanupReconciler;
 }
 
 const DEFAULT_PROFILES_FILENAME = "printer-calibration/profiles.toml";
@@ -508,29 +522,188 @@ function unavailableStatus(error: unknown): 500 | 501 {
 }
 
 export const CALIBRATION_UPLOAD_LIMIT_BYTES = 67_108_864;
+export const CALIBRATION_OUTPUT_LIMIT_BYTES = 67_108_864;
+export const CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES = 134_217_728;
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      cb(null, os.tmpdir());
-    },
-    filename: (_req, file, cb) => {
-      /* v8 ignore next -- multer supplies originalname for file uploads; input.pdf fallback is defensive. @preserve */
-      cb(null, path.basename(buildTempFilePath("upload", file.originalname || "input.pdf")));
-    },
-  }),
-  limits: { fileSize: CALIBRATION_UPLOAD_LIMIT_BYTES },
+const defaultCalibrationTemporaryFileAdmission = createCalibrationTemporaryFileAdmission({
+  maxBytes: CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES,
 });
 
-const uploadCalibrationPdf: RequestHandler = (req, res, next) => {
-  upload.single("file")(req, res, (error: unknown) => {
-    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-      res.status(413).json({ error: "Calibration upload exceeds the 64 MiB limit." });
-      return;
-    }
-    next(error);
+function unlinkOwnedTemporaryFile(filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    fs.unlink(filePath, (error) => {
+      if (!error || (error as NodeJS.ErrnoException).code === "ENOENT") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
   });
-};
+}
+
+const defaultCalibrationTemporaryFileCleanup = createCalibrationTemporaryFileCleanupReconciler({
+  unlink: unlinkOwnedTemporaryFile,
+});
+
+function createCalibrationUploadStorage(
+  admission: CalibrationTemporaryFileAdmission,
+  cleanup: CalibrationTemporaryFileCleanupReconciler
+): multer.StorageEngine {
+  return {
+    _handleFile(_req, file, callback) {
+      let inputReservation: CalibrationTemporaryFileReservation;
+      let outputReservation: CalibrationTemporaryFileReservation;
+      try {
+        // Multipart Content-Length includes framing and is optional. Reserve the
+        // enforced input and output ceilings before opening the input file so a
+        // successful upload can never later begin an unreserved output write.
+        inputReservation = admission.reserve(CALIBRATION_UPLOAD_LIMIT_BYTES);
+        try {
+          outputReservation = admission.reserve(CALIBRATION_OUTPUT_LIMIT_BYTES);
+        } catch (error) {
+          inputReservation.release();
+          throw error;
+        }
+      } catch (error) {
+        callback(error);
+        return;
+      }
+
+      const destination = os.tmpdir();
+      const filename = path.basename(buildTempFilePath("upload", file.originalname || "input.pdf"));
+      const filePath = path.join(destination, filename);
+      let output: fs.WriteStream;
+      try {
+        output = fs.createWriteStream(filePath, { flags: "wx", mode: 0o600 });
+      } catch (error) {
+        inputReservation.release();
+        outputReservation.release();
+        callback(error as Error);
+        return;
+      }
+
+      let completed = false;
+      let failed = false;
+      const finish = (error?: Error, info?: Partial<Express.Multer.File>) => {
+        if (completed) return;
+        completed = true;
+        callback(error, info);
+      };
+      const fail = (error: Error) => {
+        if (completed || failed) return;
+        failed = true;
+        file.stream.unpipe(output);
+        output.destroy();
+        const settle = () => {
+          void cleanup.reconcile(filePath, inputReservation).then(() => {
+            // No output path was created for a failed upload, so its reserved
+            // writer capacity has no physical file left to reconcile.
+            outputReservation.release();
+            finish(error);
+          });
+        };
+        if (output.closed) settle();
+        else output.once("close", settle);
+      };
+
+      output.on("error", fail);
+      file.stream.on("error", fail);
+      output.on("finish", () => {
+        if (failed) return;
+        finish(undefined, {
+          destination,
+          filename,
+          path: filePath,
+          size: output.bytesWritten,
+          calibrationInputTemporaryFileReservation: inputReservation,
+          calibrationOutputTemporaryFileReservation: outputReservation,
+        } as Partial<Express.Multer.File>);
+      });
+      file.stream.pipe(output);
+    },
+    _removeFile(_req, file, callback) {
+      const stored = file as StoredCalibrationUpload;
+      const inputReservation = stored.calibrationInputTemporaryFileReservation;
+      const outputReservation = stored.calibrationOutputTemporaryFileReservation;
+      if (!file.path) {
+        inputReservation?.release();
+        outputReservation?.release();
+        callback(null);
+        return;
+      }
+      if (!inputReservation) {
+        void unlinkOwnedTemporaryFile(file.path).then(
+          () => callback(null),
+          (error: unknown) => callback(error instanceof Error ? error : new Error(String(error)))
+        );
+        return;
+      }
+      void cleanup.reconcile(file.path, inputReservation).then(() => {
+        // Multer invokes _removeFile before the apply handler can allocate an
+        // output path, so this reservation has no physical file to retain.
+        outputReservation?.release();
+        callback(null);
+      });
+    },
+  };
+}
+
+function createCalibrationUploadMiddleware(
+  admission: CalibrationTemporaryFileAdmission,
+  cleanup: CalibrationTemporaryFileCleanupReconciler
+): RequestHandler {
+  const upload = multer({
+    storage: createCalibrationUploadStorage(admission, cleanup),
+    limits: { fileSize: CALIBRATION_UPLOAD_LIMIT_BYTES },
+  });
+  return (req, res, next) => {
+    upload.single("file")(req, res, (error: unknown) => {
+      if (error instanceof CalibrationTemporaryFileQuotaError) {
+        res.status(503).json({ error: "Calibration temporary-file capacity is currently full." });
+        return;
+      }
+      if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ error: "Calibration upload exceeds the 64 MiB limit." });
+        return;
+      }
+      next(error);
+    });
+  };
+}
+
+async function settleCalibrationApplyFiles(
+  file: StoredCalibrationUpload | undefined,
+  outputPath: string | null,
+  cleanup: CalibrationTemporaryFileCleanupReconciler
+): Promise<void> {
+  const inputPath = file?.path;
+  const inputReservation = file?.calibrationInputTemporaryFileReservation;
+  const outputReservation = file?.calibrationOutputTemporaryFileReservation;
+  await Promise.all([
+    inputPath && inputReservation
+      ? cleanup.reconcile(inputPath, inputReservation)
+      : inputPath
+        ? unlinkOwnedTemporaryFile(inputPath)
+        : Promise.resolve(),
+    outputPath && outputReservation
+      ? cleanup.reconcile(outputPath, outputReservation)
+      : outputPath
+        ? unlinkOwnedTemporaryFile(outputPath)
+        : Promise.resolve(outputReservation?.release()),
+  ]);
+}
+
+async function settleCalibrationSheetFile(
+  outputPath: string,
+  reservation: CalibrationTemporaryFileReservation,
+  cleanup: CalibrationTemporaryFileCleanupReconciler
+): Promise<void> {
+  await cleanup.reconcile(outputPath, reservation);
+}
+
+function calibrationTemporaryFileStatus(error: unknown): 500 | 501 | 503 {
+  return error instanceof CalibrationTemporaryFileQuotaError ? 503 : unavailableStatus(error);
+}
 
 export function createPrinterCalibrationRouter(
   options: PrinterCalibrationRouterOptions = {}
@@ -549,6 +722,12 @@ export function createPrinterCalibrationRouter(
   const profilesPathForRequest = (request: Request): string =>
     resolveOwnerPrinterCalibrationProfilesPath(dataDirectory, request.privateIdentity?.ownerId ?? "");
   const runCli = options.runCli ?? runPrinterCalibrationCli;
+  const temporaryFileAdmission = options.temporaryFileAdmission ?? defaultCalibrationTemporaryFileAdmission;
+  const temporaryFileCleanup = options.temporaryFileCleanup ?? defaultCalibrationTemporaryFileCleanup;
+  const uploadCalibrationPdf = createCalibrationUploadMiddleware(
+    temporaryFileAdmission,
+    temporaryFileCleanup
+  );
   const runCliForRequest = async (req: Request, res: Response, args: string[]): Promise<CliResult> => {
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -567,19 +746,33 @@ export function createPrinterCalibrationRouter(
       os.tmpdir(),
       `proxxied-printer-calibration-sheet-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`
     );
+    let reservation: CalibrationTemporaryFileReservation | undefined;
 
     try {
-      await runCliForRequest(req, res, ["sheet", "--output", outputPath]);
+      reservation = temporaryFileAdmission.reserve(CALIBRATION_OUTPUT_LIMIT_BYTES);
+      await runCliForRequest(req, res, [
+        "sheet",
+        "--output",
+        outputPath,
+        "--max-output-bytes",
+        String(CALIBRATION_OUTPUT_LIMIT_BYTES),
+      ]);
       res.setHeader("Content-Type", "application/pdf");
       res.download(outputPath, "printer_calibration_sheet.pdf", (error) => {
-        unlinkQuiet(outputPath);
+        void settleCalibrationSheetFile(outputPath, reservation!, temporaryFileCleanup).catch((cleanupError: unknown) => {
+          console.error("[printer-calibration] sheet cleanup error:", cleanupError);
+        });
         if (error) {
           console.error("[printer-calibration] download error:", error);
         }
       });
     } catch (error: unknown) {
-      unlinkQuiet(outputPath);
-      res.status(unavailableStatus(error)).json({
+      if (reservation) {
+        await settleCalibrationSheetFile(outputPath, reservation, temporaryFileCleanup).catch((cleanupError: unknown) => {
+          console.error("[printer-calibration] sheet cleanup error:", cleanupError);
+        });
+      }
+      res.status(calibrationTemporaryFileStatus(error)).json({
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -752,7 +945,7 @@ export function createPrinterCalibrationRouter(
     requirePrivate("calibration:write"),
     uploadCalibrationPdf,
     async (req: Request, res: Response) => {
-      const file = req.file;
+      const file = req.file as StoredCalibrationUpload | undefined;
       const profileName = String(req.body.profileName || "").trim();
       let pageMode: CalibrationPageMode;
       let frontPageCount: string | undefined;
@@ -760,6 +953,9 @@ export function createPrinterCalibrationRouter(
         return res.status(400).json({ error: "Missing file upload." });
       }
       if (!profileName) {
+        await settleCalibrationApplyFiles(file, null, temporaryFileCleanup).catch((cleanupError: unknown) => {
+          console.error("[printer-calibration] apply cleanup error:", cleanupError);
+        });
         return res.status(400).json({ error: "Missing profileName." });
       }
       try {
@@ -768,17 +964,19 @@ export function createPrinterCalibrationRouter(
           frontPageCount = parseGroupedDuplexFrontPageCount(req.body.frontPageCount);
         }
       } catch (error: unknown) {
+        await settleCalibrationApplyFiles(file, null, temporaryFileCleanup).catch((cleanupError: unknown) => {
+          console.error("[printer-calibration] apply cleanup error:", cleanupError);
+        });
         return res.status(400).json({
           /* v8 ignore next -- route validators throw Error instances; fallback is defensive for future validators. @preserve */
           error: error instanceof Error ? error.message : String(error),
         });
       }
 
-      let inputPath: string | null = null;
       let outputPath: string | null = null;
       try {
         const profilesPath = profilesPathForRequest(req);
-        inputPath = file.path;
+        const inputPath = file.path;
         /* v8 ignore next -- multer supplies originalname for file uploads; document fallback is defensive. @preserve */
         outputPath = buildTempFilePath("output", `${path.parse(file.originalname || "document").name}.pdf`);
         await runCliForRequest(req, res, [
@@ -789,6 +987,8 @@ export function createPrinterCalibrationRouter(
           inputPath,
           "--output",
           outputPath,
+          "--max-output-bytes",
+          String(CALIBRATION_OUTPUT_LIMIT_BYTES),
           "--page-mode",
           pageMode,
           ...(frontPageCount === undefined ? [] : ["--front-page-count", frontPageCount]),
@@ -798,15 +998,17 @@ export function createPrinterCalibrationRouter(
         res.setHeader("Content-Type", "application/pdf");
         /* v8 ignore next -- multer supplies originalname for file uploads; document fallback is defensive. @preserve */
         res.download(outputPath, `${path.parse(file.originalname || "document").name}.calibrated.pdf`, (error) => {
-          unlinkQuiet(inputPath);
-          unlinkQuiet(outputPath);
+          void settleCalibrationApplyFiles(file, outputPath, temporaryFileCleanup).catch((cleanupError: unknown) => {
+            console.error("[printer-calibration] apply cleanup error:", cleanupError);
+          });
           if (error) {
             console.error("[printer-calibration] apply download error:", error);
           }
         });
       } catch (error: unknown) {
-        unlinkQuiet(inputPath);
-        unlinkQuiet(outputPath);
+        await settleCalibrationApplyFiles(file, outputPath, temporaryFileCleanup).catch((cleanupError: unknown) => {
+          console.error("[printer-calibration] apply cleanup error:", cleanupError);
+        });
         const message = error instanceof Error ? error.message : String(error);
         const status = message.includes("not found") ? 404 : unavailableStatus(error);
         res.status(status).json({ error: message });

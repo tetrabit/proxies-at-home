@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import BinaryIO, cast
 
 from reportlab.pdfgen.canvas import Canvas
 
+from printer_calibration.bounded_output import BoundedBinaryWriter, validate_max_output_bytes
 from printer_calibration.constants import (
     CENTER_X_MM,
     CENTER_Y_MM,
@@ -170,7 +172,9 @@ def _draw_page(c: Canvas, side_label: str) -> None:
     _draw_instructions(c, side_label)
 
 
-def generate_sheet(output_path: str | Path) -> None:
+def generate_sheet(
+    output_path: str | Path, max_output_bytes: int | None = None
+) -> None:
     """Generate a 2-page duplex calibration sheet PDF.
 
     Page 1 is labeled FRONT and page 2 is labeled BACK so the user can
@@ -180,11 +184,14 @@ def generate_sheet(output_path: str | Path) -> None:
 
     Args:
         output_path: Destination file path for the generated PDF.
+        max_output_bytes: Optional cap enforced before any serializer write that
+            would grow the output past this many bytes.
 
     Raises:
         ValueError: If the output directory does not exist or is not writable.
     """
     output_path = Path(output_path)
+    max_output_bytes = validate_max_output_bytes(max_output_bytes)
     parent = output_path.parent
 
     if not parent.exists():
@@ -192,15 +199,25 @@ def generate_sheet(output_path: str | Path) -> None:
     if not os.access(parent, os.W_OK):
         raise ValueError(f"Output directory is not writable: {parent}")
 
+    def render(canvas: Canvas) -> None:
+        # Page 1 — front side
+        _draw_page(canvas, "FRONT")
+        canvas.showPage()
+
+        # Page 2 — back side
+        _draw_page(canvas, "BACK")
+        canvas.showPage()
+        canvas.save()
+
     page_size = (LETTER_WIDTH_PT, LETTER_HEIGHT_PT)
-    c = Canvas(str(output_path), pagesize=page_size)
+    if max_output_bytes is None:
+        render(Canvas(str(output_path), pagesize=page_size))
+        return
 
-    # Page 1 — front side
-    _draw_page(c, "FRONT")
-    c.showPage()
-
-    # Page 2 — back side
-    _draw_page(c, "BACK")
-    c.showPage()
-
-    c.save()
+    with output_path.open("wb") as raw:
+        render(
+            Canvas(
+                cast(BinaryIO, BoundedBinaryWriter(raw, max_bytes=max_output_bytes)),
+                pagesize=page_size,
+            )
+        )

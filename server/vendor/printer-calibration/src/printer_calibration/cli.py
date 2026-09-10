@@ -40,6 +40,13 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         metavar="PATH",
         help="Path to write the 2-page calibration PDF",
     )
+    sheet_p.add_argument(
+        "--max-output-bytes",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Optional maximum number of bytes the generated PDF may write",
+    )
 
     # -- profile group --------------------------------------------------------
     profile_p = subparsers.add_parser(
@@ -138,6 +145,14 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="Output PDF path (default: <input-stem>.calibrated.pdf next to input)",
     )
     apply_p.add_argument(
+        "--max-output-bytes",
+        dest="max_output_bytes",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Optional maximum number of bytes the calibrated PDF may write",
+    )
+    apply_p.add_argument(
         "--page-mode",
         dest="page_mode",
         choices=["duplex", "back-only", "grouped-duplex"],
@@ -183,7 +198,7 @@ def _handle_sheet(args: argparse.Namespace) -> None:
     def command() -> None:
         from printer_calibration.sheet import generate_sheet
 
-        generate_sheet(args.output)
+        generate_sheet(args.output, max_output_bytes=args.max_output_bytes)
 
     _run_command_with_error_adapter(command)
 
@@ -255,6 +270,7 @@ def _handle_apply(args: argparse.Namespace) -> None:
             profile,
             page_mode=args.page_mode,
             front_page_count=args.front_page_count,
+            max_output_bytes=args.max_output_bytes,
         )
         print(f"Calibrated PDF written to {output_path}")
 

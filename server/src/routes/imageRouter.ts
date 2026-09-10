@@ -208,8 +208,24 @@ if (!fs.existsSync(cacheDir)) {
 const MAX_CACHE_SIZE_BYTES = 12 * 1024 * 1024 * 1024; // 12GB (leaves 8GB for system/logs)
 let lastCacheCleanup = 0;
 
-// Track in-progress writes to prevent concurrent file corruption
+// Track the exact temporary paths currently owned by active publishers. Cache
+// eviction must not unlink one between createWriteStream() and rename().
 const writeInProgress = new Set<string>();
+
+interface ProxyDownloadResult {
+  contentType: string;
+}
+
+interface ProxyDownloadEntry {
+  abortController: AbortController;
+  promise: Promise<ProxyDownloadResult>;
+  settled: boolean;
+  subscribers: number;
+}
+
+// Each cache destination has at most one physical download. Subscribers await the
+// same promise, then independently read the atomically published final file.
+const proxyDownloadsInFlight = new Map<string, ProxyDownloadEntry>();
 
 // In-memory cache of URL→path mappings to avoid fs.existsSync syscalls
 import { LRUCache } from "../utils/lruCache.js";
@@ -253,6 +269,7 @@ async function checkAndCleanCache() {
 
       for (const file of fileStats) {
         if (totalSize - removedSize < targetSize) break;
+        if (writeInProgress.has(file.path)) continue;
         try {
           await fs.promises.unlink(file.path);
           removedSize += file.size;
@@ -322,6 +339,7 @@ async function streamImageResponseToFile(
 
   const tempPath = `${finalPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   let published = false;
+  writeInProgress.add(tempPath);
   try {
     let seen = 0;
     const byteCap = new Transform({
@@ -353,7 +371,78 @@ async function streamImageResponseToFile(
         console.warn("[Proxy] Failed to remove owned temporary image file:", message);
       });
     }
+    writeInProgress.delete(tempPath);
   }
+}
+
+function getOrStartProxyDownload(originalUrl: string, localPath: string): ProxyDownloadEntry {
+  const existing = proxyDownloadsInFlight.get(localPath);
+  if (existing) return existing;
+
+  // This controller belongs to the shared physical download, not any one HTTP
+  // subscriber. A disconnected subscriber must not abort other waiters.
+  const sharedAbortController = new AbortController();
+  const physicalDownload = imageFetchLimit(async () => {
+    const response = await getWithRetry(originalUrl, {
+      responseType: "stream",
+      signal: sharedAbortController.signal,
+    });
+    return streamImageResponseToFile(response, localPath, sharedAbortController.signal);
+  });
+
+  const settle = () => {
+    entry.settled = true;
+    // Delete only the entry owned by this settled download. A later retry may
+    // already have installed a new entry for the same cache path.
+    if (proxyDownloadsInFlight.get(localPath) === entry) {
+      proxyDownloadsInFlight.delete(localPath);
+    }
+  };
+  const promise = physicalDownload.then(
+    result => {
+      settle();
+      return result;
+    },
+    error => {
+      settle();
+      throw error;
+    },
+  );
+  const entry: ProxyDownloadEntry = {
+    abortController: sharedAbortController,
+    promise,
+    settled: false,
+    subscribers: 0,
+  };
+  proxyDownloadsInFlight.set(localPath, entry);
+
+  return entry;
+}
+
+function subscribeToProxyDownload(
+  originalUrl: string,
+  localPath: string,
+  req: Request,
+  res: Response,
+): { promise: Promise<ProxyDownloadResult>; release: () => void } {
+  const entry = getOrStartProxyDownload(originalUrl, localPath);
+  entry.subscribers++;
+  let subscribed = true;
+
+  const release = () => {
+    if (!subscribed) return;
+    subscribed = false;
+    req.off("aborted", release);
+    res.off("close", release);
+    entry.subscribers--;
+    if (entry.subscribers === 0 && !entry.settled && !entry.abortController.signal.aborted) {
+      entry.abortController.abort(new Error("All inbound image requests disconnected"));
+    }
+  };
+
+  req.once("aborted", release);
+  res.once("close", release);
+  return { promise: entry.promise, release };
 }
 
 // -------------------- API: batch enrich cards --------------------
@@ -643,6 +732,7 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
   /* v8 ignore next -- checkAndCleanCache catches its own filesystem failures; this is a defensive promise guard. @preserve */
   checkAndCleanCache().catch((err: unknown) => console.error("[CACHE] Cleanup failed:", err));
 
+  let subscription: ReturnType<typeof subscribeToProxyDownload> | undefined;
   try {
     // Fast path: check in-memory cache first to avoid fs.existsSync syscall
     const cachedPath = urlPathCache.get(originalUrl);
@@ -665,42 +755,20 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
       return res.sendFile(localPath);
     }
 
-    // Wait for any in-progress write to the same path to complete
-    if (writeInProgress.has(localPath)) {
-      await new Promise(r => setTimeout(r, 100));
-      if (fs.existsSync(localPath)) {
-        urlPathCache.set(originalUrl, localPath);
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        return res.sendFile(localPath);
-      }
-    }
+    // Same-key misses share one physical download. The promise resolves only
+    // after streamImageResponseToFile atomically publishes the final file.
+    subscription = subscribeToProxyDownload(originalUrl, localPath, req, res);
+    const result = await subscription.promise;
+    subscription.release();
+    urlPathCache.set(originalUrl, localPath);
 
-    // Mark path as being written to prevent concurrent corruption
-    writeInProgress.add(localPath);
-
-    const abortController = new AbortController();
-    const abortActiveDownload = () => abortController.abort(new Error("Inbound image request aborted"));
-    req.once("aborted", abortActiveDownload);
-    try {
-      // Keep the lease until the upstream stream is settled and its owned temp is
-      // either atomically published or removed.
-      const result = await imageFetchLimit(async () => {
-        const response = await getWithRetry(originalUrl, {
-          responseType: "stream",
-          signal: abortController.signal,
-        });
-        return streamImageResponseToFile(response, localPath, abortController.signal);
-      });
-      urlPathCache.set(originalUrl, localPath); // Update in-memory cache
-
-      res.setHeader("Content-Type", result.contentType);
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      return res.sendFile(localPath);
-    } finally {
-      req.off("aborted", abortActiveDownload);
-      writeInProgress.delete(localPath);
-    }
+    // A disconnected subscriber is not allowed to affect the shared owner.
+    if (req.aborted || res.destroyed) return;
+    res.setHeader("Content-Type", result.contentType);
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    return res.sendFile(localPath);
   } catch (err: unknown) {
+    if (req.aborted || res.destroyed) return;
     if (err instanceof ImageDownloadError) {
       if (err.contentType !== undefined) {
         return res.status(502).json({ error: err.message, ct: err.contentType });
@@ -713,6 +781,8 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Proxy error:", { message: msg, from: originalUrl });
     return res.status(502).json({ error: "Failed to download image", from: originalUrl });
+  } finally {
+    subscription?.release();
   }
 });
 
