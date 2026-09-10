@@ -4,7 +4,7 @@ import express, { type Express, type Response } from "express";
 import fs from "fs";
 import nodeCrypto from "crypto";
 import axios from "axios";
-import { Writable } from "stream";
+import { Readable, Writable } from "stream";
 
 const routeMocks = vi.hoisted(() => ({
     batchFetchCards: vi.fn(),
@@ -49,6 +49,7 @@ vi.mock("fs", () => {
         stat: vi.fn(),
         utimes: vi.fn().mockResolvedValue(undefined),
         unlink: vi.fn().mockResolvedValue(undefined),
+        rename: vi.fn().mockResolvedValue(undefined),
         writeFile: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -87,6 +88,7 @@ vi.mock("crypto", () => {
     };
     const mocked = {
         createHash: vi.fn(() => mockHash),
+        randomUUID: vi.fn(() => "test-request-uuid"),
     };
     return { ...mocked, default: mocked };
 });
@@ -98,9 +100,10 @@ const mockedAxios = {
     create: axios.create as Mock,
 };
 
+const imageStream = (value: string | Buffer) => Readable.from([Buffer.from(value)]);
+
 describe("getWithRetry logic", () => {
     let app: Express;
-    let writeStream: Writable;
 
     const imageUrl = "https://cards.scryfall.io/normal/front/a/b/ab123456-1234-1234-1234-123456789abc.jpg";
 
@@ -120,7 +123,7 @@ describe("getWithRetry logic", () => {
         (fs.readdirSync as unknown as Mock).mockReturnValue([]);
         (fs.promises.readdir as unknown as Mock).mockResolvedValue([]);
         (fs.promises.stat as unknown as Mock).mockReset();
-        (fs.promises.unlink as unknown as Mock).mockReset();
+        (fs.promises.unlink as unknown as Mock).mockReset().mockResolvedValue(undefined);
         (fs.promises.utimes as unknown as Mock).mockResolvedValue(undefined);
         (fs.promises.writeFile as unknown as Mock).mockResolvedValue(undefined);
         __imageRouterTestInternals.writeInProgress.clear();
@@ -132,12 +135,11 @@ describe("getWithRetry logic", () => {
         app.set("etag", false);
         app.use("/images", imageRouter);
 
-        writeStream = new Writable({
+        (fs.createWriteStream as unknown as Mock).mockImplementation(() => new Writable({
             write(_chunk, _encoding, callback) {
                 callback();
             },
-        });
-        (fs.createWriteStream as unknown as Mock).mockReturnValue(writeStream);
+        }));
     });
 
     afterEach(() => {
@@ -161,7 +163,7 @@ describe("getWithRetry logic", () => {
     it("should succeed on the first try", async () => {
         mockedAxios.get.mockResolvedValue({
             status: 200,
-            data: Buffer.from("image data"),
+            data: imageStream("image data"),
             headers: { "content-type": "image/jpeg" },
         });
 
@@ -262,7 +264,7 @@ describe("getWithRetry logic", () => {
             .mockResolvedValueOnce({ status: 429, headers: { "retry-after": "0" } }) // Use 0 to speed up test
             .mockResolvedValueOnce({
                 status: 200,
-                data: Buffer.from("image data"),
+                data: imageStream("image data"),
                 headers: { "content-type": "image/jpeg" },
             });
 
@@ -282,7 +284,7 @@ describe("getWithRetry logic", () => {
             .mockResolvedValueOnce({ status: 429, headers: {} })
             .mockResolvedValueOnce({
                 status: 200,
-                data: Buffer.from("image data"),
+                data: imageStream("image data"),
                 headers: { "content-type": "image/png" },
             });
 
@@ -297,7 +299,7 @@ describe("getWithRetry logic", () => {
             .mockRejectedValueOnce(new Error("Network Error"))
             .mockResolvedValueOnce({
                 status: 200,
-                data: Buffer.from("image data"),
+                data: imageStream("image data"),
                 headers: { "content-type": "image/jpeg" },
             });
 
@@ -322,7 +324,7 @@ describe("getWithRetry logic", () => {
     it("should return an error for a 0-byte image and not cache it", async () => {
         mockedAxios.get.mockResolvedValue({
             status: 200,
-            data: Buffer.from(""),
+            data: imageStream(""),
             headers: { "content-type": "image/jpeg" },
         });
 
@@ -406,7 +408,7 @@ describe("getWithRetry logic", () => {
         const target = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png?1562820261";
         mockedAxios.get.mockResolvedValue({
             status: 200,
-            data: Buffer.from("image data"),
+            data: imageStream("image data"),
             headers: { "content-type": "image/png" },
         });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -426,7 +428,7 @@ describe("getWithRetry logic", () => {
         __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
         mockedAxios.get.mockResolvedValue({
             status: 200,
-            data: Buffer.from("image data"),
+            data: imageStream("image data"),
             headers: { "content-type": "image/png" },
         });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -465,7 +467,7 @@ describe("getWithRetry logic", () => {
         const redirected = "https://cards.scryfall.io/png/front/b/a/ba123456-1234-1234-1234-123456789abc.png";
         mockedAxios.get
             .mockResolvedValueOnce({ status: 302, data: Buffer.alloc(0), headers: { location: "/png/front/b/a/ba123456-1234-1234-1234-123456789abc.png" } })
-            .mockResolvedValueOnce({ status: 200, data: Buffer.from("image data"), headers: { "content-type": "image/png" } });
+            .mockResolvedValueOnce({ status: 200, data: imageStream("image data"), headers: { "content-type": "image/png" } });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
             this.type("image/png").send("image data");
         });
@@ -494,7 +496,7 @@ describe("getWithRetry logic", () => {
     });
 
     it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
-        mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: Buffer.from("png") });
+        mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: imageStream("png") });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
             this.type("image/png").send("cached image data");
         });
@@ -504,13 +506,13 @@ describe("getWithRetry logic", () => {
         expect(mockedAxios.get).toHaveBeenCalledWith("https://img.mpcautofill.com/thumb-id-small-google_drive", expect.any(Object));
 
         mockedAxios.get
-            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
-            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
-            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("html") })
-            .mockResolvedValueOnce({ headers: { "content-type": "image/jpeg" }, data: Buffer.from("jpg") });
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: imageStream("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: imageStream("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: imageStream("html") })
+            .mockResolvedValueOnce({ headers: { "content-type": "image/jpeg" }, data: imageStream("jpg") });
         const full = await request(app).get("/images/mpc?id=fallback-id&size=full");
         expect(full.status).toBe(200);
-        expect(fs.promises.writeFile).toHaveBeenLastCalledWith(expect.stringContaining("gdrive_fallback-id_large"), expect.any(Buffer));
+        expect(fs.promises.rename).toHaveBeenLastCalledWith(expect.stringContaining("gdrive_fallback-id_large"), expect.stringContaining("gdrive_fallback-id_large"));
         sendFileSpy.mockRestore();
     });
 
@@ -561,7 +563,7 @@ describe("getWithRetry logic", () => {
             __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
             mockedAxios.get
                 .mockResolvedValueOnce({ status: 308, data: Buffer.alloc(0), headers: { location: "/redirect-next-small-google_drive" } })
-                .mockResolvedValueOnce({ status: 200, data: Buffer.from("png"), headers: { "content-type": "image/png" } });
+                .mockResolvedValueOnce({ status: 200, data: imageStream("png"), headers: { "content-type": "image/png" } });
             const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
                 this.type("image/png").send("png");
             });
@@ -589,7 +591,7 @@ describe("getWithRetry logic", () => {
             mockedAxios.get.mockResolvedValue({
                 status: 200,
                 headers: { "content-type": "image/jpeg" },
-                data: Buffer.from("fake image data"),
+                data: imageStream("fake image data"),
             });
 
             const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -631,17 +633,17 @@ describe("getWithRetry logic", () => {
             // Keep the expected final diagnostic visible while asserting its contents.
             const consoleErrorSpy = vi.spyOn(console, "error");
             mockedAxios.get
-                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("first interstitial") })
-                .mockResolvedValueOnce({ headers: { "content-type": "text/plain" }, data: Buffer.from("second interstitial") })
-                .mockResolvedValueOnce({ headers: { "content-type": "application/pdf" }, data: Buffer.from("third interstitial") })
-                .mockResolvedValueOnce({ headers: { "content-type": "application/octet-stream" }, data: Buffer.from("cdn error page") });
+                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: imageStream("first interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "text/plain" }, data: imageStream("second interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "application/pdf" }, data: imageStream("third interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "application/octet-stream" }, data: imageStream("cdn error page") });
 
             const res = await request(app).get("/images/mpc?id=123");
             expect(res.status).toBe(502);
             expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
             for (const [attempt, url] of candidates.entries()) {
                 expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, expect.objectContaining({
-                    responseType: "arraybuffer",
+                    responseType: "stream",
                     maxRedirects: 0,
                     proxy: false,
                     httpsAgent: expect.any(Object),
@@ -665,9 +667,9 @@ describe("getWithRetry logic", () => {
             // This spy intentionally calls through so expected diagnostics remain observable.
             const consoleErrorSpy = vi.spyOn(console, "error");
             mockedAxios.get
-                .mockResolvedValueOnce({ headers: {}, data: Buffer.from("html") })
+                .mockResolvedValueOnce({ headers: {}, data: imageStream("html") })
                 .mockRejectedValueOnce("plain gdrive failure")
-                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: Buffer.from("view interstitial") })
+                .mockResolvedValueOnce({ headers: { "content-type": "text/html" }, data: imageStream("view interstitial") })
                 .mockRejectedValueOnce("plain CDN fallback failure");
 
             const res = await request(app).get("/images/mpc?id=plain-gdrive");
@@ -675,7 +677,7 @@ describe("getWithRetry logic", () => {
             expect(mockedAxios.get).toHaveBeenCalledTimes(candidates.length);
             for (const [attempt, url] of candidates.entries()) {
                 expect(mockedAxios.get).toHaveBeenNthCalledWith(attempt + 1, url, expect.objectContaining({
-                    responseType: "arraybuffer",
+                    responseType: "stream",
                     maxRedirects: 0,
                     proxy: false,
                     httpsAgent: expect.any(Object),
@@ -709,7 +711,7 @@ describe("getWithRetry logic", () => {
             (fs.existsSync as unknown as Mock).mockReturnValue(false);
             mockedAxios.get.mockResolvedValue({
                 status: 200,
-                data: Buffer.from("text data"),
+                data: imageStream("text data"),
                 headers: { "content-type": "text/plain" },
             });
 
@@ -733,7 +735,7 @@ describe("getWithRetry logic", () => {
             __imageRouterTestInternals.writeInProgress.add(localPath);
             mockedAxios.get.mockResolvedValue({
                 status: 200,
-                data: Buffer.from("image data"),
+                data: imageStream("image data"),
                 headers: { "content-type": "image/png" },
             });
             const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
@@ -766,7 +768,7 @@ describe("getWithRetry logic", () => {
             (fs.existsSync as unknown as Mock).mockReturnValue(false);
             mockedAxios.get.mockResolvedValue({
                 status: 400,
-                data: Buffer.from("error data"),
+                data: imageStream("error data"),
                 headers: { "content-type": "image/png" }
             });
 

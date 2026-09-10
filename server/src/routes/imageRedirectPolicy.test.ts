@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Readable } from "node:stream";
 import {
   ImageRedirectPolicyError,
   fetchWithPolicyCheckedRedirects,
@@ -67,5 +68,22 @@ describe("bounded image redirect policy", () => {
     );
     await expect(fetchWithPolicyCheckedRedirects(initial, redirects, admitScryfall, options)).rejects.toThrow("maximum");
     expect(redirects.get).toHaveBeenCalledTimes(4);
+  });
+
+  it("settles a redirect response stream before issuing the admitted next hop", async () => {
+    const initial = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png";
+    const redirectBody = Readable.from([Buffer.from("redirect body")]);
+    let calls = 0;
+    const client: ImageHttpClient = {
+      get: vi.fn(async () => {
+        calls++;
+        if (calls === 1) return { status: 302, data: redirectBody, headers: { location: "/png/front/b/a/ba123456-1234-1234-1234-123456789abc.png" } } as never;
+        expect(redirectBody.destroyed).toBe(true);
+        return { status: 200, headers: {} } as never;
+      }),
+    };
+
+    await expect(fetchWithPolicyCheckedRedirects(initial, client, admitScryfall, () => ({ maxRedirects: 0, proxy: false as const }))).resolves.toMatchObject({ status: 200 });
+    expect(calls).toBe(2);
   });
 });

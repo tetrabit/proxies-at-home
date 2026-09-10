@@ -4,6 +4,8 @@ import fs from "fs";
 import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesPaged.js";
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
@@ -36,6 +38,20 @@ const AX_GDRIVE = axios.create({
   headers: { "User-Agent": "Proxxied/1.0 (+contact@example.com)" },
   validateStatus: acceptsSurfaceableStatus,
 });
+
+const MAX_PROXY_RESPONSE_BYTES = 25 * 1024 * 1024;
+
+class ImageDownloadError extends Error {
+  readonly status: number | undefined;
+  readonly contentType: string | undefined;
+
+  constructor(message: string, status?: number, contentType?: string) {
+    super(message);
+    this.name = "ImageDownloadError";
+    this.status = status;
+    this.contentType = contentType;
+  }
+}
 
 let imageResolveAllForTests: ResolveAll | undefined;
 
@@ -113,6 +129,7 @@ async function getWithRetry(
         () => connectionTimeRequestOptions(opts),
       );
       if (acceptResponse(res)) return res;
+      await disposeReadable(res.data);
       if (res.status === 429) {
         const wait = Number(res.headers["retry-after"] || 5);
         console.log(`[429] Rate limited. Waiting ${wait}s before retry...`);
@@ -268,6 +285,75 @@ function cachePathFromUrl(originalUrl: string) {
     // ignore; keep .png
   }
   return path.join(cacheDir, `${hash}${ext}`);
+}
+
+async function disposeReadable(value: unknown): Promise<void> {
+  if (!(value instanceof Readable) || value.destroyed || value.readableEnded) return;
+
+  await new Promise<void>(resolve => {
+    const settled = () => {
+      value.off("close", settled);
+      value.off("end", settled);
+      value.off("error", settled);
+      resolve();
+    };
+    value.once("close", settled);
+    value.once("end", settled);
+    value.once("error", settled);
+    value.destroy();
+  });
+}
+
+async function streamImageResponseToFile(
+  response: AxiosResponse,
+  finalPath: string,
+  signal: AbortSignal,
+): Promise<{ contentType: string }> {
+  const source = response.data;
+  if (!(source instanceof Readable)) {
+    throw new ImageDownloadError("Upstream error", response.status);
+  }
+
+  const contentType = String(response.headers["content-type"] || "").toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    await disposeReadable(source);
+    throw new ImageDownloadError("Upstream not image", response.status, contentType);
+  }
+
+  const tempPath = `${finalPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  let published = false;
+  try {
+    let seen = 0;
+    const byteCap = new Transform({
+      writableHighWaterMark: 1,
+      readableHighWaterMark: 1,
+      transform(chunk: Buffer | string, _encoding, callback) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (seen + bytes.length > MAX_PROXY_RESPONSE_BYTES) {
+          const error = new Error("Upstream image exceeds 25 MiB response limit");
+          source.destroy(error);
+          callback(error);
+          return;
+        }
+        seen += bytes.length;
+        callback(null, bytes);
+      },
+    });
+    const output = fs.createWriteStream(tempPath, { flags: "wx", mode: 0o600 });
+    await pipeline(source, byteCap, output, { signal });
+    if (seen === 0) throw new ImageDownloadError("Upstream is a 0-byte image", response.status);
+
+    await fs.promises.rename(tempPath, finalPath);
+    published = true;
+    return { contentType };
+  } finally {
+    if (!published) {
+      await fs.promises.unlink(tempPath).catch((cleanupError: unknown) => {
+        const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        console.warn("[Proxy] Failed to remove owned temporary image file:", message);
+      });
+    }
+  }
 }
 
 // -------------------- API: batch enrich cards --------------------
@@ -592,33 +678,38 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     // Mark path as being written to prevent concurrent corruption
     writeInProgress.add(localPath);
 
+    const abortController = new AbortController();
+    const abortActiveDownload = () => abortController.abort(new Error("Inbound image request aborted"));
+    req.once("aborted", abortActiveDownload);
     try {
-      // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
-      const response = await imageFetchLimit(() => getWithRetry(originalUrl, { responseType: "arraybuffer" }));
-
-      if (response.status >= 400 || !response.data) {
-        return res.status(502).json({ error: "Upstream error", status: response.status });
-      }
-      if (response.data.length === 0) {
-        return res.status(502).json({ error: "Upstream is a 0-byte image" });
-      }
-
-      const ct = String(response.headers["content-type"] || "").toLowerCase();
-      if (!ct.startsWith("image/")) {
-        return res.status(502).json({ error: "Upstream not image", ct });
-      }
-
-      // Write to cache
-      await fs.promises.writeFile(localPath, Buffer.from(response.data));
+      // Keep the lease until the upstream stream is settled and its owned temp is
+      // either atomically published or removed.
+      const result = await imageFetchLimit(async () => {
+        const response = await getWithRetry(originalUrl, {
+          responseType: "stream",
+          signal: abortController.signal,
+        });
+        return streamImageResponseToFile(response, localPath, abortController.signal);
+      });
       urlPathCache.set(originalUrl, localPath); // Update in-memory cache
 
-      res.setHeader("Content-Type", ct);
+      res.setHeader("Content-Type", result.contentType);
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
     } finally {
+      req.off("aborted", abortActiveDownload);
       writeInProgress.delete(localPath);
     }
   } catch (err: unknown) {
+    if (err instanceof ImageDownloadError) {
+      if (err.contentType !== undefined) {
+        return res.status(502).json({ error: err.message, ct: err.contentType });
+      }
+      if (err.message === "Upstream error") {
+        return res.status(502).json({ error: err.message, status: err.status });
+      }
+      return res.status(502).json({ error: err.message });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Proxy error:", { message: msg, from: originalUrl });
     return res.status(502).json({ error: "Failed to download image", from: originalUrl });
@@ -671,6 +762,9 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
     candidates.push(`https://img.mpcautofill.com/${id}-${size}-google_drive`);
   }
 
+  const abortController = new AbortController();
+  const abortActiveDownload = () => abortController.abort(new Error("Inbound image request aborted"));
+  req.once("aborted", abortActiveDownload);
   // Use imageFetchLimit to prevent overwhelming server with concurrent fetches
   let lastError: string | undefined;
   try {
@@ -680,7 +774,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
           // Use AX_GDRIVE with longer timeout for large Google Drive files
           const r = await getWithRetry(
             url,
-            { responseType: "arraybuffer" },
+            { responseType: "stream", signal: abortController.signal },
             1,
             AX_GDRIVE,
             admitMpcRedirect,
@@ -688,7 +782,13 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
           );
 
           const ct = (r.headers["content-type"] || "").toLowerCase();
+          if (r.status < 200 || r.status >= 300) {
+            await disposeReadable(r.data);
+            lastError = `HTTP ${r.status} from ${url}`;
+            continue;
+          }
           if (!ct.startsWith("image/")) {
+            await disposeReadable(r.data);
             lastError = `Non-image response from ${url}: ${ct}`;
             continue; // Not an image (HTML interstitial), try next candidate
           }
@@ -699,9 +799,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
             localPath = path.join(cacheDir, `gdrive_${id}_large`);
           }
 
-          // Cache the image
-          await fs.promises.writeFile(localPath, Buffer.from(r.data));
-          return { contentType: ct };
+          return streamImageResponseToFile(r, localPath, abortController.signal);
         } catch (err) {
           // Log each failed candidate for debugging
           const msg = err instanceof Error ? err.message : String(err);
@@ -722,6 +820,8 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
     const msg = err instanceof Error ? err.message : String(err);
     /* v8 ignore next -- defensive limiter rejection path is not reachable through candidate fetch handling. @preserve */
     console.error("Google Drive fetch error:", { message: msg, id, lastError });
+  } finally {
+    req.off("aborted", abortActiveDownload);
   }
   /* v8 ignore stop */
 
@@ -813,10 +913,13 @@ imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
 });
 
 export const __imageRouterTestInternals = {
+  MAX_PROXY_RESPONSE_BYTES,
   acceptsSurfaceableStatus,
   pLimit,
   checkAndCleanCache,
   cachePathFromUrl,
+  disposeReadable,
+  streamImageResponseToFile,
   getWithRetry,
   writeInProgress,
   setEnrichLookupTimeoutForTests: (timeoutMs: number) => {

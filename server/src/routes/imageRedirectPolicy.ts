@@ -1,4 +1,5 @@
 import { type AxiosRequestConfig, type AxiosResponse } from "axios";
+import { Readable } from "node:stream";
 
 export interface ImageHttpClient {
   get(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse>;
@@ -24,6 +25,22 @@ function locationFrom(headers: AxiosResponse["headers"]): unknown {
   return typeof get === "function" ? get.call(headers, "location") : undefined;
 }
 
+async function disposeRedirectBody(value: unknown): Promise<void> {
+  if (!(value instanceof Readable) || value.destroyed || value.readableEnded) return;
+  await new Promise<void>(resolve => {
+    const settled = () => {
+      value.off("close", settled);
+      value.off("end", settled);
+      value.off("error", settled);
+      resolve();
+    };
+    value.once("close", settled);
+    value.once("end", settled);
+    value.once("error", settled);
+    value.destroy();
+  });
+}
+
 /**
  * Issues one request per URL with automatic redirects disabled. Each redirect
  * target is resolved, admitted, and restricted to the initial origin before it
@@ -43,6 +60,7 @@ export async function fetchWithPolicyCheckedRedirects(
   while (true) {
     const response = await client.get(currentUrl, requestOptions());
     if (!REDIRECT_STATUSES.has(response.status)) return response;
+    await disposeRedirectBody(response.data);
 
     if (redirectCount >= MAX_REDIRECTS) {
       throw new ImageRedirectPolicyError("Redirect maximum exceeded");
