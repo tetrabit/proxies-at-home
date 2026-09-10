@@ -25,10 +25,15 @@ import {
   type ProxyDownloadReservation,
 } from "./proxyDownloadAdmission.js";
 import {
+  getImageCacheMetadataTotalBytes,
+  listOldestImageCacheMetadata,
   recordImageCachePublication,
+  reconcileMissingImageCacheMetadata,
   removeImageCacheMetadata,
   touchImageCacheMetadata,
 } from "../db/imageCacheMetadata.js";
+import { createImageCacheEvictor } from "../db/imageCacheEviction.js";
+import { pLimit } from "../utils/pLimit.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -174,42 +179,6 @@ async function getWithRetry(
 
 
 
-// Tiny p-limit (cap parallel Scryfall calls)
-function pLimit(concurrency: number) {
-  type Task = () => Promise<unknown>;
-  type Resolver = (value: unknown) => void;
-  type Rejector = (reason?: unknown) => void;
-
-  const q: [Task, Resolver, Rejector][] = [];
-  let active = 0;
-
-  const run = async (fn: Task, resolve: Resolver, reject: Rejector) => {
-    active++;
-    try {
-      resolve(await fn());
-    }
-    catch (e) {
-      reject(e);
-    }
-    finally {
-      active--;
-      if (q.length) {
-        const next = q.shift();
-        /* v8 ignore next -- q.length guarantees shift returns a task tuple; the guard remains defensive for queue mutation. @preserve */
-        if (next) {
-          const [nextFn, nextRes, nextRej] = next;
-          run(nextFn, nextRes, nextRej);
-        }
-      }
-    }
-  };
-  return <T>(fn: () => Promise<T>) => new Promise<T>((resolve, reject) => {
-    const wrappedResolve = resolve as Resolver;
-    const wrappedReject = reject as Rejector;
-    if (active < concurrency) run(fn, wrappedResolve, wrappedReject);
-    else q.push([fn, wrappedResolve, wrappedReject]);
-  });
-}
 // Concurrency limiters:
 // - scryfallApiLimit: For Scryfall JSON API calls (card search, collection lookups)
 // - imageFetchLimit: For outbound image fetches (Scryfall CDN, Google Drive)
@@ -229,11 +198,26 @@ if (!fs.existsSync(cacheDir)) {
 
 // Cache size management with LRU eviction (12GB limit for Koyeb eLarge 20GB disk)
 const MAX_CACHE_SIZE_BYTES = 12 * 1024 * 1024 * 1024; // 12GB (leaves 8GB for system/logs)
+const CACHE_LOW_WATER_BYTES = 10 * 1024 * 1024 * 1024;
+const CACHE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 let lastCacheCleanup = 0;
 
 // Track the exact temporary paths currently owned by active publishers. Cache
 // eviction must not unlink one between createWriteStream() and rename().
 const writeInProgress = new Set<string>();
+
+const imageCacheEvictor = createImageCacheEvictor({
+  cacheDirectory: cacheDir,
+  getTotalBytes: getImageCacheMetadataTotalBytes,
+  listOldest: listOldestImageCacheMetadata,
+  removeAfterUnlink: removeImageCacheMetadata,
+  reconcileMissing: reconcileMissingImageCacheMetadata,
+  unlink: filePath => fs.promises.unlink(filePath),
+  writeInProgress,
+  log: (message, error) => console.warn(message, error),
+  highWaterBytes: MAX_CACHE_SIZE_BYTES,
+  lowWaterBytes: CACHE_LOW_WATER_BYTES,
+});
 
 interface ProxyDownloadResult {
   contentType: string;
@@ -256,60 +240,12 @@ const urlPathCache = new LRUCache<string, string>(5000); // Cache 5000 hot URLs
 
 async function checkAndCleanCache() {
   const now = Date.now();
-  // Only check every 5 minutes to avoid excessive disk I/O
-  if (now - lastCacheCleanup < 5 * 60 * 1000) return;
-  lastCacheCleanup = now;
+  // A metadata failure must not consume this interval: its next route entry
+  // retries reconciliation instead of retaining a stale durable total forever.
+  if (now - lastCacheCleanup < CACHE_CLEANUP_INTERVAL_MS) return;
 
-  try {
-    // Use async filesystem operations to avoid blocking event loop
-    const files = await fs.promises.readdir(cacheDir);
-    const fileStats: { path: string; atime: number; size: number }[] = [];
-    let totalSize = 0;
-
-    for (const file of files) {
-      const filePath = path.join(cacheDir, file);
-      try {
-        const stats = await fs.promises.stat(filePath);
-        if (stats.isFile()) {
-          fileStats.push({ path: filePath, atime: stats.atimeMs, size: stats.size });
-          totalSize += stats.size;
-        }
-      } catch {
-        // File might have been deleted, skip it
-        continue;
-      }
-    }
-
-    if (totalSize > MAX_CACHE_SIZE_BYTES) {
-      console.log(`[CACHE] Size ${(totalSize / 1024 / 1024 / 1024).toFixed(2)}GB exceeds 12GB limit. Cleaning...`);
-
-      fileStats.sort((a, b) => a.atime - b.atime);
-
-      let removedSize = 0;
-      let removedCount = 0;
-      // Remove oldest files until we're under 10GB (leave 2GB buffer)
-      const targetSize = 10 * 1024 * 1024 * 1024;
-
-      for (const file of fileStats) {
-        if (totalSize - removedSize < targetSize) break;
-        if (writeInProgress.has(file.path)) continue;
-        try {
-          await fs.promises.unlink(file.path);
-          removeImageCacheMetadata(path.basename(file.path), true);
-          removedSize += file.size;
-          removedCount++;
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[CACHE] Failed to delete ${file.path}:`, msg);
-        }
-      }
-
-      console.log(`[CACHE] Removed ${removedCount} files (${(removedSize / 1024 / 1024 / 1024).toFixed(2)}GB)`);
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[CACHE] Cleanup error:", msg);
-  }
+  const result = await imageCacheEvictor.cleanup();
+  if (result.status !== "metadata-failure") lastCacheCleanup = now;
 }
 
 // Make a stable cache filename from the FULL raw URL (path + query)
@@ -1050,7 +986,6 @@ export const __imageRouterTestInternals = {
     return proxyDownloadAdmission;
   },
   acceptsSurfaceableStatus,
-  pLimit,
   checkAndCleanCache,
   cachePathFromUrl,
   disposeReadable,

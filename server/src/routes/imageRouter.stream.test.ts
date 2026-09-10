@@ -537,58 +537,79 @@ describe("image proxy stream cache publication", () => {
     expect(axiosMock.get).toHaveBeenCalledTimes(1);
   });
 
-  it("does not evict an active owned temp path during a cache sweep", async () => {
+  it("runs bounded metadata eviction from the real proxy route without scanning the cache directory", async () => {
     const gib = 1024 * 1024 * 1024;
     const activeTemp = path.join(cacheDirectory, "active-owner.tmp");
     const evictable = path.join(cacheDirectory, "evictable.png");
+    const cacheHit = internals.cachePathFromUrl(imageUrl);
+    await fs.promises.writeFile(activeTemp, "active");
+    await fs.promises.writeFile(evictable, "evict-me");
+    await fs.promises.writeFile(cacheHit, "cached-response");
     internals.writeInProgress.add(activeTemp);
-    const readdir = vi.spyOn(fs.promises, "readdir").mockResolvedValue(["active-owner.tmp", "evictable.png"] as never);
-    const stat = vi.spyOn(fs.promises, "stat").mockImplementation(async filePath => ({
-      isFile: () => true,
-      atimeMs: String(filePath).endsWith("active-owner.tmp") ? 1 : 2,
-      size: 7 * gib,
-    }) as never);
-    const unlink = vi.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
     dbModule.getDatabase().prepare(
       'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
-    ).run('evictable.png', 7 * gib, 1);
+    ).run('evictable.png', 13 * gib, 1);
+    const readdir = vi.spyOn(fs.promises, "readdir");
+    const stat = vi.spyOn(fs.promises, "stat");
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
 
-    await internals.checkAndCleanCache();
+    const response = await request(app).get("/images/proxy").query({ url: imageUrl });
+    sendFileSpy.mockRestore();
 
-    expect(unlink).toHaveBeenCalledTimes(1);
-    expect(unlink).toHaveBeenCalledWith(evictable);
+    expect(response.status).toBe(200);
+    await vi.waitFor(async () => expect(fs.promises.access(evictable)).rejects.toMatchObject({ code: "ENOENT" }));
+    expect(await fs.promises.readFile(activeTemp, "utf8")).toBe("active");
     expect(dbModule.getDatabase().prepare(
       'SELECT * FROM image_cache_metadata WHERE basename = ?',
     ).get('evictable.png')).toBeUndefined();
     internals.writeInProgress.delete(activeTemp);
+    expect(readdir).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
     readdir.mockRestore();
     stat.mockRestore();
-    unlink.mockRestore();
   });
 
-  it("retains metadata when cache eviction unlink fails", async () => {
+  it("retries a metadata failure from the real proxy route without debiting a failed mutation", async () => {
     const gib = 1024 * 1024 * 1024;
-    const retained = path.join(cacheDirectory, "retained.png");
-    const readdir = vi.spyOn(fs.promises, "readdir").mockResolvedValue(["retained.png"] as never);
-    const stat = vi.spyOn(fs.promises, "stat").mockResolvedValue({
-      isFile: () => true,
-      atimeMs: 1,
-      size: 13 * gib,
-    } as never);
-    const unlink = vi.spyOn(fs.promises, "unlink").mockRejectedValueOnce(new Error("EBUSY"));
+    const stale = path.join(cacheDirectory, "retry-after-metadata-failure.png");
+    const cacheHit = internals.cachePathFromUrl(imageUrl);
+    await fs.promises.writeFile(stale, "delete-once");
+    await fs.promises.writeFile(cacheHit, "cached-response");
     dbModule.getDatabase().prepare(
       'INSERT INTO image_cache_metadata (basename, size, last_access) VALUES (?, ?, ?)',
-    ).run('retained.png', 13 * gib, 1);
+    ).run('retry-after-metadata-failure.png', 13 * gib, 1);
+    const database = dbModule.getDatabase();
+    const prepare = database.prepare.bind(database);
+    const metadataFailure = vi.spyOn(database, "prepare").mockImplementation((sql: string) => {
+      if (sql.includes('DELETE FROM image_cache_metadata') && sql.includes('basename')) {
+        throw new Error('metadata mutation unavailable once');
+      }
+      return prepare(sql);
+    });
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
 
-    await internals.checkAndCleanCache();
-
-    expect(unlink).toHaveBeenCalledWith(retained);
-    expect(dbModule.getDatabase().prepare(
+    expect((await request(app).get("/images/proxy").query({ url: imageUrl })).status).toBe(200);
+    sendFileSpy.mockRestore();
+    await vi.waitFor(async () => expect(fs.promises.access(stale)).rejects.toMatchObject({ code: "ENOENT" }));
+    expect(database.prepare(
       'SELECT basename, size, last_access FROM image_cache_metadata WHERE basename = ?',
-    ).get('retained.png')).toEqual({ basename: 'retained.png', size: 13 * gib, last_access: 1 });
-    readdir.mockRestore();
-    stat.mockRestore();
-    unlink.mockRestore();
+    ).get('retry-after-metadata-failure.png')).toEqual({
+      basename: 'retry-after-metadata-failure.png', size: 13 * gib, last_access: 1,
+    });
+    metadataFailure.mockRestore();
+
+    const retrySendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+    expect((await request(app).get("/images/proxy").query({ url: imageUrl })).status).toBe(200);
+    retrySendFileSpy.mockRestore();
+    await vi.waitFor(() => expect(database.prepare(
+      'SELECT * FROM image_cache_metadata WHERE basename = ?',
+    ).get('retry-after-metadata-failure.png')).toBeUndefined());
   });
 
   it("aborts a shared download only when its last subscriber disconnects, then permits a retry", async () => {

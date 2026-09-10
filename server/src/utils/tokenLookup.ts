@@ -6,6 +6,7 @@ import { getScryfallClient, isMicroserviceAvailable } from "../services/scryfall
 import { trackMicroserviceCall } from "../services/microserviceMetrics.js";
 import { debugLog } from "./debug.js";
 import { scryfallRequestBroker } from "./scryfallRequestBroker.js";
+import { pLimit } from "./pLimit.js";
 import axios from "axios";
 
 // Microservice response wrapper types
@@ -197,43 +198,6 @@ async function resolveMostRecentTokenPrint(linkedToken: ScryfallApiCard, languag
 
   oracleMatches.sort(sortByMostRecentPrint);
   return oracleMatches[0];
-}
-
-// Small p-limit implementation to cap microservice concurrency.
-function pLimit(concurrency: number) {
-  type Task = () => Promise<unknown>;
-  type Resolver = (value: unknown) => void;
-  type Rejector = (reason?: unknown) => void;
-
-  const q: [Task, Resolver, Rejector][] = [];
-  let active = 0;
-
-  const run = async (fn: Task, resolve: Resolver, reject: Rejector) => {
-    active++;
-    try {
-      resolve(await fn());
-    } catch (e) {
-      /* v8 ignore next -- pLimit is currently used with per-task error capture; this protects future raw callers. @preserve */
-      reject(e);
-    } finally {
-      active--;
-      if (q.length) {
-        const next = q.shift();
-        /* v8 ignore else -- q.length guarantees a queued task in this single-threaded limiter. @preserve */
-        if (next) {
-          const [nextFn, nextRes, nextRej] = next;
-          run(nextFn, nextRes, nextRej);
-        }
-      }
-    }
-  };
-  return <T>(fn: () => Promise<T>) =>
-    new Promise<T>((resolve, reject) => {
-      const wrappedResolve = resolve as Resolver;
-      const wrappedReject = reject as Rejector;
-      if (active < concurrency) run(fn, wrappedResolve, wrappedReject);
-      else q.push([fn, wrappedResolve, wrappedReject]);
-    });
 }
 
 export type TokenLookupResult = {

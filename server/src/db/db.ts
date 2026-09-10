@@ -9,7 +9,7 @@ fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
 const DB_PATH = path.join(DATA_DIRECTORY, 'proxxied-cards.db');
 
 // Current schema version - increment when adding migrations
-const CURRENT_DB_VERSION = 8;
+const CURRENT_DB_VERSION = 9;
 export const LEGACY_UNASSIGNED_OWNER_ID = 'legacy-unassigned';
 
 // Migration definitions - each entry upgrades from (version-1) to (version)
@@ -158,6 +158,13 @@ const migrations: Migration[] = [
         last_access INTEGER NOT NULL
       );`,
       'CREATE INDEX IF NOT EXISTS idx_image_cache_metadata_last_access ON image_cache_metadata(last_access ASC);',
+    ],
+  },
+  {
+    version: 9,
+    description: 'Add deterministic composite image cache eviction index',
+    up: [
+      'CREATE INDEX IF NOT EXISTS idx_image_cache_metadata_last_access_basename ON image_cache_metadata(last_access ASC, basename ASC);',
     ],
   },
 ];

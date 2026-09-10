@@ -8,6 +8,11 @@ const preload = options.get("preload"); const managerPath = options.get("manager
 if (![preload, managerPath, quitGatePath, userData, reportFile].every(Boolean) || !Number.isInteger(port) || port <= 0) throw new Error("invalid lifecycle harness arguments");
 const report = (value) => { mkdirSync(path.dirname(reportFile), { recursive: true }); writeFileSync(reportFile, `${JSON.stringify(value, null, 2)}\n`); };
 const fail = (error) => error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+const processSandboxStatus = async (pid) => {
+  const status = await readFile(`/proc/${pid}/status`, "utf8");
+  const field = (name) => status.match(new RegExp(`^${name}:\\s*(.+)$`, "m"))?.[1] ?? null;
+  return { pid, seccomp: field("Seccomp"), noNewPrivs: field("NoNewPrivs") };
+};
 app.setPath("userData", userData); app.on("window-all-closed", () => {});
 const { createScryfallMicroservice } = await import(`file://${managerPath}`);
 const { registerMicroserviceQuitGate } = await import(`file://${quitGatePath}`);
@@ -19,6 +24,8 @@ app.whenReady().then(async () => {
   await window.loadURL("data:text/html,<title>desktop sqlite lifecycle</title>");
   bridge = JSON.parse(await window.webContents.executeJavaScript(`JSON.stringify({api: typeof window.electronAPI, url: typeof window.electronAPI?.getMicroserviceUrl, process: typeof window.process, require: typeof window.require})`));
   if (bridge.api !== "object" || bridge.url !== "function" || bridge.process !== "undefined" || bridge.require !== "undefined") throw new Error("sandboxed preload bridge contract failed");
+  const processSandbox = await processSandboxStatus(window.webContents.getOSProcessId());
+  if (processSandbox.seccomp !== "2" || processSandbox.noNewPrivs !== "1") throw new Error(`Chromium renderer process sandbox is not active: ${JSON.stringify(processSandbox)}`);
   window.destroy();
   manager = createScryfallMicroservice(port);
   registerMicroserviceQuitGate(app, async () => { stopCalls += 1; await manager.stop(); }, { timeoutMs: 7000 });
@@ -28,5 +35,7 @@ app.whenReady().then(async () => {
   const expectedPath = path.join(userData, "databases", "scryfall-cache.db");
   if (health?.environment?.database?.backend !== "sqlite" || health?.environment?.database?.path !== expectedPath) throw new Error("native health did not report owned SQLite path");
   if (ready?.status !== "ready" || ready?.checks?.database !== "ok") throw new Error("native readiness database check failed");
-  runtime = { health, ready, expectedPath, managerRunning: manager.isRunning() }; app.quit();
+  const childPid = manager.getPid();
+  if (!Number.isInteger(childPid) || childPid <= 0) throw new Error("native lifecycle manager did not retain an owned child PID");
+  runtime = { health, ready, expectedPath, managerRunning: manager.isRunning(), childPid, processSandbox }; app.quit();
 }).catch(async (error) => { failure = fail(error); await manager?.stop().catch(() => undefined); report({ schema: "td-4496de-electron-native-lifecycle/v2", status: "FAIL", failure, bridge, runtime, stopCalls, userData }); app.exit(2); });

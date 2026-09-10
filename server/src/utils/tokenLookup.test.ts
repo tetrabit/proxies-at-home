@@ -352,25 +352,36 @@ describe("fetchCardsForTokenLookup additional branches", () => {
     expect(result.cards.get("err")?.name).toBe("Err");
   });
 
-  it("queues microservice lookups beyond the concurrency limit", async () => {
+  it("starts only eight microservice lookups until a deferred slot is released", async () => {
     process.env.SCRYFALL_CACHE_URL = "http://localhost:8080";
     hoisted.mockIsMicroserviceAvailable.mockResolvedValueOnce(true);
 
-    const deferred: Array<{ resolve: (value: unknown) => void }> = [];
+    const releases: Array<() => void> = [];
     hoisted.mockClient.getCardByName.mockImplementation(({ exact }: { exact: string }) => (
       new Promise((resolve) => {
-        deferred.push({ resolve });
-        resolve({ success: true, data: { name: exact, set: "tst", collector_number: String(deferred.length) } });
+        releases.push(() => resolve({
+          success: true,
+          data: { name: exact, set: "tst", collector_number: exact.slice("Queued ".length) },
+        }));
       })
     ));
 
-    const result = await fetchCardsForTokenLookup(
+    const result = fetchCardsForTokenLookup(
       Array.from({ length: 9 }, (_, idx) => ({ name: `Queued ${idx}` } as CardInfo)),
       "en"
     );
 
-    expect(hoisted.mockClient.getCardByName).toHaveBeenCalledTimes(9);
-    expect(result.cards.get("queued 8")?.collector_number).toBe("9");
+    await vi.waitFor(() => expect(hoisted.mockClient.getCardByName).toHaveBeenCalledTimes(8));
+    expect(releases).toHaveLength(8);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(hoisted.mockClient.getCardByName).toHaveBeenCalledTimes(9));
+
+    for (const release of releases) release();
+    await expect(result).resolves.toMatchObject({
+      usedMicroservice: true,
+      cards: expect.any(Map),
+    });
   });
 });
 

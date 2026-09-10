@@ -103,4 +103,44 @@ describe('image cache metadata', () => {
     metadata.removeImageCacheMetadata('hit.png', true);
     expect(dbModule.getDatabase().prepare('SELECT * FROM image_cache_metadata').all()).toEqual([]);
   });
+
+  it('returns the metadata-only aggregate cache size', () => {
+    metadata.recordImageCachePublication('first.png', 7, 10);
+    metadata.recordImageCachePublication('second.png', 11, 20);
+
+    expect(metadata.getImageCacheMetadataTotalBytes()).toBe(18);
+  });
+
+  it('lists a bounded oldest batch with deterministic basename ties', () => {
+    metadata.recordImageCachePublication('zebra.png', 3, 10);
+    metadata.recordImageCachePublication('alpha.png', 4, 10);
+    metadata.recordImageCachePublication('later.png', 5, 20);
+
+    expect(metadata.listOldestImageCacheMetadata(2)).toEqual([
+      { basename: 'alpha.png', size: 4, lastAccess: 10 },
+      { basename: 'zebra.png', size: 3, lastAccess: 10 },
+    ]);
+    expect(metadata.listOldestImageCacheMetadata(0)).toBeUndefined();
+    expect(metadata.listOldestImageCacheMetadata(65)).toBeUndefined();
+  });
+
+  it('returns the transactionally reconciled total only after successful unlink metadata removal', () => {
+    metadata.recordImageCachePublication('removed.png', 7, 10);
+    metadata.recordImageCachePublication('retained.png', 11, 20);
+
+    expect(metadata.removeImageCacheMetadata('removed.png', true)).toBe(11);
+    expect(metadata.removeImageCacheMetadata('retained.png', false)).toBeUndefined();
+    expect(metadata.getImageCacheMetadataTotalBytes()).toBe(11);
+  });
+
+  it('reconciles a confirmed-missing stale basename without a directory scan', () => {
+    metadata.recordImageCachePublication('stale.png', 7, 10);
+    metadata.recordImageCachePublication('retained.png', 11, 20);
+    const readdir = vi.spyOn(fs.promises, 'readdir');
+    const stat = vi.spyOn(fs.promises, 'stat');
+
+    expect(metadata.reconcileMissingImageCacheMetadata('stale.png')).toBe(11);
+    expect(readdir).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
+  });
 });

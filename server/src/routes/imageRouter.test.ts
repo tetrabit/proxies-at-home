@@ -12,7 +12,10 @@ const routeMocks = vi.hoisted(() => ({
     fetchCardsForTokenLookup: vi.fn(),
     resolveLatestTokenParts: vi.fn(),
     extractTokenParts: vi.fn(),
+    getImageCacheMetadataTotalBytes: vi.fn(),
+    listOldestImageCacheMetadata: vi.fn(),
     recordImageCachePublication: vi.fn(),
+    reconcileMissingImageCacheMetadata: vi.fn(),
     removeImageCacheMetadata: vi.fn(),
     touchImageCacheMetadata: vi.fn(),
 }));
@@ -32,11 +35,15 @@ vi.mock("../utils/tokenUtils.js", () => ({
 }));
 
 vi.mock("../db/imageCacheMetadata.js", () => ({
+    getImageCacheMetadataTotalBytes: routeMocks.getImageCacheMetadataTotalBytes,
+    listOldestImageCacheMetadata: routeMocks.listOldestImageCacheMetadata,
     recordImageCachePublication: routeMocks.recordImageCachePublication,
+    reconcileMissingImageCacheMetadata: routeMocks.reconcileMissingImageCacheMetadata,
     removeImageCacheMetadata: routeMocks.removeImageCacheMetadata,
     touchImageCacheMetadata: routeMocks.touchImageCacheMetadata,
 }));
 import { imageRouter, __imageRouterTestInternals } from "./imageRouter";
+import { pLimit } from "../utils/pLimit.js";
 
 vi.mock("axios", () => {
     const mockGet = vi.fn();
@@ -123,6 +130,10 @@ describe("getWithRetry logic", () => {
         routeMocks.fetchCardsForTokenLookup.mockResolvedValue({ cards: new Map() });
         routeMocks.resolveLatestTokenParts.mockResolvedValue([]);
         routeMocks.extractTokenParts.mockReturnValue([]);
+        routeMocks.getImageCacheMetadataTotalBytes.mockReturnValue(0);
+        routeMocks.listOldestImageCacheMetadata.mockReturnValue([]);
+        routeMocks.removeImageCacheMetadata.mockReturnValue(0);
+        routeMocks.reconcileMissingImageCacheMetadata.mockReturnValue(0);
         mockedAxios.create.mockClear();
         mockedAxios.get.mockReset();
         // Default mock implementation for fs.existsSync to avoid "not found" errors in general flow
@@ -192,7 +203,7 @@ describe("getWithRetry logic", () => {
         expect(__imageRouterTestInternals.acceptsSurfaceableStatus(199)).toBe(false);
         expect(__imageRouterTestInternals.acceptsSurfaceableStatus(500)).toBe(false);
 
-        const limit = __imageRouterTestInternals.pLimit(1);
+        const limit = pLimit(1);
         let releaseFirst!: () => void;
         const first = limit(() => new Promise<string>(resolve => {
             releaseFirst = () => resolve("first");
@@ -205,67 +216,24 @@ describe("getWithRetry logic", () => {
         await expect(limit(() => Promise.reject(new Error("limited failure")))).rejects.toThrow("limited failure");
     });
 
-    it("cleans oversized image cache directories and tolerates cleanup races", async () => {
+    it("uses one bounded metadata eviction pass without steady directory reads", async () => {
         const gib = 1024 * 1024 * 1024;
-        const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-        const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-        vi.spyOn(Date, "now").mockReturnValue(10 * 60 * 1000);
-
-        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["dir", "gone.png", "old.png", "new.png"]);
-        (fs.promises.stat as unknown as Mock).mockImplementation(async (filePath: string) => {
-            if (String(filePath).endsWith("dir")) return { isFile: () => false, atimeMs: 0, size: 0 };
-            if (String(filePath).endsWith("gone.png")) throw new Error("gone");
-            if (String(filePath).endsWith("old.png")) return { isFile: () => true, atimeMs: 1, size: 7 * gib };
-            return { isFile: () => true, atimeMs: 2, size: 6 * gib };
-        });
-        (fs.promises.unlink as unknown as Mock)
-            .mockRejectedValueOnce(new Error("unlink failed"))
-            .mockResolvedValueOnce(undefined);
+        routeMocks.getImageCacheMetadataTotalBytes.mockReturnValue(13 * gib);
+        routeMocks.listOldestImageCacheMetadata.mockReturnValue([
+            { basename: "old.png", size: 4 * gib, lastAccess: 1 },
+        ]);
+        routeMocks.removeImageCacheMetadata.mockReturnValue(9 * gib);
 
         await __imageRouterTestInternals.checkAndCleanCache();
 
-        expect(fs.promises.unlink).toHaveBeenCalledTimes(2);
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("[CACHE] Failed to delete"), "unlink failed");
+        expect(routeMocks.listOldestImageCacheMetadata).toHaveBeenCalledWith(64);
+        expect(fs.promises.unlink).toHaveBeenCalledWith(expect.stringContaining("old.png"));
+        expect(routeMocks.removeImageCacheMetadata).toHaveBeenCalledWith("old.png", true);
+        expect(fs.promises.readdir).not.toHaveBeenCalled();
+        expect(fs.promises.stat).not.toHaveBeenCalled();
 
         await __imageRouterTestInternals.checkAndCleanCache();
-        expect(fs.promises.readdir).toHaveBeenCalledTimes(1);
-
-        __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["small.png"]);
-        (fs.promises.stat as unknown as Mock).mockResolvedValueOnce({ isFile: () => true, atimeMs: 3, size: 1 });
-        await __imageRouterTestInternals.checkAndCleanCache();
-        expect(fs.promises.readdir).toHaveBeenCalledTimes(2);
-
-        __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["old.png", "new.png"]);
-        (fs.promises.stat as unknown as Mock)
-            .mockResolvedValueOnce({ isFile: () => true, atimeMs: 1, size: 4 * gib })
-            .mockResolvedValueOnce({ isFile: () => true, atimeMs: 2, size: 9 * gib });
-        (fs.promises.unlink as unknown as Mock).mockResolvedValueOnce(undefined);
-        await __imageRouterTestInternals.checkAndCleanCache();
-        expect(fs.promises.unlink).toHaveBeenCalledTimes(3);
-
-        __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockResolvedValueOnce(["plain-error.png"]);
-        (fs.promises.stat as unknown as Mock).mockResolvedValueOnce({ isFile: () => true, atimeMs: 1, size: 13 * gib });
-        (fs.promises.unlink as unknown as Mock).mockRejectedValueOnce("plain unlink failure");
-        await __imageRouterTestInternals.checkAndCleanCache();
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("[CACHE] Failed to delete"), "plain unlink failure");
-
-        __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce(new Error("readdir failed"));
-        await __imageRouterTestInternals.checkAndCleanCache();
-        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "readdir failed");
-
-        __imageRouterTestInternals.resetCacheCleanupForTests();
-        (fs.promises.readdir as unknown as Mock).mockRejectedValueOnce("plain readdir failure");
-        await __imageRouterTestInternals.checkAndCleanCache();
-        expect(consoleErrorSpy).toHaveBeenCalledWith("[CACHE] Cleanup error:", "plain readdir failure");
-
-        consoleLogSpy.mockRestore();
-        consoleWarnSpy.mockRestore();
-        consoleErrorSpy.mockRestore();
+        expect(routeMocks.getImageCacheMetadataTotalBytes).toHaveBeenCalledOnce();
     });
 
     it("should retry on 429 and then succeed", async () => {

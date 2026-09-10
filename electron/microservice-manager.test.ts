@@ -75,7 +75,7 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     await expect(manager.start()).resolves.toBe(8123);
     const [command, args, options] = spawnMock.mock.calls[0];
     expect(command).toMatch(/microservice-package\/scryfall-cache$/); expect(args).toEqual([]);
-    expect(options.env).toMatchObject({ API_HOST: "127.0.0.1", API_PORT: "8123", SQLITE_PATH: "/owned/user-data/databases/scryfall-cache.db", RUST_LOG: "info" });
+    expect(options.env).toMatchObject({ API_HOST: "127.0.0.1", API_PORT: "8123", SQLITE_PATH: "/owned/user-data/databases/scryfall-cache.db", RUST_LOG: "info", REDIS_ENABLED: "false", BULK_DATA_LOAD_ON_STARTUP: "false", BULK_REFRESH_ENABLED: "false" });
     expect(options.env.DATABASE_URL).toBeUndefined(); expect(options.env.PORT).toBeUndefined();
     expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({ hostname: "127.0.0.1", port: 8123 }), expect.any(Function));
     await manager.stop();

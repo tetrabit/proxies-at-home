@@ -90,6 +90,11 @@ export class MicroserviceManager {
       API_HOST: "127.0.0.1",
       API_PORT: String(this.config.port),
       SQLITE_PATH: this.getDatabasePath(),
+      // Desktop lifecycle must never trigger an import or refresh: the smoke owns an
+      // empty SQLite profile and must remain offline even when its parent has policy.
+      REDIS_ENABLED: "false",
+      BULK_DATA_LOAD_ON_STARTUP: "false",
+      BULK_REFRESH_ENABLED: "false",
       RUST_LOG: "info",
     });
 
@@ -306,6 +311,7 @@ export class MicroserviceManager {
   }
 
   isRunning(): boolean { return this.process !== null && !this.process.killed; }
+  getPid(): number | undefined { return this.process?.pid; }
   getPort(): number { return this.config.port; }
 }
 
