@@ -256,6 +256,63 @@ describe("image proxy stream cache publication", () => {
     expect(await fs.promises.readdir(cacheDirectory)).toEqual([]);
   });
 
+  it("gives concurrent readers complete old and new snapshots around a paused replacement publication", async () => {
+    const finalPath = path.join(cacheDirectory, "paused-replacement.png");
+    await fs.promises.writeFile(finalPath, "old-complete");
+
+    let firstChunkSent = false;
+    const source = new Readable({
+      read() {
+        if (firstChunkSent) return;
+        firstChunkSent = true;
+        queueMicrotask(() => this.push(Buffer.from("new-")));
+      },
+    });
+    const releaseSource = () => {
+      source.push(Buffer.from("complete"));
+      source.push(null);
+    };
+
+    const publication = internals.streamImageResponseToFile(
+      { status: 200, headers: { "content-type": "image/png" }, data: source } as never,
+      finalPath,
+      new AbortController().signal,
+    );
+    await vi.waitFor(async () => expect((await fs.promises.readdir(cacheDirectory)).some(entry => entry.endsWith(".tmp"))).toBe(true));
+
+    const oldReaders = await Promise.all([fs.promises.readFile(finalPath), fs.promises.readFile(finalPath)]);
+    expect(oldReaders).toEqual([Buffer.from("old-complete"), Buffer.from("old-complete")]);
+
+    releaseSource();
+    await publication;
+
+    const newReaders = await Promise.all([fs.promises.readFile(finalPath), fs.promises.readFile(finalPath)]);
+    expect(newReaders).toEqual([Buffer.from("new-complete"), Buffer.from("new-complete")]);
+    expect(await fs.promises.readdir(cacheDirectory)).toEqual([path.basename(finalPath)]);
+  });
+
+  it("preserves an old final and a foreign temp when atomic publication rename fails", async () => {
+    const finalPath = path.join(cacheDirectory, "rename-preserves-old.png");
+    const foreignTempPath = path.join(cacheDirectory, "foreign-publisher.tmp");
+    await fs.promises.writeFile(finalPath, "old-complete");
+    await fs.promises.writeFile(foreignTempPath, "foreign-sentinel");
+    const rename = vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(new Error("rename denied"));
+
+    try {
+      await expect(internals.streamImageResponseToFile(
+        { status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("new-complete")]) } as never,
+        finalPath,
+        new AbortController().signal,
+      )).rejects.toThrow("rename denied");
+    } finally {
+      rename.mockRestore();
+    }
+
+    await expect(fs.promises.readFile(finalPath)).resolves.toEqual(Buffer.from("old-complete"));
+    await expect(fs.promises.readFile(foreignTempPath)).resolves.toEqual(Buffer.from("foreign-sentinel"));
+    expect((await fs.promises.readdir(cacheDirectory)).sort()).toEqual([path.basename(finalPath), path.basename(foreignTempPath)].sort());
+  });
+
   it("deduplicates concurrent same-key proxy misses until one complete file is published", async () => {
     const body = Buffer.from("deduplicated-png");
     let resolveUpstream: (response: { status: number; headers: { "content-type": string }; data: Readable }) => void;
