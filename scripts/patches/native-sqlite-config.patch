@@ -1,0 +1,190 @@
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -11,7 +11,10 @@
+ 
+ #[derive(Debug, Clone)]
+ pub struct DatabaseConfig {
++    #[cfg(feature = "postgres")]
+     pub url: String,
++    #[cfg(feature = "sqlite")]
++    pub sqlite_path: String,
+     pub max_connections: u32,
+     pub min_connections: u32,
+     pub acquire_timeout_ms: u64,
+@@ -31,6 +34,7 @@
+     pub rate_limit_per_second: u32,
+     pub bulk_data_type: String,
+     pub cache_ttl_hours: u32,
++    pub bulk_data_load_on_startup: bool,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -55,7 +59,11 @@
+ 
+         Ok(Config {
+             database: DatabaseConfig {
++                #[cfg(feature = "postgres")]
+                 url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
++                #[cfg(feature = "sqlite")]
++                sqlite_path: env::var("SQLITE_PATH")
++                    .context("SQLITE_PATH must be set when the sqlite feature is enabled")?,
+                 max_connections: env::var("DATABASE_MAX_CONNECTIONS")
+                     .unwrap_or_else(|_| "10".to_string())
+                     .parse()
+@@ -100,6 +108,10 @@
+                     .unwrap_or_else(|_| "24".to_string())
+                     .parse()
+                     .context("SCRYFALL_CACHE_TTL_HOURS must be a valid number")?,
++                bulk_data_load_on_startup: env::var("BULK_DATA_LOAD_ON_STARTUP")
++                    .unwrap_or_else(|_| "true".to_string())
++                    .parse()
++                    .context("BULK_DATA_LOAD_ON_STARTUP must be a valid boolean")?,
+             },
+             cache: CacheConfig {
+                 query_cache_ttl_hours: env::var("QUERY_CACHE_TTL_HOURS")
+@@ -118,6 +130,22 @@
+     pub fn server_address(&self) -> String {
+         format!("{}:{}", self.server.host, self.server.port)
+     }
++
++    /// This is compile-time feature state, not an inference from connection-string text.
++    pub fn database_backend(&self) -> &'static str {
++        #[cfg(feature = "sqlite")]
++        { "sqlite" }
++        #[cfg(all(not(feature = "sqlite"), feature = "postgres"))]
++        { "postgresql" }
++        #[cfg(all(not(feature = "sqlite"), not(feature = "postgres")))]
++        { "unknown" }
++    }
++
++    #[cfg(feature = "sqlite")]
++    pub fn database_path(&self) -> Option<&str> { Some(&self.database.sqlite_path) }
++
++    #[cfg(not(feature = "sqlite"))]
++    pub fn database_path(&self) -> Option<&str> { None }
+ 
+     fn redis_config_from_env() -> Option<RedisConfig> {
+         // Redis is optional - only enabled if REDIS_ENABLED=true
+@@ -153,7 +181,10 @@
+     fn test_server_address() {
+         let config = Config {
+             database: DatabaseConfig {
++                #[cfg(feature = "postgres")]
+                 url: "postgresql://localhost/test".to_string(),
++                #[cfg(feature = "sqlite")]
++                sqlite_path: "/tmp/scryfall-cache-test.db".to_string(),
+                 max_connections: 10,
+                 min_connections: 0,
+                 acquire_timeout_ms: 30_000,
+@@ -169,6 +200,7 @@
+                 rate_limit_per_second: 10,
+                 bulk_data_type: "default_cards".to_string(),
+                 cache_ttl_hours: 24,
++                bulk_data_load_on_startup: true,
+             },
+             cache: CacheConfig {
+                 query_cache_ttl_hours: 24,
+@@ -179,4 +211,17 @@
+ 
+         assert_eq!(config.server_address(), "127.0.0.1:3000");
+     }
+-}
++
++    #[cfg(feature = "sqlite")]
++    #[test]
++    fn sqlite_configuration_reports_its_compiled_backend_and_explicit_path() {
++        let database = DatabaseConfig {
++            sqlite_path: "/tmp/scryfall-cache-test.db".to_string(),
++            max_connections: 10, min_connections: 0, acquire_timeout_ms: 30_000,
++            idle_timeout_seconds: 600, max_lifetime_seconds: 1800,
++        };
++        let config = Config { database, server: ServerConfig { host: "127.0.0.1".to_string(), port: 3000, instance_id: "test".to_string() }, scryfall: ScryfallConfig { rate_limit_per_second: 10, bulk_data_type: "default_cards".to_string(), cache_ttl_hours: 24, bulk_data_load_on_startup: false }, cache: CacheConfig { query_cache_ttl_hours: 24, query_cache_max_size: 10000, redis: None } };
++        assert_eq!(config.database_backend(), "sqlite");
++        assert_eq!(config.database_path(), Some("/tmp/scryfall-cache-test.db"));
++    }
++}
+--- a/src/db/mod.rs
++++ b/src/db/mod.rs
+@@ -37,8 +37,7 @@
+ #[cfg(feature = "sqlite")]
+ pub async fn init_database(config: &crate::config::DatabaseConfig) -> Result<Database> {
+     tracing::info!("Initializing SQLite backend");
+-    let database_path =
+-        std::env::var("SQLITE_PATH").unwrap_or_else(|_| "./data/scryfall-cache.db".to_string());
++    let database_path = &config.sqlite_path;
+ 
+     let pool = sqlite::connection::create_pool(&database_path)?;
+     let backend = SqliteBackend::new(pool)?;
+--- a/src/api/handlers.rs
++++ b/src/api/handlers.rs
+@@ -30,6 +30,8 @@
+     pub query_validator: QueryValidator,
+     pub graphql_schema: GraphQLSchema,
+     pub instance_id: String,
++    pub database_backend: String,
++    pub database_path: Option<String>,
+ }
+ 
+ #[derive(Debug, Serialize, ToSchema)]
+@@ -299,9 +301,10 @@
+         },
+         "environment": {
+             "rust_version": env!("CARGO_PKG_RUST_VERSION", "unknown"),
+-            "database": std::env::var("DATABASE_URL")
+-                .map(|url| if url.starts_with("postgres") { "postgresql" } else { "sqlite" })
+-                .unwrap_or("unknown"),
++            "database": {
++                "backend": state.database_backend.clone(),
++                "path": state.database_path.clone(),
++            },
+         },
+         "uptime_seconds": START_TIME.elapsed().as_secs(),
+     }))
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -139,15 +139,19 @@
+     // Initialize bulk loader
+     let bulk_loader = BulkLoader::new(db.clone(), config.scryfall.clone());
+ 
+-    // Load bulk data if needed
+-    if bulk_loader.should_load().await? {
+-        info!("Loading bulk data...");
+-        if let Err(e) = bulk_loader.load().await {
+-            error!("Failed to load bulk data: {}", e);
+-            error!("Continuing without bulk data - will rely on API fallback");
++    // Loading can be disabled for an isolated SQLite fixture without changing the compiled backend.
++    if config.scryfall.bulk_data_load_on_startup {
++        if bulk_loader.should_load().await? {
++            info!("Loading bulk data...");
++            if let Err(e) = bulk_loader.load().await {
++                error!("Failed to load bulk data: {}", e);
++                error!("Continuing without bulk data - will rely on API fallback");
++            }
++        } else {
++            info!("Bulk data is up to date, skipping load");
+         }
+     } else {
+-        info!("Bulk data is up to date, skipping load");
++        info!("Bulk data load on startup is disabled");
+     }
+ 
+     // Initialize cache manager
+@@ -177,6 +181,8 @@
+         query_validator,
+         graphql_schema,
+         instance_id: config.server.instance_id.clone(),
++        database_backend: config.database_backend().to_string(),
++        database_path: config.database_path().map(str::to_owned),
+     });
+ 
+     // Start background bulk data refresh job
+--- a/src/scryfall/client.rs
++++ b/src/scryfall/client.rs
+@@ -330,6 +330,7 @@
+             rate_limit_per_second: 10,
+             bulk_data_type: "default_cards".to_string(),
+             cache_ttl_hours: 24,
++            bulk_data_load_on_startup: true,
+         };
+ 
+         let client = ScryfallClient::new(&config);
