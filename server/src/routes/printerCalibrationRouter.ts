@@ -550,7 +550,7 @@ function createCalibrationUploadStorage(
   cleanup: CalibrationTemporaryFileCleanupReconciler
 ): multer.StorageEngine {
   return {
-    _handleFile(_req, file, callback) {
+    _handleFile(req, file, callback) {
       let inputReservation: CalibrationTemporaryFileReservation;
       let outputReservation: CalibrationTemporaryFileReservation;
       try {
@@ -584,9 +584,11 @@ function createCalibrationUploadStorage(
 
       let completed = false;
       let failed = false;
+      let abortUpload: () => void = () => undefined;
       const finish = (error?: Error, info?: Partial<Express.Multer.File>) => {
         if (completed) return;
         completed = true;
+        req.off("aborted", abortUpload);
         callback(error, info);
       };
       const fail = (error: Error) => {
@@ -605,6 +607,8 @@ function createCalibrationUploadStorage(
         if (output.closed) settle();
         else output.once("close", settle);
       };
+      abortUpload = () => fail(new Error("Calibration upload was aborted."));
+      req.once("aborted", abortUpload);
 
       output.on("error", fail);
       file.stream.on("error", fail);

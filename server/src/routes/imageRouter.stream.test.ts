@@ -175,6 +175,43 @@ describe("image proxy stream cache publication", () => {
     expect(await fs.promises.readdir(cacheDirectory)).toEqual(["pre-existing-sentinel"]);
   });
 
+  it("retains a failed owned-temp cleanup lease until the router reconciler confirms removal", async () => {
+    const finalPath = path.join(cacheDirectory, "cleanup-retry.png");
+    const sentinel = path.join(cacheDirectory, "pre-existing-sentinel");
+    await fs.promises.writeFile(sentinel, "retain");
+    let emitted = false;
+    const source = new Readable({
+      read() {
+        if (emitted) return;
+        emitted = true;
+        this.push(Buffer.from("partial"));
+        queueMicrotask(() => this.destroy(new Error("upstream broke")));
+      },
+    });
+    const reservation = internals.proxyDownloadAdmission.reserve(internals.MAX_PROXY_RESPONSE_BYTES);
+    const unlink = vi.spyOn(fs.promises, "unlink").mockRejectedValueOnce(new Error("EBUSY"));
+
+    await expect(internals.streamImageResponseToFile(
+      { status: 200, headers: { "content-type": "image/png" }, data: source } as never,
+      finalPath,
+      new AbortController().signal,
+      reservation,
+    )).rejects.toThrow("upstream broke");
+
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(internals.MAX_PROXY_RESPONSE_BYTES);
+    expect(() => internals.proxyDownloadAdmission.reserve(internals.MAX_PROXY_DOWNLOAD_RESERVED_BYTES)).toThrow();
+    const tempName = (await fs.promises.readdir(cacheDirectory)).find(entry => entry.endsWith(".tmp"));
+    expect(tempName).toBeDefined();
+    const tempPath = path.join(cacheDirectory, tempName!);
+    expect(internals.writeInProgress.has(tempPath)).toBe(true);
+    await expect(fs.promises.readFile(sentinel, "utf8")).resolves.toBe("retain");
+    unlink.mockRestore();
+
+    await vi.waitFor(() => expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0));
+    expect(internals.writeInProgress.has(tempPath)).toBe(false);
+    expect((await fs.promises.readdir(cacheDirectory)).sort()).toEqual(["pre-existing-sentinel"]);
+  });
+
   it("disposes a non-image stream before allocating a cache file", async () => {
     const source = lazyChunks([Buffer.from("html")]);
     await expect(internals.streamImageResponseToFile(
@@ -240,6 +277,7 @@ describe("image proxy stream cache publication", () => {
 
     await new Promise<void>(resolve => setTimeout(resolve, 125));
     const upstreamCalls = axiosMock.get.mock.calls.length;
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(internals.MAX_PROXY_RESPONSE_BYTES);
     resolveUpstream!({
       status: 200,
       headers: { "content-type": "image/png" },
@@ -253,6 +291,7 @@ describe("image proxy stream cache publication", () => {
     expect(firstResponse.body).toEqual(body);
     expect(secondResponse.body).toEqual(body);
     expect(sharedSignal?.aborted).toBe(false);
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0);
     await expect(fs.promises.readFile(internals.cachePathFromUrl(imageUrl))).resolves.toEqual(body);
     sendFileSpy.mockRestore();
   });
@@ -436,6 +475,120 @@ describe("image proxy stream cache publication", () => {
     expect(retry.body).toEqual(retryBody);
     expect(axiosMock.get).toHaveBeenCalledTimes(2);
     await expect(fs.promises.readFile(internals.cachePathFromUrl(imageUrl))).resolves.toEqual(retryBody);
+  });
+
+  it("reserves one temporary-byte lease when a physical proxy owner starts", async () => {
+    let resolveUpstream: (response: { status: number; headers: { "content-type": string }; data: Readable }) => void;
+    axiosMock.get.mockImplementation(() => new Promise(resolve => {
+      resolveUpstream = resolve;
+    }));
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const pending = request(app).get("/images/proxy").query({ url: imageUrl }).then(response => response);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(1));
+    expect(internals.proxyDownloadAdmission.stats()).toEqual({
+      reservedBytes: internals.MAX_PROXY_RESPONSE_BYTES,
+      maxBytes: internals.MAX_PROXY_DOWNLOAD_RESERVED_BYTES,
+    });
+
+    resolveUpstream!({
+      status: 200,
+      headers: { "content-type": "image/png" },
+      data: lazyChunks([Buffer.from("settled")]),
+    });
+    await pending;
+    sendFileSpy.mockRestore();
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0);
+  });
+
+  it("holds ten distinct physical owners at the 250 MiB envelope and starts the queued eleventh only after settlement", async () => {
+    const urls = Array.from({ length: internals.MAX_PROXY_CONCURRENT_DOWNLOADS + 1 }, (_value, index) =>
+      imageUrl.replace("ab123456-1234-1234-1234-123456789abc.png", `ab123456-1234-1234-1234-123456789ab${index.toString(16)}.png`)
+    );
+    const held = new Map<string, (response: { status: number; headers: { "content-type": string }; data: Readable }) => void>();
+    axiosMock.get.mockImplementation((url: string) => new Promise(resolve => {
+      held.set(url, resolve as (response: { status: number; headers: { "content-type": string }; data: Readable }) => void);
+    }));
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const owners = urls.slice(0, 10).map(url => request(app).get("/images/proxy").query({ url }).then(response => response));
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(10));
+    expect(internals.proxyDownloadAdmission.stats()).toEqual({
+      reservedBytes: 10 * internals.MAX_PROXY_RESPONSE_BYTES,
+      maxBytes: internals.MAX_PROXY_DOWNLOAD_RESERVED_BYTES,
+    });
+
+    const queued = request(app).get("/images/proxy").query({ url: urls[10] }).then(response => response);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(axiosMock.get).toHaveBeenCalledTimes(10);
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(internals.MAX_PROXY_DOWNLOAD_RESERVED_BYTES);
+
+    held.get(urls[0])!({ status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("first")]) });
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(11));
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(internals.MAX_PROXY_DOWNLOAD_RESERVED_BYTES);
+
+    for (const url of urls.slice(1)) {
+      held.get(url)!({ status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("settled")]) });
+    }
+    await Promise.all([...owners, queued]);
+    sendFileSpy.mockRestore();
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0);
+  });
+
+  it("charges independent MPC physical owners through the shared admission", async () => {
+    const held = new Map<string, (response: { status: number; headers: { "content-type": string }; data: Readable }) => void>();
+    axiosMock.get.mockImplementation((url: string) => new Promise(resolve => {
+      held.set(url, resolve as (response: { status: number; headers: { "content-type": string }; data: Readable }) => void);
+    }));
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const first = request(app).get("/images/mpc").query({ id: "first-owner", size: "small" }).then(response => response);
+    const second = request(app).get("/images/mpc").query({ id: "second-owner", size: "small" }).then(response => response);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(2));
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(2 * internals.MAX_PROXY_RESPONSE_BYTES);
+
+    for (const resolve of held.values()) {
+      resolve({ status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("mpc")]) });
+    }
+    await Promise.all([first, second]);
+    sendFileSpy.mockRestore();
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0);
+  });
+
+  it("re-admits an MPC fallback stream after its settled predecessor fails", async () => {
+    let emitted = false;
+    const failedStream = new Readable({
+      read() {
+        if (emitted) return;
+        emitted = true;
+        this.push(Buffer.from("partial"));
+        queueMicrotask(() => this.destroy(new Error("candidate failed")));
+      },
+    });
+    let resolveFallback: (response: { status: number; headers: { "content-type": string }; data: Readable }) => void;
+    axiosMock.get
+      .mockResolvedValueOnce({ status: 200, headers: { "content-type": "image/png" }, data: failedStream })
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveFallback = resolve;
+      }));
+    const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: { type: (contentType: string) => { send: (body: Buffer) => void } }, filePath: string) {
+      this.type("image/png").send(fs.readFileSync(filePath));
+    });
+
+    const pending = request(app).get("/images/mpc").query({ id: "fallback-owner", size: "full" }).then(response => response);
+    await vi.waitFor(() => expect(axiosMock.get).toHaveBeenCalledTimes(2));
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(internals.MAX_PROXY_RESPONSE_BYTES);
+
+    resolveFallback!({ status: 200, headers: { "content-type": "image/png" }, data: lazyChunks([Buffer.from("fallback")]) });
+    await pending;
+    sendFileSpy.mockRestore();
+    expect(internals.proxyDownloadAdmission.stats().reservedBytes).toBe(0);
   });
 
   it("disposes an invalid MPC candidate before streaming a later candidate to its cache key", async () => {

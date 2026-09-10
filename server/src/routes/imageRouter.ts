@@ -18,6 +18,12 @@ import {
   type ImageHttpClient,
   type RedirectTargetAdmission,
 } from "./imageRedirectPolicy.js";
+import {
+  ProxyDownloadQuotaError,
+  createProxyDownloadAdmission,
+  createProxyDownloadCleanupReconciler,
+  type ProxyDownloadReservation,
+} from "./proxyDownloadAdmission.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,7 +45,19 @@ const AX_GDRIVE = axios.create({
   validateStatus: acceptsSurfaceableStatus,
 });
 
+const MAX_PROXY_CONCURRENT_DOWNLOADS = 10;
 const MAX_PROXY_RESPONSE_BYTES = 25 * 1024 * 1024;
+const MAX_PROXY_DOWNLOAD_RESERVED_BYTES =
+  MAX_PROXY_CONCURRENT_DOWNLOADS * MAX_PROXY_RESPONSE_BYTES;
+
+let proxyDownloadAdmission = createProxyDownloadAdmission({
+  maxBytes: MAX_PROXY_DOWNLOAD_RESERVED_BYTES,
+});
+const proxyDownloadCleanup = createProxyDownloadCleanupReconciler({
+  unlink: filePath => fs.promises.unlink(filePath),
+  log: (message, error) => console.warn(message, error),
+  onSettled: filePath => writeInProgress.delete(filePath),
+});
 
 class ImageDownloadError extends Error {
   readonly status: number | undefined;
@@ -191,7 +209,7 @@ function pLimit(concurrency: number) {
 // - scryfallApiLimit: For Scryfall JSON API calls (card search, collection lookups)
 // - imageFetchLimit: For outbound image fetches (Scryfall CDN, Google Drive)
 const scryfallApiLimit = pLimit(6);
-const imageFetchLimit = pLimit(10);
+const imageFetchLimit = pLimit(MAX_PROXY_CONCURRENT_DOWNLOADS);
 let enrichLookupTimeoutMs = 20_000;
 
 // -------------------- cache helpers --------------------
@@ -325,6 +343,7 @@ async function streamImageResponseToFile(
   response: AxiosResponse,
   finalPath: string,
   signal: AbortSignal,
+  reservation?: ProxyDownloadReservation,
 ): Promise<{ contentType: string }> {
   const source = response.data;
   if (!(source instanceof Readable)) {
@@ -365,13 +384,21 @@ async function streamImageResponseToFile(
     published = true;
     return { contentType };
   } finally {
-    if (!published) {
-      await fs.promises.unlink(tempPath).catch((cleanupError: unknown) => {
+    if (published) {
+      reservation?.release();
+      writeInProgress.delete(tempPath);
+    } else if (reservation) {
+      await proxyDownloadCleanup.reconcile(tempPath, reservation);
+      if (reservation.isReleased()) writeInProgress.delete(tempPath);
+    } else {
+      try {
+        await fs.promises.unlink(tempPath);
+        writeInProgress.delete(tempPath);
+      } catch (cleanupError: unknown) {
         const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
         console.warn("[Proxy] Failed to remove owned temporary image file:", message);
-      });
+      }
     }
-    writeInProgress.delete(tempPath);
   }
 }
 
@@ -383,11 +410,24 @@ function getOrStartProxyDownload(originalUrl: string, localPath: string): ProxyD
   // subscriber. A disconnected subscriber must not abort other waiters.
   const sharedAbortController = new AbortController();
   const physicalDownload = imageFetchLimit(async () => {
-    const response = await getWithRetry(originalUrl, {
-      responseType: "stream",
-      signal: sharedAbortController.signal,
-    });
-    return streamImageResponseToFile(response, localPath, sharedAbortController.signal);
+    const reservation = proxyDownloadAdmission.reserve(MAX_PROXY_RESPONSE_BYTES);
+    let responseReceived = false;
+    try {
+      const response = await getWithRetry(originalUrl, {
+        responseType: "stream",
+        signal: sharedAbortController.signal,
+      });
+      responseReceived = true;
+      return await streamImageResponseToFile(
+        response,
+        localPath,
+        sharedAbortController.signal,
+        reservation,
+      );
+    } catch (error) {
+      if (!responseReceived || !reservation.isCleanupPending()) reservation.release();
+      throw error;
+    }
   });
 
   const settle = () => {
@@ -769,6 +809,9 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
     return res.sendFile(localPath);
   } catch (err: unknown) {
     if (req.aborted || res.destroyed) return;
+    if (err instanceof ProxyDownloadQuotaError) {
+      return res.status(503).json({ error: "Image download service is temporarily unavailable." });
+    }
     if (err instanceof ImageDownloadError) {
       if (err.contentType !== undefined) {
         return res.status(502).json({ error: err.message, ct: err.contentType });
@@ -839,44 +882,56 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   let lastError: string | undefined;
   try {
     const result = await imageFetchLimit(async () => {
-      for (const url of candidates) {
-        try {
-          // Use AX_GDRIVE with longer timeout for large Google Drive files
-          const r = await getWithRetry(
-            url,
-            { responseType: "stream", signal: abortController.signal },
-            1,
-            AX_GDRIVE,
-            admitMpcRedirect,
-            () => true,
-          );
+      let reservation = proxyDownloadAdmission.reserve(MAX_PROXY_RESPONSE_BYTES);
+      try {
+        for (const url of candidates) {
+          try {
+            // Use AX_GDRIVE with longer timeout for large Google Drive files
+            const r = await getWithRetry(
+              url,
+              { responseType: "stream", signal: abortController.signal },
+              1,
+              AX_GDRIVE,
+              admitMpcRedirect,
+              () => true,
+            );
 
-          const ct = (r.headers["content-type"] || "").toLowerCase();
-          if (r.status < 200 || r.status >= 300) {
-            await disposeReadable(r.data);
-            lastError = `HTTP ${r.status} from ${url}`;
-            continue;
-          }
-          if (!ct.startsWith("image/")) {
-            await disposeReadable(r.data);
-            lastError = `Non-image response from ${url}: ${ct}`;
-            continue; // Not an image (HTML interstitial), try next candidate
-          }
+            const ct = (r.headers["content-type"] || "").toLowerCase();
+            if (r.status < 200 || r.status >= 300) {
+              await disposeReadable(r.data);
+              lastError = `HTTP ${r.status} from ${url}`;
+              continue;
+            }
+            if (!ct.startsWith("image/")) {
+              await disposeReadable(r.data);
+              lastError = `Non-image response from ${url}: ${ct}`;
+              continue; // Not an image (HTML interstitial), try next candidate
+            }
 
-          // If we fell back to the MPC CDN "large" image while requesting "full",
-          // save it as "large" so we don't pollute the "full" cache slot with lower res.
-          if (size === "full" && url.includes("-large-google_drive")) {
-            localPath = path.join(cacheDir, `gdrive_${id}_large`);
-          }
+            // If we fell back to the MPC CDN "large" image while requesting "full",
+            // save it as "large" so we don't pollute the "full" cache slot with lower res.
+            if (size === "full" && url.includes("-large-google_drive")) {
+              localPath = path.join(cacheDir, `gdrive_${id}_large`);
+            }
 
-          return streamImageResponseToFile(r, localPath, abortController.signal);
-        } catch (err) {
-          // Log each failed candidate for debugging
-          const msg = err instanceof Error ? err.message : String(err);
-          lastError = `Failed to fetch ${url}: ${msg}`;
+            return await streamImageResponseToFile(r, localPath, abortController.signal, reservation);
+          } catch (err) {
+            // A failed owned-temp cleanup retains its lease and must not continue
+            // candidate work under an unproven aggregate-spool capacity claim.
+            if (reservation.isCleanupPending()) throw err;
+            // A settled failed candidate may fall through to the next URL. Its
+            // next physical stream gets a new lease inside this limiter slot.
+            if (reservation.isReleased()) {
+              reservation = proxyDownloadAdmission.reserve(MAX_PROXY_RESPONSE_BYTES);
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            lastError = `Failed to fetch ${url}: ${msg}`;
+          }
         }
+        return null;
+      } finally {
+        if (!reservation.isReleased() && !reservation.isCleanupPending()) reservation.release();
       }
-      return null;
     });
 
     if (result) {
@@ -886,6 +941,9 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
     }
   /* v8 ignore start -- imageFetchLimit only rejects for defensive limiter failures; candidate fetch failures are handled inside the limiter callback. @preserve */
   } catch (err: unknown) {
+    if (err instanceof ProxyDownloadQuotaError) {
+      return res.status(503).send("Image download service is temporarily unavailable.");
+    }
     /* v8 ignore next -- defensive limiter rejection path is not reachable through candidate fetch handling. @preserve */
     const msg = err instanceof Error ? err.message : String(err);
     /* v8 ignore next -- defensive limiter rejection path is not reachable through candidate fetch handling. @preserve */
@@ -983,7 +1041,12 @@ imageRouter.get("/cardback/:id", (req: Request, res: Response) => {
 });
 
 export const __imageRouterTestInternals = {
+  MAX_PROXY_CONCURRENT_DOWNLOADS,
   MAX_PROXY_RESPONSE_BYTES,
+  MAX_PROXY_DOWNLOAD_RESERVED_BYTES,
+  get proxyDownloadAdmission() {
+    return proxyDownloadAdmission;
+  },
   acceptsSurfaceableStatus,
   pLimit,
   checkAndCleanCache,
@@ -999,6 +1062,9 @@ export const __imageRouterTestInternals = {
     lastCacheCleanup = 0;
     enrichLookupTimeoutMs = 20_000;
     imageResolveAllForTests = undefined;
+    proxyDownloadAdmission = createProxyDownloadAdmission({
+      maxBytes: MAX_PROXY_DOWNLOAD_RESERVED_BYTES,
+    });
   },
   setImageResolveAllForTests: (resolveAll: ResolveAll | undefined) => {
     imageResolveAllForTests = resolveAll;

@@ -7,6 +7,21 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
+
+const filesystemState = vi.hoisted(() => ({
+  tmpdir: "",
+}));
+
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("os")>();
+  const tmpdir = () => filesystemState.tmpdir;
+  return {
+    ...actual,
+    tmpdir,
+    default: { ...actual, tmpdir },
+  };
+});
+
 import {
   CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES,
   CALIBRATION_OUTPUT_LIMIT_BYTES,
@@ -19,6 +34,7 @@ import {
 
 async function fixtureDirectory(): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proxxied-calibration-admission-"));
+  filesystemState.tmpdir = directory;
   return directory;
 }
 
@@ -32,9 +48,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
+async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (condition()) return;
+    if (await condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("timed out waiting for calibration admission to settle");
@@ -144,21 +160,30 @@ describe("printer calibration temporary-file admission", () => {
     expect(await fs.readdir(directory)).toEqual([]);
   });
 
-  it("releases a known-size upload reservation after the client cancels an active calibration", async () => {
+  it("keeps exact owned input and output files reserved until an aborted calibration writer settles", async () => {
     const directory = await fixtureDirectory();
+    const sentinelPath = path.join(directory, "unrelated-sentinel.pdf");
+    await fs.writeFile(sentinelPath, "must survive another request cleanup");
     const admission = createCalibrationTemporaryFileAdmission({
       maxBytes: CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES,
     });
     const runnerStarted = deferred<void>();
     const runnerCancelled = deferred<void>();
-    const app = createApp(directory, admission, async (_args, options) => {
+    const settleWriter = deferred<void>();
+    let outputPath = "";
+    const app = createApp(directory, admission, async (args, options) => {
+      outputPath = args[args.indexOf("--output") + 1]!;
+      await fs.writeFile(outputPath, "%PDF-1.4\nwriter-open\n");
       runnerStarted.resolve();
       return new Promise((_resolve, reject) => {
         options?.signal?.addEventListener(
           "abort",
           () => {
             runnerCancelled.resolve();
-            reject(new Error("request cancelled"));
+            void settleWriter.promise.then(async () => {
+              await fs.appendFile(outputPath, "writer-settled\n");
+              reject(new Error("request cancelled"));
+            });
           },
           { once: true }
         );
@@ -191,9 +216,130 @@ describe("printer calibration temporary-file admission", () => {
       client.destroy();
 
       await runnerCancelled.promise;
+      expect(admission.stats().reservedBytes).toBe(CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES);
+      expect(await fs.readFile(outputPath, "utf8")).toContain("writer-open");
+      expect(await fs.readdir(directory)).toEqual(
+        expect.arrayContaining([
+          path.basename(sentinelPath),
+          path.basename(outputPath),
+          expect.stringContaining("-upload-"),
+        ])
+      );
+
+      settleWriter.resolve();
       await waitFor(() => admission.stats().reservedBytes === 0);
-      expect(await fs.readdir(directory)).toEqual([]);
+      expect(await fs.readdir(directory)).toEqual([path.basename(sentinelPath)]);
     } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("removes only the owned partial multipart upload after the client disconnects before Multer completes", async () => {
+    const directory = await fixtureDirectory();
+    const sentinelPath = path.join(directory, "unrelated-sentinel.pdf");
+    await fs.writeFile(sentinelPath, "must survive another request cleanup");
+    const admission = createCalibrationTemporaryFileAdmission({
+      maxBytes: CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES,
+    });
+    const runCli = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const app = createApp(directory, admission, runCli);
+    const server = app.listen(0);
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected TCP test listener");
+    const boundary = "partial-calibration-admission-boundary";
+
+    try {
+      const client = http.request({
+        host: "127.0.0.1",
+        port: address.port,
+        method: "POST",
+        path: "/api/printer-calibration/apply",
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+      });
+      client.on("error", () => undefined);
+      client.write(
+        `--${boundary}\r\nContent-Disposition: form-data; name="profileName"\r\n\r\noffice\r\n` +
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="partial.pdf"\r\n` +
+          "Content-Type: application/pdf\r\n\r\n%PDF-1.4\npartial upload"
+      );
+
+      await waitFor(async () =>
+        (await fs.readdir(directory)).some((name) => name.includes("-upload-"))
+      );
+      expect(admission.stats().reservedBytes).toBe(CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES);
+      client.destroy();
+
+      await waitFor(() => admission.stats().reservedBytes === 0);
+      expect(runCli).not.toHaveBeenCalled();
+      expect(await fs.readdir(directory)).toEqual([path.basename(sentinelPath)]);
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("keeps owned calibration files until a disconnected download has read output bytes", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const directory = await fixtureDirectory();
+    const sentinelPath = path.join(directory, "unrelated-sentinel.pdf");
+    await fs.writeFile(sentinelPath, "must survive another request cleanup");
+    const admission = createCalibrationTemporaryFileAdmission({
+      maxBytes: CALIBRATION_AGGREGATE_TEMP_LIMIT_BYTES,
+    });
+    const outputWritten = deferred<void>();
+    let outputPath = "";
+    const app = createApp(directory, admission, async (args) => {
+      outputPath = args[args.indexOf("--output") + 1]!;
+      await fs.writeFile(outputPath, Buffer.alloc(512 * 1024, 0x61));
+      outputWritten.resolve();
+      return { stdout: "", stderr: "" };
+    });
+    const server = app.listen(0);
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected TCP test listener");
+    const boundary = "download-calibration-admission-boundary";
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="profileName"\r\n\r\noffice\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="download.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\ndownload\n\r\n--${boundary}--\r\n`),
+    ]);
+    const firstOutputByte = deferred<void>();
+
+    try {
+      const client = http.request({
+        host: "127.0.0.1",
+        port: address.port,
+        method: "POST",
+        path: "/api/printer-calibration/apply",
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": String(body.length),
+        },
+      });
+      client.on("error", () => undefined);
+      client.once("response", (response) => {
+        response.once("data", () => {
+          void fs.access(outputPath).then(
+            () => {
+              client.destroy();
+              firstOutputByte.resolve();
+            },
+            firstOutputByte.reject
+          );
+        });
+      });
+      client.end(body);
+
+      await outputWritten.promise;
+      await firstOutputByte.promise;
+      await waitFor(() => admission.stats().reservedBytes === 0);
+      expect(await fs.readdir(directory)).toEqual([path.basename(sentinelPath)]);
+    } finally {
+      consoleError.mockRestore();
       server.close();
       await once(server, "close");
     }
