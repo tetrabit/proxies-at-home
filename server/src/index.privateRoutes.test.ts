@@ -1,8 +1,11 @@
+import type { Server } from 'node:http';
+
 import express from 'express';
 import request from 'supertest';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrivateCredentialVerifier, PrivateIdentity } from './auth/privateRouteAuth.js';
+import { closeLoopbackServer, listenLoopback } from './testUtils/calibrationHarnessFixtures.js';
 
 const state = vi.hoisted(() => ({
   getDatabase: vi.fn(),
@@ -55,6 +58,14 @@ function verifierFor(identity: PrivateIdentity | null): PrivateCredentialVerifie
   return { verifyBearer: vi.fn(() => identity) };
 }
 
+const ownedServers: Server[] = [];
+
+async function requestFor(app: express.Express): Promise<ReturnType<typeof request>> {
+  const server = await listenLoopback(app);
+  ownedServers.push(server);
+  return request(server);
+}
+
 describe('private metrics route registration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -63,12 +74,22 @@ describe('private metrics route registration', () => {
     state.isMicroserviceAvailable.mockResolvedValue(true);
   });
 
+  afterEach(async () => {
+    try {
+      await Promise.all(ownedServers.splice(0).map((server) => closeLoopbackServer(server)));
+    } finally {
+      vi.restoreAllMocks();
+      vi.resetModules();
+    }
+  });
+
   it('fails closed without server credential configuration before metrics data is read', async () => {
     const { createApp } = await import('./index.js');
 
     const app = createApp();
-    const response = await request(app).get('/api/metrics');
-    const health = await request(app).get('/api/metrics/health');
+    const api = await requestFor(app);
+    const response = await api.get('/api/metrics');
+    const health = await api.get('/api/metrics/health');
 
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: 'unauthorized' });
@@ -83,10 +104,11 @@ describe('private metrics route registration', () => {
     const { createApp } = await import('./index.js');
     const app = createApp();
 
-    const list = await request(app).get('/api/backup');
-    const read = await request(app).get('/api/backup/project123');
-    const write = await request(app).put('/api/backup/project123').send({ data: { cards: [] } });
-    const remove = await request(app).delete('/api/backup/project123');
+    const api = await requestFor(app);
+    const list = await api.get('/api/backup');
+    const read = await api.get('/api/backup/project123');
+    const write = await api.put('/api/backup/project123').send({ data: { cards: [] } });
+    const remove = await api.delete('/api/backup/project123');
 
     for (const response of [list, read, write, remove]) {
       expect(response.status).toBe(401);
@@ -101,7 +123,7 @@ describe('private metrics route registration', () => {
     });
     const { createApp } = await import('./index.js');
 
-    const response = await request(createApp({ privateCredentialVerifier: verifierFor(backupReadIdentity) }))
+    const response = await (await requestFor(createApp({ privateCredentialVerifier: verifierFor(backupReadIdentity) })))
       .get('/api/backup')
       .set('Authorization', 'Bearer valid-bearer');
 
@@ -112,7 +134,7 @@ describe('private metrics route registration', () => {
   it('rejects an authenticated identity without metrics read capability before metrics data is read', async () => {
     const { createApp } = await import('./index.js');
 
-    const response = await request(createApp({ privateCredentialVerifier: verifierFor(writeIdentity) }))
+    const response = await (await requestFor(createApp({ privateCredentialVerifier: verifierFor(writeIdentity) })))
       .get('/api/metrics')
       .set('Authorization', 'Bearer valid-bearer');
 
@@ -125,7 +147,7 @@ describe('private metrics route registration', () => {
   it('allows a server-verified metrics reader without trusting request identity fields', async () => {
     const { createApp } = await import('./index.js');
 
-    const response = await request(createApp({ privateCredentialVerifier: verifierFor(readIdentity) }))
+    const response = await (await requestFor(createApp({ privateCredentialVerifier: verifierFor(readIdentity) })))
       .get('/api/metrics?ownerId=client-owner')
       .set('Authorization', 'Bearer valid-bearer')
       .set('X-Owner-Id', 'client-owner');
@@ -142,8 +164,8 @@ describe('private metrics route registration', () => {
     const { createApp } = await import('./index.js');
     const readOnlyApp = createApp({ privateCredentialVerifier: verifierFor(readIdentity) });
 
-    const missingConfiguration = await request(createApp()).post('/api/metrics/log');
-    const readOnly = await request(readOnlyApp)
+    const missingConfiguration = await (await requestFor(createApp())).post('/api/metrics/log');
+    const readOnly = await (await requestFor(readOnlyApp))
       .post('/api/metrics/reset')
       .set('Authorization', 'Bearer valid-bearer');
 
@@ -155,10 +177,10 @@ describe('private metrics route registration', () => {
     expect(state.resetMicroserviceMetrics).not.toHaveBeenCalled();
 
     const writerApp = createApp({ privateCredentialVerifier: verifierFor(writeIdentity) });
-    const logged = await request(writerApp)
+    const logged = await (await requestFor(writerApp))
       .post('/api/metrics/log')
       .set('Authorization', 'Bearer valid-bearer');
-    const reset = await request(writerApp)
+    const reset = await (await requestFor(writerApp))
       .post('/api/metrics/reset')
       .set('Authorization', 'Bearer valid-bearer');
 
@@ -171,7 +193,7 @@ describe('private metrics route registration', () => {
   it('protects deep health before dependency checks', async () => {
     const { createApp } = await import('./index.js');
 
-    const denied = await request(createApp()).get('/health/deep');
+    const denied = await (await requestFor(createApp())).get('/health/deep');
 
     expect(denied.status).toBe(401);
     expect(denied.body).toEqual({ error: 'unauthorized' });
@@ -179,7 +201,7 @@ describe('private metrics route registration', () => {
     expect(state.getDatabase).not.toHaveBeenCalled();
     expect(state.isMicroserviceAvailable).not.toHaveBeenCalled();
 
-    const authorized = await request(createApp({ privateCredentialVerifier: verifierFor(readIdentity) }))
+    const authorized = await (await requestFor(createApp({ privateCredentialVerifier: verifierFor(readIdentity) })))
       .get('/health/deep')
       .set('Authorization', 'Bearer valid-bearer');
     expect(authorized.status).toBe(200);
@@ -189,7 +211,7 @@ describe('private metrics route registration', () => {
   it('keeps shallow health public without exposing private metric details', async () => {
     const { createApp } = await import('./index.js');
 
-    const response = await request(createApp()).get('/health');
+    const response = await (await requestFor(createApp())).get('/health');
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({

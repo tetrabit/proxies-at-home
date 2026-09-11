@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +51,13 @@ function build() {
   const outputCardbacks = join(ownedPath('dist'), 'server', 'cardbacks');
   mkdirSync(dirname(outputCardbacks), { recursive: true });
   cpSync(ownedPath('cardbacks'), outputCardbacks, { recursive: true });
+
+  // shared/*.ts remains CommonJS under the root package boundary while the
+  // server package is ESM. Preserve that boundary in NodeNext output so ESM
+  // server modules can import the emitted shared named exports correctly.
+  const outputSharedPackage = join(ownedPath('dist'), 'shared', 'package.json');
+  mkdirSync(dirname(outputSharedPackage), { recursive: true });
+  writeFileSync(outputSharedPackage, '{"type":"commonjs"}\n', { encoding: 'utf8', mode: 0o600 });
 }
 
 const [action, ...arguments_] = process.argv.slice(2);

@@ -35,11 +35,18 @@ vi.mock('express', () => {
       get: vi.fn((path: string, ...handlers: RequestHandler[]) => {
         state.getHandlers.set(path, handlers.at(-1) as RequestHandler);
       }),
-      listen: vi.fn((port: number, _host: string, cb: () => void) => {
+      listen: vi.fn((port: number, host: string) => {
+        void host;
         const server = {
+          listening: true,
           address: () => state.listenAddress ?? { port: port === 0 ? 49152 : port },
+          once: (event: string, listener: () => void) => {
+            if (event === 'listening') queueMicrotask(listener);
+            return server;
+          },
+          off: () => server,
+          close: (callback: () => void) => callback(),
         };
-        queueMicrotask(() => cb());
         return server;
       }),
     };
@@ -108,8 +115,23 @@ function createResponse() {
   };
 }
 
+const isolatedEnvironmentKeys = [
+  'SCRYFALL_CACHE_URL',
+  'ALLOWED_ORIGINS',
+  'CALIBRATION_HARNESS_ALLOWED_WEB_ORIGINS',
+  'SERVER_DATA_DIR',
+] as const;
+let originalEnvironment = new Map<string, string | undefined>();
+let originalArgv1: string | undefined;
+let originalSigtermListeners = process.listeners('SIGTERM');
+let originalSigintListeners = process.listeners('SIGINT');
+
 describe('server index bootstrap and app wiring', () => {
   beforeEach(() => {
+    originalEnvironment = new Map(isolatedEnvironmentKeys.map((key) => [key, process.env[key]]));
+    originalArgv1 = process.argv[1];
+    originalSigtermListeners = process.listeners('SIGTERM');
+    originalSigintListeners = process.listeners('SIGINT');
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:10Z'));
     delete process.env.SCRYFALL_CACHE_URL;
@@ -134,9 +156,24 @@ describe('server index bootstrap and app wiring', () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    vi.resetModules();
+    try {
+      for (const [key, value] of originalEnvironment) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (originalArgv1 === undefined) delete process.argv[1];
+      else process.argv[1] = originalArgv1;
+      for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+        const original = signal === 'SIGTERM' ? originalSigtermListeners : originalSigintListeners;
+        for (const listener of process.listeners(signal)) {
+          if (!original.includes(listener)) process.off(signal, listener);
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      vi.resetModules();
+    }
   });
 
   it('initializes side effects, registers middleware/routes, and starts on requested port', async () => {
@@ -162,7 +199,7 @@ describe('server index bootstrap and app wiring', () => {
     const preferencesOptions = state.createPreferencesRouter.mock.calls[0]?.[0];
     expect(backupOptions?.privateRouteAuth).toBe(printerOptions?.privateRouteAuth);
     expect(backupOptions?.privateRouteAuth).toBe(preferencesOptions?.privateRouteAuth);
-    expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0', expect.any(Function));
+    expect(state.app?.listen).toHaveBeenCalledWith(0, '0.0.0.0');
 
     await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
     expect(state.cleanupExpiredShares).toHaveBeenCalledTimes(2);
@@ -171,11 +208,11 @@ describe('server index bootstrap and app wiring', () => {
   it('supports explicit loopback binding without changing standalone defaults', async () => {
     const { startServer } = await import('./index.js');
     expect(await startServer(0, { host: '127.0.0.1' })).toBe(49152);
-    expect(state.app?.listen).toHaveBeenCalledWith(0, '127.0.0.1', expect.any(Function));
+    expect(state.app?.listen).toHaveBeenCalledWith(0, '127.0.0.1');
     await startServer(3001, { host: '192.0.2.5' });
-    expect(state.app?.listen).toHaveBeenCalledWith(3001, '192.0.2.5', expect.any(Function));
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '192.0.2.5');
     await startServer(3001);
-    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0', expect.any(Function));
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0');
   });
 
   it('implements health and deep-health success/degraded branches', async () => {
@@ -275,7 +312,7 @@ describe('server index bootstrap and app wiring', () => {
     await import('./index.js');
     await Promise.resolve();
 
-    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0', expect.any(Function));
+    expect(state.app?.listen).toHaveBeenCalledWith(3001, '0.0.0.0');
 
     const sigtermHandler = processOnSpy.mock.calls.find(([event]) => event === 'SIGTERM')?.[1] as (() => Promise<void>) | undefined;
     const sigintHandler = processOnSpy.mock.calls.find(([event]) => event === 'SIGINT')?.[1] as (() => Promise<void>) | undefined;
