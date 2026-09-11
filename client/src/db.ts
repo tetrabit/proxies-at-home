@@ -236,6 +236,35 @@ export interface MpcCalibrationAssetRecord {
   hash?: string;
 }
 
+/**
+ * The four harness tables have global primary keys. This singleton binds their
+ * physical contents to one authenticated calibration identity; it is not a
+ * user preference and must never be reset by ordinary settings flows.
+ */
+export interface MpcCalibrationCacheBindingRecord {
+  id: "mpc-calibration-cache-binding";
+  ownerId: string;
+  harnessId: string;
+  connectionId: string;
+  revision: number;
+  updatedAt: number;
+}
+
+/** Private, operation-owned blob staging. Canonical harness tables are never
+ * partially populated while a remote snapshot is downloading. */
+export interface MpcCalibrationHydrationStagingRecord {
+  id: string;
+  operationId: string;
+  ownerId: string;
+  harnessId: string;
+  connectionId: string;
+  assetId: string;
+  sha256: string;
+  byteLength: number;
+  mimeType: string;
+  blob: Blob;
+}
+
 export interface MpcCalibrationRunResult {
   caseId: string;
   expectedIdentifier?: string;
@@ -389,6 +418,8 @@ export class ProxxiedDexie extends Dexie {
     CalibrationHarnessLocalState,
     [string, string, string]
   >;
+  mpcCalibrationCacheBindings!: Table<MpcCalibrationCacheBindingRecord, string>;
+  mpcCalibrationHydrationStaging!: Table<MpcCalibrationHydrationStagingRecord, string>;
   fsAccessHandles!: Table<FsAccessHandleRecord, string>;
 
   // Persistent custom image storage (content-addressed)
@@ -709,6 +740,12 @@ export class ProxxiedDexie extends Dexie {
     this.version(23).stores({
       mpcCalibrationSyncStates:
         "&[ownerId+harnessId+connectionId], ownerId, harnessId, connectionId, updatedAt",
+    });
+    // Version 24: bind global harness tables to their authenticated physical
+    // owner and keep downloaded binary staging outside canonical tables.
+    this.version(24).stores({
+      mpcCalibrationCacheBindings: "&id, ownerId, harnessId, connectionId, updatedAt",
+      mpcCalibrationHydrationStaging: "&id, operationId, ownerId, harnessId, connectionId, assetId",
     });
   }
 }

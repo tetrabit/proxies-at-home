@@ -4,6 +4,7 @@ import Dexie from "dexie";
 import { describe, expect, it } from "vitest";
 import { ProxxiedDexie } from "./db";
 import type { CardOption } from "@/types";
+import { validateCalibrationHarnessLocalState } from "../../shared/calibrationHarnessLocalState";
 
 const cardsV21Schema =
   "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id";
@@ -157,6 +158,92 @@ describe("ProxxiedDexie v23 calibration sync state migration", () => {
     expect(await blobBytes(restoredAsset!.blob)).toEqual(Array.from(assetBytes));
     expect(restoredAsset!.blob.type).toBe("image/png");
     expect(await reopened.table("mpcCalibrationSyncStates").count()).toBe(0);
+    reopened.close();
+  });
+});
+
+describe("ProxxiedDexie v24 calibration cache support", () => {
+  it("upgrades a real v23 predecessor without altering complete C1, harness, or unrelated records", async () => {
+    const databaseName = `calibration-cache-v24-${crypto.randomUUID()}`;
+    const v23 = new Dexie(databaseName);
+    v23.version(22).stores({
+      cards: `${cardsV21Schema}, [projectId+order]`,
+      images: "&id, refCount, displayDpi, displayBleedWidth, exportDpi, exportBleedWidth",
+      cardbacks: "&id", settings: "&id", imageCache: "&url, cachedAt",
+      cardMetadataCache: "id, name, set, number, oracle_id, scryfall_id, cachedAt",
+      effectCache: "&key, cachedAt", mpcSearchCache: "&[query+cardType], cachedAt",
+      projects: "&id, shareId, lastOpenedAt", userPreferences: "&id", user_images: "&hash",
+      mpcCalibrationDatasets: "&id, updatedAt", mpcCalibrationCases: "&id, datasetId, updatedAt",
+      mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
+      mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId", fsAccessHandles: "&id, updatedAt",
+    });
+    v23.version(23).stores({
+      mpcCalibrationSyncStates: "&[ownerId+harnessId+connectionId], ownerId, harnessId, connectionId, updatedAt",
+    });
+    const assetBytes = new Uint8Array([1, 2, 3, 4]);
+    const predecessorSnapshot = {
+      version: 1 as const, retainedRoot: { unknown: ["root"] },
+      datasets: [{ id: "dataset", name: "Dataset", targetCaseCount: 1, createdAt: 1, updatedAt: 2, version: 1, retained: { dataset: true } }],
+      cases: [{ id: "case", datasetId: "dataset", createdAt: 3, updatedAt: 4, source: { name: "Card" }, candidates: [], retained: { case: true } }],
+      assets: [{ id: "asset", datasetId: "dataset", caseId: "case", role: "source" as const, mimeType: "image/png", createdAt: 5, hash: "legacy", sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a", byteLength: 4, retained: { asset: true } }],
+      runs: [{ id: "run", datasetId: "dataset", algorithmId: "algorithm", algorithmLabel: "Algorithm", createdAt: 6, summary: { totalCases: 0, matchedCases: 0, mismatchedCases: 0, accuracy: 0 }, results: [], retained: { run: true } }],
+    };
+    const syncState = {
+      formatVersion: 1 as const,
+      ownerId: "owner", harnessId: "harness", connectionId: "connection", updatedAt: 7,
+      dirtyGeneration: 5, sentGeneration: 4, acknowledgedGeneration: 3,
+      base: { revision: 7, snapshot: structuredClone(predecessorSnapshot) },
+      queued: { generation: 5, snapshot: { ...structuredClone(predecessorSnapshot), queuedSentinel: true } },
+      inFlight: { generation: 4, expectedBaseRevision: 7, snapshot: { ...structuredClone(predecessorSnapshot), inFlightSentinel: true } },
+      lastAcknowledgement: {
+        generation: 3, expectedBaseRevision: 6, snapshot: structuredClone(predecessorSnapshot),
+        base: { revision: 7, snapshot: structuredClone(predecessorSnapshot) },
+      },
+    };
+    validateCalibrationHarnessLocalState(syncState);
+    await v23.open();
+    expect(v23.verno).toBe(23);
+    await Promise.all([
+      v23.table("cards").add(createCard("card", "project", 3)), v23.table("images").add({ id: "image", refCount: 1, retained: true }),
+      v23.table("cardbacks").add({ id: "cardback", retained: true }), v23.table("settings").add({ id: "settings", value: { sentinel: true } }),
+      v23.table("imageCache").add({ url: "cache", cachedAt: 1, retained: true }), v23.table("cardMetadataCache").add({ id: "metadata", name: "n", set: "s", number: "1", cachedAt: 1, data: {}, retained: true }),
+      v23.table("effectCache").add({ key: "effect", cachedAt: 1, retained: true }), v23.table("mpcSearchCache").add({ query: "q", cardType: "CARD", cachedAt: 1, retained: true }),
+      v23.table("projects").add({ id: "project", lastOpenedAt: 1, retained: true }), v23.table("userPreferences").add({ id: "default", retained: true }),
+      v23.table("user_images").add({ hash: "hash", retained: true }), v23.table("fsAccessHandles").add({ id: "handle", updatedAt: 1, retained: true }),
+      v23.table("mpcCalibrationDatasets").add(predecessorSnapshot.datasets[0]), v23.table("mpcCalibrationCases").add(predecessorSnapshot.cases[0]),
+      v23.table("mpcCalibrationAssets").add({ ...predecessorSnapshot.assets[0], blob: new NodeBlob([assetBytes], { type: "image/png" }) }),
+      v23.table("mpcCalibrationRuns").add(predecessorSnapshot.runs[0]), v23.table("mpcCalibrationSyncStates").add(syncState),
+    ]);
+    const predecessorRows = new Map<string, unknown[]>();
+    const predecessorIndexes = new Map<string, { primary: string; indexes: string[] }>();
+    for (const table of v23.tables) {
+      predecessorRows.set(table.name, await table.toArray());
+      predecessorIndexes.set(table.name, { primary: table.schema.primKey.src, indexes: table.schema.indexes.map(index => index.src).sort() });
+    }
+    v23.close();
+
+    const upgraded = new ProxxiedDexie(databaseName);
+    await upgraded.open();
+    expect(upgraded.verno).toBe(24);
+    expect(upgraded.tables.map((table) => table.name)).toEqual(expect.arrayContaining(["mpcCalibrationCacheBindings", "mpcCalibrationHydrationStaging"]));
+    expect(await Promise.all([upgraded.mpcCalibrationCacheBindings.count(), upgraded.mpcCalibrationHydrationStaging.count()])).toEqual([0, 0]);
+    upgraded.close();
+
+    const reopened = new ProxxiedDexie(databaseName);
+    await reopened.open();
+    for (const [name, rows] of predecessorRows) {
+      expect(await reopened.table(name).toArray(), `${name} predecessor records`).toEqual(rows);
+      const schema = reopened.table(name).schema;
+      expect({ primary: schema.primKey.src, indexes: schema.indexes.map(index => index.src).sort() }, `${name} predecessor indexes`).toEqual(predecessorIndexes.get(name));
+    }
+    expect(await Promise.all(["cards", "images", "cardbacks", "settings", "imageCache", "cardMetadataCache", "effectCache", "mpcSearchCache", "projects", "userPreferences", "user_images", "fsAccessHandles", "mpcCalibrationDatasets", "mpcCalibrationCases", "mpcCalibrationAssets", "mpcCalibrationRuns", "mpcCalibrationSyncStates"].map(table => reopened.table(table).count()))).toEqual(Array(17).fill(1));
+    expect(await reopened.mpcCalibrationSyncStates.get(["owner", "harness", "connection"])).toEqual(syncState);
+    expect(await reopened.table("settings").get("settings")).toEqual({ id: "settings", value: { sentinel: true } });
+    const restoredAsset = await reopened.mpcCalibrationAssets.get("asset");
+    expect(restoredAsset).toMatchObject({ ...predecessorSnapshot.assets[0], blob: expect.any(Blob) });
+    expect(await blobBytes(restoredAsset!.blob)).toEqual([...assetBytes]);
+    expect(restoredAsset!.blob.type).toBe("image/png");
+    expect(await Promise.all([reopened.mpcCalibrationCacheBindings.count(), reopened.mpcCalibrationHydrationStaging.count()])).toEqual([0, 0]);
     reopened.close();
   });
 });
