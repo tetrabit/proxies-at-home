@@ -7,7 +7,7 @@ services:
       - PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration
       - PRINTER_CALIBRATION_PYTHON=/opt/printer-calibration-venv/bin/python
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     volumes:
       - server-data:/app/server/data
 
@@ -18,7 +18,7 @@ services:
     depends_on:
       - server
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
 
 volumes:
   server-data:
