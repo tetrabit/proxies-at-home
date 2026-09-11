@@ -10,12 +10,38 @@ import {
   validateCalibrationHarnessSnapshot,
 } from '../../../shared/calibrationHarness.js';
 
+import {
+  createCalibrationHarnessBlobStore,
+} from './calibrationHarnessBlobs.js';
+
+export interface CalibrationHarnessAssetWriter {
+  /** Writes only to the owner captured by this active batch operation. */
+  put(sha256: string, data: Uint8Array): {
+    sha256: string;
+    byteLength: number;
+    inserted: boolean;
+  };
+}
+
+export type CalibrationHarnessAssetProducer = (blobs: CalibrationHarnessAssetWriter) => unknown;
+
 export interface CalibrationHarnessStore {
   publish(
     ownerId: string,
     harnessId: string,
     expectedRevision: number | null,
     snapshot: CalibrationHarnessSnapshot,
+  ): CalibrationHarnessRevision;
+  /**
+   * Publishes immutable owner-scoped blobs and the next snapshot under one
+   * top-level IMMEDIATE transaction. The producer must complete synchronously.
+   */
+  publishWithAssets(
+    ownerId: string,
+    harnessId: string,
+    expectedRevision: number | null,
+    snapshot: CalibrationHarnessSnapshot,
+    produceAssets: CalibrationHarnessAssetProducer,
   ): CalibrationHarnessRevision;
   getCurrent(ownerId: string, harnessId: string): CalibrationHarnessRevision | null;
   getRevision(ownerId: string, harnessId: string, revision: number): CalibrationHarnessRevision | null;
@@ -188,33 +214,65 @@ export function createCalibrationHarnessStore(
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  const publish = database.transaction((
+  const blobStore = createCalibrationHarnessBlobStore(database);
+
+  const publishAtomically = database.transaction((
     ownerId: string,
     harnessId: string,
     expectedRevision: number | null,
     snapshotJson: string,
     snapshotDigest: string,
+    produceAssets: CalibrationHarnessAssetProducer,
   ): CalibrationHarnessRevision => {
     options.onPublishProgress?.('after-write-authority');
     const currentRow = selectCurrent.get(ownerId, harnessId) as CurrentRow | undefined;
     options.onPublishProgress?.('after-current-read');
-    const now = Date.now();
 
-    if (currentRow === undefined) {
-      if (expectedRevision !== null) {
-        throw revisionPrecondition(expectedRevision, null);
+    const current = currentRow === undefined ? null : readCurrent(currentRow);
+    if (current === null) {
+      if (expectedRevision !== null) throw revisionPrecondition(expectedRevision, null);
+    } else {
+      if (expectedRevision === null || expectedRevision !== current.revision) {
+        throw revisionPrecondition(expectedRevision, current.revision);
       }
+      if (current.revision >= Number.MAX_SAFE_INTEGER) {
+        throw new Error('Calibration harness revision cannot be incremented safely');
+      }
+    }
+
+    let active = true;
+    const writer: CalibrationHarnessAssetWriter = Object.freeze({
+      put(sha256: string, data: Uint8Array) {
+        if (!active) {
+          throw new Error('Calibration harness asset batch write capability is no longer active');
+        }
+        return blobStore.put(ownerId, sha256, data);
+      },
+    });
+    let produced: unknown;
+    try {
+      produced = produceAssets(writer);
+    } finally {
+      // Expire captured authority before examining a returned value or unwinding.
+      active = false;
+    }
+    if (produced !== undefined) {
+      if (
+        produced !== null
+        && (typeof produced === 'object' || typeof produced === 'function')
+        && typeof (produced as { then?: unknown }).then === 'function'
+      ) {
+        // Observe a rejected async continuation after revocation so it cannot leak an unhandled rejection.
+        void Promise.resolve(produced).catch(() => undefined);
+      }
+      throw new Error('Calibration harness asset batch producer must return undefined and complete synchronously');
+    }
+
+    const now = Date.now();
+    if (current === null) {
       insertCurrent.run(ownerId, harnessId, 1, snapshotJson, now);
       insertRevision.run(ownerId, harnessId, 1, snapshotJson, snapshotDigest, now);
       return { revision: 1, snapshot: readSnapshot(snapshotJson, 'published snapshot') };
-    }
-
-    const current = readCurrent(currentRow);
-    if (expectedRevision === null || expectedRevision !== current.revision) {
-      throw revisionPrecondition(expectedRevision, current.revision);
-    }
-    if (current.revision >= Number.MAX_SAFE_INTEGER) {
-      throw new Error('Calibration harness revision cannot be incremented safely');
     }
 
     const revision = current.revision + 1;
@@ -226,19 +284,34 @@ export function createCalibrationHarnessStore(
     return { revision, snapshot: readSnapshot(snapshotJson, 'published snapshot') };
   }).immediate;
 
+  function publishWithAssets(
+    ownerId: string,
+    harnessId: string,
+    expectedRevision: number | null,
+    snapshot: CalibrationHarnessSnapshot,
+    produceAssets: CalibrationHarnessAssetProducer,
+  ): CalibrationHarnessRevision {
+    assertScopedIdentifier(ownerId, 'owner ID');
+    assertScopedIdentifier(harnessId, 'ID');
+    assertExpectedRevision(expectedRevision);
+    if (typeof produceAssets !== 'function') {
+      throw new TypeError('Calibration harness asset batch producer must be a function');
+    }
+    const validated = validateCalibrationHarnessSnapshot(snapshot);
+    const snapshotJson = canonicalHarnessJson(validated);
+    if (database.inTransaction) {
+      throw new Error('Calibration harness publish requires a top-level SQLite connection outside a caller transaction');
+    }
+    options.onPublishProgress?.('before-write-authority');
+    return publishAtomically(ownerId, harnessId, expectedRevision, snapshotJson, digest(snapshotJson), produceAssets);
+  }
+
   return {
     publish(ownerId, harnessId, expectedRevision, snapshot) {
-      assertScopedIdentifier(ownerId, 'owner ID');
-      assertScopedIdentifier(harnessId, 'ID');
-      assertExpectedRevision(expectedRevision);
-      const validated = validateCalibrationHarnessSnapshot(snapshot);
-      const snapshotJson = canonicalHarnessJson(validated);
-      if (database.inTransaction) {
-        throw new Error('Calibration harness publish requires a top-level SQLite connection outside a caller transaction');
-      }
-      options.onPublishProgress?.('before-write-authority');
-      return publish(ownerId, harnessId, expectedRevision, snapshotJson, digest(snapshotJson));
+      return publishWithAssets(ownerId, harnessId, expectedRevision, snapshot, () => undefined);
     },
+
+    publishWithAssets,
 
     getCurrent(ownerId, harnessId) {
       assertScopedIdentifier(ownerId, 'owner ID');

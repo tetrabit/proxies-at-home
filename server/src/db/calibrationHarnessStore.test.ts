@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -10,6 +11,7 @@ import {
   type CalibrationHarnessSnapshot,
 } from '../../../shared/calibrationHarness.js';
 import * as storeModule from './calibrationHarnessStore.js';
+import type { CalibrationHarnessAssetProducer, CalibrationHarnessAssetWriter } from './calibrationHarnessStore.js';
 import { initializeCalibrationHarnessSchema } from './calibrationHarnessSchema.js';
 import { openNativeDatabase } from './openNativeDatabase.js';
 import { createCalibrationHarnessFixtureProvider } from '../testUtils/calibrationHarnessFixtures.js';
@@ -22,6 +24,13 @@ interface CalibrationHarnessStore {
     harnessId: string,
     expectedRevision: number | null,
     snapshot: CalibrationHarnessSnapshot,
+  ): { revision: number; snapshot: CalibrationHarnessSnapshot };
+  publishWithAssets(
+    ownerId: string,
+    harnessId: string,
+    expectedRevision: number | null,
+    snapshot: CalibrationHarnessSnapshot,
+    produceAssets: CalibrationHarnessAssetProducer,
   ): { revision: number; snapshot: CalibrationHarnessSnapshot };
   getCurrent(ownerId: string, harnessId: string): { revision: number; snapshot: CalibrationHarnessSnapshot } | null;
   getRevision(
@@ -337,6 +346,165 @@ describe('createCalibrationHarnessStore', () => {
       })();
       expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
     } finally {
+      database.close();
+    }
+  });
+
+  it('checks a populated destination precondition before invoking an asset producer', () => {
+    const database = createExclusiveDatabase();
+    try {
+      const store = createStore(database);
+      store.publish('owner-a', 'harness-a', null, snapshot('existing'));
+      let producerCalls = 0;
+
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('replacement'), () => {
+        producerCalls += 1;
+        throw new Error('producer must not run');
+      })).toThrow(storeModule.CalibrationHarnessRevisionPreconditionError);
+      expect(producerCalls).toBe(0);
+      expect(store.getCurrent('owner-a', 'harness-a')).toEqual({ revision: 1, snapshot: snapshot('existing') });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('revokes the owner-bound writer after its synchronous batch completes', () => {
+    const database = createExclusiveDatabase();
+    try {
+      const store = createStore(database);
+      const bytes = Buffer.from('owner-bound capability', 'utf8');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      let retained: CalibrationHarnessAssetWriter | undefined;
+
+      expect(store.publishWithAssets('owner-a', 'harness-a', null, snapshot('scoped'), (writer) => {
+        retained = writer;
+        expect(writer.put(sha256, bytes)).toEqual({ sha256, byteLength: bytes.byteLength, inserted: true });
+      }).revision).toBe(1);
+      expect(() => retained!.put(sha256, bytes)).toThrow(/expired|active/i);
+      database.transaction(() => {
+        expect(() => retained!.put(sha256, bytes)).toThrow(/expired|active/i);
+      })();
+      expect(database.prepare('SELECT owner_id, sha256, data FROM mpc_harness_blobs').all())
+        .toEqual([{ owner_id: 'owner-a', sha256, data: bytes }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('revokes a captured writer before a rejected async continuation can run', async () => {
+    const database = createExclusiveDatabase();
+    try {
+      const store = createStore(database);
+      const bytes = Buffer.from('delayed capability write', 'utf8');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const producer: CalibrationHarnessAssetProducer = async (writer) => {
+        await Promise.resolve();
+        writer.put(sha256, bytes);
+      };
+
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('async-delayed'), producer))
+        .toThrow(/return undefined.*synchronously/i);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_blobs').get()).toEqual({ count: 0 });
+      expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it('owns immediate authority for a synchronous asset batch and rolls back its blob with failed history', () => {
+    const database = createExclusiveDatabase();
+    try {
+      const store = createStore(database);
+      const data = Buffer.from('atomic import blob', 'utf8');
+      const sha256 = createHash('sha256').update(data).digest('hex');
+
+      database.transaction(() => {
+        expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('nested-batch'), () => undefined))
+          .toThrow(/top-level SQLite connection/i);
+      })();
+      expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
+
+      database.exec(`
+        CREATE TRIGGER reject_first_harness_revision
+        BEFORE INSERT ON mpc_harness_revisions
+        WHEN NEW.owner_id = 'owner-a' AND NEW.harness_id = 'harness-a' AND NEW.revision = 1
+        BEGIN
+          SELECT RAISE(ABORT, 'forced atomic batch history failure');
+        END;
+      `);
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('atomic-batch'), (blobs) => {
+        expect(blobs.put(sha256, data)).toMatchObject({ inserted: true, byteLength: data.byteLength });
+      })).toThrow(/forced atomic batch history failure/i);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_blobs').get()).toEqual({ count: 0 });
+      expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
+      expect(store.getRevision('owner-a', 'harness-a', 1)).toBeNull();
+
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('async-batch'), async () => undefined))
+        .toThrow(/synchronous/i);
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_blobs').get()).toEqual({ count: 0 });
+      expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it('expires owner-bound writers after producer and history failure, even inside later unrelated transactions', () => {
+    const database = createExclusiveDatabase();
+    try {
+      const store = createStore(database);
+      const producerBytes = Buffer.from('producer failure blob', 'utf8');
+      const producerSha = createHash('sha256').update(producerBytes).digest('hex');
+      let producerWriter: CalibrationHarnessAssetWriter | undefined;
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('producer-failure'), (writer) => {
+        producerWriter = writer;
+        expect(Object.keys(writer)).toEqual(['put']);
+        expect(writer.put.bind({})(producerSha, producerBytes)).toMatchObject({ inserted: true, sha256: producerSha });
+        throw new Error('forced producer failure');
+      })).toThrow(/forced producer failure/i);
+      database.transaction(() => {
+        expect(() => producerWriter!.put(producerSha, producerBytes)).toThrow(/no longer active/i);
+      })();
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_blobs').get()).toEqual({ count: 0 });
+
+      database.exec(`
+        CREATE TRIGGER reject_history_after_writer_expiry_test
+        BEFORE INSERT ON mpc_harness_revisions
+        WHEN NEW.owner_id = 'owner-a' AND NEW.harness_id = 'harness-a' AND NEW.revision = 1
+        BEGIN SELECT RAISE(ABORT, 'forced history failure after blob'); END;
+      `);
+      const historyBytes = Buffer.from('history failure blob', 'utf8');
+      const historySha = createHash('sha256').update(historyBytes).digest('hex');
+      let historyWriter: CalibrationHarnessAssetWriter | undefined;
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('history-failure'), (writer) => {
+        historyWriter = writer;
+        expect(writer.put(historySha, historyBytes)).toMatchObject({ inserted: true, sha256: historySha });
+      })).toThrow(/forced history failure after blob/i);
+      database.transaction(() => {
+        expect(() => historyWriter!.put(historySha, historyBytes)).toThrow(/no longer active/i);
+      })();
+      expect(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_blobs').get()).toEqual({ count: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('observes a rejected returned promise after revocation without an unhandled rejection', async () => {
+    const database = createExclusiveDatabase();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const store = createStore(database);
+      const rejected = Promise.reject(new Error('deliberately rejected producer result'));
+      expect(() => store.publishWithAssets('owner-a', 'harness-a', null, snapshot('rejected-return'), () => rejected))
+        .toThrow(/complete synchronously/i);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(store.getCurrent('owner-a', 'harness-a')).toBeNull();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
       database.close();
     }
   });
