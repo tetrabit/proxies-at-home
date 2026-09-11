@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import path from "path";
-import { randomUUID } from "crypto";
 import { pathToFileURL } from "url";
+import { createCalibrationHarnessFixtureProvider } from "../server/src/testUtils/calibrationHarnessFixtures.js";
 
 let readyCallback: (() => Promise<void>) | undefined;
 const updaterHandlers = new Map<string, (...args: unknown[]) => void>();
@@ -14,11 +14,9 @@ const processListenerEvents = [
   "unhandledRejection",
 ] as const;
 type ProcessListenerEvent = (typeof processListenerEvents)[number];
-const lifecycleFixtureRunDirectory = path.resolve(
-  process.cwd(),
-  ".review-artifacts",
-  `electron-async-settings-${randomUUID()}`
-);
+const lifecycleFixtureProvider = createCalibrationHarnessFixtureProvider({
+  parentName: "electron-async-settings",
+});
 let lifecycleFixtureDirectory = "";
 let processListenerBaseline = new Map<ProcessListenerEvent, Function[]>();
 
@@ -46,6 +44,9 @@ const ipcMainMock = {
       ipcHandlers.set(channel, callback);
     }
   ),
+  removeHandler: vi.fn((channel: string) => {
+    ipcHandlers.delete(channel);
+  }),
 };
 
 const nativeThemeMock = { themeSource: "system" };
@@ -164,13 +165,7 @@ function createBeforeQuitEvent() {
 
 describe("electron main lifecycle", () => {
   beforeEach(async () => {
-    await fs.promises.mkdir(lifecycleFixtureRunDirectory, { recursive: true });
-    lifecycleFixtureDirectory = await fs.promises.mkdtemp(
-      path.join(
-        lifecycleFixtureRunDirectory,
-        `electron-settings-fixture-${randomUUID()}-`
-      )
-    );
+    lifecycleFixtureDirectory = lifecycleFixtureProvider.createInvocationRoot();
     processListenerBaseline = new Map(
       processListenerEvents.map(
         (event): [ProcessListenerEvent, Function[]] => [
@@ -218,6 +213,7 @@ describe("electron main lifecycle", () => {
       "get-server-url",
       "get-private-api-bootstrap",
       "get-microservice-url",
+      "calibration-harness:execute",
       "get-app-version",
       "get-update-channel",
       "set-update-channel",
@@ -870,7 +866,8 @@ describe("electron main lifecycle", () => {
     const initialQuit = createBeforeQuitEvent();
     appHandlers.get("before-quit")?.(initialQuit);
     expect(initialQuit.preventDefault).toHaveBeenCalledOnce();
-    expect(microservice.stop).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(microservice.stop).toHaveBeenCalledOnce());
+    expect(ipcMainMock.removeHandler).toHaveBeenCalledWith("calibration-harness:execute");
 
     const repeatedQuit = createBeforeQuitEvent();
     appHandlers.get("before-quit")?.(repeatedQuit);
@@ -899,7 +896,7 @@ describe("electron main lifecycle", () => {
     expect(ipcHandlers.get("install-update")?.()).toBe("installed");
     expect(autoUpdaterMock.quitAndInstall).toHaveBeenCalledOnce();
     expect(updaterQuit.preventDefault).toHaveBeenCalledOnce();
-    expect(microservice.stop).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(microservice.stop).toHaveBeenCalledOnce());
 
     const repeatedQuit = createBeforeQuitEvent();
     appHandlers.get("before-quit")?.(repeatedQuit);
@@ -1000,7 +997,7 @@ describe("electron main lifecycle", () => {
     const beforeQuit = createBeforeQuitEvent();
     await appHandlers.get("before-quit")?.(beforeQuit);
     expect(beforeQuit.preventDefault).toHaveBeenCalledOnce();
-    expect(microservice.stop).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(microservice.stop).toHaveBeenCalledOnce());
   });
 
   it("writes crash details through global process handlers", async () => {

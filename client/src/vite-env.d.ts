@@ -44,6 +44,9 @@ interface Window {
   electronAPI?: {
     serverUrl: () => Promise<string>;
     getPrivateApiBootstrap?: () => Promise<{ baseUrl: string; bearer: string }>;
+    calibrationHarnessExecute?: (
+      operation: import('../../shared/calibrationHarnessIpc').CalibrationHarnessIpcOperation
+    ) => Promise<import('../../shared/calibrationHarnessIpc').CalibrationHarnessIpcResult>;
     loadMpcPreferences?: () => Promise<import('@/types').MpcPreferenceFixture | null>;
     saveMpcPreferences?: (
       fixture: import('@/types').MpcPreferenceFixture

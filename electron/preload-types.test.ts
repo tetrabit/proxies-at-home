@@ -9,6 +9,10 @@ it('lets renderer subscribers retain typed disposer functions', () => {
     export function subscribe(api: NonNullable<Window['electronAPI']>) {
       const updateDisposer: () => void = api.onUpdateStatus(() => {});
       const aboutDisposer: () => void = api.onShowAbout(() => {});
+      const execute = api.calibrationHarnessExecute;
+      if (execute) {
+        void execute({ kind: 'getSession' }).then(result => result.ok ? result.value : result.error.code);
+      }
       return [updateDisposer, aboutDisposer];
     }
   `;

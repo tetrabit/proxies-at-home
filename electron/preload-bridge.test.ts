@@ -9,6 +9,7 @@ const ipcRenderer = { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() };
 const originalLoad = Module._load;
 const preloadPath = fileURLToPath(new URL('./preload.cts', import.meta.url));
 const expectedMethods = [
+  'calibrationHarnessExecute',
   'checkForUpdates',
   'downloadUpdate',
   'fetchMoxfieldDeck',

@@ -1,4 +1,5 @@
 import type { MpcPreferenceFixture } from './mpc-preferences.js';
+import type { CalibrationHarnessIpcOperation, CalibrationHarnessIpcResult } from '../shared/calibrationHarnessIpc.js';
 
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -28,6 +29,8 @@ function createElectronApi(renderer: IpcRendererLike) {
     serverUrl: () => renderer.invoke('get-server-url') as Promise<string>,
     getPrivateApiBootstrap: () =>
       renderer.invoke('get-private-api-bootstrap') as Promise<PrivateApiBootstrap>,
+    calibrationHarnessExecute: (operation: CalibrationHarnessIpcOperation) =>
+      renderer.invoke('calibration-harness:execute', operation) as Promise<CalibrationHarnessIpcResult>,
     loadMpcPreferences: () =>
       renderer.invoke('mpc-preferences:load') as Promise<MpcPreferenceFixture | null>,
     saveMpcPreferences: (fixture: MpcPreferenceFixture) =>

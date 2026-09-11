@@ -51,6 +51,14 @@ describe('preload', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, 'mpc-preferences:save', fixture);
   });
 
+  it('routes calibration commands only to the fixed IPC channel', async () => {
+    const invoke = vi.fn(async () => undefined);
+    const api = createElectronApi({ invoke, on: vi.fn(), removeListener: vi.fn() });
+    const operation = { kind: 'getSession' } as const;
+    await api.calibrationHarnessExecute(operation);
+    expect(invoke).toHaveBeenCalledWith('calibration-harness:execute', operation);
+  });
+
   it('routes every exposed bridge method to the expected IPC channel', async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();

@@ -6,10 +6,9 @@
         "esModuleInterop": true,
         "strict": true,
         "skipLibCheck": true,
-        "incremental": true,
-        "tsBuildInfoFile": "./.tsbuildinfo/tsconfig.tsbuildinfo",
-        "outDir": "dist",
-        "rootDir": ".",
+        "incremental": false,
+        "noEmit": true,
+        "rootDir": "..",
         "declaration": false,
         "resolveJsonModule": true
     },
@@ -17,7 +16,9 @@
         "main.ts",
         "preload.cts",
         "preload-api.ts",
-        "mpc-preferences.ts"
+        "mpc-preferences.ts",
+        "calibration-harness-ipc.ts",
+        "../shared/calibrationHarnessIpc.ts"
     ],
     "exclude": [
         "node_modules",

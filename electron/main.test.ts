@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import type { MpcPreferenceFixture } from "../shared/types.js";
+import { createCalibrationHarnessFixtureProvider } from "../server/src/testUtils/calibrationHarnessFixtures.js";
 
 const appMock = {
   getPath: vi.fn((name: string) =>
@@ -61,6 +61,14 @@ vi.mock("./microservice-manager.js", () => ({
   MicroserviceManager: class {},
 }));
 
+const fixtureProvider = createCalibrationHarnessFixtureProvider({
+  parentName: "electron-main-test-fixtures",
+});
+
+async function fixtureDirectory(): Promise<string> {
+  return fixtureProvider.createInvocationRoot();
+}
+
 const fixture: MpcPreferenceFixture = {
   version: 1,
   exportedAt: "2026-04-18T12:00:00.000Z",
@@ -85,16 +93,14 @@ describe("electron MPC preference helpers", () => {
 
   it("returns null when no preference file exists", async () => {
     const { loadMpcPreferencesFromDisk } = await import("./main.ts");
-    const missingFile = path.join(os.tmpdir(), `missing-${Date.now()}.json`);
+    const missingFile = path.join(await fixtureDirectory(), "missing.json");
 
     await expect(loadMpcPreferencesFromDisk(missingFile)).resolves.toBeNull();
   });
 
   it("throws when the preference file contains malformed JSON", async () => {
     const { loadMpcPreferencesFromDisk } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-invalid-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const filePath = path.join(tempDirectory, "mpc-preferences.user.json");
     await fs.promises.writeFile(filePath, "{bad json", "utf8");
 
@@ -102,14 +108,11 @@ describe("electron MPC preference helpers", () => {
       "[Electron] Failed to load MPC preferences:"
     );
 
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("writes pretty-printed JSON with a trailing newline", async () => {
     const { saveMpcPreferencesToDisk } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-save-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const filePath = path.join(tempDirectory, "mpc-preferences.user.json");
 
     await saveMpcPreferencesToDisk(fixture, filePath);
@@ -118,14 +121,11 @@ describe("electron MPC preference helpers", () => {
     expect(payload.endsWith("\n")).toBe(true);
     expect(JSON.parse(payload)).toEqual(fixture);
 
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("rejects malformed preference fixture shapes with specific errors", async () => {
     const { saveMpcPreferencesToDisk } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-validation-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const filePath = path.join(tempDirectory, "mpc-preferences.user.json");
     const baseCase = {
       source: { name: "Card", set: "ABC", collectorNumber: "1" },
@@ -259,14 +259,11 @@ describe("electron MPC preference helpers", () => {
     const payload = JSON.parse(await fs.promises.readFile(filePath, "utf8"));
     expect(payload.cases[0].comparisonHints.fullCard.id).toBe(1);
 
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("loads valid preference cases without comparison hints and wraps non-Error read failures", async () => {
     const { loadMpcPreferencesFromDisk } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-no-hints-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const filePath = path.join(tempDirectory, "mpc-preferences.user.json");
     const fixtureWithoutHints = {
       version: 1,
@@ -310,14 +307,11 @@ describe("electron MPC preference helpers", () => {
     );
 
     readSpy.mockRestore();
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("cleans up temporary preference writes when atomic rename fails", async () => {
     const { saveMpcPreferencesToDisk } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-rename-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const filePath = path.join(tempDirectory, "mpc-preferences.user.json");
     const renameSpy = vi
       .spyOn(fs.promises, "rename")
@@ -335,14 +329,11 @@ describe("electron MPC preference helpers", () => {
 
     renameSpy.mockRestore();
     unlinkSpy.mockRestore();
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("executes registered preference IPC handlers", async () => {
     const { registerMpcPreferenceIpcHandlers } = await import("./main.ts");
-    const tempDirectory = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), "electron-pref-ipc-")
-    );
+    const tempDirectory = await fixtureDirectory();
     const ipc = { handle: vi.fn() };
     const appLike = { getPath: vi.fn(() => tempDirectory) };
 
@@ -358,7 +349,6 @@ describe("electron MPC preference helpers", () => {
     await saveHandler({}, fixture);
     await expect(loadHandler()).resolves.toEqual(fixture);
 
-    await fs.promises.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it("registers load and save IPC handlers", async () => {

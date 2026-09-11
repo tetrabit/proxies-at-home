@@ -21,6 +21,7 @@ import {
   MicroserviceManager,
 } from "./microservice-manager.js";
 import { registerMicroserviceQuitGate } from "./quit-gate.js";
+import { registerCalibrationHarnessIpcHandlers } from "./calibration-harness-ipc.js";
 
 export const electronMainRuntime = {
   importServerModule(serverScript: string): Promise<Record<string, unknown>> {
@@ -370,6 +371,7 @@ let serverPort = 3001; // Default port, will be updated if server starts success
 let microserviceManager: MicroserviceManager | null = null;
 let microservicePort = 8080;
 let desktopPrivateBootstrap: { baseUrl: string; bearer: string } | null = null;
+let disposeCalibrationHarnessIpc: (() => Promise<void>) | null = null;
 type DesktopServiceReadiness = "starting" | "ready" | "failed";
 let desktopServiceReadiness: DesktopServiceReadiness = "starting";
 
@@ -660,6 +662,15 @@ app.whenReady().then(async () => {
     assertDesktopServicesReady();
     return `http://localhost:${microservicePort}`;
   });
+  if (disposeCalibrationHarnessIpc !== null) {
+    await disposeCalibrationHarnessIpc();
+  }
+  disposeCalibrationHarnessIpc = registerCalibrationHarnessIpcHandlers({
+    ipcMain,
+    getMainWebContents: () => mainWindow?.webContents ?? null,
+    expectedRendererUrl: getExpectedRendererUrl,
+    configPath: () => path.join(app.getPath("userData"), "calibration-harness.connection.json"),
+  });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -871,7 +882,12 @@ app.on("window-all-closed", () => {
 
 registerMicroserviceQuitGate(
   app,
-  () => microserviceManager?.stop() ?? Promise.resolve(),
+  async () => {
+    const dispose = disposeCalibrationHarnessIpc;
+    disposeCalibrationHarnessIpc = null;
+    await dispose?.();
+    return microserviceManager?.stop() ?? Promise.resolve();
+  },
   {
     logger: (message, error) => {
       if (error === undefined) {

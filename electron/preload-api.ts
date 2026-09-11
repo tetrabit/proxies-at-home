@@ -1,4 +1,5 @@
 import type { MpcPreferenceFixture } from './mpc-preferences.js';
+import type { CalibrationHarnessIpcOperation, CalibrationHarnessIpcResult } from '../shared/calibrationHarnessIpc.js';
 
 // Retained as a compatibility-test helper; the sandboxed preload must use its inline copy.
 
@@ -27,6 +28,8 @@ export function createElectronApi(ipcRenderer: IpcRendererLike) {
     serverUrl: () => ipcRenderer.invoke('get-server-url') as Promise<string>,
     getPrivateApiBootstrap: () =>
       ipcRenderer.invoke('get-private-api-bootstrap') as Promise<PrivateApiBootstrap>,
+    calibrationHarnessExecute: (operation: CalibrationHarnessIpcOperation) =>
+      ipcRenderer.invoke('calibration-harness:execute', operation) as Promise<CalibrationHarnessIpcResult>,
     loadMpcPreferences: () =>
       ipcRenderer.invoke('mpc-preferences:load') as Promise<MpcPreferenceFixture | null>,
     saveMpcPreferences: (fixture: MpcPreferenceFixture) =>
