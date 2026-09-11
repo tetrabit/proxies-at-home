@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import type { CardOption, PrintInfo } from "@/types";
+import type { CalibrationHarnessLocalState } from "../../shared/calibrationHarnessLocalState";
 
 // Image source types for explicit tracking
 export type ImageSource = "mpc" | "scryfall" | "custom" | "cardback";
@@ -384,6 +385,10 @@ export class ProxxiedDexie extends Dexie {
   mpcCalibrationCases!: Table<MpcCalibrationCaseRecord, string>;
   mpcCalibrationAssets!: Table<MpcCalibrationAssetRecord, string>;
   mpcCalibrationRuns!: Table<MpcCalibrationRunRecord, string>;
+  mpcCalibrationSyncStates!: Table<
+    CalibrationHarnessLocalState,
+    [string, string, string]
+  >;
   fsAccessHandles!: Table<FsAccessHandleRecord, string>;
 
   // Persistent custom image storage (content-addressed)
@@ -699,6 +704,11 @@ export class ProxxiedDexie extends Dexie {
       mpcCalibrationAssets: "&id, datasetId, caseId, candidateIdentifier, role",
       mpcCalibrationRuns: "&id, datasetId, createdAt, algorithmId",
       fsAccessHandles: "&id, updatedAt",
+    });
+    // Version 23: Add dedicated owner/harness/connection-scoped sync state.
+    this.version(23).stores({
+      mpcCalibrationSyncStates:
+        "&[ownerId+harnessId+connectionId], ownerId, harnessId, connectionId, updatedAt",
     });
   }
 }
