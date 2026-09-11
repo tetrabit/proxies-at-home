@@ -122,6 +122,29 @@ function throwIfAborted(signal: AbortSignal): void {
         : new DOMException('The operation was aborted.', 'AbortError');
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+    if (typeof error === 'string' && error) return error;
+    return error instanceof Error && error.message ? error.message : fallback;
+}
+
+async function setOwnedPlaceholderLookupError(
+    uuids: string[],
+    projectId: string | undefined,
+    lookupError: string,
+    signal: AbortSignal,
+): Promise<void> {
+    await db.transaction('rw', db.cards, async () => {
+        for (const uuid of uuids) {
+            throwIfAborted(signal);
+            const card = await db.cards.get(uuid);
+            // A clear/project switch may have removed and recreated a card with the same
+            // UUID. Never write an error into that replacement, or over a resolved card.
+            if (!card || (projectId !== undefined && card.projectId !== projectId) || card.imageId) continue;
+            await db.cards.update(uuid, { lookupError });
+        }
+    });
+}
+
 export async function streamCards(options: StreamCardsOptions): Promise<StreamCardsResult> {
     const { cardInfos, language, importType, signal, artSource, onProgress, onFirstCard, onComplete, projectId } = options;
 
@@ -170,32 +193,53 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
         const { info, instances } = entry;
         const imageUrl = getMpcAutofillImageUrl(info.mpcIdentifier!);
-        const imageId = await addRemoteImage([imageUrl], instances.length);
+        try {
+            const imageId = await addRemoteImage([imageUrl], instances.length);
+            throwIfAborted(signal);
 
-        const cardsToAdd = instances.map(instance => createCardOption({
-            name: instance.name,
-            scryfall_id: instance.scryfallId,
-            oracle_id: instance.oracleId,
-            tokenAddedFrom: instance.tokenAddedFrom,
-            lang: language,
-            imageId,
-            hasBuiltInBleed: true,
-            needsEnrichment: true,
-            category: instance.category,
-            // For MPC cards, merge darken-off defaults with any existing overrides
-            overrides: instance.overrides
-                ? { darkenMode: 'none' as const, darkenUseGlobalSettings: false, ...instance.overrides }
-                : { darkenMode: 'none' as const, darkenUseGlobalSettings: false },
-            projectId,
-        },
-            instance.order
-        ));
+            const cardsToAdd = instances.map(instance => createCardOption({
+                name: instance.name,
+                scryfall_id: instance.scryfallId,
+                oracle_id: instance.oracleId,
+                tokenAddedFrom: instance.tokenAddedFrom,
+                lang: language,
+                imageId,
+                hasBuiltInBleed: true,
+                needsEnrichment: true,
+                category: instance.category,
+                // For MPC cards, merge darken-off defaults with any existing overrides
+                overrides: instance.overrides
+                    ? { darkenMode: 'none' as const, darkenUseGlobalSettings: false, ...instance.overrides }
+                    : { darkenMode: 'none' as const, darkenUseGlobalSettings: false },
+                projectId,
+            },
+                instance.order
+            ));
 
-        const added = await undoableAddCards(cardsToAdd, { /* no startOrder - using explicit orders */ });
-        cardsAdded += added.length;
-        addedCardUuids.push(...added.map(c => c.uuid));
-        /* v8 ignore next -- later direct-MPC batches skip the first-card notification. @preserve */
-        if (cardsAdded === added.length) onFirstCard?.();
+            const added = await undoableAddCards(cardsToAdd, { /* no startOrder - using explicit orders */ });
+            throwIfAborted(signal);
+            cardsAdded += added.length;
+            addedCardUuids.push(...added.map(c => c.uuid));
+            /* v8 ignore next -- later direct-MPC batches skip the first-card notification. @preserve */
+            if (cardsAdded === added.length) onFirstCard?.();
+        } catch (error) {
+            throwIfAborted(signal);
+            const errorCards = instances.map(instance => createCardOption({
+                name: instance.name,
+                scryfall_id: instance.scryfallId,
+                oracle_id: instance.oracleId,
+                tokenAddedFrom: instance.tokenAddedFrom,
+                lang: language,
+                imageId: undefined,
+                lookupError: errorMessage(error, 'Unable to load MPC image'),
+                projectId,
+            }, instance.order));
+            const added = await addCards(errorCards, undefined);
+            throwIfAborted(signal);
+            cardsAdded += added.length;
+            addedCardUuids.push(...added.map(c => c.uuid));
+            if (cardsAdded === added.length) onFirstCard?.();
+        }
 
         // Remove from quantityByKey so it's not processed again
         quantityByKey.delete(cardKey(info));
@@ -311,8 +355,6 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
             for (const match of matches) {
                 const key = cardKey(match.info);
-                matchedNames.add(key);
-
                 const placeholderUuids = placeholderUuidsByKey.get(key);
                 /* v8 ignore next -- every matched MPC info comes from the placeholder map built in the preceding loop. @preserve */
                 if (!placeholderUuids || placeholderUuids.length === 0) continue;
@@ -321,23 +363,34 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 /* v8 ignore next -- matched MPC entries are retained in quantityByKey until fallback partitioning completes. @preserve */
                 if (!entry) continue;
 
-                const imageId = await addRemoteImage([match.imageUrl], entry.instances.length);
-                const { name: cardName, hasBuiltInBleed, needsEnrichment } = parseMpcCardLogic(match.mpcCard);
+                try {
+                    const imageId = await addRemoteImage([match.imageUrl], entry.instances.length);
+                    throwIfAborted(signal);
+                    const { name: cardName, hasBuiltInBleed, needsEnrichment } = parseMpcCardLogic(match.mpcCard);
 
-                // Update all placeholder cards for this key with the MPC image
-                        await db.transaction('rw', db.cards, async () => {
-                            for (const uuid of placeholderUuids) {
-                                await db.cards.update(uuid, {
-                                    name: cardName,
-                                    scryfall_id: entry.info.scryfallId,
-                                    oracle_id: entry.info.oracleId,
-                                    tokenAddedFrom: entry.info.tokenAddedFrom,
-                                    imageId,
-                                    hasBuiltInBleed,
-                                    needsEnrichment,
-                        });
-                    }
-                });
+                    // Update all placeholder cards for this key with the MPC image.
+                    await db.transaction('rw', db.cards, async () => {
+                        for (const uuid of placeholderUuids) {
+                            throwIfAborted(signal);
+                            const card = await db.cards.get(uuid);
+                            if (!card || (projectId !== undefined && card.projectId !== projectId) || card.imageId) continue;
+                            await db.cards.update(uuid, {
+                                name: cardName,
+                                scryfall_id: entry.info.scryfallId,
+                                oracle_id: entry.info.oracleId,
+                                tokenAddedFrom: entry.info.tokenAddedFrom,
+                                imageId,
+                                lookupError: undefined,
+                                hasBuiltInBleed,
+                                needsEnrichment,
+                            });
+                        }
+                    });
+                    matchedNames.add(key);
+                } catch (error) {
+                    throwIfAborted(signal);
+                    console.warn('[streamCards] Failed to cache matched MPC image; falling back to Scryfall', error);
+                }
             }
 
             // Collect failed lookups for Scryfall fallback
@@ -387,43 +440,174 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
     let completedStreamChunks = 0;
     let completionSettled = false;
     let resolvePromise: () => void;
-    const completionPromise = new Promise<void>(resolve => { resolvePromise = resolve; });
+    let rejectPromise: (error: unknown) => void;
+    const completionPromise = new Promise<void>((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+    });
+    // Abort can arrive before the caller attaches its await; keep that expected
+    // rejection observed while preserving it for the import caller.
+    void completionPromise.catch(() => undefined);
+    const rejectCompletion = (error: unknown) => {
+        if (completionSettled) return;
+        completionSettled = true;
+        rejectPromise(error);
+    };
+    let abortActiveTransport: ((reason: unknown) => void) | undefined;
+    const abortHandler = () => {
+        abortActiveTransport?.(signal.reason);
+        rejectCompletion(
+            signal.reason instanceof Error
+                ? signal.reason
+                : new DOMException('The operation was aborted.', 'AbortError')
+        );
+    };
+    signal.addEventListener('abort', abortHandler, { once: true });
 
     const checkComplete = () => {
+        if (signal.aborted) {
+            abortHandler();
+            return;
+        }
         if (!completionSettled && completedStreamChunks === streamChunks.length && pendingOperations === 0) {
             completionSettled = true;
-            if (addedCardUuids.length > 0) {
-                createImportSession({
-                    totalCards: addedCardUuids.length,
-                    cardUuids: addedCardUuids,
-                    importType,
-                });
-                getCurrentSession()?.markFetchComplete();
-                useSettingsStore.getState().setSortBy("manual");
+            try {
+                if (addedCardUuids.length > 0) {
+                    createImportSession({
+                        totalCards: addedCardUuids.length,
+                        cardUuids: addedCardUuids,
+                        importType,
+                    });
+                    getCurrentSession()?.markFetchComplete();
+                    useSettingsStore.getState().setSortBy("manual");
+                }
+                onComplete?.();
+                resolvePromise();
+            } catch (error) {
+                rejectPromise(error);
             }
-            onComplete?.();
-            resolvePromise();
         }
     };
 
+    try {
     for (let chunkIndex = 0; chunkIndex < streamChunks.length; chunkIndex++) {
         throwIfAborted(signal);
         const chunk = streamChunks[chunkIndex];
         const progressOffset = chunkIndex * importRequestCardLimit;
         let chunkDone = false;
+        const settledKeys = new Set<string>();
+        let terminalSettlement: Promise<void> | undefined;
+        const transportController = new AbortController();
+        let acceptingMessages = true;
+        let messageChain: Promise<void> = Promise.resolve();
+        const enqueueMessage = (operation: () => Promise<void>) => {
+            messageChain = messageChain.then(operation);
+            // fetch-event-source invokes callbacks synchronously and does not await them.
+            // Observe failures here; the request path awaits the same chain below.
+            void messageChain.catch(() => undefined);
+        };
+        const abortTransport = (reason: unknown) => {
+            if (!transportController.signal.aborted) transportController.abort(reason);
+        };
+        abortActiveTransport = abortTransport;
+        const completeChunk = () => {
+            if (chunkDone || signal.aborted) return;
+            chunkDone = true;
+            completedStreamChunks++;
+            checkComplete();
+        };
+        const settleChunk = (cause: unknown) => {
+            if (terminalSettlement) return terminalSettlement;
+            const lookupError = errorMessage(cause, 'Card stream ended before completion');
+            terminalSettlement = (async () => {
+                if (signal.aborted) return;
+                for (const info of chunk) {
+                    if (signal.aborted || settledKeys.has(cardKey(info))) continue;
+                    const entry = quantityByKey.get(cardKey(info));
+                    const placeholderUuids = entry?.placeholderUuids;
+                    if (placeholderUuids?.length) {
+                        await setOwnedPlaceholderLookupError(placeholderUuids, projectId, lookupError, signal);
+                    } else {
+                        const instances = entry?.instances ?? [info];
+                        const errorCards = instances.map(instance => createCardOption({
+                            name: info.name,
+                            set: info.set,
+                            number: info.number,
+                            scryfall_id: info.scryfallId,
+                            oracle_id: info.oracleId,
+                            tokenAddedFrom: info.tokenAddedFrom,
+                            isUserUpload: false,
+                            imageId: undefined,
+                            lookupError,
+                            projectId,
+                        }, instance.order));
+                        throwIfAborted(signal);
+                        const added = await addCards(errorCards, undefined);
+                        throwIfAborted(signal);
+                        cardsAdded += added.length;
+                        addedCardUuids.push(...added.map(card => card.uuid));
+                        if (cardsAdded === added.length) onFirstCard?.();
+                    }
+                    settledKeys.add(cardKey(info));
+                }
+                completeChunk();
+            })();
+            terminalSettlement.catch(rejectCompletion);
+            return terminalSettlement;
+        };
+        const terminateFromHandler = async (cause: unknown) => {
+            acceptingMessages = false;
+            abortTransport(cause);
+            await settleChunk(cause);
+        };
 
-        await fetchEventSource(`${API_BASE}/api/stream/cards`, {
+        try {
+            await fetchEventSource(`${API_BASE}/api/stream/cards`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ cardQueries: chunk, language }),
-            signal,
+            signal: transportController.signal,
             onopen: async (res) => {
                 if (!res.ok) {
                     const errorText = await res.text();
                     throw new Error(`Failed to fetch cards: ${res.status} ${res.statusText} - ${errorText}`);
                 }
             },
-            onmessage: async (ev) => {
+            onclose: () => {
+                if (chunkDone || !acceptingMessages) return;
+                acceptingMessages = false;
+                abortTransport('Card stream closed before completion');
+                enqueueMessage(async () => { await settleChunk('Card stream closed before completion'); });
+            },
+            onerror: (error) => {
+                if (!acceptingMessages) throw error;
+                acceptingMessages = false;
+                abortTransport(error);
+                enqueueMessage(async () => { await settleChunk(error); });
+                throw error;
+            },
+            onmessage: (ev) => {
+                if (!acceptingMessages) return;
+                if (ev.event === "fatal-error") {
+                    let message = 'Card stream terminated unexpectedly';
+                    try {
+                        const data = JSON.parse(ev.data) as { message?: string };
+                        if (data.message) message = data.message;
+                    } catch {
+                        // Use the terminal fallback for malformed fatal events.
+                    }
+                    acceptingMessages = false;
+                    abortTransport(message);
+                    enqueueMessage(async () => { await settleChunk(message); });
+                    return;
+                }
+                if (ev.event === "done") {
+                    acceptingMessages = false;
+                    enqueueMessage(async () => { completeChunk(); });
+                    return;
+                }
+                enqueueMessage(async () => {
+                try {
             if (ev.event === "progress") {
                 const progress = JSON.parse(ev.data);
                 onProgress?.(
@@ -432,21 +616,26 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 );
             } else if (ev.event === "card-error") {
                 pendingOperations++;
+                try {
+                throwIfAborted(signal);
                 const { query, error } = JSON.parse(ev.data) as { query: CardInfo; error?: string };
-                const entry = quantityByKey.get(cardKey(query));
+                const queryKey = cardKey(query);
+                // A result already won this key. Server terminal/error callbacks can be
+                // delivered after it, but must not create a second outcome.
+                if (settledKeys.has(queryKey)) return;
+                const entry = quantityByKey.get(queryKey);
                 // quantity variable removed as it is now unused
                 const placeholderUuids = entry?.placeholderUuids;
 
                 if (placeholderUuids && placeholderUuids.length > 0) {
-                    // Update existing placeholder cards with error state
-                    await db.transaction('rw', db.cards, async () => {
-                        for (const uuid of placeholderUuids) {
-                            await db.cards.update(uuid, {
-                                /* v8 ignore next -- omitted card-error messages use the default lookup error. @preserve */
-                                lookupError: error || 'Card not found',
-                            });
-                        }
-                    });
+                    // Update existing placeholder cards with an error only while they are
+                    // still owned by this import's project and remain unresolved.
+                    await setOwnedPlaceholderLookupError(
+                        placeholderUuids,
+                        projectId,
+                        error || 'Card not found',
+                        signal,
+                    );
                 } else {
                     // No existing placeholders - add new error cards
                     const instances = entry?.instances ?? [query];
@@ -469,16 +658,20 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     /* v8 ignore next -- later card-error placeholders skip the first-card notification. @preserve */
                     if (cardsAdded === added.length) onFirstCard?.();
                 }
-
-                pendingOperations--;
-                checkComplete();
+                settledKeys.add(cardKey(query));
+                } catch (error) {
+                    await terminateFromHandler(error);
+                } finally {
+                    pendingOperations--;
+                    checkComplete();
+                }
             } else if (ev.event === "card-found") {
                 pendingOperations++;
+                try {
+                throwIfAborted(signal);
                 const card = JSON.parse(ev.data) as ScryfallCard;
 
                 if (!card?.name) {
-                    pendingOperations--;
-                    checkComplete();
                     return;
                 }
 
@@ -489,6 +682,11 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                 let entry = quantityByKey.get(exactKey)
                     || (setOnlyKey && quantityByKey.get(setOnlyKey))
                     || quantityByKey.get(nameOnlyKey);
+
+                const resultKey = entry ? cardKey(entry.info) : exactKey;
+                // Duplicate card-found events and a late card-error must not replace an
+                // outcome already persisted for this import key.
+                if (settledKeys.has(resultKey)) return;
 
                 const hasDfcBack = card.card_faces && card.card_faces.length > 1;
                 let isBackFaceImport = false;
@@ -544,6 +742,7 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                     isBackFaceImport,
                     projectId,
                 });
+                throwIfAborted(signal);
                 if (entry?.info.tokenAddedFrom?.length) {
                     for (const cardToAdd of cardsToAdd) {
                         cardToAdd.tokenAddedFrom = entry.info.tokenAddedFrom;
@@ -619,14 +818,22 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
 
                 /* v8 ignore next -- Scryfall conversion emits at least one front card for valid card-found payloads. @preserve */
                 if (cardsToAdd.length > 0) {
+                    throwIfAborted(signal);
                     if (placeholderUuids && placeholderUuids.length > 0) {
                         // Update existing placeholder cards with Scryfall data
                         const cardData = cardsToAdd[0]; // Get template from first card
+                        const resolvedPlaceholderUuids = new Set<string>();
                         await db.transaction('rw', db.cards, async () => {
                             for (const uuid of placeholderUuids) {
-                                await db.cards.update(uuid, {
+                                throwIfAborted(signal);
+                                const existing = await db.cards.get(uuid);
+                                // A clear/project switch may have recreated this UUID, and a
+                                // prior result may already have resolved it. Preserve both.
+                                if (!existing || (projectId !== undefined && existing.projectId !== projectId) || existing.imageId) continue;
+                                const updated = await db.cards.update(uuid, {
                                     name: cardData.name,
                                     imageId: cardData.imageId,
+                                    lookupError: undefined,
                                     set: cardData.set,
                                     number: cardData.number,
                                     scryfall_id: cardData.scryfall_id,
@@ -644,18 +851,24 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                                     hasBuiltInBleed: false, // Scryfall images don't have built-in bleed
                                     needsEnrichment: false,
                                 });
+                                if (updated) resolvedPlaceholderUuids.add(uuid);
                             }
                         });
 
                         // Handle DFC back cards for existing placeholders
                         if (backCardTasks.length > 0) {
-                            await createLinkedBackCardsBulk(
-                                backCardTasks.map((task, i) => ({
-                                    frontUuid: placeholderUuids[task.frontIndex] || placeholderUuids[i] || placeholderUuids[0],
+                            const resolvedBackTasks = backCardTasks.flatMap((task, i) => {
+                                const frontUuid = placeholderUuids[task.frontIndex] || placeholderUuids[i] || placeholderUuids[0];
+                                if (!resolvedPlaceholderUuids.has(frontUuid)) return [];
+                                return [{
+                                    frontUuid,
                                     backImageId: task.backImageId,
                                     backName: task.backName,
-                                }))
-                            );
+                                }];
+                            });
+                            if (resolvedBackTasks.length > 0) {
+                                await createLinkedBackCardsBulk(resolvedBackTasks);
+                            }
                         }
                     } else {
                         // No existing placeholders - add new cards for each instance
@@ -696,26 +909,49 @@ export async function streamCards(options: StreamCardsOptions): Promise<StreamCa
                         }
 
                         const added = await persistResolvedCards({ cardsToAdd: allFrontCards, backCardTasks: allBackTasks }, { /* no startOrder */ });
+                        throwIfAborted(signal);
                         cardsAdded += added.length;
                         addedCardUuids.push(...added.map(c => c.uuid));
                         /* v8 ignore next -- first-card notification for this path mirrors direct and placeholder import paths. @preserve */
                         if (cardsAdded === added.length) onFirstCard?.();
                     }
                 }
-                pendingOperations--;
-                checkComplete();
-                /* v8 ignore next -- non-card/progress/done SSE events are ignored by design. @preserve */
-                } else if (ev.event === "done" && !chunkDone) {
-                    chunkDone = true;
-                    completedStreamChunks++;
+                if (entry) settledKeys.add(cardKey(entry.info));
+                } catch (error) {
+                    await terminateFromHandler(error);
+                } finally {
+                    pendingOperations--;
                     checkComplete();
                 }
+                }
+                } catch (error) {
+                    await terminateFromHandler(error);
+                }
+                });
+            },
+            });
+            await messageChain;
+            if (!chunkDone) await settleChunk('Card stream closed before completion');
+        } catch (error) {
+            throwIfAborted(signal);
+            if (acceptingMessages) {
+                acceptingMessages = false;
+                abortTransport(error);
+                enqueueMessage(async () => { await settleChunk(error); });
             }
-        });
+            await messageChain;
+            if (!chunkDone) await settleChunk(error);
+        } finally {
+            if (abortActiveTransport === abortTransport) abortActiveTransport = undefined;
+        }
     }
 
-    await completionPromise;
-    return { addedCardUuids, totalCardsAdded: cardsAdded };
+        await completionPromise;
+        throwIfAborted(signal);
+        return { addedCardUuids, totalCardsAdded: cardsAdded };
+    } finally {
+        signal.removeEventListener('abort', abortHandler);
+    }
 }
 
 function createCardOption(

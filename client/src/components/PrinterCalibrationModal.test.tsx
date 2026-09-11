@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import { CalibrationApiUnavailableError } from "@/helpers/printerCalibrationApi";
+import { PrivateApiIdentityUnavailableError } from "@/helpers/privateApi";
 
 const mockGetPrinterProfiles = vi.hoisted(() => vi.fn());
 const mockGenerateCalibrationSheet = vi.hoisted(() => vi.fn());
@@ -93,6 +94,21 @@ describe("PrinterCalibrationModal", () => {
     });
   });
 
+  describe("when private calibration operations are unavailable on initial load", () => {
+    beforeEach(() => {
+      mockGetPrinterProfiles.mockRejectedValue(new PrivateApiIdentityUnavailableError());
+    });
+
+    it("keeps the static calibration-sheet download available while disabling private profile controls", async () => {
+      await renderOpen();
+
+      expect(screen.getByTestId("calibration-unavailable-banner")).toBeDefined();
+      const sheetButton = screen.getByText(/Download Calibration Sheet/i).closest("button") as HTMLButtonElement;
+      expect(sheetButton.disabled).toBe(false);
+      expect((screen.getByRole("combobox") as HTMLSelectElement).disabled).toBe(true);
+    });
+  });
+
   describe("when API is unavailable on initial load", () => {
     beforeEach(() => {
       mockGetPrinterProfiles.mockRejectedValue(unavailableError());
@@ -116,10 +132,10 @@ describe("PrinterCalibrationModal", () => {
       expect(banner.textContent).toMatch(/proxxied server/i);
     });
 
-    it("Download Calibration Sheet button is disabled", async () => {
+    it("Download Calibration Sheet button remains enabled because it is generated locally", async () => {
       await renderOpen();
       const btn = screen.getByText(/Download Calibration Sheet/i).closest("button") as HTMLButtonElement;
-      expect(btn.disabled).toBe(true);
+      expect(btn.disabled).toBe(false);
     });
 
     it("profile Select is disabled", async () => {
@@ -168,7 +184,7 @@ describe("PrinterCalibrationModal", () => {
       expect(mockShowErrorToast).toHaveBeenCalledOnce();
 
       const sheetBtn = screen.getByText(/Download Calibration Sheet/i).closest("button") as HTMLButtonElement;
-      expect(sheetBtn.disabled).toBe(true);
+      expect(sheetBtn.disabled).toBe(false);
     });
   });
 

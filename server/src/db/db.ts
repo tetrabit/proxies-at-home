@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { reconcileImageCacheMetadataSync } from './imageCacheMetadata.js';
+import { openNativeDatabase } from './openNativeDatabase.js';
 
 // Database file location (persists in server/data directory)
 const DATA_DIRECTORY = path.resolve(process.env.SERVER_DATA_DIR ?? path.join(process.cwd(), 'data'));
@@ -226,7 +227,7 @@ function runMigrations(database: Database.Database): void {
 export function initDatabase(): Database.Database {
   if (db) return db;
 
-  db = new Database(DB_PATH);
+  db = openNativeDatabase(DB_PATH);
 
   // Enable WAL mode for better concurrent read/write performance
   db.pragma('journal_mode = WAL');

@@ -132,23 +132,21 @@ describe("printerCalibrationApi – network error normalization", () => {
   });
 
   describe("generateCalibrationSheet", () => {
-    it("returns a Blob on success", async () => {
-      const blob = new Blob(["pdf-data"], { type: "application/pdf" });
-      mockFetch.mockResolvedValueOnce({ ok: true, blob: () => Promise.resolve(blob) } as unknown as Response);
-      await expect(generateCalibrationSheet()).resolves.toBe(blob);
+    it("creates a valid two-page US Letter PDF locally without private identity or network I/O", async () => {
+      vi.stubGlobal('electronAPI', undefined);
+
+      const blob = await generateCalibrationSheet();
+      const { PDFDocument } = await import('pdf-lib');
+      const pdf = await PDFDocument.load(await blob.arrayBuffer());
+      const [firstPage] = pdf.getPages();
+
+      expect(blob.type).toBe('application/pdf');
+      expect(pdf.getPageCount()).toBe(2);
+      expect(firstPage.getWidth()).toBeCloseTo(612);
+      expect(firstPage.getHeight()).toBeCloseTo(792);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("throws CalibrationApiUnavailableError on network failure", async () => {
-      mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-      await expect(generateCalibrationSheet()).rejects.toBeInstanceOf(CalibrationApiUnavailableError);
-    });
-
-    it("preserves server error on non-ok response", async () => {
-      mockFetch.mockResolvedValueOnce(makeErrorResponse(503, { error: "service unavailable" }));
-      const err = await generateCalibrationSheet().catch((e: unknown) => e);
-      expect(err).not.toBeInstanceOf(CalibrationApiUnavailableError);
-      expect((err as Error).message).toBe("service unavailable");
-    });
   });
 
   describe("applyCalibration", () => {

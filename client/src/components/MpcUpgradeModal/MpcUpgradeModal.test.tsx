@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 /* ------------------------------------------------------------------ */
 /*  vi.hoisted – mock values shared across mock factories              */
@@ -399,6 +399,10 @@ describe("MpcUpgradeModal", () => {
     mockModalState.cardUuid = null;
   });
 
+  afterEach(() => {
+    mockBuildLayerTabs.mockReset().mockReturnValue([]);
+  });
+
   /* ======================== RENDERING ======================== */
 
   it("renders nothing visible when closed", () => {
@@ -578,8 +582,8 @@ describe("MpcUpgradeModal", () => {
     releaseFirstPreferenceContext();
 
     await waitFor(() => {
-      expect(mockRankCandidates).toHaveBeenCalledTimes(1);
-      expect(mockRankCandidates).toHaveBeenCalledWith(
+      expect(mockRankCandidates).toHaveBeenCalledTimes(2);
+      expect(mockRankCandidates.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ candidates: [replacementCandidate] })
       );
     });
@@ -818,7 +822,8 @@ describe("MpcUpgradeModal", () => {
       "Resolved Card", // newName
       undefined, // previewImageUrls
       expect.any(Object), // cardMetadata
-      false // hasBuiltInBleed
+      false, // hasBuiltInBleed
+      expect.any(Function) // persistence ownership guard
     );
 
     // Modal closes after apply
@@ -1063,8 +1068,295 @@ describe("MpcUpgradeModal", () => {
       );
     });
     const unseenPreferenceScores =
-      mockRankCandidates.mock.calls[0]?.[0].unseenPreferenceScores;
+      mockRankCandidates.mock.calls.at(-1)?.[0].unseenPreferenceScores;
     expect(unseenPreferenceScores?.["visual-pick"]).toBeGreaterThan(4.2);
+  });
+
+  it("shows baseline candidates while the optional preference context is still building", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const mpcCard = makeMpcCard({ identifier: "baseline-before-preferences" });
+    const baseline = makeRankedCandidate(mpcCard, "name_dpi_fallback", "name");
+    let releasePreferenceContext!: () => void;
+    const pendingPreferenceContext = new Promise<{
+      calibrationCases: never[];
+      model: null;
+      profiles: Record<string, never>;
+    }>((resolve) => {
+      releasePreferenceContext = () =>
+        resolve({ calibrationCases: [], model: null, profiles: {} });
+    });
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([mpcCard]);
+    mockFilterByExactName.mockReturnValueOnce([mpcCard]);
+    mockListDefaultCalibrationCases.mockResolvedValueOnce([]);
+    mockGetSharedMpcPreferenceContext.mockReturnValueOnce(
+      pendingPreferenceContext
+    );
+    mockRankCandidates.mockResolvedValueOnce({
+      fullProcess: [baseline],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [baseline],
+      allMatches: [baseline],
+    });
+    mockBuildLayerTabs.mockReturnValue(
+      makeLayerTabs({ fullProcess: [baseline], fullCard: [baseline], allMatches: [baseline] })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledTimes(1);
+    });
+
+    try {
+      await waitFor(
+        () => {
+          expect(
+            screen.getAllByTestId("mpc-upgrade-recommendation-card")
+          ).toHaveLength(1);
+        },
+        { timeout: 250 }
+      );
+    } finally {
+      await act(async () => {
+        releasePreferenceContext();
+      });
+    }
+  });
+
+  it("moves to the first non-empty tab when preference refinement empties the active tab", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const baselineCard = makeMpcCard({ identifier: "baseline-full-card" });
+    const refinedCard = makeMpcCard({ identifier: "refined-full-process" });
+    const baseline = {
+      fullProcess: [makeRankedCandidate(baselineCard)],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [makeRankedCandidate(baselineCard)],
+      allMatches: [baselineCard],
+    };
+    const refined = {
+      fullProcess: [makeRankedCandidate(refinedCard)],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [refinedCard],
+    };
+    let releasePreferenceContext!: () => void;
+    const pendingPreferenceContext = new Promise<{
+      calibrationCases: never[];
+      model: {
+        bias: number;
+        sourceWeights: Record<string, number>;
+        tagWeights: Record<string, number>;
+        formatWeights: {
+          hasBracketSet: number;
+          hasParenText: number;
+          plainName: number;
+          dpi: number;
+        };
+        trainingCaseCount: number;
+      };
+      profiles: Record<string, never>;
+    }>((resolve) => {
+      releasePreferenceContext = () =>
+        resolve({
+          calibrationCases: [],
+          model: {
+            bias: 0,
+            sourceWeights: {},
+            tagWeights: {},
+            formatWeights: {
+              hasBracketSet: 0,
+              hasParenText: 0,
+              plainName: 0,
+              dpi: 0,
+            },
+            trainingCaseCount: 0,
+          },
+          profiles: {},
+        });
+    });
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([baselineCard]);
+    mockFilterByExactName.mockReturnValueOnce([baselineCard]);
+    mockGetSharedMpcPreferenceContext.mockReturnValueOnce(
+      pendingPreferenceContext
+    );
+    mockRankCandidates.mockResolvedValueOnce(baseline).mockResolvedValueOnce(refined);
+    mockBuildLayerTabs.mockImplementation((recommendations) =>
+      recommendations === baseline
+        ? makeLayerTabs({ fullProcess: baseline.fullProcess, fullCard: baseline.fullCard, allMatches: baseline.allMatches.map((card) => makeRankedCandidate(card)) })
+        : makeLayerTabs({ fullProcess: refined.fullProcess, allMatches: refined.allMatches.map((card) => makeRankedCandidate(card)) })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-fullCard")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId("tab-fullCard"));
+    expect(screen.getByTestId("tab-fullCard").getAttribute("data-active")).toBe("true");
+
+    await act(async () => {
+      releasePreferenceContext();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-fullProcess").getAttribute("data-active")).toBe("true");
+    });
+  });
+
+  it("keeps baseline recommendations displayed while preference refinement completes during apply", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const baselineCard = makeMpcCard({ identifier: "baseline-applying" });
+    const refinedCard = makeMpcCard({ identifier: "refined-applying" });
+    const baseline = {
+      fullProcess: [makeRankedCandidate(baselineCard)],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [baselineCard],
+    };
+    const refined = {
+      fullProcess: [makeRankedCandidate(refinedCard)],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [],
+      allMatches: [refinedCard],
+    };
+    let releasePreferenceContext!: () => void;
+    const pendingPreferenceContext = new Promise<{
+      calibrationCases: never[];
+      model: {
+        bias: number;
+        sourceWeights: Record<string, number>;
+        tagWeights: Record<string, number>;
+        formatWeights: { hasBracketSet: number; hasParenText: number; plainName: number; dpi: number };
+        trainingCaseCount: number;
+      };
+      profiles: Record<string, never>;
+    }>((resolve) => {
+      releasePreferenceContext = () =>
+        resolve({
+          calibrationCases: [],
+          model: {
+            bias: 0,
+            sourceWeights: {},
+            tagWeights: {},
+            formatWeights: { hasBracketSet: 0, hasParenText: 0, plainName: 0, dpi: 0 },
+            trainingCaseCount: 0,
+          },
+          profiles: {},
+        });
+    });
+    let resolveImport!: (value: Awaited<ReturnType<typeof mockImportOrchestratorResolve>>) => void;
+    const pendingImport = new Promise<Awaited<ReturnType<typeof mockImportOrchestratorResolve>>>((resolve) => {
+      resolveImport = resolve;
+    });
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([baselineCard]);
+    mockFilterByExactName.mockReturnValueOnce([baselineCard]);
+    mockGetSharedMpcPreferenceContext.mockReturnValueOnce(pendingPreferenceContext);
+    mockRankCandidates.mockResolvedValueOnce(baseline).mockResolvedValueOnce(refined);
+    mockBuildLayerTabs.mockImplementation((recommendations) =>
+      recommendations === baseline
+        ? makeLayerTabs({ fullProcess: baseline.fullProcess, allMatches: baseline.allMatches.map((card) => makeRankedCandidate(card)) })
+        : makeLayerTabs({ fullProcess: refined.fullProcess, allMatches: refined.allMatches.map((card) => makeRankedCandidate(card)) })
+    );
+    mockImportOrchestratorResolve.mockReturnValueOnce(pendingImport);
+
+    render(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-upgrade-candidate-id-baseline-applying")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId("mpc-upgrade-recommendation-card"));
+
+    await act(async () => {
+      releasePreferenceContext();
+    });
+
+    await waitFor(() => {
+      expect(mockRankCandidates).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("mpc-upgrade-candidate-id-baseline-applying")).toBeTruthy();
+      expect(screen.queryByTestId("mpc-upgrade-candidate-id-refined-applying")).toBeNull();
+    });
+
+    await act(async () => {
+      resolveImport({
+        cardsToAdd: [{ name: "Resolved Card", imageId: "resolved-image-id", hasBuiltInBleed: false, needsEnrichment: false, isToken: false }],
+        backCardTasks: [],
+      });
+    });
+  });
+
+  it("does not let an old apply completion mutate or close a reopened modal", async () => {
+    const secondCard = { ...TEST_CARD, uuid: "card-uuid-2", name: "Counterspell", imageId: "img-2" };
+    const firstMpcCard = makeMpcCard({ identifier: "first-session" });
+    const secondMpcCard = makeMpcCard({ identifier: "second-session" });
+    const firstRanked = {
+      fullProcess: [makeRankedCandidate(firstMpcCard)], exactPrinting: [], artMatch: [], fullCard: [], allMatches: [firstMpcCard],
+    };
+    const secondRanked = {
+      fullProcess: [makeRankedCandidate(secondMpcCard)], exactPrinting: [], artMatch: [], fullCard: [], allMatches: [secondMpcCard],
+    };
+    let resolveFirstImport!: (value: Awaited<ReturnType<typeof mockImportOrchestratorResolve>>) => void;
+    const firstImport = new Promise<Awaited<ReturnType<typeof mockImportOrchestratorResolve>>>((resolve) => {
+      resolveFirstImport = resolve;
+    });
+
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+    mockSearchMpcAutofill.mockResolvedValueOnce([firstMpcCard]).mockResolvedValueOnce([secondMpcCard]);
+    mockFilterByExactName.mockReturnValueOnce([firstMpcCard]).mockReturnValueOnce([secondMpcCard]);
+    mockRankCandidates.mockResolvedValueOnce(firstRanked).mockResolvedValueOnce(secondRanked);
+    mockBuildLayerTabs.mockImplementation((recommendations) =>
+      recommendations === firstRanked
+        ? makeLayerTabs({ fullProcess: firstRanked.fullProcess, allMatches: firstRanked.allMatches.map((card) => makeRankedCandidate(card)) })
+        : makeLayerTabs({ fullProcess: secondRanked.fullProcess, allMatches: secondRanked.allMatches.map((card) => makeRankedCandidate(card)) })
+    );
+    mockImportOrchestratorResolve.mockReturnValueOnce(firstImport);
+
+    const view = render(<MpcUpgradeModal />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-upgrade-candidate-id-first-session")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId("mpc-upgrade-recommendation-card"));
+
+    mockModalState.open = false;
+    mockModalState.card = null;
+    mockModalState.cardUuid = null;
+    view.rerender(<MpcUpgradeModal />);
+    mockModalState.open = true;
+    mockModalState.card = secondCard;
+    mockModalState.cardUuid = secondCard.uuid;
+    view.rerender(<MpcUpgradeModal />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-upgrade-candidate-id-second-session")).toBeTruthy();
+    });
+    await act(async () => {
+      resolveFirstImport({
+        cardsToAdd: [{ name: "Resolved Card", imageId: "resolved-image-id", hasBuiltInBleed: false, needsEnrichment: false, isToken: false }],
+        backCardTasks: [],
+      });
+    });
+
+    expect(mockChangeCardArtwork).not.toHaveBeenCalled();
+    expect(mockCloseModal).not.toHaveBeenCalled();
+    expect(screen.getByTestId("mpc-upgrade-candidate-id-second-session")).toBeTruthy();
   });
 
   it("closes a modal without cancelling its shared preference source build", async () => {
@@ -1174,7 +1466,7 @@ describe("MpcUpgradeModal", () => {
 
     expect(mockBuildSourceVisualProfiles).not.toHaveBeenCalled();
     expect(mockBuildVisualPreferenceScoreMap).not.toHaveBeenCalled();
-    expect(mockRankCandidates).not.toHaveBeenCalled();
+    expect(mockRankCandidates).toHaveBeenCalledTimes(1);
     expect(mockAddToast).not.toHaveBeenCalled();
   });
 

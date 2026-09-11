@@ -162,7 +162,10 @@ function PixiVirtualCanvasInner({
     const spritesRef = useRef<Map<string, SpriteData>>(new Map());
     const pageGraphicsRef = useRef<Map<number, Graphics>>(new Map());
     const updateCounterRef = useRef(0); // Track update calls to prevent race conditions
-    const renditionIdentityAdmissionRef = useRef(createRenditionIdentityAdmission());
+    // Admission is owned by a mount-effect generation, rather than the React
+    // component instance. Strict Mode replays mount cleanup/setup on the same
+    // instance, so a disposed admission must never be reused by the replay.
+    const renditionIdentityAdmissionRef = useRef<ReturnType<typeof createRenditionIdentityAdmission> | null>(null);
     const [isReady, setIsReady] = useState(false);
 
     // Store dimensions in ref for init effect to access
@@ -273,7 +276,8 @@ function PixiVirtualCanvasInner({
 
         const canvas = canvasRef.current;
         const sprites = spritesRef.current;
-        const renditionIdentityAdmission = renditionIdentityAdmissionRef.current;
+        const renditionIdentityAdmission = createRenditionIdentityAdmission();
+        renditionIdentityAdmissionRef.current = renditionIdentityAdmission;
         const pageGraphics = pageGraphicsRef.current;
         let unmounted = false;
 
@@ -299,6 +303,9 @@ function PixiVirtualCanvasInner({
             unmounted = true;
             updateCounterRef.current += 1;
             renditionIdentityAdmission.dispose();
+            if (renditionIdentityAdmissionRef.current === renditionIdentityAdmission) {
+                renditionIdentityAdmissionRef.current = null;
+            }
 
             try {
                 sprites.forEach((data) => {
@@ -580,6 +587,8 @@ function PixiVirtualCanvasInner({
         if (!isReady || !cardsContainerRef.current) return;
         const container = cardsContainerRef.current;
         const sprites = spritesRef.current;
+        const renditionIdentityAdmission = renditionIdentityAdmissionRef.current;
+        if (!renditionIdentityAdmission) return;
 
         // Increment counter to track this update call
         const thisUpdate = ++updateCounterRef.current;
@@ -663,11 +672,11 @@ function PixiVirtualCanvasInner({
                 let backRenditionIdentity: string | undefined;
                 try {
                     frontRenditionIdentity = imageBlob
-                        ? await renditionIdentityAdmissionRef.current.identify(imageBlob)
+                        ? await renditionIdentityAdmission.identify(imageBlob)
                         : 'placeholder';
                     if (isStale()) return;
                     backRenditionIdentity = backBlob
-                        ? await renditionIdentityAdmissionRef.current.identify(backBlob)
+                        ? await renditionIdentityAdmission.identify(backBlob)
                         : undefined;
                     if (isStale()) return;
                 } catch (e) {

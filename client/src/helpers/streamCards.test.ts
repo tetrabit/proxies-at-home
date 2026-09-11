@@ -43,6 +43,7 @@ vi.mock("@/db", () => ({
           toArray: vi.fn().mockResolvedValue([]),
         })),
       })),
+      get: vi.fn((uuid: string) => Promise.resolve({ uuid, projectId: "project-a" })),
       update: vi.fn().mockResolvedValue(1),
     },
     cardbacks: {
@@ -102,6 +103,7 @@ describe("streamCards", () => {
         toArray: vi.fn().mockResolvedValue([]),
       })),
     });
+    (db.cards.get as any).mockImplementation((uuid: string) => Promise.resolve({ uuid, projectId: "project-a" }));
     (db.transaction as any).mockImplementation(
       async (_mode: string, _table: unknown, callback: () => Promise<void>) =>
         callback()
@@ -239,7 +241,8 @@ describe("streamCards", () => {
     }
   });
 
-  it("should reject when the SSE connection opens with an error response", async () => {
+  it("settles the affected cards when the SSE connection opens with an error response", async () => {
+    (addCards as any).mockResolvedValue([{ uuid: "open-error" }]);
     (fetchEventSource as any).mockImplementation(
       async (_url: string, opts: any) => {
         await opts.onopen({
@@ -251,14 +254,18 @@ describe("streamCards", () => {
       }
     );
 
-    await expect(
-      streamCards({
-        cardInfos: [{ name: "Explosive Vegetation" }],
-        language: "en",
-        importType: "deck",
-        signal: new AbortController().signal,
-      })
-    ).rejects.toThrow("Failed to fetch cards: 500 Server Error - boom");
+    const result = await streamCards({
+      cardInfos: [{ name: "Explosive Vegetation" }],
+      language: "en",
+      importType: "deck",
+      signal: new AbortController().signal,
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ lookupError: "Failed to fetch cards: 500 Server Error - boom" })],
+      undefined,
+    );
+    expect(result).toEqual({ addedCardUuids: ["open-error"], totalCardsAdded: 1 });
   });
 
   it("should forward progress events and ignore malformed card-found payloads", async () => {
@@ -650,11 +657,39 @@ describe("streamCards", () => {
         needsEnrichment: false,
       })
     );
-    expect(db.cards.update).toHaveBeenCalledWith("placeholder-fallback", {
+    expect(db.cards.update).not.toHaveBeenCalledWith("placeholder-fallback", {
       lookupError: "Still missing",
     });
     expect(addCards).not.toHaveBeenCalled();
     expect(result.addedCardUuids).toEqual(["placeholder-fallback"]);
+  });
+
+  it("clears a retrying placeholder lookup error when Scryfall resolves it", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "retry-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (addRemoteImage as any).mockResolvedValue("retry-image");
+    (db.cards.get as any).mockResolvedValue({
+      uuid: "retry-placeholder",
+      projectId: "project-a",
+      lookupError: "previous failure",
+    });
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Retry Placeholder", imageUrls: ["http://retry"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Retry Placeholder" }], language: "en", importType: "deck",
+      signal: new AbortController().signal, artSource: "mpc", projectId: "project-a",
+    });
+
+    expect(db.cards.update).toHaveBeenCalledWith(
+      "retry-placeholder",
+      expect.objectContaining({ imageId: "retry-image", lookupError: undefined }),
+    );
   });
 
   it("leaves unmatched cards without a requested order for atomic append allocation", async () => {
@@ -855,6 +890,47 @@ describe("streamCards", () => {
     ]);
   });
 
+  it("only links DFC backs to MPC placeholders that its guarded front update resolved", async () => {
+    (undoableAddCards as any).mockResolvedValue([
+      { uuid: "foreign-placeholder" },
+      { uuid: "owned-placeholder" },
+    ]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (addRemoteImage as any)
+      .mockResolvedValueOnce("back-image")
+      .mockResolvedValueOnce("front-image");
+    (db.cards.get as any).mockImplementation((uuid: string) => Promise.resolve({
+      uuid,
+      projectId: uuid === "foreign-placeholder" ? "project-b" : "project-a",
+    }));
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({
+          name: "Guarded DFC",
+          imageUrls: ["http://front"],
+          layout: "transform",
+          card_faces: [
+            { name: "Guarded DFC", imageUrl: "http://front" },
+            { name: "Guarded Back", imageUrl: "http://back" },
+          ],
+        }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Guarded DFC", quantity: 2 }], language: "en", importType: "deck",
+      signal: new AbortController().signal, artSource: "mpc", projectId: "project-a",
+    });
+
+    expect(db.cards.update).toHaveBeenCalledWith("owned-placeholder", expect.objectContaining({ imageId: "front-image" }));
+    expect(db.cards.update).not.toHaveBeenCalledWith("foreign-placeholder", expect.anything());
+    expect(createLinkedBackCardsBulk).toHaveBeenCalledWith([
+      { frontUuid: "owned-placeholder", backImageId: "back-image", backName: "Guarded Back" },
+    ]);
+  });
+
   it("should leave built-in custom linked back IDs unfetched and use the default back name", async () => {
     (undoableAddCards as any).mockResolvedValue([{ uuid: "front-built-in" }]);
     (addRemoteImage as any).mockResolvedValue("front-built-in-image");
@@ -1006,7 +1082,7 @@ describe("streamCards", () => {
     await streamCards({
       cardInfos: [{ name: "Layout Back" }],
       language: "en",
-      importType: "deck",
+      importType: "scryfall",
       signal: new AbortController().signal,
     });
 
@@ -1054,7 +1130,7 @@ describe("streamCards", () => {
         },
       ],
       language: "en",
-      importType: "deck",
+      importType: "scryfall",
       signal: new AbortController().signal,
     });
 
@@ -1647,5 +1723,402 @@ describe("streamCards", () => {
 
     await expect(processing).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchEventSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles MPC placeholders when the stream closes without done", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "closed-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    let streamOptions: any;
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      streamOptions = opts;
+      opts.onclose();
+    });
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Closed Stream" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+      projectId: "project-a",
+    });
+
+    expect(streamOptions.onclose).toEqual(expect.any(Function));
+    expect(db.cards.update).toHaveBeenCalledWith(
+      "closed-placeholder",
+      { lookupError: "Card stream closed before completion" },
+    );
+    expect(result).toEqual({ addedCardUuids: ["closed-placeholder"], totalCardsAdded: 1 });
+  });
+
+  it("does not mark a replacement-project placeholder after stream termination", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "replacement-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (db.cards.get as any).mockResolvedValue({ uuid: "replacement-placeholder", projectId: "project-b" });
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onclose();
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Replacement Project" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+      projectId: "project-a",
+    });
+
+    expect(db.cards.update).not.toHaveBeenCalled();
+  });
+
+  it("settles unresolved placeholders on fatal stream events without replacing completed cards", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "fatal-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      await opts.onmessage({
+        event: "fatal-error",
+        data: JSON.stringify({ message: "deadline exceeded" }),
+      });
+    });
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Fatal Stream" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+      projectId: "project-a",
+    });
+
+    expect(db.cards.update).toHaveBeenCalledWith(
+      "fatal-placeholder",
+      { lookupError: "deadline exceeded" },
+    );
+    expect(result).toEqual({ addedCardUuids: ["fatal-placeholder"], totalCardsAdded: 1 });
+  });
+
+  it("throws from the fetch-event-source retry callback after an HTTP open failure", async () => {
+    (addCards as any).mockResolvedValue([{ uuid: "http-error" }]);
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      const response = {
+        ok: false,
+        status: 502,
+        statusText: "Bad Gateway",
+        text: async () => "upstream unavailable",
+      };
+      let openError: Error | undefined;
+      try {
+        await opts.onopen(response);
+      } catch (error) {
+        openError = error as Error;
+      }
+      expect(openError?.message).toBe("Failed to fetch cards: 502 Bad Gateway - upstream unavailable");
+      expect(() => opts.onerror(openError)).toThrow(openError);
+      throw openError;
+    });
+
+    const result = await streamCards({
+      cardInfos: [{ name: "HTTP Failure" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      projectId: "project-a",
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "HTTP Failure", lookupError: expect.stringContaining("502 Bad Gateway") })],
+      undefined,
+    );
+    expect(result).toEqual({ addedCardUuids: ["http-error"], totalCardsAdded: 1 });
+  });
+
+  it("settles a rejected asynchronous card handler instead of leaving completion pending", async () => {
+    (addRemoteImage as any).mockRejectedValue(new Error("image cache failed"));
+    (addCards as any).mockResolvedValue([{ uuid: "handler-error" }]);
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Handler Failure", imageUrls: ["http://image"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Handler Failure" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      projectId: "project-a",
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "Handler Failure", lookupError: "image cache failed" })],
+      undefined,
+    );
+    expect(result).toEqual({ addedCardUuids: ["handler-error"], totalCardsAdded: 1 });
+  });
+
+  it("does not write a stale asynchronous stream result after cancellation", async () => {
+    let releaseImage!: () => void;
+    let releaseStream!: () => void;
+    const imageStarted = new Promise<void>((resolve) => { releaseImage = resolve; });
+    const streamOpen = new Promise<void>((resolve) => { releaseStream = resolve; });
+    const controller = new AbortController();
+    (addRemoteImage as any).mockImplementation(() => imageStarted.then(() => "late-image"));
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "Cancelled Result", imageUrls: ["http://image"] }),
+      });
+      await streamOpen;
+    });
+
+    const processing = streamCards({
+      cardInfos: [{ name: "Cancelled Result" }],
+      language: "en",
+      importType: "scryfall",
+      signal: controller.signal,
+      projectId: "project-a",
+    });
+
+    await vi.waitFor(() => expect(addRemoteImage).toHaveBeenCalled());
+    controller.abort();
+    releaseImage();
+    releaseStream();
+
+    await expect(processing).rejects.toMatchObject({ name: "AbortError" });
+    expect(undoableAddCards).not.toHaveBeenCalled();
+    expect(addCards).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite an already resolved placeholder with a later card error", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "already-resolved" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (db.cards.get as any).mockResolvedValue({
+      uuid: "already-resolved",
+      projectId: "project-a",
+      imageId: "resolved-image",
+    });
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-error",
+        data: JSON.stringify({ query: { name: "Already Resolved" }, error: "late failure" }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Already Resolved" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+      projectId: "project-a",
+    });
+
+    expect(db.cards.update).not.toHaveBeenCalled();
+  });
+
+  it("falls back from a matched MPC image failure without leaving its placeholder unresolved", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "mpc-image-failure" }]);
+    (findBestMpcMatches as any).mockResolvedValue([{
+      info: { name: "MPC Image Failure" },
+      imageUrl: "http://mpc/image",
+      mpcCard: { name: "MPC Image Failure" },
+    }]);
+    (addRemoteImage as any)
+      .mockRejectedValueOnce(new Error("MPC image unavailable"))
+      .mockResolvedValueOnce("scryfall-fallback-image");
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({
+        event: "card-found",
+        data: JSON.stringify({ name: "MPC Image Failure", imageUrls: ["http://scryfall/image"] }),
+      });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "MPC Image Failure" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      artSource: "mpc",
+      projectId: "project-a",
+    });
+
+    expect(db.cards.update).toHaveBeenCalledWith(
+      "mpc-image-failure",
+      expect.objectContaining({ imageId: "scryfall-fallback-image" }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[streamCards] Failed to cache matched MPC image; falling back to Scryfall",
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("marks an explicit MPC image failure instead of rejecting the entire import", async () => {
+    (addRemoteImage as any).mockRejectedValue(new Error("MPC image unavailable"));
+    (addCards as any).mockResolvedValue([{ uuid: "explicit-mpc-error" }]);
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Explicit MPC Failure", mpcIdentifier: "mpc-failure" }],
+      language: "en",
+      importType: "scryfall",
+      signal: new AbortController().signal,
+      projectId: "project-a",
+    });
+
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "Explicit MPC Failure", lookupError: "MPC image unavailable" })],
+      undefined,
+    );
+    expect(result).toEqual({ addedCardUuids: ["explicit-mpc-error"], totalCardsAdded: 1 });
+  });
+
+  it("drains an admitted card-found before fatal settlement without adding a second outcome", async () => {
+    let releaseImage!: () => void;
+    let releaseStream!: () => void;
+    const imageStarted = new Promise<void>((resolve) => { releaseImage = resolve; });
+    const streamOpen = new Promise<void>((resolve) => { releaseStream = resolve; });
+    (addRemoteImage as any).mockImplementation(() => imageStarted.then(() => "found-image"));
+    (addCards as any).mockResolvedValue([]);
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "found-before-fatal" }]);
+    let streamOptions: any;
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      streamOptions = opts;
+      opts.onmessage({ event: "card-found", data: JSON.stringify({ name: "Found Before Fatal", imageUrls: ["http://image"] }) });
+      await streamOpen;
+    });
+
+    const processing = streamCards({
+      cardInfos: [{ name: "Found Before Fatal" }], language: "en", importType: "scryfall",
+      signal: new AbortController().signal, projectId: "project-a",
+    });
+    await vi.waitFor(() => expect(addRemoteImage).toHaveBeenCalled());
+    streamOptions.onmessage({ event: "fatal-error", data: JSON.stringify({ message: "late fatal" }) });
+    releaseImage();
+    releaseStream();
+
+    await expect(processing).resolves.toEqual({ addedCardUuids: ["found-before-fatal"], totalCardsAdded: 1 });
+    expect(undoableAddCards).toHaveBeenCalledTimes(1);
+    expect(addCards).not.toHaveBeenCalled();
+  });
+
+  it("aborts a fatal stream transport and ignores callbacks delivered after terminal failure", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "fatal-transport-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    let streamOptions: any;
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      streamOptions = opts;
+      opts.onmessage({ event: "fatal-error", data: JSON.stringify({ message: "transport fatal" }) });
+      opts.onmessage({ event: "card-error", data: JSON.stringify({ query: { name: "Fatal Transport" }, error: "late callback" }) });
+      if (!opts.signal.aborted) {
+        await new Promise<void>((resolve) => opts.signal.addEventListener("abort", resolve, { once: true }));
+      }
+    });
+
+    const result = await streamCards({
+      cardInfos: [{ name: "Fatal Transport" }], language: "en", importType: "scryfall",
+      signal: new AbortController().signal, artSource: "mpc", projectId: "project-a",
+    });
+
+    expect(streamOptions.signal.aborted).toBe(true);
+    expect(db.cards.update).toHaveBeenCalledTimes(1);
+    expect(db.cards.update).toHaveBeenCalledWith("fatal-transport-placeholder", { lookupError: "transport fatal" });
+    expect(result).toEqual({ addedCardUuids: ["fatal-transport-placeholder"], totalCardsAdded: 1 });
+  });
+
+  it("rejects when stream finalization callbacks throw instead of leaving completion pending", async () => {
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await expect(streamCards({
+      cardInfos: [{ name: "Finalizer Failure" }], language: "en", importType: "scryfall",
+      signal: new AbortController().signal,
+      onComplete: () => { throw new Error("finalizer failed"); },
+    })).rejects.toThrow("finalizer failed");
+  });
+
+  it("removes its caller abort listener when a chunk fails before final completion", async () => {
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    (addCards as any).mockRejectedValue(new Error("persistence failed"));
+    (fetchEventSource as any).mockImplementation(async () => {
+      throw new Error("stream failed");
+    });
+
+    await expect(streamCards({
+      cardInfos: [{ name: "Listener Cleanup" }], language: "en", importType: "scryfall",
+      signal: controller.signal,
+    })).rejects.toThrow("persistence failed");
+    expect(removeListener).toHaveBeenCalled();
+  });
+
+  it("does not overwrite a replacement-project MPC placeholder with successful Scryfall fallback", async () => {
+    (undoableAddCards as any).mockResolvedValue([{ uuid: "replacement-success-placeholder" }]);
+    (findBestMpcMatches as any).mockResolvedValue([]);
+    (addRemoteImage as any).mockResolvedValue("replacement-success-image");
+    (db.cards.get as any).mockResolvedValue({ uuid: "replacement-success-placeholder", projectId: "project-b" });
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      opts.onmessage({ event: "card-found", data: JSON.stringify({ name: "Replacement Success", imageUrls: ["http://image"] }) });
+      opts.onmessage({ event: "done", data: "" });
+    });
+
+    await streamCards({
+      cardInfos: [{ name: "Replacement Success" }], language: "en", importType: "scryfall",
+      signal: new AbortController().signal, artSource: "mpc", projectId: "project-a",
+    });
+
+    expect(db.cards.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "image cache failure",
+      event: { event: "card-found", data: JSON.stringify({ name: "Terminal Handler", imageUrls: ["http://image"] }) },
+      arrange: () => (addRemoteImage as any).mockRejectedValue(new Error("image cache failed")),
+      error: "image cache failed",
+    },
+    {
+      name: "card persistence failure",
+      event: { event: "card-found", data: JSON.stringify({ name: "Terminal Handler", imageUrls: ["http://image"] }) },
+      arrange: () => {
+        (addRemoteImage as any).mockResolvedValue("handler-image");
+        (undoableAddCards as any).mockRejectedValue(new Error("persistence failed"));
+      },
+      error: "persistence failed",
+    },
+    {
+      name: "malformed event JSON",
+      event: { event: "progress", data: "{" },
+      arrange: () => undefined,
+      error: expect.stringContaining("JSON"),
+    },
+  ])("aborts an open transport and ignores late messages after a $name", async ({ event, arrange, error }) => {
+    arrange();
+    (addCards as any).mockResolvedValue([{ uuid: "terminal-handler-error" }]);
+    let streamOptions: any;
+    (fetchEventSource as any).mockImplementation(async (_url: string, opts: any) => {
+      streamOptions = opts;
+      opts.onmessage(event);
+      await new Promise<void>((resolve) => opts.signal.addEventListener("abort", resolve, { once: true }));
+      opts.onmessage({ event: "card-error", data: JSON.stringify({ query: { name: "Terminal Handler" }, error: "late error" }) });
+    });
+
+    const processing = streamCards({
+      cardInfos: [{ name: "Terminal Handler" }], language: "en", importType: "scryfall",
+      signal: new AbortController().signal,
+    });
+
+    await vi.waitFor(() => expect(streamOptions.signal.aborted).toBe(true));
+    await expect(processing).resolves.toEqual({ addedCardUuids: ["terminal-handler-error"], totalCardsAdded: 1 });
+    expect(addCards).toHaveBeenCalledTimes(1);
+    expect(addCards).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "Terminal Handler", lookupError: error })],
+      undefined,
+    );
   });
 });

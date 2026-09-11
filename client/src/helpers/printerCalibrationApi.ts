@@ -145,13 +145,10 @@ export const calculateProfile = async (req: CalculateProfileRequest): Promise<Ca
 };
 
 export const generateCalibrationSheet = async (): Promise<Blob> => {
-  return withCalibrationNetworkGuard("generateCalibrationSheet", async () => {
-    const res = await privateFetch('/api/printer-calibration/sheet');
-    if (!res.ok) {
-      throw new Error(await readErrorMessage(res, 'Failed to generate calibration sheet'));
-    }
-    return res.blob();
-  });
+  // This template is static and contains no profile, upload, or account data.
+  // Keeping it local avoids weakening the private calibration route policy for web deployments.
+  const { createCalibrationSheet } = await import('./calibrationSheet');
+  return createCalibrationSheet();
 };
 
 export const applyCalibration = async (

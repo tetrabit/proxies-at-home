@@ -60,6 +60,12 @@ type SourceDebugInfo = {
   sourceImageUrl?: string;
 };
 
+type ApplyOperation = {
+  generation: number;
+  cardUuid: string;
+  projectId: string | null;
+};
+
 async function copyValue(text: string) {
   await navigator.clipboard.writeText(text);
 }
@@ -119,8 +125,22 @@ export function MpcUpgradeModal() {
 
   const abortRef = useRef<AbortController | null>(null);
   const applyingRef = useRef(false);
+  const modalGenerationRef = useRef(0);
+
+  const isCurrentApplyOperation = (operation: ApplyOperation) => {
+    const currentModal = useMpcUpgradeModalStore.getState();
+    return (
+      modalGenerationRef.current === operation.generation &&
+      currentModal.open &&
+      currentModal.cardUuid === operation.cardUuid &&
+      currentModal.card?.uuid === operation.cardUuid &&
+      useProjectStore.getState().currentProjectId === operation.projectId
+    );
+  };
 
   useEffect(() => {
+    modalGenerationRef.current += 1;
+    const sessionGeneration = modalGenerationRef.current;
     if (!open) {
       abortRef.current?.abort();
       abortRef.current = null;
@@ -151,7 +171,8 @@ export function MpcUpgradeModal() {
       card.number,
       card.imageId,
       card.uuid,
-      controller.signal
+      controller.signal,
+      sessionGeneration
     );
     return () => {
       controller.abort();
@@ -168,7 +189,8 @@ export function MpcUpgradeModal() {
     collectorNumber: string | undefined,
     imageId: string | undefined,
     sourceCardUuid: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    sessionGeneration: number
   ) {
     try {
       setPhase("searching");
@@ -234,78 +256,9 @@ export function MpcUpgradeModal() {
           getMpcCalibrationPreferenceProfile(preferenceInput),
           listDefaultMpcCalibrationCases(),
         ]);
-      const unseenPreferenceScores =
-        preferredIdentifier || preferenceProfile
-          ? undefined
-          : await (async () => {
-              const preferenceContext = await getSharedMpcPreferenceContext(
-                {
-                  dataset: {
-                    calibrationCases,
-                    version: MPC_CALIBRATION_DATASET_VERSION,
-                    content: {
-                      datasetName: "MPC Calibration Harness",
-                      selection: "default-calibration-datasets",
-                    },
-                  },
-                  source: {
-                    version: "bootstrap-preference-seeds-v1",
-                    content: {
-                      seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                      targetSources: ["Hathwellcrisping", "Chilli_Axe"],
-                    },
-                    loadExamples: () =>
-                      harvestSourcePreferenceCandidates(
-                        BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                        async (name) =>
-                          searchMpcAutofill(name, "CARD", true, {}),
-                        ["Hathwellcrisping", "Chilli_Axe"]
-                      ),
-                  },
-                  provider: {
-                    version: "mpc-autofill-card-exact-v1",
-                    content: { cardType: "CARD", exactName: true },
-                  },
-                  algorithm: {
-                    version: "mpc-preference-model-visual-profile-v1",
-                    content: {
-                      metadataScore: "buildMpcPreferenceScoreMap",
-                      visualProfile: "buildMpcSourceVisualProfiles",
-                      visualScore: "buildMpcVisualPreferenceScoreMap",
-                    },
-                    trainingOptions: {
-                      emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
-                    },
-                  },
-                },
-                signal
-              );
-              if (signal.aborted || !preferenceContext.model) {
-                return undefined;
-              }
-
-              const metadataScores = buildMpcPreferenceScoreMap(
-                preferenceContext.model,
-                exactMatches
-              );
-              const visualScores = await buildMpcVisualPreferenceScoreMap(
-                exactMatches,
-                preferenceContext.profiles,
-                preferenceContext.model,
-                signal
-              );
-              if (signal.aborted) return undefined;
-
-              return Object.fromEntries(
-                exactMatches.map((candidate) => [
-                  candidate.identifier,
-                  (metadataScores[candidate.identifier] ?? 0) +
-                    (visualScores[candidate.identifier] ?? 0),
-                ])
-              );
-            })();
-      if (signal.aborted) return;
-
+      // A slow first-run preference build must not make the usable MPC matches
+      // look empty. Publish the deterministic metadata/image ranking first,
+      // then refine it only if the optional preference context becomes ready.
       const ranked = await rankCandidates({
         candidates: exactMatches,
         set,
@@ -317,7 +270,6 @@ export function MpcUpgradeModal() {
         getMpcImageUrl: (id: string) => getMpcAutofillImageUrl(id, "small"),
         preferredIdentifier,
         preferenceProfile,
-        unseenPreferenceScores,
       });
       if (signal.aborted) return;
 
@@ -329,6 +281,109 @@ export function MpcUpgradeModal() {
       if (firstNonEmpty) {
         setActiveTab(firstNonEmpty.key);
       }
+
+      if (preferredIdentifier || preferenceProfile) return;
+
+      void (async () => {
+        try {
+          const preferenceContext = await getSharedMpcPreferenceContext(
+            {
+              dataset: {
+                calibrationCases,
+                version: MPC_CALIBRATION_DATASET_VERSION,
+                content: {
+                  datasetName: "MPC Calibration Harness",
+                  selection: "default-calibration-datasets",
+                },
+              },
+              source: {
+                version: "bootstrap-preference-seeds-v1",
+                content: {
+                  seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                  targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+                },
+                loadExamples: () =>
+                  harvestSourcePreferenceCandidates(
+                    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                    async (name) => searchMpcAutofill(name, "CARD", true, {}),
+                    ["Hathwellcrisping", "Chilli_Axe"]
+                  ),
+              },
+              provider: {
+                version: "mpc-autofill-card-exact-v1",
+                content: { cardType: "CARD", exactName: true },
+              },
+              algorithm: {
+                version: "mpc-preference-model-visual-profile-v1",
+                content: {
+                  metadataScore: "buildMpcPreferenceScoreMap",
+                  visualProfile: "buildMpcSourceVisualProfiles",
+                  visualScore: "buildMpcVisualPreferenceScoreMap",
+                },
+                trainingOptions: {
+                  emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+                },
+              },
+            },
+            signal
+          );
+          if (signal.aborted || !preferenceContext.model) return;
+
+          const metadataScores = buildMpcPreferenceScoreMap(
+            preferenceContext.model,
+            exactMatches
+          );
+          const visualScores = await buildMpcVisualPreferenceScoreMap(
+            exactMatches,
+            preferenceContext.profiles,
+            preferenceContext.model,
+            signal
+          );
+          if (signal.aborted) return;
+
+          const unseenPreferenceScores = Object.fromEntries(
+            exactMatches.map((candidate) => [
+              candidate.identifier,
+              (metadataScores[candidate.identifier] ?? 0) +
+                (visualScores[candidate.identifier] ?? 0),
+            ])
+          );
+          const preferenceRanked = await rankCandidates({
+            candidates: exactMatches,
+            set,
+            collectorNumber,
+            sourceImageUrl,
+            signal,
+            ssimCompare,
+            artMatchCompare,
+            getMpcImageUrl: (id: string) =>
+              getMpcAutofillImageUrl(id, "small"),
+            preferredIdentifier,
+            preferenceProfile,
+            unseenPreferenceScores,
+          });
+          if (
+            !signal.aborted &&
+            modalGenerationRef.current === sessionGeneration &&
+            !applyingRef.current
+          ) {
+            setRecommendations(preferenceRanked);
+            const tabs = buildLayerTabs(preferenceRanked);
+            setActiveTab((currentTab) => {
+              const current = tabs.find((tab) => tab.key === currentTab);
+              if (current?.count) return currentTab;
+              return tabs.find((tab) => tab.count > 0)?.key ?? currentTab;
+            });
+          }
+        } catch (err) {
+          if (!signal.aborted) {
+            console.warn(
+              "[MpcUpgradeModal] preference refinement unavailable; keeping baseline ranking:",
+              err
+            );
+          }
+        }
+      })();
     } catch (err) {
       if (signal.aborted) return;
       console.error("[MpcUpgradeModal] pipeline error:", err);
@@ -387,6 +442,14 @@ export function MpcUpgradeModal() {
     return null;
   }, [activeCandidates, activeTab]);
 
+  const handleClose = useCallback(() => {
+    modalGenerationRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    applyingRef.current = false;
+    closeModal();
+  }, [closeModal]);
+
   const handleCardClick = useCallback(
     async (mpcCard: MpcAutofillCard) => {
       // Snapshot store values at click time to avoid stale closures
@@ -394,6 +457,15 @@ export function MpcUpgradeModal() {
       const clickedCardUuid = useMpcUpgradeModalStore.getState().cardUuid;
 
       if (!clickedCard || applyingRef.current) return;
+
+      const projectId =
+        clickedCard.projectId || useProjectStore.getState().currentProjectId!;
+      const operation: ApplyOperation = {
+        generation: modalGenerationRef.current,
+        cardUuid: clickedCard.uuid,
+        projectId,
+      };
+      const shouldContinue = () => isCurrentApplyOperation(operation);
 
       applyingRef.current = true;
       setSelectedIdentifier(mpcCard.identifier);
@@ -409,12 +481,11 @@ export function MpcUpgradeModal() {
           isToken: clickedCard.isToken || false,
         };
 
-        const projectId =
-          clickedCard.projectId || useProjectStore.getState().currentProjectId!;
         const { cardsToAdd, backCardTasks } = await ImportOrchestrator.resolve(
           intent,
           projectId
         );
+        if (!shouldContinue()) return;
         const resolved = cardsToAdd[0];
 
         if (!resolved?.imageId) {
@@ -441,16 +512,20 @@ export function MpcUpgradeModal() {
             type_line: resolved.type_line,
             mana_cost: resolved.mana_cost,
           },
-          resolved.hasBuiltInBleed
+          resolved.hasBuiltInBleed,
+          shouldContinue
         );
+        if (!shouldContinue()) return;
 
         if (resolved.needsEnrichment && clickedCardUuid) {
           await db.cards.update(clickedCardUuid, { needsEnrichment: true });
+          if (!shouldContinue()) return;
         }
 
         if (backCardTasks && backCardTasks.length > 0 && clickedCardUuid) {
           const backTask = backCardTasks[0];
           const currentCard = await db.cards.get(clickedCardUuid);
+          if (!shouldContinue()) return;
 
           if (currentCard?.linkedBackId) {
             await db.cards.update(currentCard.linkedBackId, {
@@ -460,6 +535,7 @@ export function MpcUpgradeModal() {
                 (backTask as { hasBleed?: boolean }).hasBleed ?? false,
               usesDefaultCardback: false,
             });
+            if (!shouldContinue()) return;
           } else {
             await createLinkedBackCard(
               clickedCardUuid,
@@ -468,11 +544,14 @@ export function MpcUpgradeModal() {
               {
                 hasBuiltInBleed:
                   (backTask as { hasBleed?: boolean }).hasBleed ?? false,
+                shouldContinue,
               }
             );
+            if (!shouldContinue()) return;
           }
         }
 
+        if (!shouldContinue()) return;
         const toastId = useToastStore.getState().addToast({
           type: "success",
           message: "MPC art applied successfully",
@@ -480,9 +559,11 @@ export function MpcUpgradeModal() {
         });
         setTimeout(() => useToastStore.getState().removeToast(toastId), 2000);
 
+        if (!shouldContinue()) return;
         applyingRef.current = false;
         closeModal();
       } catch (err) {
+        if (!shouldContinue()) return;
         applyingRef.current = false;
         console.error("[MpcUpgradeModal] apply error:", err);
         setErrorMsg(
@@ -500,7 +581,7 @@ export function MpcUpgradeModal() {
   return (
     <Modal
       show={open}
-      onClose={closeModal}
+      onClose={handleClose}
       size="4xl"
       dismissible
       data-testid="mpc-upgrade-modal"

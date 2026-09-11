@@ -180,10 +180,13 @@ function normalizeCategory(boardType: string): string {
 /**
  * Extract cards from a Moxfield deck response.
  *
- * Includes ALL cards from the deck (mainboard, sideboard, maybeboard, etc.)
- * with normalized category names for filtering.
+ * Includes deck cards with normalized category names for filtering.
+ * Moxfield's Considering section (maybeboard) is excluded by default.
  */
-export function extractCardsFromDeck(deck: MoxfieldDeck): ParsedMoxfieldCard[] {
+export function extractCardsFromDeck(
+  deck: MoxfieldDeck,
+  { includeConsidering = false }: { includeConsidering?: boolean } = {},
+): ParsedMoxfieldCard[] {
   const cards: ParsedMoxfieldCard[] = [];
 
   const boards: Array<{
@@ -194,8 +197,11 @@ export function extractCardsFromDeck(deck: MoxfieldDeck): ParsedMoxfieldCard[] {
     { data: deck.companions || {}, category: "Companion" },
     { data: deck.mainboard || {}, category: "Mainboard" },
     { data: deck.sideboard || {}, category: "Sideboard" },
-    { data: deck.maybeboard || {}, category: "Maybeboard" },
   ];
+
+  if (includeConsidering) {
+    boards.push({ data: deck.maybeboard || {}, category: "Maybeboard" });
+  }
 
   for (const board of boards) {
     for (const deckCard of Object.values(board.data)) {

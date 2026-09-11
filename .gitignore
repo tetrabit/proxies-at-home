@@ -14,6 +14,7 @@ node_modules
 # Electron
 dist-app/
 electron/dist/
+electron/.native-cache/
 shared/scryfall-client/dist/
 .todos/
 
@@ -29,3 +30,21 @@ electron/.tsbuildinfo/
 .td-root
 .sisyphus/
 .playwright-mcp/
+
+# Repository-local runtime data and retained review artifacts
+/data/
+/.recovery/
+.review-artifacts/
+.review-artifacts-*.log
+/.td-qa-lifecycle.lock
+/.hermes/
+.flowbite-react/
+/server/proxxied-calibration-admission-*/
+__pycache__/
+
+# Retained one-off debugging scripts (not application tests)
+/client/fix_test.js
+/client/test_debug.js
+/client/test_greedy.js
+/client/test_greedy2.js
+/client/test_pairs.js

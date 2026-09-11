@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { openNativeDatabase } from './openNativeDatabase.js';
 
 export interface NativeDatabaseCompatibility {
     nodeVersion: string;
@@ -7,7 +7,7 @@ export interface NativeDatabaseCompatibility {
 }
 
 export function verifyNativeDatabaseCompatibility(): NativeDatabaseCompatibility {
-    const database = new Database(':memory:');
+    const database = openNativeDatabase(':memory:');
 
     try {
         const row = database

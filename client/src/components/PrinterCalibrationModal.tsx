@@ -5,6 +5,7 @@ import { useSettingsStore } from "@/store/settings";
 import { useToastStore } from "@/store/toast";
 import * as api from "@/helpers/printerCalibrationApi";
 import { CalibrationApiUnavailableError } from "@/helpers/printerCalibrationApi";
+import { PrivateApiIdentityUnavailableError } from "@/helpers/privateApi";
 
 type Props = {
   isOpen: boolean;
@@ -29,6 +30,8 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
 
   const getErrorMessage = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+  const isPrivateCalibrationUnavailable = (error: unknown) =>
+    error instanceof CalibrationApiUnavailableError || error instanceof PrivateApiIdentityUnavailableError;
 
   const fetchProfiles = useCallback(async () => {
     try {
@@ -36,7 +39,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       setProfiles(data);
       setApiUnavailable(false);
     } catch (e: unknown) {
-      if (e instanceof CalibrationApiUnavailableError) {
+      if (isPrivateCalibrationUnavailable(e)) {
         setApiUnavailable(true);
       } else {
         console.error(e);
@@ -63,7 +66,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e: unknown) {
-      if (e instanceof CalibrationApiUnavailableError) {
+      if (isPrivateCalibrationUnavailable(e)) {
         setApiUnavailable(true);
       }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
@@ -88,7 +91,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       setPrinterCalibrationProfileId(profileName);
       setNewProfileName("");
     } catch (e: unknown) {
-      if (e instanceof CalibrationApiUnavailableError) {
+      if (isPrivateCalibrationUnavailable(e)) {
         setApiUnavailable(true);
       }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
@@ -105,7 +108,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
       }
       await fetchProfiles();
     } catch (e: unknown) {
-      if (e instanceof CalibrationApiUnavailableError) {
+      if (isPrivateCalibrationUnavailable(e)) {
         setApiUnavailable(true);
       }
       useToastStore.getState().showErrorToast(getErrorMessage(e));
@@ -123,8 +126,8 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
               data-testid="calibration-unavailable-banner"
             >
               <strong>Printer calibration is not available.</strong>{" "}
-              Profile management and calibration sheet download require a connected Proxxied server.
-              Controls are disabled until the service responds.
+              Profile management and applying calibration require a connected Proxxied server.
+              The calibration sheet is generated locally and remains available.
             </div>
           )}
 
@@ -142,7 +145,7 @@ export function PrinterCalibrationModal({ isOpen, onClose }: Props) {
           </div>
 
           <div className="flex gap-4 items-end border-b pb-4 dark:border-gray-700">
-              <Button color="gray" onClick={downloadSheet} className="w-full" disabled={apiUnavailable}>
+              <Button color="gray" onClick={downloadSheet} className="w-full">
                 Download Calibration Sheet (US Letter)
               </Button>
           </div>

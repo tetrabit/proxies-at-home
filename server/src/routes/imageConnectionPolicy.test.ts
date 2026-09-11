@@ -25,6 +25,24 @@ function lookupThroughAgent(agent: https.Agent, hostname: string): Promise<{ add
   });
 }
 
+function lookupAllThroughAgent(agent: https.Agent, hostname: string): Promise<Array<{ address: string; family: number }>> {
+  const lookup = agent.options.lookup as (
+    hostname: string,
+    options: { all: true },
+    callback: (error: NodeJS.ErrnoException | null, addresses?: Array<{ address: string; family: number }>) => void,
+  ) => void;
+
+  return new Promise((resolve, reject) => {
+    lookup(hostname, { all: true }, (error, addresses) => {
+      if (error || !addresses) {
+        reject(error ?? new Error("lookup did not return pinned addresses"));
+        return;
+      }
+      resolve(addresses);
+    });
+  });
+}
+
 function resolverReturning(records: Array<{ address: string; family: number }>): ResolveAll {
   return (_hostname, _options, callback) => callback(null, records);
 }
@@ -97,6 +115,15 @@ describe("image connection-time address policy", () => {
       { all: true, verbatim: true },
       expect.any(Function),
     );
+  });
+
+  it("returns the selected pinned record in Node's all-address lookup shape", async () => {
+    const resolveAll = vi.fn(resolverReturning([{ address: "8.8.8.8", family: 4 }]));
+    const agent = createPinnedHttpsAgent({ resolveAll });
+
+    await expect(lookupAllThroughAgent(agent, "cards.scryfall.io")).resolves.toEqual([
+      { address: "8.8.8.8", family: 4 },
+    ]);
   });
 
   it("revalidates a rebinding hostname at the socket lookup rather than retaining a prior approval", async () => {

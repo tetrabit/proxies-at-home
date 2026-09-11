@@ -11,7 +11,11 @@ export type ResolveAll = (
 type PinnedLookup = (
   hostname: string,
   options: number | LookupOptions,
-  callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  callback: (
+    error: NodeJS.ErrnoException | null,
+    address: string | LookupAddress[],
+    family?: number,
+  ) => void,
 ) => void;
 
 const IPV4_DENY_RANGES: Array<[number, number]> = ([
@@ -130,23 +134,39 @@ export function isPublicIpAddress(address: string): boolean {
 }
 
 export function createPinnedLookup(resolveAll: ResolveAll = dnsLookup as unknown as ResolveAll): PinnedLookup {
-  return (hostname, _options, callback) => {
+  return (hostname, options, callback) => {
+    const expectsAll = typeof options === "object" && options !== null && options.all === true;
+    const fail = (error: NodeJS.ErrnoException) => {
+      if (expectsAll) {
+        callback(error, []);
+      } else {
+        callback(error, "", 0);
+      }
+    };
+
     resolveAll(hostname, { all: true, verbatim: true }, (error, records) => {
       if (error) {
-        callback(error, "", 0);
+        fail(error);
         return;
       }
       if (!records.length) {
-        callback(new AddressPolicyError("DNS returned no addresses"), "", 0);
+        fail(new AddressPolicyError("DNS returned no addresses"));
         return;
       }
       if (records.some(record => record.family !== isIP(record.address) || !isPublicIpAddress(record.address))) {
-        callback(new AddressPolicyError("DNS returned a prohibited address"), "", 0);
+        fail(new AddressPolicyError("DNS returned a prohibited address"));
         return;
       }
 
       const pinned = records[0];
-      callback(null, pinned.address, pinned.family);
+      if (expectsAll) {
+        // Node may request the `all: true` callback shape during address-family
+        // selection. Return exactly the one just-validated address rather than
+        // allowing a second DNS decision, while retaining hostname-based SNI.
+        callback(null, [pinned]);
+      } else {
+        callback(null, pinned.address, pinned.family);
+      }
     });
   };
 }

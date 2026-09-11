@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { TextInput } from "flowbite-react";
+import { Checkbox, TextInput } from "flowbite-react";
 import type { ImportIntent } from "@/helpers/importParsers";
 import { useSettingsStore } from "@/store";
 import { useLoadingStore } from "@/store/loading";
@@ -46,6 +46,7 @@ function detectSource(url: string): DeckSource {
 
 export function DeckBuilderImporter({ mobile, onUploadComplete }: Props) {
     const [deckUrl, setDeckUrl] = useState("");
+    const [includeConsidering, setIncludeConsidering] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -93,7 +94,7 @@ export function DeckBuilderImporter({ mobile, onUploadComplete }: Props) {
 
                 const deck = await fetchMoxfieldDeck(deckId);
 
-                const cards = extractMoxfieldCards(deck);
+                const cards = extractMoxfieldCards(deck, { includeConsidering });
                 intents = cards.map((c) => ({
                     name: c.name,
                     set: c.set,
@@ -161,6 +162,14 @@ export function DeckBuilderImporter({ mobile, onUploadComplete }: Props) {
                     className={`w-full ${mobile ? 'landscape:text-sm' : ''}`}
                     color={error ? "failure" : undefined}
                 />
+                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <Checkbox
+                        checked={includeConsidering}
+                        onChange={(e) => setIncludeConsidering(e.target.checked)}
+                        disabled={isLoading || source === "archidekt"}
+                    />
+                    <span>Include considering cards (Moxfield)</span>
+                </label>
                 <button
                     type="button"
                     onClick={handleImport}

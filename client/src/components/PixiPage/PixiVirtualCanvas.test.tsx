@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { CardOption } from "../../../../shared/types";
 import type { CardWithGlobalLayout, PageLayoutInfo } from "./PixiVirtualCanvas";
@@ -801,6 +802,39 @@ describe("PixiVirtualCanvas", () => {
     await waitFor(() => expect(state.apps.at(-1)?.init).toHaveBeenCalledWith(
       expect.objectContaining({ width: 816, height: 1056, resolution: 1 }),
     ));
+  });
+
+  it("recreates the rendition admission after Strict Mode cleanup so cached images render", async () => {
+    const state = pixiState();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const cachedImportedImage = new Blob(["cached imported image"]);
+    const cachedCard = card({
+      imageBlob: cachedImportedImage,
+      backBlob: undefined,
+      backImageId: undefined,
+      card: {
+        ...card().card,
+        overrides: { ...card().card.overrides, holoEffect: "none" },
+      },
+    });
+
+    const { unmount } = render(
+      <StrictMode>{canvasElement({ cards: [cachedCard] })}</StrictMode>,
+    );
+
+    await waitFor(() => expect(state.sprites).toHaveLength(1));
+    await waitFor(() => expect(state.textures).toHaveLength(1));
+    expect(warn).not.toHaveBeenCalledWith(
+      "[PixiVirtualCanvas] Failed to identify rendition:",
+      expect.objectContaining({ message: "Rendition identity admission is disposed" }),
+    );
+
+    const texture = state.textures[0];
+    const objectUrl = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.results[0].value;
+    unmount();
+
+    expect(texture.destroy).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(objectUrl);
   });
 
   it("reuses singleton apps while canceling reattached identity and texture work", async () => {

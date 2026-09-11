@@ -258,7 +258,7 @@ describe("moxfieldApi", () => {
       expect(cards[0].category).toBe("Mainboard");
     });
 
-    it("should extract cards from all boards", () => {
+    it("should exclude Considering cards by default while retaining all other boards", () => {
       const deck = createMockDeck({
         commanders: {
           cmd1: createDeckCard("Commander Card", 1, "1", "ABC", "commanders"),
@@ -279,13 +279,36 @@ describe("moxfieldApi", () => {
 
       const cards = extractCardsFromDeck(deck);
 
-      expect(cards).toHaveLength(5);
+      expect(cards).toHaveLength(4);
       const categories = cards.map((c) => c.category);
       expect(categories).toContain("Commander");
       expect(categories).toContain("Companion");
       expect(categories).toContain("Mainboard");
       expect(categories).toContain("Sideboard");
-      expect(categories).toContain("Maybeboard");
+      expect(categories).not.toContain("Maybeboard");
+    });
+
+    it("should include Considering cards only when explicitly enabled", () => {
+      const deck = createMockDeck({
+        mainboard: { main: createDeckCard("Sol Ring", 1) },
+        maybeboard: {
+          maybe: createDeckCard("Counterspell", 3, "54", "LEA", "maybeboard"),
+        },
+      });
+
+      expect(extractCardsFromDeck(deck, { includeConsidering: true })).toEqual([
+        expect.objectContaining({ name: "Sol Ring", quantity: 1 }),
+        expect.objectContaining({
+          name: "Counterspell", quantity: 3, set: "lea", number: "54",
+          scryfallId: "scryfall-Counterspell", category: "Maybeboard",
+        }),
+      ]);
+      expect(extractCardsFromDeck(deck, { includeConsidering: false })).toEqual([
+        expect.objectContaining({ name: "Sol Ring", quantity: 1 }),
+      ]);
+      expect(extractCardsFromDeck(createMockDeck({ maybeboard: undefined }), {
+        includeConsidering: true,
+      })).toEqual([]);
     });
 
     it("should normalize custom board names and tolerate missing optional boards", () => {

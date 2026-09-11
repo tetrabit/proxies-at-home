@@ -10,6 +10,7 @@ import {
   extractMoxfieldDeckId,
   fetchMoxfieldDeck,
   extractCardsFromDeck as extractMoxfieldCards,
+  type MoxfieldDeck,
 } from "@/helpers/moxfieldApi";
 
 // Mock hoisted values
@@ -19,6 +20,9 @@ const mockOrchestratorProcess = vi.hoisted(() => vi.fn());
 const mockHandleAutoImportTokens = vi.hoisted(() => vi.fn());
 
 vi.mock("flowbite-react", () => ({
+  Checkbox: (props: React.InputHTMLAttributes<HTMLInputElement>) => (
+    <input {...props} type="checkbox" />
+  ),
   TextInput: ({
     value,
     onChange,
@@ -202,6 +206,54 @@ describe("DeckBuilderImporter", () => {
       render(<DeckBuilderImporter mobile />);
       // Should still render the heading (may be hidden on landscape)
       expect(screen.getAllByText(/Import/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("Considering cards", () => {
+    it.each([false, true])("defaults to unchecked (mobile=%s)", (mobile) => {
+      render(<DeckBuilderImporter mobile={mobile} />);
+      const checkbox = screen.getByRole("checkbox", { name: /Include considering cards/i }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
+    });
+
+    it.each(["default", "checked", "unchecked again"])("imports the intended boards when %s", async (mode) => {
+      const actual = await vi.importActual<typeof import("@/helpers/moxfieldApi")>("@/helpers/moxfieldApi");
+      const card = { id: "test", uniqueCardId: "test", scryfall_id: "test", name: "Sol Ring", set: "C21", set_name: "Test", cn: "289", layout: "normal", type_line: "Artifact" };
+      const deck: MoxfieldDeck = {
+        id: "test", publicId: "test", publicUrl: "https://moxfield.com/decks/test", name: "Fixture", format: "commander",
+        commanders: {}, companions: {}, sideboard: {},
+        mainboard: { main: { card, quantity: 1, boardType: "mainboard", finish: "nonFoil", isFoil: false } },
+        maybeboard: { maybe: { card: { ...card, name: "Counterspell", cn: "54", set: "LEA" }, quantity: 3, boardType: "maybeboard", finish: "nonFoil", isFoil: false } },
+        mainboardCount: 1, commandersCount: 0, companionsCount: 0, sideboardCount: 0, maybeboardCount: 3,
+      };
+      vi.mocked(fetchMoxfieldDeck).mockResolvedValueOnce(deck);
+      vi.mocked(extractMoxfieldCards).mockImplementationOnce(actual.extractCardsFromDeck);
+      render(<DeckBuilderImporter />);
+      fireEvent.change(screen.getByTestId("deck-url-input"), { target: { value: deck.publicUrl } });
+      const checkbox = screen.getByRole("checkbox", { name: /Include considering cards/i });
+      if (mode !== "default") fireEvent.click(checkbox);
+      if (mode === "unchecked again") fireEvent.click(checkbox);
+      fireEvent.click(screen.getByRole("button", { name: "Import Deck" }));
+      expect(checkbox.hasAttribute("disabled")).toBe(true);
+      await waitFor(() => expect(mockOrchestratorProcess).toHaveBeenCalledTimes(1));
+      const intents = mockOrchestratorProcess.mock.calls[0][0];
+      expect(intents).toEqual(mode === "checked" ? [
+        expect.objectContaining({ name: "Sol Ring", quantity: 1, category: "Mainboard" }),
+        expect.objectContaining({ name: "Counterspell", quantity: 3, set: "lea", number: "54", category: "Maybeboard" }),
+      ] : [expect.objectContaining({ name: "Sol Ring", quantity: 1, category: "Mainboard" })]);
+      await waitFor(() => expect(checkbox.hasAttribute("disabled")).toBe(false));
+    });
+
+    it("does not change Archidekt imports", async () => {
+      render(<DeckBuilderImporter />);
+      const checkbox = screen.getByRole("checkbox", { name: /Include considering cards/i });
+      fireEvent.click(checkbox);
+      fireEvent.change(screen.getByTestId("deck-url-input"), { target: { value: "https://archidekt.com/decks/12345" } });
+      expect(checkbox.hasAttribute("disabled")).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Import Deck" }));
+      await waitFor(() => expect(mockOrchestratorProcess).toHaveBeenCalledTimes(1));
+      expect(extractArchidektCards).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+      expect(extractMoxfieldCards).not.toHaveBeenCalled();
     });
   });
 
