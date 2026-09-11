@@ -173,7 +173,7 @@ function mergeRootMetadata(
       propertyEntry(right, key),
       () =>
         conflicts.push(
-          conflict("root", key, "unsupported-deletion", "metadata deletion requires the M2 deletion policy")
+          conflict("root", key, "divergent-edit", "metadata was deleted on one side and changed on the other")
         ),
       () =>
         conflicts.push(
@@ -204,9 +204,22 @@ function mergeRecords<T extends IdentifiedRecord>(
     const leftCurrent = leftById.get(current.id);
     const rightCurrent = rightById.get(current.id);
     if (policy === "immutable") {
-      if (!sameRecord(current, leftCurrent) || !sameRecord(current, rightCurrent)) {
+      if (leftCurrent === undefined || rightCurrent === undefined) {
+        const survivingRecord = leftCurrent ?? rightCurrent;
+        if (survivingRecord === undefined || sameRecord(current, survivingRecord)) {
+          continue;
+        }
         conflicts.push(
-          conflict(collection, current.id, "immutable-run-change", "base runs are immutable and cannot be changed or deleted")
+          conflict(
+            collection,
+            current.id,
+            "immutable-run-change",
+            "base runs are immutable and cannot be changed when the other side deletes them"
+          )
+        );
+      } else if (!sameRecord(current, leftCurrent) || !sameRecord(current, rightCurrent)) {
+        conflicts.push(
+          conflict(collection, current.id, "immutable-run-change", "base runs are immutable and cannot be changed")
         );
       } else {
         output.push(cloneJson(current) as T);
@@ -214,34 +227,51 @@ function mergeRecords<T extends IdentifiedRecord>(
       continue;
     }
     if (policy === "assets") {
-      if (!sameRecord(current, leftCurrent) || !sameRecord(current, rightCurrent)) {
-        conflicts.push(
-          conflict(collection, current.id, "asset-divergence", "asset updates and deletions require the M2 asset policy")
-        );
-      } else {
-        output.push(cloneJson(current) as T);
-      }
-      continue;
-    }
-
-    if (leftCurrent === undefined || rightCurrent === undefined) {
-      conflicts.push(
-        conflict(collection, current.id, "unsupported-deletion", "record deletion requires the M2 deletion policy")
+      const selected = mergeProperty(
+        { present: true, value: current },
+        { present: leftCurrent !== undefined, value: leftCurrent },
+        { present: rightCurrent !== undefined, value: rightCurrent },
+        () =>
+          conflicts.push(
+            conflict(
+              collection,
+              current.id,
+              "asset-divergence",
+              "asset was deleted on one side and changed on the other"
+            )
+          ),
+        () =>
+          conflicts.push(
+            conflict(collection, current.id, "asset-divergence", "both sides changed the same asset")
+          )
       );
+      if (selected.present) {
+        output.push(cloneJson(selected.value) as T);
+      }
       continue;
     }
 
     const selected = mergeProperty(
       { present: true, value: current },
-      { present: true, value: leftCurrent },
-      { present: true, value: rightCurrent },
+      { present: leftCurrent !== undefined, value: leftCurrent },
+      { present: rightCurrent !== undefined, value: rightCurrent },
       () =>
         conflicts.push(
-          conflict(collection, current.id, "unsupported-deletion", "record deletion requires the M2 deletion policy")
+          conflict(
+            collection,
+            current.id,
+            "divergent-edit",
+            "record was deleted on one side and changed on the other"
+          )
         ),
       () =>
         conflicts.push(
-          conflict(collection, current.id, "divergent-edit", "both sides changed the same record")
+          conflict(
+            collection,
+            current.id,
+            "divergent-edit",
+            "both sides changed the same record"
+          )
         )
     );
     if (selected.present) {
@@ -297,7 +327,20 @@ function mergeProperty(
     return { present: false, value: undefined };
   }
 
-  if (!left.present || !right.present) {
+  if (!left.present && !right.present) {
+    return { present: false, value: undefined };
+  }
+  if (!left.present) {
+    if (sameEntry(right, base)) {
+      return { present: false, value: undefined };
+    }
+    onDeletion();
+    return { present: false, value: undefined };
+  }
+  if (!right.present) {
+    if (sameEntry(left, base)) {
+      return { present: false, value: undefined };
+    }
     onDeletion();
     return { present: false, value: undefined };
   }

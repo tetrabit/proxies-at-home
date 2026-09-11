@@ -4,6 +4,7 @@ import {
   CalibrationHarnessValidationError,
   canonicalHarnessJson,
   validateCalibrationHarnessSnapshot,
+  type CalibrationHarnessAsset,
   type CalibrationHarnessCase,
   type CalibrationHarnessDataset,
   type CalibrationHarnessRun,
@@ -60,6 +61,20 @@ function run(id: string): CalibrationHarnessRun {
     createdAt: 1,
     summary: { totalCases: 0, matchedCases: 0, mismatchedCases: 0, accuracy: 0 },
     results: [],
+  };
+}
+
+function asset(id = "asset-1", overrides: Partial<CalibrationHarnessAsset> = {}): CalibrationHarnessAsset {
+  return {
+    id,
+    datasetId: "dataset-1",
+    caseId: "case-1",
+    role: "source",
+    mimeType: "image/png",
+    createdAt: 1,
+    sha256: "a".repeat(64),
+    byteLength: 1,
+    ...overrides,
   };
 }
 
@@ -157,37 +172,181 @@ describe("mergeCalibrationHarnessSnapshots", () => {
     expect(collision).not.toHaveProperty("snapshot");
   });
 
-  it("fails closed for deletions and independent asset-slot divergence", () => {
-    const base = snapshot();
-    const deletion = mergeCalibrationHarnessSnapshots(base, { ...clone(base), cases: [] }, clone(base));
-    expect(deletion).toMatchObject({
-      ok: false,
-      conflicts: [expect.objectContaining({ collection: "cases", id: "case-1", kind: "unsupported-deletion" })],
-    });
+  it("deletes unchanged base runs unilaterally and bilaterally", () => {
+    const base = snapshot({ runs: [run("run-delete")] });
+    const unilateral = mergedSnapshot(
+      mergeCalibrationHarnessSnapshots(base, { ...clone(base), runs: [] }, clone(base))
+    );
+    const bilateral = mergedSnapshot(
+      mergeCalibrationHarnessSnapshots(base, { ...clone(base), runs: [] }, { ...clone(base), runs: [] })
+    );
 
+    expect(unilateral.runs).toEqual([]);
+    expect(bilateral.runs).toEqual([]);
+  });
+
+  it("selects an asset replacement only when the opposite side remains at the common base", () => {
+    const base = snapshot({ assets: [asset()] });
     const left = clone(base);
-    left.assets.push({
-      id: "asset-left",
-      datasetId: "dataset-1",
-      caseId: "case-1",
-      role: "source",
-      mimeType: "image/png",
-      createdAt: 1,
-      sha256: "a".repeat(64),
-      byteLength: 1,
+    left.assets[0] = asset("asset-1", { sha256: "b".repeat(64), byteLength: 2 });
+
+    const selected = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, left, clone(base)));
+    const reversed = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, clone(base), left));
+    const deleted = mergedSnapshot(
+      mergeCalibrationHarnessSnapshots(base, { ...clone(base), assets: [] }, clone(base))
+    );
+
+    expect(selected.assets).toEqual([left.assets[0]]);
+    expect(reversed.assets).toEqual([left.assets[0]]);
+    expect(deleted.assets).toEqual([]);
+  });
+
+  it("retains actual case and dataset deletions across their related records and optional root metadata", () => {
+    const base = snapshot({ assets: [asset()], runs: [run("run-case")] }) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    base.runs[0].results.push({ caseId: "case-1", matched: true });
+    base.optionalRoot = { retained: true };
+
+    const caseDeletion = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    caseDeletion.cases = [];
+    caseDeletion.assets = [];
+    caseDeletion.runs = [];
+    delete caseDeletion.optionalRoot;
+    const caseMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, caseDeletion, clone(base)));
+
+    expect(caseMerged).toMatchObject({ datasets: [dataset()], cases: [], assets: [], runs: [] });
+    expect(caseMerged).not.toHaveProperty("optionalRoot");
+
+    const rootDeletedOnBoth = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    delete rootDeletedOnBoth.optionalRoot;
+    const rootMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, rootDeletedOnBoth, clone(rootDeletedOnBoth)));
+    expect(rootMerged).not.toHaveProperty("optionalRoot");
+
+    const datasetDeletion = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    datasetDeletion.datasets = [];
+    datasetDeletion.cases = [];
+    datasetDeletion.assets = [];
+    datasetDeletion.runs = [];
+    const datasetMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, datasetDeletion, clone(datasetDeletion)));
+    const unilateralDatasetMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, datasetDeletion, clone(base)));
+
+    expect(datasetMerged).toMatchObject({ datasets: [], cases: [], assets: [], runs: [] });
+    expect(unilateralDatasetMerged).toMatchObject({ datasets: [], cases: [], assets: [], runs: [] });
+  });
+
+  it("fails closed for deletion versus changed survivors in either branch order", () => {
+    const base = snapshot({ assets: [asset()], runs: [run("run-history")] }) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    base.optionalRoot = { value: "base" };
+    const deletedCase = clone(base);
+    deletedCase.cases = [];
+    deletedCase.assets = [];
+    const changedCase = clone(base);
+    changedCase.cases[0].notes = "changed";
+
+    const deletedAsset = clone(base);
+    deletedAsset.assets = [];
+    const changedAsset = clone(base);
+    changedAsset.assets[0] = asset("asset-1", { sha256: "b".repeat(64), byteLength: 2 });
+
+    const deletedRun = clone(base);
+    deletedRun.runs = [];
+    const changedRun = clone(base);
+    changedRun.runs[0].algorithmLabel = "changed";
+    const deletedRoot = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    delete deletedRoot.optionalRoot;
+    const changedRoot = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    changedRoot.optionalRoot = { value: "changed" };
+
+    for (const result of [
+      mergeCalibrationHarnessSnapshots(base, deletedCase, changedCase),
+      mergeCalibrationHarnessSnapshots(base, changedCase, deletedCase),
+      mergeCalibrationHarnessSnapshots(base, deletedAsset, changedAsset),
+      mergeCalibrationHarnessSnapshots(base, changedAsset, deletedAsset),
+      mergeCalibrationHarnessSnapshots(base, deletedRun, changedRun),
+      mergeCalibrationHarnessSnapshots(base, changedRun, deletedRun),
+      mergeCalibrationHarnessSnapshots(base, deletedRoot, changedRoot),
+      mergeCalibrationHarnessSnapshots(base, changedRoot, deletedRoot),
+    ]) {
+      expect(result).toMatchObject({ ok: false });
+      expect(result).not.toHaveProperty("snapshot");
+    }
+  });
+
+  it("fails validation without publishing when a deletion leaves an independently added related record", () => {
+    const base = snapshot();
+    const deletedCase = clone(base);
+    deletedCase.cases = [];
+    const addedAsset = clone(base);
+    addedAsset.assets.push(asset("added-asset"));
+
+    const result = mergeCalibrationHarnessSnapshots(base, deletedCase, addedAsset);
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ kind: "invalid-merged-snapshot" })],
     });
-    const right = clone(base);
-    right.assets.push({
-      ...left.assets[0],
-      id: "asset-right",
-      sha256: "b".repeat(64),
+    expect(result).not.toHaveProperty("snapshot");
+  });
+
+  it("fails incompatible asset replacements and slot collisions while retaining idempotent additions", () => {
+    const base = snapshot({ assets: [asset()] });
+    const leftReplacement = clone(base);
+    leftReplacement.assets[0] = asset("asset-1", { sha256: "b".repeat(64), byteLength: 2 });
+    const rightReplacement = clone(base);
+    rightReplacement.assets[0] = asset("asset-1", { sha256: "c".repeat(64), byteLength: 3 });
+
+    const incompatible = mergeCalibrationHarnessSnapshots(base, leftReplacement, rightReplacement);
+    expect(incompatible).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "assets", id: "asset-1", kind: "asset-divergence" })],
     });
-    const assetDivergence = mergeCalibrationHarnessSnapshots(base, left, right);
-    expect(assetDivergence).toMatchObject({
+    expect(incompatible).not.toHaveProperty("snapshot");
+
+    const emptyAssets = snapshot();
+    const leftSlot = clone(emptyAssets);
+    leftSlot.assets.push(asset("asset-left"));
+    const rightSlot = clone(emptyAssets);
+    rightSlot.assets.push(asset("asset-right", { sha256: "b".repeat(64) }));
+    const slotCollision = mergeCalibrationHarnessSnapshots(emptyAssets, leftSlot, rightSlot);
+    expect(slotCollision).toMatchObject({
       ok: false,
       conflicts: [expect.objectContaining({ collection: "assets", kind: "asset-divergence" })],
     });
-    expect(assetDivergence).not.toHaveProperty("snapshot");
+    expect(slotCollision).not.toHaveProperty("snapshot");
+
+    const sameAddition = clone(emptyAssets);
+    sameAddition.assets.push(asset("asset-same"));
+    const idempotent = mergedSnapshot(mergeCalibrationHarnessSnapshots(emptyAssets, sameAddition, clone(sameAddition)));
+    expect(idempotent.assets).toEqual([asset("asset-same")]);
+
+    const differingAddition = clone(sameAddition);
+    differingAddition.assets[0] = asset("asset-same", { sha256: "c".repeat(64) });
+    const sameIdConflict = mergeCalibrationHarnessSnapshots(emptyAssets, sameAddition, differingAddition);
+    expect(sameIdConflict).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "assets", id: "asset-same", kind: "asset-divergence" })],
+    });
+    expect(sameIdConflict).not.toHaveProperty("snapshot");
+  });
+
+  it("keeps NUL and prototype-looking literal ids distinct in deterministic new-id order", () => {
+    const base = snapshot({ datasets: [dataset(), dataset("__proto__")] });
+    const left = clone(base);
+    left.cases.push(calibrationCase("\u0000case", "__proto__"));
+    const right = clone(base);
+    right.cases.push(calibrationCase("constructor"));
+
+    const merged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, left, right));
+
+    expect(merged.cases.map((entry) => entry.id)).toEqual(["case-1", "\u0000case", "constructor"]);
+  });
+
+  it("deletes a base case when the other side leaves it unchanged", () => {
+    const base = snapshot();
+    const deletion = mergedSnapshot(
+      mergeCalibrationHarnessSnapshots(base, { ...clone(base), cases: [] }, clone(base))
+    );
+
+    expect(deletion.cases).toEqual([]);
   });
 
   it("does not mutate sources and preserves nested candidate and result ordering", () => {
