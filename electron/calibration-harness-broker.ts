@@ -80,6 +80,23 @@ function boundedIdentity(value: unknown): value is string {
   return true;
 }
 
+function captureMissingHashes(value: unknown): string[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+    || Object.getOwnPropertySymbols(value).length !== 0) return fail("invalid-operation");
+  const length = Object.getOwnPropertyDescriptor(value, "length")?.value;
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_MISSING_HASHES
+    || Object.getOwnPropertyNames(value).length !== length + 1) return fail("invalid-operation");
+  const hashes: string[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable
+      || typeof descriptor.value !== "string" || !SHA256.test(descriptor.value)) return fail("invalid-operation");
+    hashes.push(descriptor.value);
+  }
+  if (new Set(hashes).size !== hashes.length) return fail("invalid-operation");
+  return hashes;
+}
+
 function parseOperation(value: unknown): CalibrationHarnessOperation {
   if (!exactDataRecord(value, ["kind"]) && !(value !== null && typeof value === "object")) return fail("invalid-operation");
   const kind = exactDataRecord(value, ["kind"])
@@ -117,27 +134,39 @@ function parseOperation(value: unknown): CalibrationHarnessOperation {
       if (actual !== value.sha256) return fail("invalid-operation");
       return { kind, sha256: value.sha256, bytes: value.bytes as Uint8Array | ArrayBuffer };
     }
-    case "missingBlobs":
-      if (!exactDataRecord(value, ["kind", "hashes"]) || !Array.isArray(value.hashes)
-        || value.hashes.length > MAX_MISSING_HASHES || value.hashes.some((hash) => typeof hash !== "string" || !SHA256.test(hash))
-        || new Set(value.hashes).size !== value.hashes.length) {
+    case "missingBlobs": {
+      if (!exactDataRecord(value, ["kind", "hashes"])) {
         return fail("invalid-operation");
       }
+      const hashes = captureMissingHashes(value.hashes);
       try {
-        const encoded = JSON.stringify({ hashes: value.hashes });
+        const encoded = JSON.stringify({ hashes });
         if (Buffer.byteLength(encoded, "utf8") > MAX_MISSING_REQUEST_BYTES) return fail("invalid-operation");
       } catch {
         return fail("invalid-operation");
       }
-      return { kind, hashes: [...value.hashes] };
+      return { kind, hashes };
+    }
     default:
       return fail("invalid-operation");
   }
 }
 
 function byteView(value: unknown): Uint8Array | undefined {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (value instanceof Uint8Array) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof ArrayBuffer) {
+    if (Object.getPrototypeOf(value) !== ArrayBuffer.prototype
+      || Object.getOwnPropertyDescriptor(value, "byteLength") !== undefined) return undefined;
+    return new Uint8Array(value);
+  }
+  if (value instanceof Uint8Array) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Uint8Array.prototype && prototype !== Buffer.prototype) return undefined;
+    for (const key of ["buffer", "byteOffset", "byteLength"]) {
+      if (Object.getOwnPropertyDescriptor(value, key) !== undefined) return undefined;
+    }
+    if (!(value.buffer instanceof ArrayBuffer)) return undefined;
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   return undefined;
 }
 

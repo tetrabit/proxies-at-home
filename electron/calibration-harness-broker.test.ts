@@ -232,6 +232,65 @@ describe("fixed-origin calibration harness broker", () => {
     await expect(broker.execute({ kind: "missingBlobs", hashes: [sha256, sha256] })).rejects.toMatchObject({ code: "invalid-operation" });
   });
 
+  it.each(["sparse", "accessor", "iterator", "toJSON", "some", "extra", "prototype", "hidden", "symbol"])("rejects %s hash arrays without executing hooks or dispatching", async kind => {
+    const hash = "a".repeat(64);
+    let hooks = 0;
+    let dispatches = 0;
+    const hashes: string[] = kind === "sparse" ? new Array(1) : [hash];
+    if (kind === "accessor") Object.defineProperty(hashes, "0", { get() { hooks++; return hash; }, enumerable: true });
+    if (kind === "iterator") Object.defineProperty(hashes, Symbol.iterator, { value: function* () { hooks++; yield hash; } });
+    if (kind === "toJSON") Object.defineProperty(hashes, "toJSON", { value: () => { hooks++; return [hash]; } });
+    if (kind === "some") Object.defineProperty(hashes, "some", { value: () => { hooks++; return false; } });
+    if (kind === "extra") Object.defineProperty(hashes, "extra", { value: true });
+    if (kind === "prototype") Object.setPrototypeOf(hashes, Object.create(Array.prototype));
+    if (kind === "hidden") Object.defineProperty(hashes, "0", { value: hash, enumerable: false });
+    if (kind === "symbol") Object.defineProperty(hashes, Symbol("extra"), { value: true });
+    const broker = createCalibrationHarnessBroker(config(), { fetch: async () => { dispatches++; return response({ missing: [] }); } });
+    await expect(broker.execute({ kind: "missingBlobs", hashes })).rejects.toMatchObject({ code: "invalid-operation" });
+    expect(hooks).toBe(0);
+    expect(dispatches).toBe(0);
+  });
+
+  it("rejects a spoofed binary view before reading its accessor or dispatching", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const buffer = bytes.buffer;
+    let getters = 0;
+    let dispatches = 0;
+    Object.defineProperty(bytes, "buffer", { get() { getters++; return buffer; } });
+    const broker = createCalibrationHarnessBroker(config(), { fetch: async () => {
+      dispatches++;
+      return response({ sha256, byteLength: 3, inserted: true }, { status: 201 });
+    } });
+    await expect(broker.execute({ kind: "putBlob", sha256, bytes })).rejects.toMatchObject({ code: "invalid-operation" });
+    expect(getters).toBe(0);
+    expect(dispatches).toBe(0);
+  });
+
+  it.each(["ArrayBuffer", "Uint8Array", "Buffer"])("retains valid %s binary operations", async kind => {
+    const source = new Uint8Array([1, 2, 3]);
+    const bytes = kind === "ArrayBuffer" ? source.buffer : kind === "Buffer" ? Buffer.from(source) : source;
+    const sha256 = createHash("sha256").update(source).digest("hex");
+    const broker = createCalibrationHarnessBroker(config(), { fetch: async (_url, init) => {
+      expect(init?.body).toBe(bytes);
+      return response({ sha256, byteLength: 3, inserted: true }, { status: 201 });
+    } });
+    await expect(broker.execute({ kind: "putBlob", sha256, bytes })).resolves.toEqual({ sha256, byteLength: 3, inserted: true });
+  });
+
+  it("retains empty and full-bound dense hash queries while rejecting the next item", async () => {
+    let dispatches = 0;
+    const hashes = Array.from({ length: 512 }, (_, index) => index.toString(16).padStart(64, "0"));
+    const broker = createCalibrationHarnessBroker(config(), { fetch: async (_url, init) => {
+      dispatches++;
+      return response({ missing: JSON.parse(String(init?.body)).hashes });
+    } });
+    await expect(broker.execute({ kind: "missingBlobs", hashes: [] })).resolves.toEqual({ missing: [] });
+    await expect(broker.execute({ kind: "missingBlobs", hashes: Object.freeze(hashes) })).resolves.toEqual({ missing: hashes });
+    await expect(broker.execute({ kind: "missingBlobs", hashes: [...hashes, "f".repeat(64)] })).rejects.toMatchObject({ code: "invalid-operation" });
+    expect(dispatches).toBe(2);
+  });
+
   it("cancels a chunked response that exceeds its bound", async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
