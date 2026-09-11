@@ -1,7 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import type { Server } from 'node:http';
 
 import type Database from 'better-sqlite3';
 import express from 'express';
@@ -13,18 +11,17 @@ import { createCalibrationHarnessSessionAuth } from './calibrationHarnessSession
 import { createPrivateRouteAuth } from './privateRouteAuth.js';
 import { initializeCalibrationHarnessSchema } from '../db/calibrationHarnessSchema.js';
 import { openNativeDatabase } from '../db/openNativeDatabase.js';
+import {
+  closeLoopbackServer,
+  createCalibrationHarnessFixtureProvider,
+  listenLoopback,
+} from '../testUtils/calibrationHarnessFixtures.js';
 
-const fixtureRoot = path.join(
-  fileURLToPath(new URL('../../../', import.meta.url)),
-  '.review-artifacts',
-  'calibration-harness-session-01',
-);
+const fixtures = createCalibrationHarnessFixtureProvider();
 const webOrigin = 'http://localhost:5173';
 
 function createExclusiveDatabase(): Database.Database {
-  fs.mkdirSync(fixtureRoot, { recursive: true });
-  const directory = path.join(fixtureRoot, randomUUID());
-  fs.mkdirSync(directory);
+  const directory = fixtures.createInvocationRoot();
   const database = openNativeDatabase(path.join(directory, 'calibration-harness.db'));
   initializeCalibrationHarnessSchema(database);
   return database;
@@ -34,6 +31,7 @@ describe('createCalibrationHarnessSessionAuth', () => {
   it('pairs an approved operator bearer into a scoped persistent cookie without returning a credential', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a',
@@ -50,7 +48,8 @@ describe('createCalibrationHarnessSessionAuth', () => {
         res.json(req.calibrationHarnessIdentity);
       });
 
-      const agent = request.agent(app);
+      server = await listenLoopback(app);
+      const agent = request.agent(server);
       const paired = await agent
         .post('/api/calibration-harness/pair')
         .set('Origin', webOrigin)
@@ -76,13 +75,18 @@ describe('createCalibrationHarnessSessionAuth', () => {
         capabilities: {},
       });
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
   });
 
   it('denies anonymous, malformed, foreign-origin, unsafe-CSRF, ambiguous, and wrong-harness requests before the protected parser', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a', harnessId: 'harness-a', expiresAt: now + 60_000,
@@ -93,25 +97,30 @@ describe('createCalibrationHarnessSessionAuth', () => {
       app.post('/api/calibration-harness/pair', sessionAuth.pair);
       app.post('/api/calibration-harness/:harnessId', sessionAuth.authenticate, protectedParser, (_req, res) => res.status(204).end());
       app.get('/api/calibration-harness/:harnessId', sessionAuth.authenticate, protectedParser, (_req, res) => res.status(204).end());
+      server = await listenLoopback(app);
 
-      expect((await request(app).post('/api/calibration-harness/pair')).status).toBe(401);
-      expect((await request(app).post('/api/calibration-harness/pair').set('Origin', 'null').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
-      expect((await request(app).post('/api/calibration-harness/pair').set('Origin', 'http://localhost:5174').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
-      expect((await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', 'Bearer calibration_pair_bad')).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/pair')).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/pair').set('Origin', 'null').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/pair').set('Origin', 'http://localhost:5174').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', 'Bearer calibration_pair_bad')).status).toBe(401);
 
-      const paired = await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
+      const paired = await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
       const cookie = paired.headers['set-cookie'][0]!.split(';', 1)[0]!;
-      expect((await request(app).post('/api/calibration-harness/harness-a').set('Cookie', cookie)).status).toBe(401);
-      expect((await request(app).post('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Origin', 'http://localhost:5174')).status).toBe(401);
-      expect((await request(app).post('/api/calibration-harness/harness-other').set('Cookie', cookie).set('Origin', webOrigin)).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Sec-Fetch-Site', 'cross-site').set('Host', 'localhost:5173')).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Sec-Fetch-Site', 'same-origin').set('Host', 'localhost')).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Authorization', `Bearer ${pairBearer}`).set('Origin', webOrigin)).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', [cookie, cookie] as unknown as string).set('Origin', webOrigin)).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Authorization', [`Bearer ${pairBearer}`, `Bearer ${pairBearer}`] as unknown as string)).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/harness-a').set('Cookie', cookie)).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Origin', 'http://localhost:5174')).status).toBe(401);
+      expect((await request(server).post('/api/calibration-harness/harness-other').set('Cookie', cookie).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Sec-Fetch-Site', 'cross-site').set('Host', 'localhost:5173')).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Sec-Fetch-Site', 'same-origin').set('Host', 'localhost')).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', cookie).set('Authorization', `Bearer ${pairBearer}`).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', [cookie, cookie] as unknown as string).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Authorization', [`Bearer ${pairBearer}`, `Bearer ${pairBearer}`] as unknown as string)).status).toBe(401);
       expect(protectedParser).not.toHaveBeenCalled();
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
   });
 
@@ -120,6 +129,7 @@ describe('createCalibrationHarnessSessionAuth', () => {
     const filename = database.name;
     let now = 1_700_000_000_000;
     let cookie: string;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a', harnessId: 'shared-harness', expiresAt: now + 30_000,
@@ -131,38 +141,50 @@ describe('createCalibrationHarnessSessionAuth', () => {
         ownerId: req.calibrationHarnessIdentity!.ownerId,
         harnessId: req.calibrationHarnessIdentity!.harnessId,
       }));
-      const paired = await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
+      server = await listenLoopback(app);
+      const paired = await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
       expect(paired.headers['set-cookie'][0]).toContain('Max-Age=30');
       cookie = paired.headers['set-cookie'][0]!.split(';', 1)[0]!;
-      const isolated = await request(app)
+      const isolated = await request(server)
         .get('/api/calibration-harness/shared-harness?ownerId=owner-b')
         .set('Cookie', cookie)
         .set('Origin', webOrigin)
         .set('X-Owner-Id', 'owner-b');
       expect(isolated.body).toEqual({ ownerId: 'owner-a', harnessId: 'shared-harness' });
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
 
     const reopened = openNativeDatabase(filename);
+    let reopenedServer: Server | undefined;
     try {
       initializeCalibrationHarnessSchema(reopened);
       const sessionAuth = createCalibrationHarnessSessionAuth(reopened, { allowedWebOrigins: [webOrigin], now: () => now });
       const app = express();
       app.get('/api/calibration-harness/:harnessId', sessionAuth.authenticate, (req, res) => res.json({ ownerId: req.calibrationHarnessIdentity!.ownerId }));
-      const persisted = await request(app).get('/api/calibration-harness/shared-harness').set('Cookie', cookie!).set('Origin', webOrigin);
+      reopenedServer = await listenLoopback(app);
+      const persisted = await request(reopenedServer).get('/api/calibration-harness/shared-harness').set('Cookie', cookie!).set('Origin', webOrigin);
       expect(persisted.status).toBe(200);
       expect(persisted.body).toEqual({ ownerId: 'owner-a' });
       now += 30_000;
-      expect((await request(app).get('/api/calibration-harness/shared-harness').set('Cookie', cookie!).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(reopenedServer).get('/api/calibration-harness/shared-harness').set('Cookie', cookie!).set('Origin', webOrigin)).status).toBe(401);
     } finally {
-      reopened.close();
+      try {
+        if (reopenedServer !== undefined) await closeLoopbackServer(reopenedServer);
+      } finally {
+        reopened.close();
+      }
     }
   });
 
   it('allows fixed pair bearers with an empty cookie origin allowlist but never enables cookie authentication', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a', harnessId: 'harness-a', expiresAt: now + 60_000,
@@ -171,17 +193,23 @@ describe('createCalibrationHarnessSessionAuth', () => {
       const app = express();
       app.post('/api/calibration-harness/pair', sessionAuth.pair);
       app.get('/api/calibration-harness/:harnessId', sessionAuth.authenticate, (_req, res) => res.status(204).end());
-      expect((await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(204);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', 'proxxied_calibration_session=calibration_session_' + 'a'.repeat(43)).set('Origin', webOrigin)).status).toBe(401);
+      server = await listenLoopback(app);
+      expect((await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(204);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', 'proxxied_calibration_session=calibration_session_' + 'a'.repeat(43)).set('Origin', webOrigin)).status).toBe(401);
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
   });
 
   it('revokes only the authenticated session cookie on CSRF-checked unpair', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a', harnessId: 'harness-a', expiresAt: now + 60_000,
@@ -191,25 +219,31 @@ describe('createCalibrationHarnessSessionAuth', () => {
       app.post('/api/calibration-harness/pair', sessionAuth.pair);
       app.post('/api/calibration-harness/unpair', sessionAuth.unpair);
       app.get('/api/calibration-harness/:harnessId', sessionAuth.authenticate, (_req, res) => res.status(204).end());
-      const first = await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
-      const second = await request(app).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
+      server = await listenLoopback(app);
+      const first = await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
+      const second = await request(server).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
       const firstCookie = first.headers['set-cookie'][0]!.split(';', 1)[0]!;
       const secondCookie = second.headers['set-cookie'][0]!.split(';', 1)[0]!;
-      expect((await request(app).post('/api/calibration-harness/unpair').set('Cookie', firstCookie)).status).toBe(401);
-      const unpaired = await request(app).post('/api/calibration-harness/unpair').set('Cookie', firstCookie).set('Origin', webOrigin);
+      expect((await request(server).post('/api/calibration-harness/unpair').set('Cookie', firstCookie)).status).toBe(401);
+      const unpaired = await request(server).post('/api/calibration-harness/unpair').set('Cookie', firstCookie).set('Origin', webOrigin);
       expect(unpaired.status).toBe(204);
       expect(unpaired.headers['set-cookie'][0]).toContain('proxxied_calibration_session=; Path=/api/calibration-harness; Expires=');
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', firstCookie).set('Origin', webOrigin)).status).toBe(401);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Cookie', secondCookie).set('Origin', webOrigin)).status).toBe(204);
-      expect((await request(app).get('/api/calibration-harness/harness-a').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(204);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', firstCookie).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Cookie', secondCookie).set('Origin', webOrigin)).status).toBe(204);
+      expect((await request(server).get('/api/calibration-harness/harness-a').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(204);
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
   });
 
   it('marks HTTPS session cookies Secure and rejects non-loopback HTTP origin configuration', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let server: Server | undefined;
     try {
       const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
         ownerId: 'owner-a', harnessId: 'harness-a', expiresAt: now + 60_000,
@@ -217,33 +251,50 @@ describe('createCalibrationHarnessSessionAuth', () => {
       const sessionAuth = createCalibrationHarnessSessionAuth(database, { allowedWebOrigins: ['https://calibration.example.test'], now: () => now });
       const app = express();
       app.post('/api/calibration-harness/pair', sessionAuth.pair);
-      const paired = await request(app).post('/api/calibration-harness/pair').set('Origin', 'https://calibration.example.test').set('Authorization', `Bearer ${pairBearer}`);
+      server = await listenLoopback(app);
+      const paired = await request(server).post('/api/calibration-harness/pair').set('Origin', 'https://calibration.example.test').set('Authorization', `Bearer ${pairBearer}`);
       expect(paired.headers['set-cookie'][0]).toContain('Secure');
       expect(() => createCalibrationHarnessSessionAuth(database, { allowedWebOrigins: ['http://calibration.example.test'] })).toThrow();
     } finally {
-      database.close();
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
     }
   });
 
   it('does not extend existing private-route authentication to browser session cookies or session bearers', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
+    let sessionServer: Server | undefined;
+    let privateServer: Server | undefined;
     try {
       const credentialStore = createCalibrationHarnessCredentialStore(database, { now: () => now });
       const pairBearer = credentialStore.provision({ ownerId: 'owner-a', harnessId: 'harness-a', expiresAt: now + 60_000 });
       const sessionAuth = createCalibrationHarnessSessionAuth(database, { allowedWebOrigins: [webOrigin], now: () => now });
       const sessionApp = express();
       sessionApp.post('/api/calibration-harness/pair', sessionAuth.pair);
-      const paired = await request(sessionApp).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
+      sessionServer = await listenLoopback(sessionApp);
+      const paired = await request(sessionServer).post('/api/calibration-harness/pair').set('Origin', webOrigin).set('Authorization', `Bearer ${pairBearer}`);
       const sessionCookie = paired.headers['set-cookie'][0]!.split(';', 1)[0]!;
       const sessionBearer = sessionCookie.slice(`${'proxxied_calibration_session='}`.length);
 
       const privateApp = express();
       privateApp.get('/private', createPrivateRouteAuth(credentialStore).private('calibration:read'), (_req, res) => res.status(204).end());
-      expect((await request(privateApp).get('/private').set('Cookie', sessionCookie)).status).toBe(401);
-      expect((await request(privateApp).get('/private').set('Authorization', `Bearer ${sessionBearer}`)).status).toBe(401);
+      privateServer = await listenLoopback(privateApp);
+      expect((await request(privateServer).get('/private').set('Cookie', sessionCookie)).status).toBe(401);
+      expect((await request(privateServer).get('/private').set('Authorization', `Bearer ${sessionBearer}`)).status).toBe(401);
     } finally {
-      database.close();
+      try {
+        if (privateServer !== undefined) await closeLoopbackServer(privateServer);
+      } finally {
+        try {
+          if (sessionServer !== undefined) await closeLoopbackServer(sessionServer);
+        } finally {
+          database.close();
+        }
+      }
     }
   });
 });

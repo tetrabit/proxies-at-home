@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -14,12 +12,9 @@ import {
 import * as storeModule from './calibrationHarnessStore.js';
 import { initializeCalibrationHarnessSchema } from './calibrationHarnessSchema.js';
 import { openNativeDatabase } from './openNativeDatabase.js';
+import { createCalibrationHarnessFixtureProvider } from '../testUtils/calibrationHarnessFixtures.js';
 
-const fixtureRoot = path.join(
-  fileURLToPath(new URL('../../../', import.meta.url)),
-  '.review-artifacts',
-  'calibration-harness-store-0f0d7e3a-9653-4aaf-9ac7-7f3d7952b0ad',
-);
+const fixtures = createCalibrationHarnessFixtureProvider();
 
 interface CalibrationHarnessStore {
   publish(
@@ -43,9 +38,7 @@ function createStore(database: Database.Database): CalibrationHarnessStore {
 }
 
 function createExclusiveDatabase(): Database.Database {
-  fs.mkdirSync(fixtureRoot, { recursive: true });
-  const directory = path.join(fixtureRoot, randomUUID());
-  fs.mkdirSync(directory);
+  const directory = fixtures.createInvocationRoot();
   const database = openNativeDatabase(path.join(directory, 'calibration-harness.db'));
   initializeCalibrationHarnessSchema(database);
   return database;
