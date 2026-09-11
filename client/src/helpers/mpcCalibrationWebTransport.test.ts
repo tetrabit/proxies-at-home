@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MpcCalibrationTransportError,
@@ -31,6 +31,42 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 }
 
 describe("same-origin calibration web transport", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("captures the original put signal before digest and skips late fetch dispatch", async () => {
+    const bytes = new Uint8Array([4, 5, 6]);
+    const digest = await sha256(bytes);
+    let dispatches = 0;
+    let enterDigest!: () => void;
+    let releaseDigest!: () => void;
+    const digestEntered = new Promise<void>(resolve => { enterDigest = resolve; });
+    const digestReleased = new Promise<void>(resolve => { releaseDigest = resolve; });
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "digest").mockImplementation((...args) => {
+      enterDigest();
+      return digestReleased.then(() => originalDigest(...args));
+    });
+    const transport = createMpcCalibrationWebTransport({ fetch: async (_url, init) => {
+      dispatches += 1;
+      return init?.method === "POST"
+        ? json({ ownerId: "owner-a", harnessId: "harness-a" })
+        : json({ sha256: digest, byteLength: bytes.byteLength, inserted: true }, { status: 201 });
+    } });
+    await transport.pair(pairCredential);
+    dispatches = 0;
+    const controller = new AbortController();
+    const requestOptions: { signal: AbortSignal } = { signal: controller.signal };
+    const completion = transport.putBlob(digest, bytes, requestOptions);
+
+    await digestEntered;
+    controller.abort();
+    requestOptions.signal = new AbortController().signal;
+    releaseDigest();
+
+    await expect(completion).rejects.toMatchObject({ code: "aborted" });
+    expect(dispatches).toBe(0);
+  });
+
   it("pairs only through the fixed relative route then uses browser cookie policy without retaining authorization", async () => {
     const calls: Array<{ url: RequestInfo | URL; init?: RequestInit }> = [];
     const transport = createMpcCalibrationWebTransport({

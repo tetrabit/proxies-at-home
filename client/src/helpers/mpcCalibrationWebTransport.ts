@@ -15,7 +15,6 @@ import {
   MpcCalibrationTransportError,
   type MpcCalibrationBlobReceipt,
   type MpcCalibrationMissingBlobs,
-  type MpcCalibrationRequestOptions,
   type MpcCalibrationSession,
   type MpcCalibrationTransport,
   type MpcCalibrationTransportErrorCode,
@@ -35,6 +34,10 @@ export type MpcCalibrationWebTransportOptions = Readonly<{
 
 function fail(code: MpcCalibrationTransportErrorCode, status?: number): never {
   throw new MpcCalibrationTransportError(code, status);
+}
+
+function requireActive(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) fail("aborted");
 }
 
 function exactDataRecord(value: unknown, keys: readonly string[]): value is ExactRecord {
@@ -110,10 +113,23 @@ function captureMissingHashes(value: unknown): string[] {
 }
 
 function parseMissing(value: unknown, requested: readonly string[]): MpcCalibrationMissingBlobs {
-  if (!exactDataRecord(value, ["missing"]) || !Array.isArray(value.missing) || value.missing.length > requested.length) return fail("invalid-response");
+  if (!exactDataRecord(value, ["missing"])) return fail("invalid-response");
+  const missingDescriptor = Object.getOwnPropertyDescriptor(value, "missing");
+  if (missingDescriptor === undefined || !("value" in missingDescriptor)) return fail("invalid-response");
+  const valueMissing = missingDescriptor.value;
+  if (!Array.isArray(valueMissing) || Object.getPrototypeOf(valueMissing) !== Array.prototype
+    || Object.getOwnPropertySymbols(valueMissing).length !== 0) return fail("invalid-response");
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(valueMissing, "length");
+  if (lengthDescriptor === undefined || !("value" in lengthDescriptor)
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0
+    || lengthDescriptor.value > requested.length
+    || Object.getOwnPropertyNames(valueMissing).length !== lengthDescriptor.value + 1) return fail("invalid-response");
   const missing: string[] = [];
   const seen = new Set<string>();
-  for (const hash of value.missing) {
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(valueMissing, String(index));
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) return fail("invalid-response");
+    const hash = descriptor.value;
     if (!isCalibrationHarnessBlobSha256(hash) || seen.has(hash) || !requested.includes(hash)) return fail("invalid-response");
     seen.add(hash);
     missing.push(hash);
@@ -296,11 +312,10 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
   const request = async (
     path: string,
     init: RequestInit,
-    requestOptions: MpcCalibrationRequestOptions | undefined,
+    signal: AbortSignal | undefined,
     authenticated: boolean
   ): Promise<Response> => {
-    const signal = requestOptions?.signal;
-    if (signal?.aborted) return fail("aborted");
+    requireActive(signal);
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -314,12 +329,18 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
         redirect: "error",
         signal: controller.signal,
       });
+      if (signal?.aborted) {
+        await cancelResponseBody(response, timeoutMs);
+        return fail("aborted");
+      }
       if (response.redirected || (response.status >= 300 && response.status < 400)) {
         await cancelResponseBody(response, timeoutMs);
+        requireActive(signal);
         return fail("redirect");
       }
       if (!response.ok) {
         await cancelResponseBody(response, timeoutMs);
+        requireActive(signal);
         if (authenticated && response.status === 401) {
           paired = undefined;
           return fail("authentication", 401);
@@ -349,46 +370,63 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
 
   const transport: MpcCalibrationTransport = {
     async pair(credential, requestOptions) {
-      if (requestOptions?.signal?.aborted) return fail("aborted");
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       if (typeof credential !== "string" || !PAIR_CREDENTIAL.test(credential)) return fail("invalid-operation");
       const response = await request(CALIBRATION_HARNESS_HTTP.pairPath, {
         method: "POST",
         headers: { ...headers(), authorization: `Bearer ${credential}` },
-      }, requestOptions, false);
+      }, signal, false);
       await requireStatus(response, [200], timeoutMs);
-      const session = parseSession(await boundedJson(response, timeoutMs, requestOptions?.signal));
+      const session = parseSession(await boundedJson(response, timeoutMs, signal));
+      requireActive(signal);
       paired = session;
       return session;
     },
     async unpair(requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
-      const response = await request(CALIBRATION_HARNESS_HTTP.unpairPath, { method: "POST", headers: headers() }, requestOptions, true);
+      const response = await request(CALIBRATION_HARNESS_HTTP.unpairPath, { method: "POST", headers: headers() }, signal, true);
+      requireActive(signal);
       if (response.status !== 204) {
+        await cancelResponseBody(response, timeoutMs);
+        requireActive(signal);
         paired = undefined;
-        await requireStatus(response, [204], timeoutMs);
+        return fail("invalid-response");
       }
       await cancelResponseBody(response, timeoutMs);
+      requireActive(signal);
       paired = undefined;
     },
     async getSession(requestOptions) {
-      const response = await request(CALIBRATION_HARNESS_HTTP.sessionPath, { method: "GET", headers: headers() }, requestOptions, true);
+      const signal = requestOptions?.signal;
+      requireActive(signal);
+      const response = await request(CALIBRATION_HARNESS_HTTP.sessionPath, { method: "GET", headers: headers() }, signal, true);
       await requireStatus(response, [200], timeoutMs);
-      const session = parseSession(await boundedJson(response, timeoutMs, requestOptions?.signal));
+      const session = parseSession(await boundedJson(response, timeoutMs, signal));
+      requireActive(signal);
       paired = session;
       return session;
     },
     async getSnapshot(requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
       try {
-        const response = await request(CALIBRATION_HARNESS_HTTP.snapshotPath, { method: "GET", headers: headers() }, requestOptions, true);
+        const response = await request(CALIBRATION_HARNESS_HTTP.snapshotPath, { method: "GET", headers: headers() }, signal, true);
         await requireStatus(response, [200], timeoutMs);
-        return parseRevision(await boundedJson(response, timeoutMs, requestOptions?.signal), response);
+        const revision = parseRevision(await boundedJson(response, timeoutMs, signal), response);
+        requireActive(signal);
+        return revision;
       } catch (error) {
         if (error instanceof MpcCalibrationTransportError && error.code === "http" && error.status === 404) return null;
         throw error;
       }
     },
     async publishSnapshot(snapshot, expectedRevision, requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
       if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) return fail("invalid-operation");
       let body: string;
@@ -404,18 +442,21 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
         : { "if-match": calibrationHarnessRevisionEtag(expectedRevision) };
       const response = await request(CALIBRATION_HARNESS_HTTP.snapshotPath, {
         method: "PUT", headers: headers("application/json", precondition), body,
-      }, requestOptions, true);
+      }, signal, true);
       await requireStatus(response, [expectedRevision === null ? 201 : 200], timeoutMs);
-      const published = parseRevision(await boundedJson(response, timeoutMs, requestOptions?.signal), response);
+      const published = parseRevision(await boundedJson(response, timeoutMs, signal), response);
+      requireActive(signal);
       if (canonicalHarnessJson(published.snapshot) !== body || (expectedRevision !== null && published.revision <= expectedRevision)) {
         return fail("invalid-response");
       }
       return published;
     },
     async getBlob(sha256, requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
       if (!isCalibrationHarnessBlobSha256(sha256)) return fail("invalid-operation");
-      const response = await request(calibrationHarnessBlobPath(sha256), { method: "GET", headers: headers(undefined, undefined, "application/octet-stream") }, requestOptions, true);
+      const response = await request(calibrationHarnessBlobPath(sha256), { method: "GET", headers: headers(undefined, undefined, "application/octet-stream") }, signal, true);
       await requireStatus(response, [200], timeoutMs);
       const contentType = response.headers.get("content-type");
       if (contentType === null || !/^application\/octet-stream(?:\s*;|\s*$)/i.test(contentType.trim())) {
@@ -424,33 +465,44 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
       }
       const contentLength = response.headers.get("content-length");
       const identityEncoding = response.headers.get("content-encoding");
-      const bytes = await boundedBody(response, CALIBRATION_HARNESS_LIMITS.maxAssetBytes, timeoutMs, requestOptions?.signal);
+      const bytes = await boundedBody(response, CALIBRATION_HARNESS_LIMITS.maxAssetBytes, timeoutMs, signal);
+      requireActive(signal);
       if ((identityEncoding === null || identityEncoding.trim().toLowerCase() === "identity") && contentLength !== null && Number(contentLength) !== bytes.byteLength) {
         return fail("invalid-response");
       }
       if (await digestSha256(bytes) !== sha256) return fail("invalid-response");
+      requireActive(signal);
       return bytes;
     },
     async putBlob(sha256, value, requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
       if (!isCalibrationHarnessBlobSha256(sha256)) return fail("invalid-operation");
       const bytes = captureBytes(value, CALIBRATION_HARNESS_LIMITS.maxAssetBytes);
       if (await digestSha256(bytes) !== sha256) return fail("invalid-operation");
+      requireActive(signal);
       const response = await request(calibrationHarnessBlobPath(sha256), {
         method: "PUT", headers: headers("application/octet-stream"), body: bytes as unknown as BodyInit,
-      }, requestOptions, true);
+      }, signal, true);
       await requireStatus(response, [200, 201], timeoutMs);
-      return parseReceipt(await boundedJson(response, timeoutMs, requestOptions?.signal), response.status, sha256, bytes.byteLength);
+      const receipt = parseReceipt(await boundedJson(response, timeoutMs, signal), response.status, sha256, bytes.byteLength);
+      requireActive(signal);
+      return receipt;
     },
     async missingBlobs(value, requestOptions) {
+      const signal = requestOptions?.signal;
+      requireActive(signal);
       requirePaired();
       const hashes = captureMissingHashes(value);
       const body = JSON.stringify({ hashes });
       const response = await request(CALIBRATION_HARNESS_HTTP.blobsMissingPath, {
         method: "POST", headers: headers("application/json"), body,
-      }, requestOptions, true);
+      }, signal, true);
       await requireStatus(response, [200], timeoutMs);
-      return parseMissing(await boundedJson(response, timeoutMs, requestOptions?.signal), hashes);
+      const missing = parseMissing(await boundedJson(response, timeoutMs, signal), hashes);
+      requireActive(signal);
+      return missing;
     },
   };
   return Object.freeze(transport);
