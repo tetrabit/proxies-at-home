@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CALIBRATION_HARNESS_FORMAT_VERSION,
+  CALIBRATION_HARNESS_LIMITS,
+  CalibrationHarnessValidationError,
   canonicalHarnessJson,
+  validateCalibrationHarnessSnapshot,
+  type CalibrationHarnessJsonValue,
   type CalibrationHarnessRevision,
   type CalibrationHarnessSnapshot,
 } from "./calibrationHarness";
@@ -232,5 +236,252 @@ describe("calibration harness wire contract", () => {
     expect(
       JSON.parse(canonicalHarnessJson(snapshot)).datasets[0]
     ).not.toHaveProperty("transientMetadata");
+  });
+});
+
+function snapshotFixture(): CalibrationHarnessSnapshot {
+  return JSON.parse(JSON.stringify(representativeSnapshot)) as CalibrationHarnessSnapshot;
+}
+
+describe("validateCalibrationHarnessSnapshot", () => {
+  it("retains valid full metadata, unknown fields, and historical rows without mutation", () => {
+    const snapshot = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    snapshot.retainedEnvelopeMetadata = {
+      nested: [true, { literalIdentifier: "preserve-me" }],
+      omittedByJson: undefined,
+    };
+    snapshot.runs[0].results.push({
+      caseId: "historical-case-no-longer-present",
+      expectedIdentifier: "old-expected",
+      predictedIdentifier: "old-prediction",
+      matched: false,
+      historicalMetadata: { retained: true },
+    });
+    const before = canonicalHarnessJson(snapshot);
+
+    const validated = validateCalibrationHarnessSnapshot(snapshot);
+
+    expect(validated).toBe(snapshot);
+    expect(canonicalHarnessJson(validated)).toBe(before);
+    expect(validated.runs).toHaveLength(25);
+    expect(validated.retainedEnvelopeMetadata).toEqual({
+      nested: [true, { literalIdentifier: "preserve-me" }],
+      omittedByJson: undefined,
+    });
+  });
+
+  it("rejects malformed required nested values", () => {
+    const snapshot = snapshotFixture();
+    snapshot.cases[0].candidates[0].tags = ["valid", 2] as unknown as string[];
+
+    expect(() => validateCalibrationHarnessSnapshot(snapshot)).toThrow(
+      CalibrationHarnessValidationError
+    );
+  });
+
+  it("rejects malformed table rows with a validation error", () => {
+    const snapshot = snapshotFixture();
+    snapshot.datasets = [null] as unknown as CalibrationHarnessSnapshot["datasets"];
+
+    expect(() => validateCalibrationHarnessSnapshot(snapshot)).toThrow(
+      CalibrationHarnessValidationError
+    );
+  });
+
+  it("rejects duplicate identifiers in each identity scope", () => {
+    const duplicateCase = snapshotFixture();
+    duplicateCase.cases.push({ ...duplicateCase.cases[0] });
+    const duplicateCandidate = snapshotFixture();
+    duplicateCandidate.cases[0].candidates.push({
+      ...duplicateCandidate.cases[0].candidates[0],
+    });
+
+    expect(() => validateCalibrationHarnessSnapshot(duplicateCase)).toThrow(/duplicate case id/i);
+    expect(() => validateCalibrationHarnessSnapshot(duplicateCandidate)).toThrow(
+      /duplicate candidate identifier/i
+    );
+  });
+
+  it("rejects invalid asset hashes and byte sizes", () => {
+    const invalidHash = snapshotFixture();
+    invalidHash.assets[0].sha256 = "A".repeat(64);
+    const invalidSize = snapshotFixture();
+    invalidSize.assets[0].byteLength = CALIBRATION_HARNESS_LIMITS.maxAssetBytes + 1;
+
+    expect(() => validateCalibrationHarnessSnapshot(invalidHash)).toThrow(/sha256/i);
+    expect(() => validateCalibrationHarnessSnapshot(invalidSize)).toThrow(/byteLength/i);
+  });
+
+  it("rejects cross-dataset assets and invalid current candidate references", () => {
+    const crossDataset = snapshotFixture();
+    crossDataset.datasets.push({
+      ...crossDataset.datasets[0],
+      id: "dataset-other",
+    });
+    crossDataset.assets[0].datasetId = "dataset-other";
+    const missingCandidate = snapshotFixture();
+    missingCandidate.assets[1].candidateIdentifier = "not-in-this-case";
+    const invalidExpected = snapshotFixture();
+    invalidExpected.cases[0].expectedIdentifier = "not-in-this-case";
+
+    expect(() => validateCalibrationHarnessSnapshot(crossDataset)).toThrow(/datasetId/i);
+    expect(() => validateCalibrationHarnessSnapshot(missingCandidate)).toThrow(
+      /candidateIdentifier/i
+    );
+    expect(() => validateCalibrationHarnessSnapshot(invalidExpected)).toThrow(
+      /expectedIdentifier/i
+    );
+  });
+
+  it("rejects over-budget payloads and excessive nesting before canonical output", () => {
+    const excessivePayload = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    excessivePayload.unknownPayload = "x".repeat(CALIBRATION_HARNESS_LIMITS.maxMetadataBytes);
+    const excessiveDepth = snapshotFixture() as CalibrationHarnessSnapshot;
+    let cursor: Record<string, unknown> = {};
+    (excessiveDepth as unknown as Record<string, unknown>).unknownMetadata = cursor;
+    for (let depth = 0; depth <= CALIBRATION_HARNESS_LIMITS.maxDepth; depth += 1) {
+      cursor.next = {};
+      cursor = cursor.next as Record<string, unknown>;
+    }
+
+    expect(() => validateCalibrationHarnessSnapshot(excessivePayload)).toThrow(/metadata bytes/i);
+    expect(() => validateCalibrationHarnessSnapshot(excessiveDepth)).toThrow(/depth/i);
+  });
+
+  it("counts JSON string bytes exactly without materializing a large escaped value", () => {
+    const encodedByteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
+    const stringSamples = [
+      ["plain", 7],
+      ["\u0000\b\t\n\f\r\u001f", 24],
+      ["😀", 6],
+      ["\ud800", 8],
+      ["\udc00", 8],
+    ] as const;
+    for (const [sample, expectedSerializedBytes] of stringSamples) {
+      expect(encodedByteLength(JSON.stringify(sample))).toBe(expectedSerializedBytes);
+      expect(() =>
+        validateCalibrationHarnessSnapshot({
+          version: 1,
+          datasets: [],
+          cases: [],
+          assets: [],
+          runs: [],
+          unknownMetadata: sample,
+        })
+      ).not.toThrow();
+    }
+
+    const encodeSpy = vi.spyOn(TextEncoder.prototype, "encode");
+    const controlPayload = "\u0000".repeat(1024 * 1024);
+    try {
+      expect(() =>
+        validateCalibrationHarnessSnapshot({
+          version: 1,
+          datasets: [],
+          cases: [],
+          assets: [],
+          runs: [],
+          unknownMetadata: controlPayload,
+        })
+      ).not.toThrow();
+      expect(Math.max(...encodeSpy.mock.calls.map(([value]) => (value ?? "").length))).toBeLessThan(
+        1024
+      );
+    } finally {
+      encodeSpy.mockRestore();
+    }
+  });
+
+  it("keeps NUL-containing asset-slot tuples distinct while rejecting a true duplicate", () => {
+    const snapshot = snapshotFixture();
+    const firstIdentifier = "x\u0000candidate-small\u0000y";
+    const secondCaseId = "a\u0000candidate-small\u0000x";
+    snapshot.cases = [
+      {
+        ...snapshot.cases[0],
+        id: "a",
+        candidates: [{ ...snapshot.cases[0].candidates[0], identifier: firstIdentifier }],
+        expectedIdentifier: firstIdentifier,
+      },
+      {
+        ...snapshot.cases[0],
+        id: secondCaseId,
+        candidates: [{ ...snapshot.cases[0].candidates[0], identifier: "y" }],
+        expectedIdentifier: "y",
+      },
+    ];
+    snapshot.assets = [
+      {
+        ...snapshot.assets[1],
+        id: "asset-nul-one",
+        caseId: "a",
+        candidateIdentifier: firstIdentifier,
+      },
+      {
+        ...snapshot.assets[1],
+        id: "asset-nul-two",
+        caseId: secondCaseId,
+        candidateIdentifier: "y",
+      },
+    ];
+
+    expect(validateCalibrationHarnessSnapshot(snapshot)).toBe(snapshot);
+    snapshot.assets.push({ ...snapshot.assets[1], id: "asset-nul-duplicate" });
+    expect(() => validateCalibrationHarnessSnapshot(snapshot)).toThrow(/duplicate asset slot/i);
+  });
+
+  it("rejects accessor, hidden, sparse, and custom-iterator properties without invoking them", () => {
+    const accessor = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    let getterCalls = 0;
+    Object.defineProperty(accessor, "volatileMetadata", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "not data";
+      },
+    });
+    expect(() => validateCalibrationHarnessSnapshot(accessor)).toThrow(/data property|accessor/i);
+    expect(getterCalls).toBe(0);
+
+    const hiddenRequired = snapshotFixture();
+    const version = hiddenRequired.version;
+    delete (hiddenRequired as Partial<CalibrationHarnessSnapshot>).version;
+    Object.defineProperty(hiddenRequired, "version", { enumerable: false, value: version });
+    expect(() => validateCalibrationHarnessSnapshot(hiddenRequired)).toThrow(/enumerable data/i);
+
+    const sparse = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    sparse.unknownMetadata = ["present", , "present"] as unknown as CalibrationHarnessJsonValue;
+    expect(() => validateCalibrationHarnessSnapshot(sparse)).toThrow(/sparse arrays/i);
+
+    const arrayAccessor = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    let arrayGetterCalls = 0;
+    const accessorArray = ["data"];
+    Object.defineProperty(accessorArray, "0", {
+      enumerable: true,
+      get() {
+        arrayGetterCalls += 1;
+        return "not data";
+      },
+    });
+    arrayAccessor.unknownMetadata = accessorArray;
+    expect(() => validateCalibrationHarnessSnapshot(arrayAccessor)).toThrow(/data array index/i);
+    expect(arrayGetterCalls).toBe(0);
+
+    const customIterator = snapshotFixture() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    let iteratorCalls = 0;
+    const metadataArray = ["data"];
+    Object.defineProperty(metadataArray, Symbol.iterator, {
+      enumerable: true,
+      value: function* () {
+        iteratorCalls += 1;
+        yield "altered";
+      },
+    });
+    customIterator.unknownMetadata = metadataArray;
+    expect(() => validateCalibrationHarnessSnapshot(customIterator)).toThrow(/symbol|array/i);
+    expect(iteratorCalls).toBe(0);
+
+    const nullPrototype = Object.assign(Object.create(null), snapshotFixture());
+    expect(validateCalibrationHarnessSnapshot(nullPrototype)).toBe(nullPrototype);
   });
 });
