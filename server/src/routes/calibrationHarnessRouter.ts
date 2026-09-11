@@ -17,6 +17,7 @@ import {
   type CalibrationHarnessSessionAuthOptions,
 } from '../auth/calibrationHarnessSession.js';
 import { CalibrationHarnessRevisionPreconditionError, createCalibrationHarnessStore } from '../db/calibrationHarnessStore.js';
+import { createCalibrationHarnessBlobRouter } from './calibrationHarnessBlobRouter.js';
 
 export interface CalibrationHarnessRouterOptions {
   /** An already opened and initialized calibration-harness SQLite database. */
@@ -244,7 +245,7 @@ export function createCalibrationHarnessRouter(options: CalibrationHarnessRouter
   );
 
   router.use(noStore, sessionAuth.authenticate);
-  // H2 may insert authenticated namespace handlers here before this terminal boundary.
+  router.use('/blobs', createCalibrationHarnessBlobRouter(options.database));
   router.use(rejectUnhandledNamespaceRequest);
 
   return router;
