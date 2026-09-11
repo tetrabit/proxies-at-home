@@ -60,11 +60,12 @@ One owner-scoped SQLite database in Docker persistent storage is authoritative f
 | --- | --- | --- | --- |
 | M1 | `td-14045a` | Merge disjoint offline harness changes | T2 |
 | M2 | `td-158fbf` | Preserve deletions and asset conflicts during merge | M1 |
+| M3 | `td-5babbb` | Merge generated parent timestamps without false conflicts | M2 |
 | C1 | `td-09d79c` | Persist local revision base and outgoing edits | T2 |
 | C2 | `td-330727` | Implement authenticated web harness transport | H2, T2 |
 | C3 | `td-729b89` | Hydrate shared harness into an offline cache safely | C1, C2 |
 | C4 | `td-7b267f` | Upload local edits against their recorded revision | C3 |
-| C5 | `td-b9689b` | Recover conflicts and reconnect queued edits | C4, M2 |
+| C5 | `td-b9689b` | Recover conflicts and reconnect queued edits | C4, M2, M3 |
 | C6 | `td-ce21b5` | Mark all harness mutations for durable sync | C5 |
 | E1 | `td-30aa34` | Broker fixed shared-backend requests in Electron main | A1, T2 |
 | E2 | `td-06d5fb` | Expose sandbox-compatible calibration IPC | E1 |
@@ -85,6 +86,8 @@ One owner-scoped SQLite database in Docker persistent storage is authoritative f
 
 ## Tracker verification
 
-Created and read back 32 one-point leaves and 44 exact dependency edges under four outcome epics. The initial dependency-ready set was P1, T1 and S1.
+The initial map created and read back 32 one-point leaves and 44 exact dependency edges under four outcome epics. The initial dependency-ready set was P1, T1 and S1.
+
+M3 was added after executable probes showed that ordinary child edits also change their parent dataset's generated `updatedAt`, causing false whole-record merge conflicts. It is a narrow prerequisite for C5, not a relaxation of substantive conflict handling. Its task and two added dependency edges were read back; the retained finding/action map is `.review-artifacts/mpc-parent-timestamp-630054a09d9443c5a5989d04e4a1bd95/`. Implementation and independent QA are still required.
 
 Local machine-readable map and verification: `.review-artifacts/mpc-sqlite-task-map-244975198eb84e12b48c5343b17d5ceb/`. This document is tasking, not a completion or release claim.

@@ -395,4 +395,159 @@ describe("mergeCalibrationHarnessSnapshots", () => {
     );
     expect(() => validateCalibrationHarnessSnapshot(invalid)).toThrow(CalibrationHarnessValidationError);
   });
+
+  it("merges independent case edits when both sides only advance the parent dataset timestamp", () => {
+    const base = snapshot();
+    const left = clone(base);
+    left.datasets[0].updatedAt = 4;
+    left.cases[0].notes = "left case edit";
+    const right = clone(base);
+    right.datasets[0].updatedAt = 9;
+    right.cases.push(calibrationCase("case-2"));
+    const before = [canonicalHarnessJson(base), canonicalHarnessJson(left), canonicalHarnessJson(right)];
+
+    const first = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, left, right));
+    const repeated = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, left, right));
+    const second = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, right, left));
+
+    expect(first.datasets[0]).toEqual({ ...base.datasets[0], updatedAt: 9 });
+    expect(first.cases).toMatchObject([
+      { id: "case-1", notes: "left case edit" },
+      { id: "case-2" },
+    ]);
+    expect(canonicalHarnessJson(first)).toBe(canonicalHarnessJson(repeated));
+    expect(canonicalHarnessJson(first)).toBe(canonicalHarnessJson(second));
+    expect([canonicalHarnessJson(base), canonicalHarnessJson(left), canonicalHarnessJson(right)]).toEqual(before);
+  });
+
+  it("preserves an exact substantive dataset edit against a peer parent timestamp update", () => {
+    const base = snapshot();
+    const left = clone(base) as CalibrationHarnessSnapshot & Record<string, unknown>;
+    left.datasets[0] = {
+      ...left.datasets[0],
+      name: "substantive dataset edit",
+      unknownDatasetMetadata: { nested: ["first", { retained: true }] },
+      updatedAt: 4,
+    };
+    const right = clone(base);
+    right.datasets[0].updatedAt = 11;
+    const expected = clone(left.datasets[0]);
+    expected.updatedAt = 11;
+    const before = [canonicalHarnessJson(base), canonicalHarnessJson(left), canonicalHarnessJson(right)];
+
+    const merged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, left, right));
+    const reversed = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, right, left));
+
+    expect(merged.datasets).toEqual([expected]);
+    expect(canonicalHarnessJson(merged)).toBe(canonicalHarnessJson(reversed));
+    expect([canonicalHarnessJson(base), canonicalHarnessJson(left), canonicalHarnessJson(right)]).toEqual(before);
+  });
+
+  it("retains unchanged and idempotent dataset records while advancing only their generated timestamp", () => {
+    const base = snapshot();
+    const unchanged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, clone(base), clone(base)));
+    const advanced = clone(base);
+    advanced.datasets[0].updatedAt = 8;
+
+    const merged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, advanced, clone(base)));
+    const idempotent = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, advanced, clone(advanced)));
+
+    expect(unchanged).toEqual(base);
+    expect(merged.datasets[0]).toEqual({ ...base.datasets[0], updatedAt: 8 });
+    expect(idempotent.datasets[0]).toEqual({ ...base.datasets[0], updatedAt: 8 });
+  });
+
+  it("retains divergent dataset edits and unknown nested-array distinctions as fail-closed conflicts", () => {
+    const base = snapshot() as CalibrationHarnessSnapshot & Record<string, unknown>;
+    base.datasets[0] = {
+      ...base.datasets[0],
+      unknownDatasetMetadata: { nested: ["base", "order"] },
+    };
+    const left = clone(base);
+    left.datasets[0] = {
+      ...left.datasets[0],
+      name: "left dataset edit",
+      unknownDatasetMetadata: { nested: ["left", "order"] },
+      updatedAt: 4,
+    };
+    const right = clone(base);
+    right.datasets[0] = {
+      ...right.datasets[0],
+      name: "right dataset edit",
+      unknownDatasetMetadata: { nested: ["order", "right"] },
+      updatedAt: 9,
+    };
+
+    const result = mergeCalibrationHarnessSnapshots(base, left, right);
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "datasets", id: "dataset-1", kind: "divergent-edit" })],
+    });
+    expect(result).not.toHaveProperty("snapshot");
+  });
+
+  it("keeps dataset deletion and distinct same-id additions as conflicts despite timestamp handling", () => {
+    const base = snapshot();
+    const deleted = clone(base);
+    deleted.datasets = [];
+    deleted.cases = [];
+    const timestampOnly = clone(base);
+    timestampOnly.datasets[0].updatedAt = 5;
+    const deletionResult = mergeCalibrationHarnessSnapshots(base, deleted, timestampOnly);
+
+    expect(deletionResult).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "datasets", id: "dataset-1", kind: "divergent-edit" })],
+    });
+    expect(deletionResult).not.toHaveProperty("snapshot");
+
+    const empty = snapshot({ datasets: [], cases: [] });
+    const left = clone(empty);
+    left.datasets.push({ ...dataset("dataset-added"), name: "left addition", updatedAt: 3 });
+    const right = clone(empty);
+    right.datasets.push({ ...dataset("dataset-added"), name: "right addition", updatedAt: 7 });
+    const additionResult = mergeCalibrationHarnessSnapshots(empty, left, right);
+
+    expect(additionResult).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "datasets", id: "dataset-added", kind: "divergent-edit" })],
+    });
+    expect(additionResult).not.toHaveProperty("snapshot");
+  });
+
+  it("leaves case, asset, and immutable-run semantics unchanged beside a parent timestamp update", () => {
+    const base = snapshot({ assets: [asset()], runs: [run("run-base")] });
+    const changedCase = clone(base);
+    changedCase.datasets[0].updatedAt = 4;
+    changedCase.cases[0].notes = "case edit";
+    const caseMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, changedCase, clone(base)));
+    expect(caseMerged.cases[0].notes).toBe("case edit");
+
+    const changedAsset = clone(base);
+    changedAsset.datasets[0].updatedAt = 5;
+    changedAsset.assets[0] = asset("asset-1", { sha256: "b".repeat(64), byteLength: 2 });
+    const assetMerged = mergedSnapshot(mergeCalibrationHarnessSnapshots(base, changedAsset, clone(base)));
+    expect(assetMerged.assets).toEqual(changedAsset.assets);
+
+    const changedRun = clone(base);
+    changedRun.datasets[0].updatedAt = 6;
+    changedRun.runs[0].algorithmLabel = "changed";
+    const runResult = mergeCalibrationHarnessSnapshots(base, changedRun, clone(base));
+    expect(runResult).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({ collection: "runs", id: "run-base", kind: "immutable-run-change" })],
+    });
+    expect(runResult).not.toHaveProperty("snapshot");
+  });
+
+  it("keeps malformed dataset timestamps under existing validation rather than coercing them", () => {
+    const base = snapshot();
+    const malformed = clone(base);
+    (malformed.datasets[0] as unknown as { updatedAt: unknown }).updatedAt = "9";
+
+    expect(() => mergeCalibrationHarnessSnapshots(base, malformed, clone(base))).toThrow(
+      CalibrationHarnessValidationError
+    );
+  });
 });

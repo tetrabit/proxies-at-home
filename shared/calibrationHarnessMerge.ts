@@ -251,6 +251,15 @@ function mergeRecords<T extends IdentifiedRecord>(
       continue;
     }
 
+    const generatedTimestampMerge =
+      collection === "datasets" && leftCurrent !== undefined && rightCurrent !== undefined
+        ? mergeGeneratedDatasetTimestamp(current, leftCurrent, rightCurrent)
+        : undefined;
+    if (generatedTimestampMerge !== undefined) {
+      output.push(generatedTimestampMerge);
+      continue;
+    }
+
     const selected = mergeProperty(
       { present: true, value: current },
       { present: leftCurrent !== undefined, value: leftCurrent },
@@ -304,6 +313,52 @@ function mergeRecords<T extends IdentifiedRecord>(
   }
 
   return output;
+}
+
+function mergeGeneratedDatasetTimestamp<T extends IdentifiedRecord>(base: T, left: T, right: T): T | undefined {
+  const baseTimestamp = generatedDatasetTimestamp(base);
+  const leftTimestamp = generatedDatasetTimestamp(left);
+  const rightTimestamp = generatedDatasetTimestamp(right);
+  if (
+    baseTimestamp === undefined ||
+    leftTimestamp === undefined ||
+    rightTimestamp === undefined ||
+    (!sameRecordExceptUpdatedAt(base, left) && !sameRecordExceptUpdatedAt(base, right))
+  ) {
+    return undefined;
+  }
+
+  const selected = sameRecordExceptUpdatedAt(base, left)
+    ? sameRecordExceptUpdatedAt(base, right)
+      ? base
+      : right
+    : left;
+  const merged = cloneJson(selected) as JsonObject;
+  Object.defineProperty(merged, "updatedAt", {
+    configurable: true,
+    enumerable: true,
+    value: Math.max(baseTimestamp, leftTimestamp, rightTimestamp),
+    writable: true,
+  });
+  return merged as T;
+}
+
+function generatedDatasetTimestamp(record: object): number | undefined {
+  const updatedAt = propertyEntry(record, "updatedAt");
+  return updatedAt.present && typeof updatedAt.value === "number" && Number.isSafeInteger(updatedAt.value)
+    ? updatedAt.value
+    : undefined;
+}
+
+function sameRecordExceptUpdatedAt(first: object, second: object): boolean {
+  const keys = new Set([...Object.keys(first), ...Object.keys(second)]);
+  keys.delete("updatedAt");
+  for (const key of keys) {
+    if (!sameEntry(propertyEntry(first, key), propertyEntry(second, key))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function mergeProperty(
