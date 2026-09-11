@@ -93,7 +93,13 @@ function createCredential(): string {
   return `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
 }
 
-function projectIdentity(ownerId: string, harnessId: string): CalibrationHarnessIdentity {
+/** Creates a validated, server-owned calibration-only identity projection. */
+export function createCalibrationHarnessIdentity(
+  ownerId: string,
+  harnessId: string,
+): CalibrationHarnessIdentity {
+  assertBoundedIdentity(ownerId, 'ownerId');
+  assertBoundedIdentity(harnessId, 'harnessId');
   return Object.freeze({
     ownerId,
     harnessId,
@@ -195,7 +201,7 @@ export function createCalibrationHarnessCredentialStore(
         return null;
       }
 
-      return projectIdentity(ownerId, harnessId);
+      return createCalibrationHarnessIdentity(ownerId, harnessId);
     },
   };
 }
