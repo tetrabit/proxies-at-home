@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type { CardOption, PrintInfo } from "@/types";
 import type { CalibrationHarnessLocalState } from "../../shared/calibrationHarnessLocalState";
+import type { CalibrationHarnessRecoveryState } from "../../shared/calibrationHarnessRecoveryState";
 
 // Image source types for explicit tracking
 export type ImageSource = "mpc" | "scryfall" | "custom" | "cardback";
@@ -415,7 +416,7 @@ export class ProxxiedDexie extends Dexie {
   mpcCalibrationAssets!: Table<MpcCalibrationAssetRecord, string>;
   mpcCalibrationRuns!: Table<MpcCalibrationRunRecord, string>;
   mpcCalibrationSyncStates!: Table<
-    CalibrationHarnessLocalState,
+    CalibrationHarnessLocalState | CalibrationHarnessRecoveryState,
     [string, string, string]
   >;
   mpcCalibrationCacheBindings!: Table<MpcCalibrationCacheBindingRecord, string>;

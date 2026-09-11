@@ -1,13 +1,18 @@
 import type { ProxxiedDexie } from "@/db";
 import {
-  CALIBRATION_HARNESS_LOCAL_STATE_VERSION,
   captureCalibrationHarnessRevision,
   validateCalibrationHarnessPersistenceIdentity,
   validateCalibrationHarnessLocalState,
   type CalibrationHarnessAcknowledgementReceipt,
-  type CalibrationHarnessLocalState,
   type CalibrationHarnessPersistenceIdentity,
 } from "../../../shared/calibrationHarnessLocalState";
+import {
+  CALIBRATION_HARNESS_RECOVERY_STATE_VERSION,
+  convertCalibrationHarnessLocalStateToRecoveryState,
+  validateCalibrationHarnessRecoveryState,
+  type CalibrationHarnessAnyLocalState,
+  type CalibrationHarnessRecoveryState,
+} from "../../../shared/calibrationHarnessRecoveryState";
 import {
   canonicalHarnessJson,
   type CalibrationHarnessRevision,
@@ -30,15 +35,15 @@ export interface MpcCalibrationAcknowledgement extends CalibrationHarnessPersist
 }
 
 export interface MpcCalibrationSyncStateStore {
-  load(identity: CalibrationHarnessPersistenceIdentity): Promise<CalibrationHarnessLocalState | undefined>;
-  storeBaseWhenClean(identity: CalibrationHarnessPersistenceIdentity, base: CalibrationHarnessRevision | null): Promise<CalibrationHarnessLocalState>;
-  queueSnapshot(identity: CalibrationHarnessPersistenceIdentity, snapshot: CalibrationHarnessSnapshot): Promise<CalibrationHarnessLocalState>;
-  markSnapshotSent(identity: CalibrationHarnessPersistenceIdentity, generation: number): Promise<CalibrationHarnessLocalState>;
+  load(identity: CalibrationHarnessPersistenceIdentity): Promise<CalibrationHarnessAnyLocalState | undefined>;
+  storeBaseWhenClean(identity: CalibrationHarnessPersistenceIdentity, base: CalibrationHarnessRevision | null): Promise<CalibrationHarnessAnyLocalState>;
+  queueSnapshot(identity: CalibrationHarnessPersistenceIdentity, snapshot: CalibrationHarnessSnapshot): Promise<CalibrationHarnessAnyLocalState>;
+  markSnapshotSent(identity: CalibrationHarnessPersistenceIdentity, generation: number): Promise<CalibrationHarnessAnyLocalState>;
   /**
    * A duplicate succeeds only when it exactly equals the one retained latest
    * acknowledgement receipt. Older or malformed receipts always fail closed.
    */
-  acknowledge(acknowledgement: MpcCalibrationAcknowledgement): Promise<CalibrationHarnessLocalState>;
+  acknowledge(acknowledgement: MpcCalibrationAcknowledgement): Promise<CalibrationHarnessAnyLocalState>;
 }
 
 type StoreOptions = { now?: () => number };
@@ -151,14 +156,16 @@ function matchesReceipt(
     sameSnapshot(receipt.base.snapshot, acknowledgement.base.snapshot);
 }
 
-function initialState(identity: CalibrationHarnessPersistenceIdentity, updatedAt: number): CalibrationHarnessLocalState {
+function initialState(identity: CalibrationHarnessPersistenceIdentity, updatedAt: number): CalibrationHarnessRecoveryState {
   return {
-    formatVersion: CALIBRATION_HARNESS_LOCAL_STATE_VERSION,
+    formatVersion: CALIBRATION_HARNESS_RECOVERY_STATE_VERSION,
     ...identity,
     base: null,
     queued: null,
     inFlight: null,
     lastAcknowledgement: null,
+    settledGeneration: 0,
+    lastRecovery: null,
     dirtyGeneration: 0,
     sentGeneration: 0,
     acknowledgedGeneration: 0,
@@ -191,9 +198,24 @@ export function createMpcCalibrationSyncStateStore(
     }
     return value;
   };
-  const validState = (state: CalibrationHarnessLocalState) => {
+  const validState = (state: unknown): CalibrationHarnessAnyLocalState => {
     try {
-      return validateCalibrationHarnessLocalState(state);
+      try {
+        return validateCalibrationHarnessLocalState(state);
+      } catch {
+        return validateCalibrationHarnessRecoveryState(state);
+      }
+    } catch (error) {
+      throw asSyncError(error);
+    }
+  };
+  const writableState = (state: CalibrationHarnessAnyLocalState): CalibrationHarnessRecoveryState =>
+    state.formatVersion === CALIBRATION_HARNESS_RECOVERY_STATE_VERSION
+      ? state
+      : convertCalibrationHarnessLocalStateToRecoveryState(state);
+  const validRecoveryState = (state: unknown): CalibrationHarnessRecoveryState => {
+    try {
+      return validateCalibrationHarnessRecoveryState(state);
     } catch (error) {
       throw asSyncError(error);
     }
@@ -202,7 +224,7 @@ export function createMpcCalibrationSyncStateStore(
   return {
     async load(identity) {
       const valid = validIdentity(identity);
-      let state: CalibrationHarnessLocalState | undefined;
+      let state: CalibrationHarnessAnyLocalState | undefined;
       try {
         state = await database.mpcCalibrationSyncStates.get(key(valid));
       } catch (error) {
@@ -231,7 +253,7 @@ export function createMpcCalibrationSyncStateStore(
       try {
         return await database.transaction("rw", database.mpcCalibrationSyncStates, async () => {
           const current = await database.mpcCalibrationSyncStates.get(key(valid));
-          const state = current === undefined ? initialState(valid, timestamp()) : validState(current);
+          const state = current === undefined ? initialState(valid, timestamp()) : writableState(validState(current));
           if (state.queued !== null) {
             throw new MpcCalibrationSyncStateError("cannot replace the base while a snapshot is queued");
           }
@@ -250,7 +272,7 @@ export function createMpcCalibrationSyncStateStore(
             }
           }
           if (capturedBase === null) return state;
-          const next = validState({ ...state, base: capturedBase, updatedAt: timestamp() });
+          const next = validRecoveryState({ ...state, base: capturedBase, updatedAt: timestamp() });
           await database.mpcCalibrationSyncStates.put(next);
           return next;
         });
@@ -270,12 +292,12 @@ export function createMpcCalibrationSyncStateStore(
       try {
         return await database.transaction("rw", database.mpcCalibrationSyncStates, async () => {
           const current = await database.mpcCalibrationSyncStates.get(key(valid));
-          const state = current === undefined ? initialState(valid, timestamp()) : validState(current);
+          const state = current === undefined ? initialState(valid, timestamp()) : writableState(validState(current));
           if (state.dirtyGeneration === Number.MAX_SAFE_INTEGER) {
             throw new MpcCalibrationSyncStateError("dirty generation overflow");
           }
           const generation = state.dirtyGeneration + 1;
-          const next = validState({
+          const next = validRecoveryState({
             ...state,
             queued: { generation, snapshot: capturedSnapshot },
             dirtyGeneration: generation,
@@ -298,16 +320,16 @@ export function createMpcCalibrationSyncStateStore(
         return await database.transaction("rw", database.mpcCalibrationSyncStates, async () => {
           const current = await database.mpcCalibrationSyncStates.get(key(valid));
           if (current === undefined) throw new MpcCalibrationSyncStateError("sync state does not exist");
-          const state = validState(current);
+          const state = writableState(validState(current));
           if (
             state.inFlight !== null ||
             state.queued === null ||
             state.queued.generation !== generation ||
-            generation <= state.acknowledgedGeneration
+            generation <= state.settledGeneration
           ) {
             throw new MpcCalibrationSyncStateError("generation is not the exact queued publication");
           }
-          const next = validState({
+          const next = validRecoveryState({
             ...state,
             sentGeneration: generation,
             inFlight: {
@@ -341,7 +363,7 @@ export function createMpcCalibrationSyncStateStore(
         return await database.transaction("rw", database.mpcCalibrationSyncStates, async () => {
           const current = await database.mpcCalibrationSyncStates.get(key(valid));
           if (current === undefined) throw new MpcCalibrationSyncStateError("sync state does not exist");
-          const state = validState(current);
+          const state = writableState(validState(current));
           if (captured.generation <= state.acknowledgedGeneration) {
             if (state.lastAcknowledgement !== null && state.lastAcknowledgement !== undefined &&
               matchesReceipt(state.lastAcknowledgement, captured)) {
@@ -369,10 +391,11 @@ export function createMpcCalibrationSyncStateStore(
             expectedBaseRevision: captured.expectedBaseRevision,
             base: captured.base,
           };
-          const next = validState({
+          const next = validRecoveryState({
             ...state,
             base: captured.base,
             acknowledgedGeneration: captured.generation,
+            settledGeneration: captured.generation,
             queued: state.queued?.generation === captured.generation ? null : state.queued,
             inFlight: null,
             lastAcknowledgement: receipt,

@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
 import {
   createMpcCalibrationSyncStateStore,
@@ -155,6 +155,48 @@ describe("mpcCalibrationSyncState", () => {
     expect((await state.load(identity))?.dirtyGeneration).toBe(Number.MAX_SAFE_INTEGER);
   });
 
+  it("converts a valid persisted V1 row only when transitioning and retains it through reopen", async () => {
+    const database = freshDatabase();
+    const legacy = {
+      formatVersion: 1 as const, ...identity, base: { revision: 1, snapshot },
+      queued: { generation: 1, snapshot: { ...snapshot, retained: { legacy: true } } }, inFlight: null,
+      dirtyGeneration: 1, sentGeneration: 0, acknowledgedGeneration: 0, updatedAt: 1,
+    };
+    await database.mpcCalibrationSyncStates.put(legacy as never);
+    const retainedBlob = new Blob(["legacy-asset"], { type: "application/octet-stream" });
+    await database.settings.put({ id: "legacy-setting", value: { preserved: true } });
+    await database.mpcCalibrationAssets.put({
+      id: "legacy-asset",
+      datasetId: "dataset",
+      caseId: "case",
+      role: "source",
+      mimeType: retainedBlob.type,
+      blob: retainedBlob,
+      createdAt: 1,
+      retained: { unrelated: true },
+    } as never);
+    const state = createMpcCalibrationSyncStateStore(database, { now: () => 31 });
+    expect(await state.load(identity)).toEqual(legacy);
+    expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(legacy);
+    expect(await database.settings.get("legacy-setting")).toEqual({ id: "legacy-setting", value: { preserved: true } });
+    const preservedAsset = await database.mpcCalibrationAssets.get("legacy-asset");
+    expect(preservedAsset).toMatchObject({ id: "legacy-asset", retained: { unrelated: true }, mimeType: "application/octet-stream" });
+    expect(await preservedAsset!.blob.arrayBuffer()).toEqual(await retainedBlob.arrayBuffer());
+
+    const transitioned = await state.markSnapshotSent(identity, 1);
+    expect(transitioned).toMatchObject({ formatVersion: 2, settledGeneration: 0, lastRecovery: null, inFlight: { generation: 1 } });
+    expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(transitioned);
+    expect(await database.settings.get("legacy-setting")).toEqual({ id: "legacy-setting", value: { preserved: true } });
+    database.close();
+    const reopened = new ProxxiedDexie(database.name);
+    handles.push(reopened);
+    expect(await createMpcCalibrationSyncStateStore(reopened).load(identity)).toEqual(transitioned);
+    expect(await reopened.settings.get("legacy-setting")).toEqual({ id: "legacy-setting", value: { preserved: true } });
+    const reopenedAsset = await reopened.mpcCalibrationAssets.get("legacy-asset");
+    expect(reopenedAsset).toMatchObject({ id: "legacy-asset", retained: { unrelated: true }, mimeType: "application/octet-stream" });
+    expect(await reopenedAsset!.blob.arrayBuffer()).toEqual(await retainedBlob.arrayBuffer());
+  });
+
   it("fails closed on corrupt rows and is isolated from generic settings and preferences", async () => {
     const database = freshDatabase();
     const state = createMpcCalibrationSyncStateStore(database, { now: () => 30 });
@@ -169,5 +211,22 @@ describe("mpcCalibrationSyncState", () => {
     await database.mpcCalibrationSyncStates.put(corrupt as never);
     await expect(state.load(identity)).rejects.toBeInstanceOf(MpcCalibrationSyncStateError);
     expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(corrupt);
+  });
+
+  it("rolls back a real same-key state put when persistence fails after the put resolves", async () => {
+    const database = freshDatabase();
+    const state = createMpcCalibrationSyncStateStore(database, { now: () => 35 });
+    const before = await state.queueSnapshot(identity, { ...snapshot, retained: "before" });
+    const put = database.mpcCalibrationSyncStates.put.bind(database.mpcCalibrationSyncStates);
+    const failure = new Error("post-put failure");
+    const spy = vi.spyOn(database.mpcCalibrationSyncStates, "put").mockImplementation((row, key) =>
+      put(row, key).then(() => { throw failure; })
+    );
+
+    await expect(state.queueSnapshot(identity, { ...snapshot, retained: "after" })).rejects.toThrow("post-put failure");
+    spy.mockRestore();
+
+    expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(before);
+    expect(await state.load(identity)).toEqual(before);
   });
 });

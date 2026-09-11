@@ -1,10 +1,11 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
-import { hydrateMpcCalibrationCache } from "./mpcCalibrationCache";
+import { applyMpcCalibrationRecoveryCache, hydrateMpcCalibrationCache } from "./mpcCalibrationCache";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
 import { buildBootstrapPreferenceFixture } from "./mpcPreferenceBootstrap";
 import { CALIBRATION_HARNESS_LIMITS, validateCalibrationHarnessSnapshot } from "../../../shared/calibrationHarness";
+import { validateCalibrationHarnessRecoveryState } from "../../../shared/calibrationHarnessRecoveryState";
 
 const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
 const assetBytes = new Uint8Array([1, 2, 3, 4]);
@@ -547,5 +548,283 @@ describe("hydrateMpcCalibrationCache", () => {
     } finally {
       add.mockRestore();
     }
+  });
+
+  it("atomically applies a queued recovery snapshot with a verified remote Blob and exact next state", async () => {
+    const database = freshDatabase();
+    await expect(hydrateMpcCalibrationCache({ database, transport: transport(), identity })).resolves.toMatchObject({ status: "hydrated" });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    const replacementBytes = new Uint8Array([8, 7, 6, 5]);
+    target.assets[0] = {
+      ...target.assets[0]!,
+      sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272",
+      byteLength: replacementBytes.byteLength,
+    };
+    const nextState = {
+      ...expectedState,
+      base: { revision: 2, snapshot: target },
+      queued: { generation: 2, snapshot: target },
+      dirtyGeneration: 2,
+      updatedAt: 11,
+    };
+    const remote = transport();
+    remote.getBlob = async hash => {
+      expect(hash).toBe(target.assets[0]!.sha256);
+      return replacementBytes.slice();
+    };
+
+    await expect(applyMpcCalibrationRecoveryCache({
+      database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target,
+    })).resolves.toMatchObject({ status: "applied", revision: 2 });
+
+    expect(await bytes((await database.mpcCalibrationAssets.get("asset"))!.blob)).toEqual([...replacementBytes]);
+    expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(nextState);
+    expect(await database.mpcCalibrationCacheBindings.get("mpc-calibration-cache-binding")).toMatchObject({ ...identity, revision: 2 });
+    expect(await database.mpcCalibrationHydrationStaging.count()).toBe(0);
+  });
+
+  it("retains a foreign replacement at a recovery staging ID after cancellation", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    target.assets[0] = { ...target.assets[0]!, sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const controller = new AbortController();
+    const originalAdd = database.mpcCalibrationHydrationStaging.add.bind(database.mpcCalibrationHydrationStaging);
+    let stageId: string | undefined;
+    vi.spyOn(database.mpcCalibrationHydrationStaging, "add").mockImplementation((async (...args: unknown[]) => {
+      const id = await Reflect.apply(originalAdd, database.mpcCalibrationHydrationStaging, args);
+      stageId = id;
+      const staged = await database.mpcCalibrationHydrationStaging.get(id);
+      await database.mpcCalibrationHydrationStaging.put({ ...staged!, ownerId: "foreign-owner", operationId: "foreign-operation" });
+      controller.abort();
+      return id;
+    }) as unknown as typeof originalAdd);
+    const remote = transport();
+    remote.getBlob = async () => new Uint8Array([8, 7, 6, 5]);
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target, signal: controller.signal })).resolves.not.toMatchObject({ status: "applied" });
+    expect(stageId).toBeDefined();
+    expect(await database.mpcCalibrationHydrationStaging.get(stageId!)).toMatchObject({ ownerId: "foreign-owner", operationId: "foreign-operation" });
+  });
+
+  it("rejects a recovery proof whose prior queued and sent body differs from expected state", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const local = snapshot();
+    local.cases[0]!.notes = "local choice";
+    const expectedState = await stateStore.queueSnapshot(identity, local);
+    await database.mpcCalibrationCases.put(local.cases[0]! as never);
+    const sent = await stateStore.markSnapshotSent(identity, expectedState.dirtyGeneration);
+    const foreign = structuredClone(local);
+    foreign.cases[0]!.notes = "foreign choice";
+    const observed = { revision: 2, snapshot: foreign };
+    const nextState = {
+      ...sent, base: observed, queued: null, inFlight: null, settledGeneration: sent.dirtyGeneration, updatedAt: 11,
+      lastRecovery: { kind: "observed-current-inflight" as const, priorBase: sent.base!, priorQueued: { generation: sent.dirtyGeneration, snapshot: foreign }, retiredInFlight: { generation: sent.dirtyGeneration, snapshot: foreign, expectedBaseRevision: sent.base!.revision }, observed, resultingQueued: null, settledGeneration: sent.dirtyGeneration },
+    };
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: transport(), identity, expectedState: sent, nextState: nextState as never, snapshot: foreign })).resolves.toMatchObject({ status: "blocked" });
+    expect((await database.mpcCalibrationCases.get("case"))!.notes).toBe("local choice");
+  });
+
+  it("rejects an unsent recovery rebase that drops the queued local edit", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const local = snapshot();
+    local.cases[0]!.notes = "local choice";
+    const expectedState = await stateStore.queueSnapshot(identity, local);
+    await database.mpcCalibrationCases.put(local.cases[0]! as never);
+    const remote = snapshot();
+    remote.datasets[0]!.name = "Remote rename";
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: remote }, queued: { generation: 2, snapshot: remote }, dirtyGeneration: 2, updatedAt: 11 };
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: transport(), identity, expectedState, nextState: nextState as never, snapshot: remote })).resolves.toMatchObject({ status: "blocked" });
+    expect((await database.mpcCalibrationCases.get("case"))!.notes).toBe("local choice");
+  });
+
+  it("reuses verified local recovery bytes without downloading them", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const remote = transport();
+    const getBlob = vi.spyOn(remote, "getBlob");
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "applied" });
+    expect(getBlob).not.toHaveBeenCalled();
+    expect(await bytes((await database.mpcCalibrationAssets.get("asset"))!.blob)).toEqual([...assetBytes]);
+  });
+
+  it("deduplicates a remote digest while validating and installing every logical asset", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    target.cases.push({ ...structuredClone(target.cases[0]!), id: "case-two" });
+    target.assets[0] = { ...target.assets[0]!, id: "remote-one", sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    target.assets.push({ ...structuredClone(target.assets[0]!), id: "remote-two", caseId: "case-two" });
+    validateCalibrationHarnessSnapshot(target);
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const remote = transport();
+    const getBlob = vi.spyOn(remote, "getBlob").mockResolvedValue(new Uint8Array([8, 7, 6, 5]));
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "applied" });
+    expect(getBlob).toHaveBeenCalledTimes(1);
+    expect(await database.mpcCalibrationAssets.toArray()).toHaveLength(2);
+    await expect(Promise.all((await database.mpcCalibrationAssets.toArray()).map(record => bytes(record.blob)))).resolves.toEqual([[8, 7, 6, 5], [8, 7, 6, 5]]);
+  });
+
+  it("blocks corrupt remote recovery bytes and pre-aborted recovery without canonical writes", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    target.assets[0] = { ...target.assets[0]!, sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const corrupt = transport();
+    corrupt.getBlob = async () => new Uint8Array([1, 2, 3, 4]);
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: corrupt, identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "blocked" });
+    expect((await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId]))).toEqual(expectedState);
+    const controller = new AbortController();
+    controller.abort();
+    const neverCalled = transport();
+    const getSession = vi.spyOn(neverCalled, "getSession");
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: neverCalled, identity, expectedState, nextState: nextState as never, snapshot: target, signal: controller.signal })).resolves.toMatchObject({ status: "cancelled" });
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks corrupt local bytes and oversized declared remote recovery content before download", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    await database.mpcCalibrationAssets.update("asset", { blob: new Blob([new Uint8Array([4, 3, 2, 1])], { type: "image/png" }) });
+    const target = snapshot();
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: transport(), identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "blocked" });
+    const oversized = structuredClone(target);
+    oversized.assets[0] = { ...oversized.assets[0]!, byteLength: CALIBRATION_HARNESS_LIMITS.maxAssetBytes + 1 };
+    const getBlob = vi.spyOn(transport(), "getBlob");
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: { ...transport(), getBlob }, identity, expectedState, nextState: { ...nextState, base: { revision: 2, snapshot: oversized }, queued: { generation: 2, snapshot: oversized } } as never, snapshot: oversized })).resolves.toMatchObject({ status: "blocked" });
+    expect(getBlob).not.toHaveBeenCalled();
+  });
+
+  it("rolls back recovery when binding persistence fails after its real write", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const before = await bootstrapState(database);
+    const target = snapshot();
+    target.assets[0] = { ...target.assets[0]!, sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const originalPut = database.mpcCalibrationCacheBindings.put.bind(database.mpcCalibrationCacheBindings);
+    vi.spyOn(database.mpcCalibrationCacheBindings, "put").mockImplementation((async (...args: unknown[]) => {
+      await Reflect.apply(originalPut, database.mpcCalibrationCacheBindings, args);
+      throw new Error("quota after binding write");
+    }) as unknown as typeof originalPut);
+    const remote = transport();
+    remote.getBlob = async () => new Uint8Array([8, 7, 6, 5]);
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "failed" });
+    await expect(bootstrapState(database)).resolves.toEqual(before);
+    expect(await database.mpcCalibrationHydrationStaging.count()).toBe(0);
+  });
+
+  it("cancels a recovery after staging and preserves a newer queued state", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    target.assets[0] = { ...target.assets[0]!, sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const remote = transport();
+    let sessions = 0;
+    remote.getSession = async () => {
+      sessions += 1;
+      if (sessions === 2) await stateStore.queueSnapshot(identity, snapshot());
+      return { ownerId: identity.ownerId, harnessId: identity.harnessId };
+    };
+    remote.getBlob = async () => new Uint8Array([8, 7, 6, 5]);
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: remote, identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "cancelled" });
+    expect((await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId]))!.dirtyGeneration).toBeGreaterThan(expectedState.dirtyGeneration);
+    expect(await database.mpcCalibrationHydrationStaging.count()).toBe(0);
+  });
+
+  it("blocks an unqueued manual row before replacing the recovery cache", async () => {
+    const database = freshDatabase();
+    await hydrateMpcCalibrationCache({ database, transport: transport(), identity });
+    const stateStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const expectedState = await stateStore.queueSnapshot(identity, snapshot());
+    await database.mpcCalibrationDatasets.add({ id: "manual", name: "manual", targetCaseCount: 0, createdAt: 1, updatedAt: 1, version: 1 } as never);
+    const target = snapshot();
+    const nextState = { ...expectedState, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+
+    await expect(applyMpcCalibrationRecoveryCache({ database, transport: transport(), identity, expectedState, nextState: nextState as never, snapshot: target })).resolves.toMatchObject({ status: "blocked" });
+    expect(await database.mpcCalibrationDatasets.get("manual")).toMatchObject({ name: "manual" });
+  });
+
+  it("distinguishes committed recovery cleanup failure from precommit cleanup failure", async () => {
+    const committed = freshDatabase();
+    await hydrateMpcCalibrationCache({ database: committed, transport: transport(), identity });
+    const committedStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(committed, { now: () => 10 });
+    const committedExpected = await committedStore.queueSnapshot(identity, snapshot());
+    const target = snapshot();
+    target.assets[0] = { ...target.assets[0]!, sha256: "952b50fd4fe30aee9420f479ff3f4c6268f2865ee65a82e1f8e157abc1455272" };
+    const committedNext = { ...committedExpected, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    vi.spyOn(committed.mpcCalibrationHydrationStaging, "bulkDelete").mockRejectedValue(new Error("committed cleanup failure"));
+    const remote = transport();
+    remote.getBlob = async () => new Uint8Array([8, 7, 6, 5]);
+    await expect(applyMpcCalibrationRecoveryCache({ database: committed, transport: remote, identity, expectedState: committedExpected, nextState: committedNext as never, snapshot: target })).resolves.toMatchObject({ status: "applied", reason: "committed-staging-cleanup-failed" });
+    expect((await committed.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId]))!.base!.revision).toBe(2);
+
+    const precommit = freshDatabase();
+    await hydrateMpcCalibrationCache({ database: precommit, transport: transport(), identity });
+    const precommitStore = (await import("./mpcCalibrationSyncState")).createMpcCalibrationSyncStateStore(precommit, { now: () => 10 });
+    const precommitExpected = await precommitStore.queueSnapshot(identity, snapshot());
+    const precommitNext = { ...precommitExpected, base: { revision: 2, snapshot: target }, queued: { generation: 2, snapshot: target }, dirtyGeneration: 2, updatedAt: 11 };
+    const replacingSession = transport();
+    let calls = 0;
+    replacingSession.getSession = async () => ({ ownerId: calls++ === 0 ? identity.ownerId : "other", harnessId: identity.harnessId });
+    replacingSession.getBlob = async () => new Uint8Array([8, 7, 6, 5]);
+    vi.spyOn(precommit.mpcCalibrationHydrationStaging, "bulkDelete").mockRejectedValue(new Error("precommit cleanup failure"));
+    await expect(applyMpcCalibrationRecoveryCache({ database: precommit, transport: replacingSession, identity, expectedState: precommitExpected, nextState: precommitNext as never, snapshot: target })).resolves.toMatchObject({ status: "failed", reason: "staging-cleanup-failed" });
+    expect((await precommit.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId]))).toEqual(precommitExpected);
+  });
+
+  it("treats a valid non-ACK-settled V2 state as clean during ordinary C3 hydration", async () => {
+    const database = freshDatabase();
+    await expect(hydrateMpcCalibrationCache({ database, transport: transport(), identity })).resolves.toMatchObject({ status: "hydrated" });
+    const key: [string, string, string] = [identity.ownerId, identity.harnessId, identity.connectionId];
+    const clean = await database.mpcCalibrationSyncStates.get(key);
+    const base = clean!.base!;
+    const observed = { revision: 2, snapshot: base.snapshot };
+    await database.mpcCalibrationSyncStates.put({
+      ...clean!, base: observed, dirtyGeneration: 1, sentGeneration: 1, settledGeneration: 1,
+      lastRecovery: {
+        kind: "observed-current-inflight", priorBase: base,
+        priorQueued: { generation: 1, snapshot: base.snapshot },
+        retiredInFlight: { generation: 1, snapshot: base.snapshot, expectedBaseRevision: base.revision },
+        observed, resultingQueued: null, settledGeneration: 1,
+      }, updatedAt: 12,
+    } as never);
+
+    const persisted = await database.mpcCalibrationSyncStates.get(key);
+    expect(() => validateCalibrationHarnessRecoveryState(persisted)).not.toThrow();
+    await expect(hydrateMpcCalibrationCache({ database, transport: transport(3), identity })).resolves.toEqual({ status: "hydrated", revision: 3 });
+    expect((await database.mpcCalibrationSyncStates.get(key))!.base!.revision).toBe(3);
   });
 });
