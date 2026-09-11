@@ -437,7 +437,7 @@ export function createMpcCalibrationWebTransport(options: MpcCalibrationWebTrans
       const bytes = captureBytes(value, CALIBRATION_HARNESS_LIMITS.maxAssetBytes);
       if (await digestSha256(bytes) !== sha256) return fail("invalid-operation");
       const response = await request(calibrationHarnessBlobPath(sha256), {
-        method: "PUT", headers: headers("application/octet-stream", undefined, "application/octet-stream"), body: bytes as unknown as BodyInit,
+        method: "PUT", headers: headers("application/octet-stream"), body: bytes as unknown as BodyInit,
       }, requestOptions, true);
       await requireStatus(response, [200, 201], timeoutMs);
       return parseReceipt(await boundedJson(response, timeoutMs, requestOptions?.signal), response.status, sha256, bytes.byteLength);

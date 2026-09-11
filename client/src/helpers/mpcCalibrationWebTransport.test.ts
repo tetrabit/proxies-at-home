@@ -137,7 +137,7 @@ describe("same-origin calibration web transport", () => {
       accept: "application/json", "content-type": "application/json", "if-match": "\"7\"",
     }});
     expect(calls[4]!.init).toMatchObject({ method: "PUT", headers: {
-      accept: "application/octet-stream", "content-type": "application/octet-stream",
+      accept: "application/json", "content-type": "application/octet-stream",
     }, body: bytes });
     expect(calls[5]!.init).toMatchObject({ method: "POST", headers: {
       accept: "application/json", "content-type": "application/json",
