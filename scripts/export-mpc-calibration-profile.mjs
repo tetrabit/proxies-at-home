@@ -5,13 +5,13 @@ import { mkdir, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCalibrationBlobChunkReader, exportCalibrationBlob } from './calibration-blob-export.mjs';
+import { resolveCalibrationExportOrigin } from './calibration-profile-origin.mjs';
 
 // Read only this application's origin, never browser cookies or credentials.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-if (!process.argv[2]) throw new Error('Usage: node scripts/export-mpc-calibration-profile.mjs <browser-profile/IndexedDB>');
+if (!process.argv[2] || process.argv.length > 4) throw new Error('Usage: node scripts/export-mpc-calibration-profile.mjs <browser-profile/IndexedDB> [origin]');
+const { origin, indexedDbPrefix: prefix } = resolveCalibrationExportOrigin(process.argv[3]);
 const source = await realpath(process.argv[2]);
-const origin = 'http://127.0.0.1:5173';
-const prefix = 'http_127.0.0.1_5173.indexeddb';
 const destination = path.join(root, '.recovery', `mpc-calibration-origin-${randomUUID()}`);
 await mkdir(destination, { recursive: false });
 const snapshot = path.join(destination, 'original', 'Default', 'IndexedDB');
