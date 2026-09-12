@@ -736,6 +736,8 @@ export class ImportOrchestrator {
 
         // Find cards that need token lookup
         const cardsNeedingTokenLookup = cards.filter(c => {
+            // Persisted library backs are local static art, never token lookup sources.
+            if (c.imageId && isCardbackId(c.imageId)) return false;
             // Skip back cards and token cards
             if (c.linkedFrontId || c.type_line?.toLowerCase().includes('token')) {
                 return false;

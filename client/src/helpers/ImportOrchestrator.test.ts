@@ -975,6 +975,64 @@ describe('ImportOrchestrator', () => {
             }));
         });
 
+        it('enrichTokenData excludes persisted static cardbacks while retaining ordinary custom uploads', async () => {
+            const tokenFetchSpy = vi.mocked(tokenApiModule.fetchTokenParts).mockResolvedValue({
+                success: true,
+                data: [],
+            });
+            const cards = [
+                {
+                    uuid: 'static-back',
+                    name: 'Rose',
+                    order: 0,
+                    imageId: 'cardback_builtin_mtg',
+                    isUserUpload: false,
+                },
+                {
+                    uuid: 'custom-rose',
+                    name: 'Rose',
+                    imageId: 'custom-upload-id',
+                    isUserUpload: true,
+                },
+                {
+                    uuid: 'normal-maker',
+                    name: 'Treasure Maker',
+                    set: 'abc',
+                    number: '1',
+                    isUserUpload: false,
+                },
+            ] as CardOption[];
+
+            await ImportOrchestrator.enrichTokenData(undefined, cards, false);
+
+            expect(tokenFetchSpy).toHaveBeenCalledTimes(1);
+            expect(tokenFetchSpy).toHaveBeenCalledWith([
+                { name: 'Rose', set: undefined, number: undefined },
+                { name: 'Treasure Maker', set: 'abc', number: '1' },
+            ], undefined);
+        });
+
+        it('enrichTokenData excludes persisted static cardbacks during forced refresh', async () => {
+            const tokenFetchSpy = vi.mocked(tokenApiModule.fetchTokenParts).mockResolvedValue({
+                success: true,
+                data: [],
+            });
+            const cards = [
+                {
+                    uuid: 'static-back',
+                    name: 'Rose',
+                    order: 0,
+                    imageId: 'cardback_builtin_mtg',
+                    isUserUpload: false,
+                    token_parts: [],
+                },
+            ] as CardOption[];
+
+            await ImportOrchestrator.enrichTokenData(undefined, cards, true);
+
+            expect(tokenFetchSpy).not.toHaveBeenCalled();
+        });
+
         it('importMissingTokens calls enrichTokenData with fetched cards', async () => {
             // Mock enrichTokenData to track its call
             const enrichSpy = vi.spyOn(ImportOrchestrator, 'enrichTokenData').mockResolvedValue();

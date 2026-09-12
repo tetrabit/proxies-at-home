@@ -287,6 +287,94 @@ describe("dbUtils", () => {
       expect(bolt?.imageId).toBe("https://cards.scryfall.io/normal/bolt.jpg");
     });
 
+    it("does not query static cardbacks through bulk or single-card resets", async () => {
+      const projectId = "static-cardbacks";
+
+      await db.cards.bulkAdd([
+        {
+          uuid: "standalone-cardback-import",
+          name: "Rose",
+          order: 10,
+          isUserUpload: false,
+          isFlipped: true,
+          projectId,
+          imageId: "cardback_builtin_mtg",
+        },
+        {
+          uuid: "static-cardback-front",
+          name: "Custom Front",
+          order: 20,
+          isUserUpload: true,
+          projectId,
+          imageId: "https://cards.scryfall.io/custom-front.jpg",
+          linkedBackId: "static-cardback-linked",
+        },
+        {
+          uuid: "static-cardback-linked",
+          name: "Rose",
+          order: 20,
+          isUserUpload: true,
+          projectId,
+          imageId: "cardback_uploaded_project_rose",
+          linkedFrontId: "static-cardback-front",
+          usesDefaultCardback: false,
+        },
+      ]);
+
+      const bulkResult = await resetCardsToOriginalImages(projectId);
+      await resetCardToOriginalImage("standalone-cardback-import");
+      await resetCardToOriginalImage("static-cardback-linked");
+
+      expect(fetchCardsMetadataBatch).not.toHaveBeenCalled();
+      expect(bulkResult.reset).toBe(0);
+      await expect(db.cards.get("standalone-cardback-import")).resolves.toMatchObject({
+        imageId: "cardback_builtin_mtg",
+      });
+      await expect(db.cards.get("static-cardback-linked")).resolves.toMatchObject({
+        imageId: "cardback_uploaded_project_rose",
+        linkedFrontId: "static-cardback-front",
+      });
+    });
+
+    it("keeps custom token uploads eligible for original-art reset", async () => {
+      const projectId = "custom-token-reset";
+      const customImageId =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+      vi.mocked(fetchCardsMetadataBatch).mockImplementationOnce(async () =>
+        new Map([
+          [
+            "custom token",
+            {
+              name: "Custom Token",
+              imageUrls: ["https://cards.scryfall.io/custom-token.jpg"],
+            },
+          ],
+        ])
+      );
+      await db.cards.add({
+        uuid: "custom-token",
+        name: "Custom Token",
+        order: 10,
+        isUserUpload: true,
+        isToken: true,
+        projectId,
+        imageId: customImageId,
+      });
+
+      const result = await resetCardsToOriginalImages(projectId);
+
+      expect(fetchCardsMetadataBatch).toHaveBeenCalledWith([
+        expect.objectContaining({ name: "Custom Token" }),
+      ]);
+      expect(result.reset).toBe(1);
+      await expect(db.cards.get("custom-token")).resolves.toMatchObject({
+        imageId: "https://cards.scryfall.io/custom-token.jpg",
+        isUserUpload: false,
+        isToken: true,
+      });
+    });
+
     it("resets double-faced cards correctly", async () => {
       const projectId = "dfc-reset";
 
@@ -338,6 +426,88 @@ describe("dbUtils", () => {
 
       expect(front?.imageId).toBe("https://cards.scryfall.io/front/zendikar.jpg");
       expect(back?.imageId).toBe("https://cards.scryfall.io/back/zendikar.jpg");
+    });
+
+    it("maps a reset DFC front's static in-project back and leaves cross-project links untouched", async () => {
+      const projectId = "dfc-reset-project";
+      const otherProjectId = "other-project";
+
+      vi.mocked(fetchCardsMetadataBatch).mockImplementationOnce(async () =>
+        new Map([
+          [
+            "dfc front",
+            {
+              name: "DFC Front",
+              imageUrls: ["https://cards.scryfall.io/dfc-front.jpg", "https://cards.scryfall.io/dfc-back.jpg"],
+            },
+          ],
+          [
+            "cross project front",
+            {
+              name: "Cross Project Front",
+              imageUrls: ["https://cards.scryfall.io/cross-front.jpg", "https://cards.scryfall.io/cross-back.jpg"],
+            },
+          ],
+        ])
+      );
+
+      await db.cards.bulkAdd([
+        {
+          uuid: "dfc-front",
+          name: "DFC Front",
+          order: 10,
+          isUserUpload: false,
+          projectId,
+          imageId: "mpc-dfc-front",
+          linkedBackId: "dfc-static-back",
+        },
+        {
+          uuid: "dfc-static-back",
+          name: "Project Custom Back",
+          order: 10,
+          isUserUpload: false,
+          projectId,
+          imageId: "cardback_uploaded_project_custom",
+          linkedFrontId: "dfc-front",
+          usesDefaultCardback: false,
+        },
+        {
+          uuid: "cross-project-front",
+          name: "Cross Project Front",
+          order: 20,
+          isUserUpload: false,
+          projectId,
+          imageId: "mpc-cross-front",
+          linkedBackId: "other-project-static-back",
+        },
+        {
+          uuid: "other-project-static-back",
+          name: "Other Project Back",
+          order: 20,
+          isUserUpload: false,
+          projectId: otherProjectId,
+          imageId: "cardback_uploaded_other_project",
+          linkedFrontId: "cross-project-front",
+          usesDefaultCardback: false,
+        },
+      ]);
+
+      await resetCardsToOriginalImages(projectId);
+
+      expect(fetchCardsMetadataBatch).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "DFC Front" }),
+          expect.objectContaining({ name: "Cross Project Front" }),
+        ])
+      );
+      await expect(db.cards.get("dfc-static-back")).resolves.toMatchObject({
+        imageId: "https://cards.scryfall.io/dfc-back.jpg",
+        linkedFrontId: "dfc-front",
+      });
+      await expect(db.cards.get("other-project-static-back")).resolves.toMatchObject({
+        imageId: "cardback_uploaded_other_project",
+        projectId: otherProjectId,
+      });
     });
 
     it("returns zero counts when projectId is missing", async () => {
@@ -720,6 +890,131 @@ describe("dbUtils", () => {
 
       const normal = await db.cards.get("normal");
       expect(normal?.needsEnrichment).toBe(false);
+    });
+
+    it("does not enrich standalone built-in or uploaded cardbacks while repairing a real DFC", async () => {
+      const projectId = "mixed-static-cardbacks-and-dfc";
+
+      await db.cards.bulkAdd([
+        {
+          uuid: "builtin-cardback",
+          name: "Rose",
+          order: 10,
+          isUserUpload: false,
+          isFlipped: true,
+          projectId,
+          imageId: "cardback_builtin_mtg",
+        },
+        {
+          uuid: "uploaded-cardback",
+          name: "Rose",
+          order: 20,
+          isUserUpload: false,
+          isFlipped: true,
+          projectId,
+          imageId: "cardback_uploaded_project_rose",
+        },
+        {
+          uuid: "dfc-front-static-back",
+          name: "Delver of Secrets",
+          order: 30,
+          isUserUpload: false,
+          projectId,
+          set: "isd",
+          number: "51",
+          linkedBackId: "dfc-static-back",
+        },
+        {
+          uuid: "dfc-static-back",
+          name: "Back",
+          order: 30,
+          isUserUpload: false,
+          projectId,
+          imageId: "cardback_builtin_mtg",
+          linkedFrontId: "dfc-front-static-back",
+          usesDefaultCardback: true,
+        },
+      ]);
+
+      global.fetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => [
+          {
+            name: "Delver of Secrets // Insectile Aberration",
+            layout: "transform",
+            card_faces: [
+              { name: "Delver of Secrets", image_uris: { png: "front.png" } },
+              { name: "Insectile Aberration", image_uris: { png: "back.png" } },
+            ],
+          },
+        ],
+      })) as unknown as typeof fetch;
+
+      const result = await checkMultiFaceCardsHaveCorrectBack(projectId);
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/cards/images/enrich"),
+        expect.objectContaining({
+          body: JSON.stringify({
+            cards: [
+              { name: "Delver of Secrets", set: "isd", number: "51" },
+            ],
+          }),
+        })
+      );
+      expect(result).toMatchObject({ checked: 1, multiFace: 1, broken: 1, fixed: 1 });
+      await expect(db.cards.get("builtin-cardback")).resolves.toMatchObject({
+        imageId: "cardback_builtin_mtg",
+      });
+      await expect(db.cards.get("uploaded-cardback")).resolves.toMatchObject({
+        imageId: "cardback_uploaded_project_rose",
+      });
+      await expect(db.cards.get("dfc-static-back")).resolves.toMatchObject({
+        imageId: "back.png",
+        linkedFrontId: "dfc-front-static-back",
+        usesDefaultCardback: false,
+      });
+    });
+
+    it("does not request enrichment when every candidate is a static cardback", async () => {
+      const projectId = "static-cardbacks-only";
+      await db.cards.bulkAdd([
+        {
+          uuid: "builtin-cardback-only",
+          name: "Rose",
+          order: 10,
+          isUserUpload: false,
+          isFlipped: true,
+          projectId,
+          imageId: "cardback_builtin_mtg",
+        },
+        {
+          uuid: "uploaded-cardback-only",
+          name: "Rose",
+          order: 20,
+          isUserUpload: false,
+          isFlipped: true,
+          projectId,
+          imageId: "cardback_uploaded_project_rose",
+        },
+      ]);
+      global.fetch = vi.fn() as unknown as typeof fetch;
+
+      await expect(checkMultiFaceCardsHaveCorrectBack(projectId)).resolves.toEqual({
+        checked: 0,
+        multiFace: 0,
+        broken: 0,
+        fixed: 0,
+        skipped: 0,
+        errors: 0,
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+      await expect(db.cards.get("builtin-cardback-only")).resolves.toMatchObject({
+        imageId: "cardback_builtin_mtg",
+      });
+      await expect(db.cards.get("uploaded-cardback-only")).resolves.toMatchObject({
+        imageId: "cardback_uploaded_project_rose",
+      });
     });
 
     it("creates a missing DFC back in the current front project with reciprocal links", async () => {

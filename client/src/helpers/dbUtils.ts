@@ -285,6 +285,15 @@ async function resetCardRecordsToOriginalImages(
       return false;
     }
 
+    // Cardback library IDs are static backs (built-in, uploaded, or imported).
+    // They are not Scryfall card identities even when their display name is a
+    // legal card name such as "Rose". This also covers standalone flipped
+    // cardback imports, which have no linkedFrontId.
+    if (isCardbackId(card.imageId)) {
+      result.skipped += 1;
+      return false;
+    }
+
     // Skip cards that are already using Scryfall art
     const source = getImageSourceSync(card.imageId);
     if (source === "scryfall") {
@@ -353,7 +362,9 @@ async function resetCardRecordsToOriginalImages(
         // Handle DFCs: if there's a linked back card, reset its image too
         if (card.linkedBackId && scryCard.imageUrls.length > 1) {
           const backCard = await db.cards.get(card.linkedBackId);
-          if (backCard) {
+          // Linked backs are project-local. A stale/corrupt cross-project link
+          // must not let a reset for this card overwrite another project.
+          if (backCard && backCard.projectId === card.projectId) {
             const backImageId = await addRemoteImage([scryCard.imageUrls[1]], 1);
             if (backImageId) {
               const oldBackImageId = backCard.imageId!;
@@ -701,7 +712,11 @@ export async function checkMultiFaceCardsHaveCorrectBack(
       .filter((id): id is string => typeof id === "string" && id.length > 0)
   );
   const fronts = allCards.filter(
-    (c) => !c.linkedFrontId && !linkedBackIds.has(c.uuid) && !c.isUserUpload
+    (c) =>
+      !c.linkedFrontId &&
+      !linkedBackIds.has(c.uuid) &&
+      !c.isUserUpload &&
+      !(c.imageId && isCardbackId(c.imageId))
   );
   const byUuid = new Map(allCards.map((c) => [c.uuid, c]));
   const backByFrontUuid = new Map<string, CardOption>();
