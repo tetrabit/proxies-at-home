@@ -266,6 +266,19 @@ export interface MpcCalibrationHydrationStagingRecord {
   blob: Blob;
 }
 
+/**
+ * Controller-owned, non-secret link metadata. This only remembers which
+ * server-derived owner/harness session selected a stable local connection ID;
+ * it is never evidence that a future action is authenticated.
+ */
+export interface MpcCalibrationLinkStateRecord {
+  formatVersion: 1;
+  ownerId: string;
+  harnessId: string;
+  connectionId: string;
+  updatedAt: number;
+}
+
 export interface MpcCalibrationRunResult {
   caseId: string;
   expectedIdentifier?: string;
@@ -421,6 +434,7 @@ export class ProxxiedDexie extends Dexie {
   >;
   mpcCalibrationCacheBindings!: Table<MpcCalibrationCacheBindingRecord, string>;
   mpcCalibrationHydrationStaging!: Table<MpcCalibrationHydrationStagingRecord, string>;
+  mpcCalibrationLinkStates!: Table<MpcCalibrationLinkStateRecord, [string, string]>;
   fsAccessHandles!: Table<FsAccessHandleRecord, string>;
 
   // Persistent custom image storage (content-addressed)
@@ -747,6 +761,11 @@ export class ProxxiedDexie extends Dexie {
     this.version(24).stores({
       mpcCalibrationCacheBindings: "&id, ownerId, harnessId, connectionId, updatedAt",
       mpcCalibrationHydrationStaging: "&id, operationId, ownerId, harnessId, connectionId, assetId",
+    });
+    // Version 25: separately owned durable, non-secret link identity metadata.
+    this.version(25).stores({
+      mpcCalibrationLinkStates:
+        "&[ownerId+harnessId], ownerId, harnessId, connectionId, updatedAt",
     });
   }
 }
