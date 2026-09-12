@@ -88,6 +88,44 @@ describe('createCalibrationHarnessCredentialStore', () => {
     }
   });
 
+  it('provisions an explicit non-expiring credential that survives far time advance and database reopen', () => {
+    const database = createExclusiveDatabase();
+    const filename = database.name;
+    const initialNow = 1_700_000_000_000;
+    const farFutureNow = initialNow + 100 * 365 * 24 * 60 * 60 * 1000;
+    let credential: string;
+    try {
+      const store = createCalibrationHarnessCredentialStore(database, { now: () => initialNow });
+      credential = store.provision({
+        ownerId: 'owner-non-expiring',
+        harnessId: 'harness-non-expiring',
+        noExpiry: true,
+      } as never);
+      expect(database.prepare('SELECT expires_at FROM mpc_harness_sessions').get()).toEqual({ expires_at: -1 });
+      expect(store.verifyBearer(credential)).toMatchObject({
+        ownerId: 'owner-non-expiring',
+        harnessId: 'harness-non-expiring',
+      });
+    } finally {
+      database.close();
+    }
+
+    const reopened = openNativeDatabase(filename);
+    try {
+      initializeCalibrationHarnessSchema(reopened);
+      const store = createCalibrationHarnessCredentialStore(reopened, { now: () => farFutureNow });
+      expect(store.verifyBearer(credential!)).toMatchObject({
+        ownerId: 'owner-non-expiring',
+        harnessId: 'harness-non-expiring',
+        transport: 'server',
+      });
+      reopened.prepare('DELETE FROM mpc_harness_sessions').run();
+      expect(store.verifyBearer(credential!)).toBeNull();
+    } finally {
+      reopened.close();
+    }
+  });
+
   it('does not expose mutable authority through the capabilities forEach callback Set', () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;
@@ -163,6 +201,9 @@ describe('createCalibrationHarnessCredentialStore', () => {
       expect(() => store.provision({ ownerId: 'owner\ninvalid', harnessId: 'harness-valid', expiresAt: now + 60_000 })).toThrow();
       expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'x'.repeat(129), expiresAt: now + 60_000 })).toThrow();
       expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'harness-valid', expiresAt: now })).toThrow();
+      expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'harness-valid', expiresAt: -1 })).toThrow();
+      expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'harness-valid' } as never)).toThrow();
+      expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'harness-valid', noExpiry: false } as never)).toThrow();
       expect(() => store.provision({ ownerId: 'owner-valid', harnessId: 'harness-valid', expiresAt: Number.MAX_SAFE_INTEGER + 1 })).toThrow();
       expect(sessionCount(database)).toBe(1);
     } finally {

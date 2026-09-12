@@ -83,6 +83,47 @@ describe('createCalibrationHarnessSessionAuth', () => {
     }
   });
 
+  it('pairs an explicit non-expiring bearer into an ordinary finite browser session', async () => {
+    const database = createExclusiveDatabase();
+    let now = 1_700_000_000_000;
+    let server: Server | undefined;
+    try {
+      const pairBearer = createCalibrationHarnessCredentialStore(database, { now: () => now }).provision({
+        ownerId: 'owner-permanent',
+        harnessId: 'harness-permanent',
+        noExpiry: true,
+      });
+      const sessionAuth = createCalibrationHarnessSessionAuth(database, {
+        allowedWebOrigins: [webOrigin],
+        now: () => now,
+        maxAgeMs: 60_000,
+      });
+      const app = express();
+      app.post('/api/calibration-harness/pair', sessionAuth.pair);
+      app.get('/api/calibration-harness/:harnessId', sessionAuth.authenticate, (_req, res) => res.status(204).end());
+      server = await listenLoopback(app);
+
+      const paired = await request(server)
+        .post('/api/calibration-harness/pair')
+        .set('Origin', webOrigin)
+        .set('Authorization', `Bearer ${pairBearer}`);
+      expect(paired.status).toBe(200);
+      expect(paired.headers['set-cookie'][0]).toContain('Max-Age=60');
+      const cookie = paired.headers['set-cookie'][0]!.split(';', 1)[0]!;
+      expect((await request(server).get('/api/calibration-harness/harness-permanent').set('Cookie', cookie).set('Origin', webOrigin)).status).toBe(204);
+
+      now += 60_000;
+      expect((await request(server).get('/api/calibration-harness/harness-permanent').set('Cookie', cookie).set('Origin', webOrigin)).status).toBe(401);
+      expect((await request(server).get('/api/calibration-harness/harness-permanent').set('Authorization', `Bearer ${pairBearer}`)).status).toBe(204);
+    } finally {
+      try {
+        if (server !== undefined) await closeLoopbackServer(server);
+      } finally {
+        database.close();
+      }
+    }
+  });
+
   it('denies anonymous, malformed, foreign-origin, unsafe-CSRF, ambiguous, and wrong-harness requests before the protected parser', async () => {
     const database = createExclusiveDatabase();
     const now = 1_700_000_000_000;

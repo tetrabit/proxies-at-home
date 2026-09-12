@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
@@ -95,6 +95,71 @@ test('provisions a mode-0600 config through the TypeScript credential store with
     assert.doesNotMatch(JSON.stringify(row), /calibration_pair_/);
   } finally {
     database.close();
+  }
+});
+
+test('provisions an explicit non-expiring config without exposing its credential', () => {
+  const directory = fixtureDirectory();
+  const databasePath = path.join(directory, 'calibration-harness.db');
+  const configPath = path.join(directory, 'harness-config.json');
+  const result = invoke(directory, [
+    '--database', databasePath,
+    '--owner-id', 'owner-cli-permanent',
+    '--harness-id', 'harness-cli-permanent',
+    '--backend-origin', 'https://calibration.example.test',
+    '--output', configPath,
+    '--no-expiry',
+  ]);
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(statSync(configPath).mode & 0o777, 0o600);
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  assert.match(config.credential, /^calibration_pair_[A-Za-z0-9_-]{43}$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /calibration_pair_/);
+
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    assert.deepEqual(database.prepare('SELECT owner_id, harness_id, expires_at FROM mpc_harness_sessions').get(), {
+      owner_id: 'owner-cli-permanent',
+      harness_id: 'harness-cli-permanent',
+      expires_at: -1,
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test('requires exactly one explicit expiry mode without creating credentials', () => {
+  for (const expiryArguments of [
+    [],
+    ['--no-expiry', '--lifetime-ms', '60000'],
+    ['--no-expiry', '--expires-at', '1700000060000'],
+    ['--expires-at', '-1'],
+  ]) {
+    const directory = fixtureDirectory();
+    const databasePath = path.join(directory, 'calibration-harness.db');
+    const configPath = path.join(directory, 'harness-config.json');
+    const result = invoke(directory, [
+      '--database', databasePath,
+      '--owner-id', 'owner-cli-invalid-expiry',
+      '--harness-id', 'harness-cli-invalid-expiry',
+      '--backend-origin', 'https://calibration.example.test',
+      '--output', configPath,
+      ...expiryArguments,
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.throws(() => statSync(configPath));
+    if (existsSync(databasePath)) {
+      const database = new Database(databasePath, { readonly: true });
+      try {
+        assert.deepEqual(database.prepare('SELECT COUNT(*) AS count FROM mpc_harness_sessions').get(), { count: 0 });
+      } finally {
+        database.close();
+      }
+    }
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /calibration_pair_/);
   }
 });
 

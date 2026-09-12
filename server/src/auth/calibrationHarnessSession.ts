@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import type { Request, RequestHandler, Response } from 'express';
 
 import {
+  CALIBRATION_HARNESS_NO_EXPIRY,
   createCalibrationHarnessCredentialStore,
   createCalibrationHarnessIdentity,
   type CalibrationHarnessIdentity,
@@ -295,11 +296,16 @@ export function createCalibrationHarnessSessionAuth(
         return;
       }
       const grantExpiresAt = row?.expires_at;
-      if (!isSafeTimestamp(grantExpiresAt) || grantExpiresAt <= currentTime) {
+      if (
+        !isSafeTimestamp(grantExpiresAt)
+        || (grantExpiresAt !== CALIBRATION_HARNESS_NO_EXPIRY && grantExpiresAt <= currentTime)
+      ) {
         denyUnauthorized(response);
         return;
       }
-      const expiresAt = Math.min(grantExpiresAt, currentTime + maxAgeMs);
+      const expiresAt = grantExpiresAt === CALIBRATION_HARNESS_NO_EXPIRY
+        ? currentTime + maxAgeMs
+        : Math.min(grantExpiresAt, currentTime + maxAgeMs);
       const sessionToken = `calibration_session_${randomBytes(32).toString('base64url')}`;
       try {
         insertSession.run(tokenHash(sessionToken), identity.ownerId, identity.harnessId, currentTime, expiresAt);

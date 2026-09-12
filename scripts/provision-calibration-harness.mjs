@@ -15,6 +15,7 @@ const optionNames = new Set([
   '--expires-at',
   '--lifetime-ms',
 ]);
+const flagNames = new Set(['--no-expiry']);
 
 const usage = [
   'Usage:',
@@ -23,7 +24,7 @@ const usage = [
   '    --owner-id OWNER --harness-id HARNESS \\',
   '    --backend-origin https://backend.example \\',
   '    --output /absolute/path/harness-config.json \\',
-  '    (--expires-at UNIX_MILLISECONDS | --lifetime-ms MILLISECONDS)',
+  '    (--no-expiry | --expires-at UNIX_MILLISECONDS | --lifetime-ms MILLISECONDS)',
 ].join('\n');
 
 function fail(message) {
@@ -37,13 +38,20 @@ function parseArguments(argv) {
   }
 
   const values = new Map();
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length;) {
     const option = argv[index];
+    if (flagNames.has(option)) {
+      if (values.has(option)) fail('Invalid provisioning arguments');
+      values.set(option, true);
+      index += 1;
+      continue;
+    }
     const value = argv[index + 1];
     if (!optionNames.has(option) || typeof value !== 'string' || values.has(option)) {
       fail('Invalid provisioning arguments');
     }
     values.set(option, value);
+    index += 2;
   }
 
   for (const option of ['--database', '--owner-id', '--harness-id', '--backend-origin', '--output']) {
@@ -51,7 +59,10 @@ function parseArguments(argv) {
   }
   const hasExpiry = values.has('--expires-at');
   const hasLifetime = values.has('--lifetime-ms');
-  if (hasExpiry === hasLifetime) fail('Specify exactly one credential expiry argument');
+  const hasNoExpiry = values.has('--no-expiry');
+  if (Number(hasExpiry) + Number(hasLifetime) + Number(hasNoExpiry) !== 1) {
+    fail('Specify exactly one credential expiry argument');
+  }
 
   return {
     databasePath: path.resolve(values.get('--database')),
@@ -61,6 +72,7 @@ function parseArguments(argv) {
     outputPath: path.resolve(values.get('--output')),
     expiresAt: values.get('--expires-at'),
     lifetimeMs: values.get('--lifetime-ms'),
+    noExpiry: hasNoExpiry,
   };
 }
 
@@ -169,15 +181,23 @@ const producerSource = `
     const existingDatabase = existingPathKind(input.databasePath);
     if (existingPathKind(input.outputPath) !== undefined) fail('Refusing to overwrite existing config');
     const backendOrigin = approvedOrigin(input.backendOrigin);
-    const expiresAt = input.expiresAt === undefined
-      ? Date.now() + readInteger(input.lifetimeMs, 'lifetime', { positive: true })
-      : readInteger(input.expiresAt, 'expiry');
-    if (!Number.isSafeInteger(expiresAt)) fail('Credential expiry must be a safe integer');
+    const expiresAt = input.noExpiry === true
+      ? undefined
+      : input.expiresAt === undefined
+        ? Date.now() + readInteger(input.lifetimeMs, 'lifetime', { positive: true })
+        : readInteger(input.expiresAt, 'expiry');
+    if (expiresAt !== undefined && !Number.isSafeInteger(expiresAt)) {
+      fail('Credential expiry must be a safe integer');
+    }
 
     database = prepareDatabase(existingDatabase);
     const store = createCalibrationHarnessCredentialStore(database);
     database.transaction(() => {
-      const credential = store.provision({
+      const credential = store.provision(input.noExpiry === true ? {
+        ownerId: input.ownerId,
+        harnessId: input.harnessId,
+        noExpiry: true,
+      } : {
         ownerId: input.ownerId,
         harnessId: input.harnessId,
         expiresAt,

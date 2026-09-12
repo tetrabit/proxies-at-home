@@ -15,6 +15,12 @@ type ProvisionInput = {
   ownerId: string;
   harnessId: string;
   expiresAt: number;
+  noExpiry?: undefined;
+} | {
+  ownerId: string;
+  harnessId: string;
+  noExpiry: true;
+  expiresAt?: undefined;
 };
 
 type CredentialStoreOptions = {
@@ -24,6 +30,7 @@ type CredentialStoreOptions = {
 const TOKEN_PREFIX = 'calibration_pair_';
 const TOKEN_PATTERN = /^calibration_pair_[A-Za-z0-9_-]{43}$/;
 const MAX_ID_LENGTH = 128;
+export const CALIBRATION_HARNESS_NO_EXPIRY = -1;
 
 function immutableCalibrationCapabilities(): ReadonlySet<CalibrationHarnessCapability> {
   const capabilities = new Set<CalibrationHarnessCapability>([
@@ -131,14 +138,24 @@ export function createCalibrationHarnessCredentialStore(
   `);
 
   return {
-    provision({ ownerId, harnessId, expiresAt }: ProvisionInput): string {
+    provision(input: ProvisionInput): string {
+      const { ownerId, harnessId } = input;
       assertBoundedIdentity(ownerId, 'ownerId');
       assertBoundedIdentity(harnessId, 'harnessId');
-      assertSafeTimestamp(expiresAt, 'expiresAt');
       const createdAt = now();
       assertSafeTimestamp(createdAt, 'now');
-      if (expiresAt <= createdAt) {
-        throw new RangeError('expiresAt must be in the future');
+      let expiresAt: number;
+      if (input.noExpiry === true && input.expiresAt === undefined) {
+        expiresAt = CALIBRATION_HARNESS_NO_EXPIRY;
+      } else {
+        if (input.noExpiry !== undefined) {
+          throw new TypeError('noExpiry must be explicitly true without expiresAt');
+        }
+        assertSafeTimestamp(input.expiresAt, 'expiresAt');
+        if (input.expiresAt <= createdAt) {
+          throw new RangeError('expiresAt must be in the future');
+        }
+        expiresAt = input.expiresAt;
       }
 
       const credential = createCredential();
@@ -195,8 +212,10 @@ export function createCalibrationHarnessCredentialStore(
       const storedExpiresAt = expiresAt as number;
       if (
         !Number.isSafeInteger(currentTime)
-        || storedExpiresAt <= currentTime
-        || storedExpiresAt <= storedCreatedAt
+        || (
+          storedExpiresAt !== CALIBRATION_HARNESS_NO_EXPIRY
+          && (storedExpiresAt <= currentTime || storedExpiresAt <= storedCreatedAt)
+        )
       ) {
         return null;
       }
