@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
 import { applyMpcCalibrationRecoveryCache, hydrateMpcCalibrationCache } from "./mpcCalibrationCache";
@@ -6,6 +7,10 @@ import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
 import { buildBootstrapPreferenceFixture } from "./mpcPreferenceBootstrap";
 import { CALIBRATION_HARNESS_LIMITS, validateCalibrationHarnessSnapshot } from "../../../shared/calibrationHarness";
 import { validateCalibrationHarnessRecoveryState } from "../../../shared/calibrationHarnessRecoveryState";
+
+// fake-indexeddb preserves the platform Blob brand through IDB structured clone;
+// jsdom's Blob shim serializes to a plain object, unlike a browser Blob.
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
 const assetBytes = new Uint8Array([1, 2, 3, 4]);
