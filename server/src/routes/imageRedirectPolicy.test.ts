@@ -46,6 +46,38 @@ describe("bounded image redirect policy", () => {
     expect(client.get).toHaveBeenLastCalledWith(initial, expect.any(Object));
   });
 
+  it("strips credential headers before an explicitly admitted cross-origin hop", async () => {
+    const initial = "https://drive.google.com/thumbnail?id=Drive_ID-123&sz=w400-h400";
+    const cdn = "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400";
+    const client = clientReturning(
+      { status: 302, headers: { location: cdn } },
+      { status: 200, headers: {} },
+    );
+    const requestOptions = vi.fn(() => ({
+      headers: {
+        Authorization: "Bearer must-not-forward",
+        Cookie: "must-not-forward",
+        "Proxy-Authorization": "must-not-forward",
+        "X-Image-Request": "retained",
+      },
+      maxRedirects: 0,
+      proxy: false as const,
+    }));
+
+    await expect(fetchWithPolicyCheckedRedirects(
+      initial,
+      client,
+      value => value === cdn ? value : undefined,
+      requestOptions,
+      (first, next) => first === initial && next === cdn,
+    )).resolves.toMatchObject({ status: 200 });
+
+    expect(client.get).toHaveBeenNthCalledWith(1, initial, expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer must-not-forward" }) }));
+    expect(client.get).toHaveBeenNthCalledWith(2, cdn, expect.objectContaining({
+      headers: { "X-Image-Request": "retained" },
+    }));
+  });
+
   it("rejects missing locations, loops, and a fourth redirect", async () => {
     const initial = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png";
     const options = () => ({ maxRedirects: 0, proxy: false as const });

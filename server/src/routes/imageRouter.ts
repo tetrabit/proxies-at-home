@@ -10,7 +10,7 @@ import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesP
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
 import { validateImportCardRequest } from "../utils/importRequestValidation.js";
-import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js";
+import { createProxyRedirectPolicy, validateMpcRequest, validateProxyTarget, type ProxyRedirectPolicy } from "./imageOriginPolicy.js";
 import { createPinnedHttpsAgent, type ResolveAll } from "./imageConnectionPolicy.js";
 import {
   fetchWithPolicyCheckedRedirects,
@@ -146,6 +146,7 @@ async function getWithRetry(
   client: ImageHttpClient = AX,
   admitRedirectTarget: RedirectTargetAdmission = admitProxyRedirect,
   acceptResponse: (response: AxiosResponse) => boolean = response => response.status >= 200 && response.status < 300,
+  allowsCrossOriginRedirect: (initialUrl: string, nextUrl: string) => boolean = () => false,
 ): Promise<AxiosResponse> {
   let lastErr: unknown;
   for (let i = 0; i < tries; i++) {
@@ -155,6 +156,7 @@ async function getWithRetry(
         client,
         admitRedirectTarget,
         () => connectionTimeRequestOptions(opts),
+        allowsCrossOriginRedirect,
       );
       if (acceptResponse(res)) return res;
       await disposeReadable(res.data);
@@ -347,7 +349,11 @@ async function streamImageResponseToFile(
   }
 }
 
-function getOrStartProxyDownload(originalUrl: string, localPath: string): ProxyDownloadEntry {
+function getOrStartProxyDownload(
+  originalUrl: string,
+  localPath: string,
+  redirectPolicy: ProxyRedirectPolicy,
+): ProxyDownloadEntry {
   const existing = proxyDownloadsInFlight.get(localPath);
   if (existing) return existing;
 
@@ -361,7 +367,7 @@ function getOrStartProxyDownload(originalUrl: string, localPath: string): ProxyD
       const response = await getWithRetry(originalUrl, {
         responseType: "stream",
         signal: sharedAbortController.signal,
-      });
+      }, 2, AX, redirectPolicy.admitRedirectTarget, undefined, redirectPolicy.allowsCrossOriginRedirect);
       responseReceived = true;
       return await streamImageResponseToFile(
         response,
@@ -407,10 +413,11 @@ function getOrStartProxyDownload(originalUrl: string, localPath: string): ProxyD
 function subscribeToProxyDownload(
   originalUrl: string,
   localPath: string,
+  redirectPolicy: ProxyRedirectPolicy,
   req: Request,
   res: Response,
 ): { promise: Promise<ProxyDownloadResult>; release: () => void } {
-  const entry = getOrStartProxyDownload(originalUrl, localPath);
+  const entry = getOrStartProxyDownload(originalUrl, localPath, redirectPolicy);
   entry.subscribers++;
   let subscribed = true;
 
@@ -710,6 +717,10 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
   }
 
   const originalUrl = admission.url;
+  const redirectPolicy = createProxyRedirectPolicy(originalUrl);
+  if (!redirectPolicy) {
+    return res.status(400).json({ error: "Missing or invalid ?url" });
+  }
 
   const localPath = cachePathFromUrl(originalUrl);
 
@@ -737,7 +748,7 @@ imageRouter.get("/proxy", async (req: Request, res: Response) => {
 
     // Same-key misses share one physical download. The promise resolves only
     // after streamImageResponseToFile atomically publishes the final file.
-    subscription = subscribeToProxyDownload(originalUrl, localPath, req, res);
+    subscription = subscribeToProxyDownload(originalUrl, localPath, redirectPolicy, req, res);
     const result = await subscription.promise;
     subscription.release();
     urlPathCache.set(originalUrl, localPath);

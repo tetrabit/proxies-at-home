@@ -6,6 +6,7 @@ export interface ImageHttpClient {
 }
 
 export type RedirectTargetAdmission = (value: string) => string | undefined;
+export type CrossOriginRedirectAllowance = (initialUrl: string, nextUrl: string) => boolean;
 
 export class ImageRedirectPolicyError extends Error {
   constructor(message: string) {
@@ -16,6 +17,33 @@ export class ImageRedirectPolicyError extends Error {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 3;
+
+function hasSafeRedirectLocationSyntax(location: string): boolean {
+  const containsControl = [...location].some(character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+
+  return location.length > 0
+    && location === location.trim()
+    && !containsControl
+    && !location.includes("%")
+    && !location.includes("\\")
+    && !location.includes("/./")
+    && !location.includes("/../");
+}
+
+function withoutCrossOriginCredentials(options: AxiosRequestConfig): AxiosRequestConfig {
+  if (!options.headers) return options;
+
+  const headerValues = typeof (options.headers as { toJSON?: () => Record<string, unknown> }).toJSON === "function"
+    ? (options.headers as { toJSON: () => Record<string, unknown> }).toJSON()
+    : options.headers;
+  const headers = Object.fromEntries(Object.entries(headerValues).filter(([name]) =>
+    !/^(authorization|cookie|proxy-authorization)$/i.test(name),
+  ));
+  return { ...options, headers };
+}
 
 function locationFrom(headers: AxiosResponse["headers"]): unknown {
   const headerMap = headers as unknown as Record<string, unknown>;
@@ -51,14 +79,20 @@ export async function fetchWithPolicyCheckedRedirects(
   client: ImageHttpClient,
   admitRedirectTarget: RedirectTargetAdmission,
   requestOptions: () => AxiosRequestConfig,
+  allowsCrossOriginRedirect: CrossOriginRedirectAllowance = () => false,
 ): Promise<AxiosResponse> {
   const initialOrigin = new URL(initialUrl).origin;
   let currentUrl = initialUrl;
   let redirectCount = 0;
+  let stripCredentialsForNextHop = false;
   const visited = new Set([initialUrl]);
 
   while (true) {
-    const response = await client.get(currentUrl, requestOptions());
+    const options = requestOptions();
+    const response = await client.get(
+      currentUrl,
+      stripCredentialsForNextHop ? withoutCrossOriginCredentials(options) : options,
+    );
     if (!REDIRECT_STATUSES.has(response.status)) return response;
     await disposeRedirectBody(response.data);
 
@@ -67,7 +101,7 @@ export async function fetchWithPolicyCheckedRedirects(
     }
 
     const location = locationFrom(response.headers);
-    if (typeof location !== "string" || location.length === 0 || location !== location.trim()) {
+    if (typeof location !== "string" || !hasSafeRedirectLocationSyntax(location)) {
       throw new ImageRedirectPolicyError("Redirect response has no valid Location");
     }
 
@@ -82,7 +116,8 @@ export async function fetchWithPolicyCheckedRedirects(
     if (!nextUrl) {
       throw new ImageRedirectPolicyError("Redirect target is not admitted");
     }
-    if (new URL(nextUrl).origin !== initialOrigin) {
+    const crossesOrigin = new URL(nextUrl).origin !== initialOrigin;
+    if (crossesOrigin && !allowsCrossOriginRedirect(initialUrl, nextUrl)) {
       throw new ImageRedirectPolicyError("Cross-origin redirect is not allowed");
     }
     if (visited.has(nextUrl)) {
@@ -91,6 +126,7 @@ export async function fetchWithPolicyCheckedRedirects(
 
     visited.add(nextUrl);
     currentUrl = nextUrl;
+    stripCredentialsForNextHop ||= crossesOrigin;
     redirectCount++;
   }
 }

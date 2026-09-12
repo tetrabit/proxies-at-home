@@ -3,11 +3,15 @@ import { validateMpcRequest, validateProxyTarget } from "./imageOriginPolicy.js"
 
 const validScryfall = "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png?1562820261";
 const validThumbnail = "https://drive.google.com/thumbnail?id=Drive_ID-123&sz=w400-h400";
+const validThumbnailCdn = "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400";
 
 describe("image proxy origin policy", () => {
   it("accepts only the documented Scryfall and legacy Drive thumbnail forms", () => {
     expect(validateProxyTarget(validScryfall)).toEqual({ ok: true, url: validScryfall });
     expect(validateProxyTarget(validThumbnail)).toEqual({ ok: true, url: validThumbnail });
+    // The CDN is reachable only as the verified next hop of an admitted Drive
+    // thumbnail request; it is never a client-admissible proxy target.
+    expect(validateProxyTarget(validThumbnailCdn)).toEqual({ ok: false });
     expect(validateProxyTarget("https://cards.scryfall.io:443/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png"))
       .toEqual({ ok: true, url: "https://cards.scryfall.io/png/front/a/b/ab123456-1234-1234-1234-123456789abc.png" });
     expect(validateProxyTarget("https://drive.google.com/thumbnail?sz=w800-h800&id=Drive_ID-123"))

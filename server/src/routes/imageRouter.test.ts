@@ -446,6 +446,56 @@ describe("getWithRetry logic", () => {
         expect(mockedAxios.get).toHaveBeenCalledTimes(1);
     });
 
+    it("follows only the identity-bound Drive thumbnail CDN redirect with a fresh pinned second-hop agent", async () => {
+        const resolveAll = vi.fn((_hostname: string, _options: { all: true; verbatim: true }, callback: (error: NodeJS.ErrnoException | null, addresses: Array<{ address: string; family: number }>) => void) => {
+            callback(null, [{ address: "8.8.8.8", family: 4 }]);
+        });
+        __imageRouterTestInternals.setImageResolveAllForTests(resolveAll);
+        const initial = "https://drive.google.com/thumbnail?id=Drive_ID-123&sz=w400-h400";
+        const cdn = "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400";
+        mockedAxios.get
+            .mockResolvedValueOnce({ status: 302, data: Buffer.alloc(0), headers: { location: cdn } })
+            .mockResolvedValueOnce({ status: 200, data: imageStream("image data"), headers: { "content-type": "image/jpeg" } });
+        const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
+            this.type("image/jpeg").send("image data");
+        });
+
+        const accepted = await request(app).get("/images/proxy").query({ url: initial });
+        expect(accepted.status).toBe(200);
+        expect(mockedAxios.get).toHaveBeenNthCalledWith(1, initial, expect.objectContaining({ maxRedirects: 0, proxy: false }));
+        expect(mockedAxios.get).toHaveBeenNthCalledWith(2, cdn, expect.objectContaining({ maxRedirects: 0, proxy: false }));
+        const firstOptions = mockedAxios.get.mock.calls[0][1] as { httpsAgent: { options: { lookup: (hostname: string, options: unknown, callback: (error: NodeJS.ErrnoException | null) => void) => void } } };
+        const secondOptions = mockedAxios.get.mock.calls[1][1] as typeof firstOptions;
+        expect(firstOptions.httpsAgent).not.toBe(secondOptions.httpsAgent);
+        await Promise.all([
+            [firstOptions, "drive.google.com"],
+            [secondOptions, "lh3.googleusercontent.com"],
+        ].map(([options, hostname]) => new Promise<void>((resolve, reject) => {
+            (options as typeof firstOptions).httpsAgent.options.lookup(hostname as string, {}, error => error ? reject(error) : resolve());
+        })));
+        expect(resolveAll).toHaveBeenCalledWith("drive.google.com", { all: true, verbatim: true }, expect.any(Function));
+        expect(resolveAll).toHaveBeenCalledWith("lh3.googleusercontent.com", { all: true, verbatim: true }, expect.any(Function));
+        sendFileSpy.mockRestore();
+
+        for (const location of [
+            "https://lh3.googleusercontent.com/d/other-id=w400-h400",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123=w800-h800",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400?extra=1",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400#fragment",
+            "https://user@lh3.googleusercontent.com/d/Drive_ID-123=w400-h400",
+            "https://lh3.googleusercontent.com:444/d/Drive_ID-123=w400-h400",
+            "https://lh3.googleusercontent.com.evil.example/d/Drive_ID-123=w400-h400",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400/../Drive_ID-123=w400-h400",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123%3Dw400-h400",
+            "https://lh3.googleusercontent.com/d/Drive_ID-123=w400-h400\u0000",
+        ]) {
+            mockedAxios.get.mockReset().mockResolvedValue({ status: 302, data: Buffer.alloc(0), headers: { location } });
+            const denied = await request(app).get("/images/proxy").query({ url: initial });
+            expect(denied.status).toBe(502);
+            expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+        }
+    });
+
     it("uses thumbnail MPC CDN candidates and full-size large fallback cache path", async () => {
         mockedAxios.get.mockResolvedValue({ status: 200, headers: { "content-type": "image/png" }, data: imageStream("png") });
         const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
