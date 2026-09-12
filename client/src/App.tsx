@@ -11,6 +11,7 @@ import {
 } from "@/store";
 import { useToastStore } from "@/store/toast";
 import { autoRestore } from "@/helpers/autoRestore";
+import { MpcCalibrationSyncLifecycle } from "@/components/MpcCalibrationSyncLifecycle";
 
 const ProxyBuilderPage = lazy(() => import("@/pages/ProxyBuilderPage"));
 const AboutModal = lazy(() =>
@@ -143,6 +144,7 @@ function App() {
 
   return (
     <>
+      <MpcCalibrationSyncLifecycle />
       <h1 className="sr-only">Proxxied — MTG Proxy Builder and Print</h1>
 
       <Loader />

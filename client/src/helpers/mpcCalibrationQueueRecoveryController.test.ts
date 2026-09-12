@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Blob as NativeBlob } from "node:buffer";
 import { ProxxiedDexie } from "@/db";
 import type { CalibrationHarnessRevision, CalibrationHarnessSnapshot } from "../../../shared/calibrationHarness";
 import { createMpcCalibrationOperationScope } from "./mpcCalibrationOperationScope";
@@ -11,6 +12,8 @@ const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connec
 
 const databases: ProxxiedDexie[] = [];
 const owners: ReturnType<typeof createMpcCalibrationOperationScope>[] = [];
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 type Deferred<T> = Readonly<{
   promise: Promise<T>;
@@ -194,11 +197,13 @@ describe("createMpcCalibrationQueueRecoveryController", () => {
     owners.push(owner);
     const publication = deferred<CalibrationHarnessRevision>();
     const started = deferred<CalibrationHarnessSnapshot>();
+    const results = vi.fn();
     const transport = queuedTransport({ revision: 1, snapshot: snapshot("base") }, [publication], [started]);
     const controller = createMpcCalibrationQueueRecoveryController({
       database,
       operation: owner.captureAppOperation(),
       transport,
+      onResult: results,
     });
 
     await state.queueSnapshot(identity, snapshot("G1"));
@@ -219,6 +224,71 @@ describe("createMpcCalibrationQueueRecoveryController", () => {
       inFlight: { generation: 1, snapshot: snapshot("G1") },
       acknowledgedGeneration: 0,
     });
+    expect(results).not.toHaveBeenCalled();
     controller.dispose();
+  });
+
+  it("publishes a bounded C5 conflict result from the real durable queue and preserves both queued and remote inputs", async () => {
+    const database = fresh();
+    const state = await seedBoundBase(database);
+    const owner = createMpcCalibrationOperationScope({ target: "linked-web", identity });
+    owners.push(owner);
+    const local = snapshot("local-conflict");
+    const remote = snapshot("remote-conflict");
+    const results = vi.fn();
+    const transport: MpcCalibrationTransport = {
+      pair: async () => ({ ownerId: identity.ownerId, harnessId: identity.harnessId }),
+      unpair: async () => undefined,
+      getSession: async () => ({ ownerId: identity.ownerId, harnessId: identity.harnessId }),
+      getSnapshot: async () => ({ revision: 2, snapshot: remote }),
+      getBlob: async () => new Uint8Array(),
+      missingBlobs: async () => ({ missing: [] }),
+      putBlob: async () => ({ sha256: "unused", byteLength: 0, inserted: false }),
+      publishSnapshot: vi.fn(async () => ({ revision: 3, snapshot: local })),
+    };
+    const controller = createMpcCalibrationQueueRecoveryController({
+      database,
+      operation: owner.captureAppOperation(),
+      transport,
+      onResult: results,
+    });
+
+    await state.queueSnapshot(identity, local);
+
+    await vi.waitFor(() => expect(results).toHaveBeenCalledOnce());
+    expect(results).toHaveBeenCalledWith({ kind: "recovery", target: "linked-web", status: "conflict" });
+    expect(transport.publishSnapshot).not.toHaveBeenCalled();
+    expect(await state.load(identity)).toMatchObject({
+      queued: { generation: 1, snapshot: local },
+      base: { revision: 1, snapshot: snapshot("base") },
+    });
+    controller.dispose();
+  });
+
+  it("does not publish a C5 result after controller disposal although the physical request settles", async () => {
+    const database = fresh();
+    const state = await seedBoundBase(database);
+    const owner = createMpcCalibrationOperationScope({ target: "linked-web", identity });
+    owners.push(owner);
+    const publication = deferred<CalibrationHarnessRevision>();
+    const started = deferred<CalibrationHarnessSnapshot>();
+    const results = vi.fn();
+    const transport = queuedTransport({ revision: 1, snapshot: snapshot("base") }, [publication], [started]);
+    const controller = createMpcCalibrationQueueRecoveryController({
+      database,
+      operation: owner.captureAppOperation(),
+      transport,
+      onResult: results,
+    });
+
+    await state.queueSnapshot(identity, snapshot("G1"));
+    await started.promise;
+    controller.dispose();
+    publication.resolve({ revision: 2, snapshot: snapshot("G1") });
+    await expectPhysicalSettlement(controller);
+
+    expect(results).not.toHaveBeenCalled();
+    // Disposal fences publication, not the already admitted physical C5 request.
+    expect(await state.load(identity)).toMatchObject({ acknowledgedGeneration: 1, queued: null });
   });
 });

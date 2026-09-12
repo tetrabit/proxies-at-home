@@ -1,11 +1,17 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
 import { buildBootstrapPreferenceFixture } from "./mpcPreferenceBootstrap";
-import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
-import { runMpcCalibrationInitialAdmission } from "./mpcCalibrationInitialAdmission";
+import { MpcCalibrationTransportError, type MpcCalibrationTransport } from "./mpcCalibrationTransport";
+import {
+  runMpcCalibrationInitialAdmission,
+  runMpcCalibrationInitialAdmissionWithIdentity,
+} from "./mpcCalibrationInitialAdmission";
 import { createMpcCalibrationOperationScope } from "./mpcCalibrationOperationScope";
 import { validateCalibrationHarnessSnapshot } from "../../../shared/calibrationHarness";
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 const handles: ProxxiedDexie[] = [];
 const owners: ReturnType<typeof createMpcCalibrationOperationScope>[] = [];
@@ -510,5 +516,156 @@ describe("runMpcCalibrationInitialAdmission", () => {
     expect(bindingPut).toHaveBeenCalledOnce();
     expect(bindingPut).toHaveBeenCalledWith(expect.objectContaining({ revision: 2 }));
     await expect(readPreserved()).resolves.toEqual(before);
+  });
+
+  it("hands the restored non-secret identity to an app owner once before hydration settles", async () => {
+    const { input, getSession } = admissionSetup();
+    const identities: unknown[] = [];
+
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity({
+      ...input,
+      onAuthenticated: (identity) => identities.push(identity),
+    })).resolves.toEqual({
+      kind: "no-remote",
+      target: "linked-web",
+      identity: expect.objectContaining({ ownerId: "parent-owner", harnessId: "parent-harness" }),
+    });
+
+    expect(identities).toEqual([
+      expect.objectContaining({ ownerId: "parent-owner", harnessId: "parent-harness" }),
+    ]);
+    // One restoration session plus C3's independent server-identity recheck.
+    expect(getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands the one restored identity to queue-aware blocked admission without running C3", async () => {
+    const database = freshDatabase();
+    const getSession = vi.fn(async () => ({ ownerId: "owner-a", harnessId: "harness-a" }));
+    const getSnapshot = vi.fn(async () => null);
+    const transport = controlledTransport(getSession, getSnapshot);
+    const operation = {
+      target: "linked-web" as const,
+      identity: { ownerId: "prior-owner", harnessId: "prior-harness", connectionId: "prior-connection" },
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    };
+
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity({
+      database,
+      target: "linked-web",
+      operation,
+      createWebTransport: () => transport,
+    })).resolves.toEqual({
+      kind: "blocked",
+      target: "linked-web",
+      identity: expect.objectContaining({ ownerId: "owner-a", harnessId: "harness-a" }),
+    });
+
+    expect(getSession).toHaveBeenCalledOnce();
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("hands the restored identity to queue-aware reconciliation without requesting C3", async () => {
+    const database = freshDatabase();
+    await database.mpcCalibrationDatasets.add({
+      id: "manual",
+      name: "Manual",
+      targetCaseCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 1,
+    });
+    const getSnapshot = vi.fn(async () => null);
+    const transport = controlledTransport(async () => ({ ownerId: "owner-a", harnessId: "harness-a" }), getSnapshot);
+    const operation = {
+      target: "linked-web" as const,
+      identity: null,
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+    };
+
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity({
+      database,
+      target: "linked-web",
+      operation,
+      createWebTransport: () => transport,
+    })).resolves.toEqual({
+      kind: "needs-reconciliation",
+      target: "linked-web",
+      identity: expect.objectContaining({ ownerId: "owner-a", harnessId: "harness-a" }),
+    });
+
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("reports an allowlisted restoration status only on the with-identity failed result", async () => {
+    const { input, factory } = admissionSetup();
+    const transport = controlledTransport(
+      async () => { throw new MpcCalibrationTransportError("offline"); },
+      async () => null,
+    );
+    factory.mockReturnValue(transport);
+
+    await expect(runMpcCalibrationInitialAdmission(input)).resolves.toEqual({
+      kind: "failed",
+      target: "linked-web",
+      code: "unavailable",
+    });
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity(input)).resolves.toEqual({
+      kind: "failed",
+      target: "linked-web",
+      code: "unavailable",
+      restorationStatus: "offline",
+    });
+  });
+
+  it("with-identity local admission leaves its dormant callback unread", async () => {
+    const { input, database } = admissionSetup("local");
+    const getter = vi.fn(() => { throw new Error("local admission must not read dormant callback"); });
+    Object.defineProperty(input, "onAuthenticated", { get: getter });
+
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity(input)).resolves.toEqual({ kind: "local", target: "local" });
+
+    expect(getter).not.toHaveBeenCalled();
+    expect(await database.mpcCalibrationLinkStates.count()).toBe(0);
+  });
+
+  it("with-identity pre-abort leaves its dormant callback unread", async () => {
+    const { input, database, factory } = admissionSetup();
+    input.operation.dispose();
+    const getter = vi.fn(() => { throw new Error("pre-abort must not read dormant callback"); });
+    Object.defineProperty(input, "onAuthenticated", { get: getter });
+
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity(input)).resolves.toEqual({ kind: "cancelled", target: "linked-web" });
+
+    expect(getter).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+    expect(await database.mpcCalibrationLinkStates.count()).toBe(0);
+  });
+
+  it("captures the app callback once with its receiver and fences callback cancellation before C3", async () => {
+    const { input, getSnapshot } = admissionSetup();
+    const controller = new AbortController();
+    const operation = { ...input.operation, signal: controller.signal };
+    const replacement = vi.fn();
+    const callback = vi.fn(function(this: typeof input) {
+      expect(this).toBe(input);
+      controller.abort();
+    });
+    let reads = 0;
+    Object.defineProperty(input, "onAuthenticated", {
+      get() { return reads++ === 0 ? callback : replacement; },
+    });
+
+    input.operation = operation;
+    await expect(runMpcCalibrationInitialAdmissionWithIdentity(input)).resolves.toEqual({
+      kind: "cancelled",
+      target: "linked-web",
+    });
+
+    expect(reads).toBe(1);
+    expect(callback).toHaveBeenCalledOnce();
+    expect(replacement).not.toHaveBeenCalled();
+    expect(getSnapshot).not.toHaveBeenCalled();
   });
 });

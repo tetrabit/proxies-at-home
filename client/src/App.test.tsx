@@ -136,6 +136,11 @@ describe("App", () => {
     });
   });
 
+  it("mounts the dormant app-owned calibration sync lifecycle", async () => {
+    renderApp();
+    expect(await screen.findByTestId("mpc-calibration-sync-lifecycle")).toBeDefined();
+  });
+
   it("should render the ProxyBuilderPage component", async () => {
     renderApp();
     await waitFor(() => {

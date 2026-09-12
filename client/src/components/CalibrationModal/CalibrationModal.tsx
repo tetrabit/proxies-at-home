@@ -70,6 +70,8 @@ import {
 } from "@/helpers/mpcPreferenceSync";
 import { CardGrid } from "@/components/common/CardGrid";
 import { CardImageSvg } from "@/components/common/CardImageSvg";
+import { CalibrationSyncStatus } from "./CalibrationSyncStatus";
+import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
 const DEFAULT_DATASET_NAME = "MPC Calibration Harness";
 
@@ -158,6 +160,7 @@ export function CalibrationModal() {
   const open = useCalibrationModalStore((state) => state.open);
   const card = useCalibrationModalStore((state) => state.card);
   const closeModal = useCalibrationModalStore((state) => state.closeModal);
+  const calibrationSyncStatus = useMpcCalibrationSyncStore((state) => state.status);
 
   const [dataset, setDataset] = useState<MpcCalibrationDatasetRecord | null>(
     null
@@ -576,6 +579,9 @@ export function CalibrationModal() {
                 >
                   {syncSaveStateLabel}
                 </span>
+              </div>
+              <div data-testid="mpc-calibration-linked-sync-status">
+                <CalibrationSyncStatus status={calibrationSyncStatus} />
               </div>
               {status ? (
                 <p

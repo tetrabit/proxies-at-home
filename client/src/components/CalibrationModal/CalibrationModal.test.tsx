@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const {
   mockCalibrationState,
@@ -33,6 +33,7 @@ const {
   mockRankCandidates,
   mockGetSharedMpcPreferenceContext,
   mockScopeSource,
+  linkedSync,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
     open: true,
@@ -90,12 +91,17 @@ const {
   mockScopeSource: {
     current: { kind: "bound", identity: { ownerId: "owner-a", harnessId: "harness-a", connectionId: "connection-a" }, bindingRevision: 1 },
   },
+  linkedSync: { status: "unpaired" },
 }));
 
 vi.mock("@/store", () => ({
   useCalibrationModalStore: (
     selector: (state: typeof mockCalibrationState) => unknown
   ) => selector(mockCalibrationState),
+}));
+
+vi.mock("@/store/mpcCalibrationSync", () => ({
+  useMpcCalibrationSyncStore: (selector: (state: typeof linkedSync) => unknown) => selector(linkedSync),
 }));
 
 vi.mock("@/db", () => ({
@@ -222,6 +228,7 @@ describe("CalibrationModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    linkedSync.status = "unpaired";
     mockCaptureMutationScope.mockReset();
     mockScopeSource.current = {
       kind: "bound",
@@ -932,6 +939,36 @@ describe("CalibrationModal", () => {
         expect.any(AbortSignal)
       );
     });
+  });
+
+  it("renders each app-owned linked-sync status and closing remains a UI-only request", async () => {
+    const labels = {
+      unpaired: "Sync is not paired.",
+      authenticating: "Authenticating sync connection.",
+      "paired-not-hydrated": "Sync paired; data is not yet loaded.",
+      clean: "Sync is up to date.",
+      queued: "Sync is queued.",
+      "in-flight": "Sync is in progress.",
+      conflict: "Sync needs attention because of a conflict.",
+      offline: "Sync is offline.",
+      blocked: "Sync is blocked.",
+      failed: "Sync failed.",
+    } as const;
+    const statuses = Object.entries(labels) as [keyof typeof labels, string][];
+    linkedSync.status = statuses[0]![0];
+    const view = render(<CalibrationModal />);
+
+    for (const [value, label] of statuses) {
+      await act(async () => {
+        linkedSync.status = value;
+        view.rerender(<CalibrationModal />);
+      });
+      expect(screen.getByTestId("mpc-calibration-linked-sync-status").textContent).toContain(label);
+    }
+
+    fireEvent.click(screen.getByTestId("calibration-modal-close"));
+    expect(mockCalibrationState.closeModal).toHaveBeenCalledOnce();
+    expect(linkedSync.status).toBe("failed");
   });
 
   it("aborts only its shared-context subscription on close and never ranks stale results", async () => {

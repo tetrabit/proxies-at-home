@@ -5,7 +5,10 @@ import {
   type CalibrationHarnessPersistenceIdentity,
 } from "../../../shared/calibrationHarnessLocalState";
 import type { MpcCalibrationCapturedOperation } from "./mpcCalibrationOperationScope";
-import { dispatchMpcCalibrationQueuedRecovery } from "./mpcCalibrationQueuedRecovery";
+import {
+  dispatchMpcCalibrationQueuedRecovery,
+  type MpcCalibrationQueuedRecoveryResult,
+} from "./mpcCalibrationQueuedRecovery";
 import { createMpcCalibrationQueueTrigger, type MpcCalibrationQueueTrigger } from "./mpcCalibrationQueueTrigger";
 import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
@@ -21,6 +24,8 @@ export type MpcCalibrationQueueRecoveryControllerOptions = Readonly<{
   transport: MpcCalibrationTransport;
   /** Bounded notification for an unexpected drain rejection. */
   onFailure?: () => void;
+  /** Closed C5 outcome only; stale/cancelled/disposed owners receive nothing. */
+  onResult?: (result: MpcCalibrationQueuedRecoveryResult) => void;
 }>;
 
 export type MpcCalibrationQueueRecoveryController = Readonly<{
@@ -37,6 +42,9 @@ type CapturedControllerOptions = Readonly<{
   identity: CalibrationHarnessPersistenceIdentity;
   transport: MpcCalibrationTransport;
   onFailure: (() => void) | undefined;
+  onResult: ((result: MpcCalibrationQueuedRecoveryResult) => void) | undefined;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
 }>;
 
 function captureOptions(
@@ -49,8 +57,17 @@ function captureOptions(
     const rawIdentity = operation.identity;
     const transport = supplied.transport;
     const onFailure = supplied.onFailure;
-    if ((target !== "linked-web" && target !== "linked-electron") || rawIdentity === null || transport === null) return undefined;
-    if (onFailure !== undefined && typeof onFailure !== "function") return undefined;
+    const onResult = supplied.onResult;
+    const signal = operation.signal;
+    const isCurrent = operation.isCurrent;
+    if (
+      (target !== "linked-web" && target !== "linked-electron") || rawIdentity === null || transport === null ||
+      !(signal instanceof AbortSignal) || typeof isCurrent !== "function"
+    ) return undefined;
+    if (
+      (onFailure !== undefined && typeof onFailure !== "function") ||
+      (onResult !== undefined && typeof onResult !== "function")
+    ) return undefined;
     const validIdentity = validateCalibrationHarnessPersistenceIdentity(rawIdentity);
     return {
       database,
@@ -63,6 +80,9 @@ function captureOptions(
       },
       transport,
       onFailure: onFailure?.bind(supplied),
+      onResult: onResult?.bind(supplied),
+      signal,
+      isCurrent: isCurrent.bind(operation),
     };
   } catch {
     return undefined;
@@ -71,6 +91,16 @@ function captureOptions(
 
 function inertController(): MpcCalibrationQueueRecoveryController {
   return { dispose() {}, isRunning: () => false };
+}
+
+function operationCurrent(captured: Pick<CapturedControllerOptions, "signal" | "isCurrent">): boolean {
+  try {
+    const aborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get?.call(captured.signal);
+    if (aborted !== false || captured.isCurrent() !== true) return false;
+    return Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get?.call(captured.signal) === false;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -88,19 +118,28 @@ export function createMpcCalibrationQueueRecoveryController(
 
   const state = createMpcCalibrationSyncStateStore(captured.database);
   let disposed = false;
+  const notifyResult = (result: MpcCalibrationQueuedRecoveryResult) => {
+    if (disposed || !operationCurrent(captured) || captured.onResult === undefined) return;
+    try {
+      captured.onResult(result);
+    } catch {
+      // Consumer failures cannot alter durable C5 settlement or trigger state.
+    }
+  };
   let trigger: MpcCalibrationQueueTrigger;
   try {
     trigger = createMpcCalibrationQueueTrigger({
       operation: captured.operation,
       onFailure: captured.onFailure,
       async drain() {
-        await dispatchMpcCalibrationQueuedRecovery({
+        const result = await dispatchMpcCalibrationQueuedRecovery({
           database: captured.database,
           target: captured.target,
           identity: captured.identity,
           transport: captured.transport,
           operation: captured.operation,
         });
+        notifyResult(result);
       },
     });
   } catch {
@@ -135,6 +174,18 @@ export function createMpcCalibrationQueueRecoveryController(
     trigger.dispose();
     return inertController();
   }
+
+  // Dexie can have no change notification for a queue that existed before this
+  // app owner subscribed, so recover one validated persisted generation now.
+  void state.load(captured.identity).then(
+    latest => {
+      const generation = latest?.queued?.generation;
+      if (!disposed && operationCurrent(captured) && generation !== undefined) trigger.notify(generation);
+    },
+    () => {
+      // A corrupt or inaccessible C1 row remains untouched; no recovery runs.
+    }
+  );
 
   return {
     dispose() {

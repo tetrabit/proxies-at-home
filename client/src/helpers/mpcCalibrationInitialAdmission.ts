@@ -10,7 +10,10 @@ import {
 import type { MpcCalibrationElectronBridge } from "./mpcCalibrationElectronTransport";
 import type { MpcCalibrationCapturedOperation } from "./mpcCalibrationOperationScope";
 import { createMpcCalibrationLinkStateStore } from "./mpcCalibrationLinkState";
-import { restoreMpcCalibrationSession } from "./mpcCalibrationSessionRestoration";
+import {
+  restoreMpcCalibrationSession,
+  type MpcCalibrationSessionRestorationStatus,
+} from "./mpcCalibrationSessionRestoration";
 import type { MpcCalibrationSession, MpcCalibrationTransport } from "./mpcCalibrationTransport";
 import {
   selectMpcCalibrationTransport,
@@ -30,7 +33,18 @@ export type MpcCalibrationInitialAdmissionInput = Readonly<{
   createWebTransport?: () => MpcCalibrationTransport;
   electronBridge?: MpcCalibrationElectronBridge;
   now?: () => number;
+  onAuthenticated?: (identity: Readonly<CalibrationHarnessPersistenceIdentity>) => void;
 }>;
+
+/**
+ * App lifecycle variant. The callback receives only the validated durable
+ * identity after exactly one restoration; it never receives an origin,
+ * credential, session cookie, or transport error.
+ */
+export type MpcCalibrationInitialAdmissionWithIdentityInput =
+  MpcCalibrationInitialAdmissionInput & Readonly<{
+    onAuthenticated?: (identity: Readonly<CalibrationHarnessPersistenceIdentity>) => void;
+  }>;
 
 export type MpcCalibrationInitialAdmissionResult =
   | Readonly<{ kind: "local"; target: "local" }>
@@ -52,6 +66,7 @@ type CapturedInput = Readonly<{
   createWebTransport?: () => MpcCalibrationTransport;
   electronBridge?: MpcCalibrationElectronBridge;
   now?: () => number;
+  onAuthenticated?: (identity: Readonly<CalibrationHarnessPersistenceIdentity>) => void;
 }>;
 
 function targetFrom(value: unknown): MpcCalibrationTransportTarget | undefined {
@@ -123,15 +138,20 @@ function captureInput(input: MpcCalibrationInitialAdmissionInput): CapturedInput
     const database = input.database;
     const priorIdentity = captureIdentity(operation.identity);
     const now = input.now;
+    const onAuthenticated = input.onAuthenticated;
+    if (onAuthenticated !== undefined && typeof onAuthenticated !== "function") return undefined;
+    const capturedOnAuthenticated = onAuthenticated === undefined
+      ? undefined
+      : Function.prototype.bind.call(onAuthenticated, input) as (identity: Readonly<CalibrationHarnessPersistenceIdentity>) => void;
     if (target === "linked-web") {
       const createWebTransport = input.createWebTransport;
       if (createWebTransport !== undefined && typeof createWebTransport !== "function") return undefined;
-      return { ...captured, database, priorIdentity, now, createWebTransport };
+      return { ...captured, database, priorIdentity, now, onAuthenticated: capturedOnAuthenticated, createWebTransport };
     }
 
     const rawBridge = input.electronBridge;
     const electronBridge = rawBridge === undefined ? captureDefaultElectronBridge() : captureBridge(rawBridge);
-    return { ...captured, database, priorIdentity, now, electronBridge };
+    return { ...captured, database, priorIdentity, now, onAuthenticated: capturedOnAuthenticated, electronBridge };
   } catch {
     return undefined;
   }
@@ -189,19 +209,39 @@ function resultFromHydration(
   }
 }
 
-/**
- * Performs one finite, owner-fenced initial C3 admission. It restores a real
- * authenticated session and durable non-secret identity first, then lets C3
- * independently recheck that server identity before any cache admission.
- */
-export async function runMpcCalibrationInitialAdmission(
-  input: MpcCalibrationInitialAdmissionInput,
-): Promise<MpcCalibrationInitialAdmissionResult> {
-  const captured = captureInput(input);
-  if (captured === undefined) return { kind: "failed", code: "invalid-operation" };
-  if (captured.target === "local") return { kind: "local", target: "local" };
+type MpcCalibrationInitialAdmissionRestorationStatus = Extract<
+  MpcCalibrationSessionRestorationStatus,
+  "offline" | "unpaired" | "authentication"
+>;
+type MpcCalibrationInitialAdmissionFailure = Extract<MpcCalibrationInitialAdmissionResult, Readonly<{ kind: "failed" }>>;
+type CapturedAdmissionOutcome = Readonly<{
+  result: MpcCalibrationInitialAdmissionResult;
+  restoredIdentity?: Readonly<CalibrationHarnessPersistenceIdentity>;
+  restorationStatus?: MpcCalibrationInitialAdmissionRestorationStatus;
+}>;
+
+function allowlistedRestorationStatus(
+  status: MpcCalibrationSessionRestorationStatus,
+): MpcCalibrationInitialAdmissionRestorationStatus | undefined {
+  switch (status) {
+    case "offline":
+    case "unpaired":
+    case "authentication":
+      return status;
+    default:
+      return undefined;
+  }
+}
+
+function completed(result: MpcCalibrationInitialAdmissionResult): CapturedAdmissionOutcome {
+  return { result };
+}
+
+/** Performs one finite, owner-fenced admission from a previously captured public input. */
+async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput): Promise<CapturedAdmissionOutcome> {
+  if (captured.target === "local") return completed({ kind: "local", target: "local" });
   const target = captured.target;
-  if (captured.cancelled || !current(captured)) return { kind: "cancelled", target };
+  if (captured.cancelled || !current(captured)) return completed({ kind: "cancelled", target });
 
   let transport: CapturedTransport;
   let resolveIdentity: ReturnType<typeof createMpcCalibrationLinkStateStore>["resolve"];
@@ -215,7 +255,7 @@ export async function runMpcCalibrationInitialAdmission(
     const acceptedLinkStore = createMpcCalibrationLinkStateStore(captured.database!);
     resolveIdentity = acceptedLinkStore.resolve.bind(acceptedLinkStore);
   } catch {
-    return { kind: "failed", target, code: "unavailable" };
+    return completed({ kind: "failed", target, code: "unavailable" });
   }
 
   const restorationFactory = target === "linked-web" ? () => transport as MpcCalibrationTransport : undefined;
@@ -238,24 +278,38 @@ export async function runMpcCalibrationInitialAdmission(
       operation: { isCurrent: captured.isCurrent },
     });
   } catch {
-    return { kind: "failed", target, code: "unavailable" };
+    return completed({ kind: "failed", target, code: "unavailable" });
   }
 
-  if (!current(captured) || restored.kind === "cancelled") return { kind: "cancelled", target };
+  if (!current(captured) || restored.kind === "cancelled") return completed({ kind: "cancelled", target });
   if (restored.kind === "rejected") {
+    const restorationStatus = allowlistedRestorationStatus(restored.status);
     let binding: unknown;
     try {
       binding = await captured.database!.mpcCalibrationCacheBindings.get("mpc-calibration-cache-binding");
     } catch {
       // The restoration status remains the bounded failure when its state cannot be read.
     }
-    if (!current(captured)) return { kind: "cancelled", target };
-    if (foreignPhysicalBinding(binding, authenticatedSession)) return { kind: "blocked", target };
-    return { kind: "failed", target, code: "unavailable" };
+    if (!current(captured)) return completed({ kind: "cancelled", target });
+    if (foreignPhysicalBinding(binding, authenticatedSession)) return completed({ kind: "blocked", target });
+    return { result: { kind: "failed", target, code: "unavailable" }, restorationStatus };
   }
-  if (restored.kind !== "restored") return { kind: "failed", target, code: "unavailable" };
-  if (captured.priorIdentity !== undefined && captured.priorIdentity !== null && !sameIdentity(captured.priorIdentity, restored.identity)) {
-    return { kind: "blocked", target };
+  if (restored.kind !== "restored") return completed({ kind: "failed", target, code: "unavailable" });
+  const restoredIdentity = Object.freeze({
+    ownerId: restored.identity.ownerId,
+    harnessId: restored.identity.harnessId,
+    connectionId: restored.identity.connectionId,
+  });
+  if (captured.priorIdentity !== undefined && captured.priorIdentity !== null && !sameIdentity(captured.priorIdentity, restoredIdentity)) {
+    return { result: { kind: "blocked", target }, restoredIdentity };
+  }
+  if (captured.onAuthenticated !== undefined) {
+    try {
+      captured.onAuthenticated(restoredIdentity);
+    } catch {
+      return { result: { kind: "failed", target, code: "unavailable" }, restoredIdentity };
+    }
+    if (!current(captured)) return completed({ kind: "cancelled", target });
   }
 
   try {
@@ -267,9 +321,67 @@ export async function runMpcCalibrationInitialAdmission(
       operation: { isCurrent: captured.isCurrent },
       now: captured.now,
     });
-    if (!current(captured) && hydrated.status !== "cancelled") return { kind: "cancelled", target };
-    return resultFromHydration(target, hydrated.status, hydrated.revision);
+    if (!current(captured) && hydrated.status !== "cancelled") return completed({ kind: "cancelled", target });
+    return { result: resultFromHydration(target, hydrated.status, hydrated.revision), restoredIdentity };
   } catch {
-    return { kind: "failed", target, code: "unavailable" };
+    return { result: { kind: "failed", target, code: "unavailable" }, restoredIdentity };
   }
+}
+
+/**
+ * Performs one finite, owner-fenced initial C3 admission. It restores a real
+ * authenticated session and durable non-secret identity first, then lets C3
+ * independently recheck that server identity before any cache admission.
+ */
+export async function runMpcCalibrationInitialAdmission(
+  input: MpcCalibrationInitialAdmissionInput,
+): Promise<MpcCalibrationInitialAdmissionResult> {
+  const captured = captureInput(input);
+  return captured === undefined
+    ? { kind: "failed", code: "invalid-operation" }
+    : (await runCapturedMpcCalibrationInitialAdmission(captured)).result;
+}
+
+export type MpcCalibrationInitialAdmissionWithIdentityResult =
+  | Exclude<MpcCalibrationInitialAdmissionResult, MpcCalibrationInitialAdmissionFailure>
+  | (MpcCalibrationInitialAdmissionFailure & Readonly<{
+    restorationStatus?: MpcCalibrationInitialAdmissionRestorationStatus;
+  }>)
+  | Readonly<{
+    kind: "hydrated" | "no-remote" | "blocked" | "needs-reconciliation";
+    target: LinkedTarget;
+    revision?: number;
+    identity: Readonly<CalibrationHarnessPersistenceIdentity>;
+  }>;
+
+function isIdentityHandoffResult(
+  result: MpcCalibrationInitialAdmissionResult,
+): result is Extract<MpcCalibrationInitialAdmissionResult, Readonly<{
+  kind: "hydrated" | "no-remote" | "blocked" | "needs-reconciliation";
+}>> {
+  return result.kind === "hydrated"
+    || result.kind === "no-remote"
+    || result.kind === "blocked"
+    || result.kind === "needs-reconciliation";
+}
+
+/**
+ * Reuses the one restoration performed by initial admission while exposing its
+ * validated non-secret identity to the app lifecycle. It must not call session
+ * restoration a second time merely to reconstruct ownership.
+ */
+export async function runMpcCalibrationInitialAdmissionWithIdentity(
+  input: MpcCalibrationInitialAdmissionWithIdentityInput,
+): Promise<MpcCalibrationInitialAdmissionWithIdentityResult> {
+  const captured = captureInput(input);
+  if (captured === undefined) return { kind: "failed", code: "invalid-operation" };
+  const outcome = await runCapturedMpcCalibrationInitialAdmission(captured);
+  if (outcome.result.kind === "failed") {
+    return outcome.restorationStatus === undefined
+      ? outcome.result
+      : { ...outcome.result, restorationStatus: outcome.restorationStatus };
+  }
+  return outcome.restoredIdentity !== undefined && isIdentityHandoffResult(outcome.result)
+    ? { ...outcome.result, identity: outcome.restoredIdentity }
+    : outcome.result;
 }
