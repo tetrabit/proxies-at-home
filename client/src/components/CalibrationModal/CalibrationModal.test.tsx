@@ -91,7 +91,12 @@ const {
   mockScopeSource: {
     current: { kind: "bound", identity: { ownerId: "owner-a", harnessId: "harness-a", connectionId: "connection-a" }, bindingRevision: 1 },
   },
-  linkedSync: { status: "unpaired" },
+  linkedSync: {
+    status: "unpaired",
+    selection: { kind: "unselected" as const },
+    selectLinked: vi.fn(),
+    disableCurrentConnection: vi.fn(),
+  },
 }));
 
 vi.mock("@/store", () => ({
@@ -969,6 +974,13 @@ describe("CalibrationModal", () => {
     fireEvent.click(screen.getByTestId("calibration-modal-close"));
     expect(mockCalibrationState.closeModal).toHaveBeenCalledOnce();
     expect(linkedSync.status).toBe("failed");
+  });
+
+  it("renders web pairing controls without Electron configured-service controls", async () => {
+    render(<CalibrationModal />);
+
+    expect(await screen.findByRole("button", { name: "Pair web service" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect configured service" })).toBeNull();
   });
 
   it("aborts only its shared-context subscription on close and never ranks stale results", async () => {

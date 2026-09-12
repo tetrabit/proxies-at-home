@@ -71,6 +71,7 @@ import {
 import { CardGrid } from "@/components/common/CardGrid";
 import { CardImageSvg } from "@/components/common/CardImageSvg";
 import { CalibrationSyncStatus } from "./CalibrationSyncStatus";
+import { CalibrationConnectionControls } from "./CalibrationConnectionControls";
 import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
 const DEFAULT_DATASET_NAME = "MPC Calibration Harness";
@@ -583,6 +584,7 @@ export function CalibrationModal() {
               <div data-testid="mpc-calibration-linked-sync-status">
                 <CalibrationSyncStatus status={calibrationSyncStatus} />
               </div>
+              <CalibrationConnectionControls />
               {status ? (
                 <p
                   className="mt-2 text-xs text-gray-600 dark:text-gray-300"

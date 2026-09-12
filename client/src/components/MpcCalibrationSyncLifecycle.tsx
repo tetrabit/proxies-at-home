@@ -16,6 +16,7 @@ import {
   type MpcCalibrationRefreshScheduler,
   type MpcCalibrationRefreshSchedulerStatus,
 } from "@/helpers/mpcCalibrationRefreshScheduler";
+import { disableMpcCalibrationLink } from "@/helpers/mpcCalibrationDisable";
 import {
   runMpcCalibrationInitialAdmissionWithIdentity,
   type MpcCalibrationInitialAdmissionWithIdentityResult,
@@ -42,6 +43,7 @@ type LifecycleDependencies = Readonly<{
   selectTransport: typeof selectMpcCalibrationTransport;
   createQueueController: typeof createMpcCalibrationQueueRecoveryController;
   createRefreshScheduler: typeof createMpcCalibrationRefreshScheduler;
+  disable: typeof disableMpcCalibrationLink;
 }>;
 
 const defaultDependencies: LifecycleDependencies = {
@@ -51,6 +53,7 @@ const defaultDependencies: LifecycleDependencies = {
   selectTransport: selectMpcCalibrationTransport,
   createQueueController: createMpcCalibrationQueueRecoveryController,
   createRefreshScheduler: createMpcCalibrationRefreshScheduler,
+  disable: disableMpcCalibrationLink,
 };
 
 export type MpcCalibrationSyncLifecycleProps = Readonly<{
@@ -186,6 +189,7 @@ export function MpcCalibrationSyncLifecycle({
     let queueController: MpcCalibrationQueueRecoveryController | undefined;
     let refreshScheduler: MpcCalibrationRefreshScheduler | undefined;
     let unsubscribe: (() => void) | undefined;
+    let connectionControl: ReturnType<typeof useMpcCalibrationSyncStore.getState>["connectionControl"];
     let latestRow: SyncRow;
     let terminalOutcome: MpcCalibrationSyncStatus | undefined;
 
@@ -203,6 +207,11 @@ export function MpcCalibrationSyncLifecycle({
       queueController = undefined;
       refreshScheduler?.dispose();
       refreshScheduler = undefined;
+      if (connectionControl !== undefined
+        && useMpcCalibrationSyncStore.getState().connectionControl === connectionControl) {
+        useMpcCalibrationSyncStore.getState().registerConnectionControl(undefined);
+      }
+      connectionControl = undefined;
       connectionScope?.dispose();
       connectionScope = undefined;
       preAuthenticationScope?.dispose();
@@ -261,6 +270,30 @@ export function MpcCalibrationSyncLifecycle({
         authentication: identity,
       });
       const queueOperation = connectionScope.captureAppOperation();
+      const ownedConnectionScope = connectionScope;
+      connectionControl = Object.freeze({
+        target,
+        disable: async () => {
+          const result = await dependencies.disable({
+            target,
+            scope: ownedConnectionScope,
+            identity,
+            database: dependencies.database,
+          });
+          if (disposed || !selectionIsCurrent()) return result;
+          if (result.kind === "disabled") {
+            useMpcCalibrationSyncStore.getState().selectLocal();
+          } else if (result.kind === "rejected") {
+            useMpcCalibrationSyncStore.getState().publishStatus(
+              result.status === "offline" ? "offline" : "failed",
+            );
+          }
+          return result;
+        },
+      });
+      if (selectionIsCurrent()) {
+        useMpcCalibrationSyncStore.getState().registerConnectionControl(connectionControl);
+      }
       let transport;
       try {
         transport = dependencies.selectTransport({ target });

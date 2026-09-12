@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ProxxiedDexie } from "@/db";
 import { createMpcCalibrationOperationScope } from "@/helpers/mpcCalibrationOperationScope";
 import { createMpcCalibrationQueueRecoveryController } from "@/helpers/mpcCalibrationQueueRecoveryController";
@@ -12,6 +12,7 @@ import type { MpcCalibrationTransport } from "@/helpers/mpcCalibrationTransport"
 import { MpcCalibrationSyncLifecycle } from "./MpcCalibrationSyncLifecycle";
 import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 import { useCalibrationModalStore } from "@/store/calibrationModal";
+import { CalibrationConnectionControls } from "./CalibrationModal/CalibrationConnectionControls";
 
 const identity = {
   ownerId: "owner-a",
@@ -40,6 +41,7 @@ function dependencies() {
     selectTransport: vi.fn(() => ({} as never)),
     createQueueController: vi.fn(() => queue),
     createRefreshScheduler: vi.fn(() => scheduler),
+    disable: vi.fn(async () => ({ kind: "disabled" as const, target: "local" as const, previousTarget: "linked-web" as const })),
     queueDispose,
     schedulerDispose,
   };
@@ -89,6 +91,43 @@ describe("MpcCalibrationSyncLifecycle", () => {
 
     await state.markSnapshotSent(identity, 1);
     await waitFor(() => expect(useMpcCalibrationSyncStore.getState().status).toBe("in-flight"));
+  });
+
+  it("shows real durable queued work and scheduler offline state through the actual modal control", async () => {
+    const deps = dependencies();
+    let schedulerOptions: { onStatus?: (status: { kind: "retrying"; attempt: number; delayMs: number }) => void } | undefined;
+    deps.createRefreshScheduler = vi.fn((options: Parameters<typeof createMpcCalibrationRefreshScheduler>[0]) => {
+      schedulerOptions = options;
+      return { start: vi.fn(async () => undefined), dispose: deps.schedulerDispose };
+    }) as never;
+    render(<><MpcCalibrationSyncLifecycle dependencies={deps} /><CalibrationConnectionControls /></>);
+    act(() => useMpcCalibrationSyncStore.getState().selectLinked("linked-web"));
+    await waitFor(() => expect(deps.createQueueController).toHaveBeenCalledOnce());
+
+    const state = createMpcCalibrationSyncStateStore(deps.database, { now: () => 1 });
+    const snapshot = { version: 1 as const, datasets: [], cases: [], assets: [], runs: [], retained: { queue: "kept" } };
+    await state.storeBaseWhenClean(identity, { revision: 1, snapshot });
+    await state.queueSnapshot(identity, snapshot);
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("queued"));
+
+    act(() => schedulerOptions!.onStatus?.({ kind: "retrying", attempt: 1, delayMs: 1_000 }));
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("offline"));
+    expect(await state.load(identity)).toMatchObject({ queued: { generation: 1, snapshot } });
+  });
+
+  it("registers the lifecycle-owned disable command and selects local only after it succeeds", async () => {
+    const deps = dependencies();
+    render(<><MpcCalibrationSyncLifecycle dependencies={deps} /><CalibrationConnectionControls /></>);
+    act(() => useMpcCalibrationSyncStore.getState().selectLinked("linked-web"));
+    await waitFor(() => expect(useMpcCalibrationSyncStore.getState().connectionControl).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Disable calibration sync" }));
+    await waitFor(() => expect(useMpcCalibrationSyncStore.getState().selection).toEqual({ kind: "local" }));
+    expect(deps.disable).toHaveBeenCalledWith(expect.objectContaining({
+      target: "linked-web", identity, database: deps.database,
+      scope: expect.any(Object),
+    }));
+    expect(useMpcCalibrationSyncStore.getState().selection).toEqual({ kind: "local" });
   });
 
   it("keeps app-owned queue and retry resources alive when only the modal store closes", async () => {
@@ -246,6 +285,7 @@ describe("MpcCalibrationSyncLifecycle", () => {
       selectTransport: vi.fn(() => transport),
       createQueueController,
       createRefreshScheduler: vi.fn(() => ({ start: vi.fn(async () => undefined), dispose: vi.fn() })),
+      disable: vi.fn(async () => ({ kind: "disabled" as const, target: "local" as const, previousTarget: "linked-web" as const })),
     };
     render(<MpcCalibrationSyncLifecycle dependencies={deps} />);
 
@@ -263,5 +303,62 @@ describe("MpcCalibrationSyncLifecycle", () => {
       acknowledgedGeneration: 1,
     });
     expect(useMpcCalibrationSyncStore.getState().status).toBe("clean");
+  });
+
+  it("keeps conflicting local calibration data queued without overwriting it through real C3 and C5", async () => {
+    const database = new ProxxiedDexie(`app-sync-conflict-${crypto.randomUUID()}`);
+    handles.push(database);
+    const base = {
+      version: 1 as const,
+      datasets: [{ id: "dataset", name: "Base", targetCaseCount: 1, createdAt: 1, updatedAt: 1, version: 1 }],
+      cases: [{ id: "case", datasetId: "dataset", createdAt: 1, updatedAt: 1, source: { name: "Base" }, candidates: [] }],
+      assets: [], runs: [], retained: { common: "base" },
+    };
+    const desired = structuredClone(base);
+    desired.datasets[0]!.name = "Local desired";
+    desired.datasets[0]!.updatedAt = 2;
+    desired.cases[0]!.source = { name: "Local desired" };
+    const remote = structuredClone(base);
+    remote.datasets[0]!.name = "Remote conflict";
+    remote.datasets[0]!.updatedAt = 3;
+    remote.cases[0]!.source = { name: "Remote conflict" };
+    const state = createMpcCalibrationSyncStateStore(database, { now: () => 1 });
+    await state.storeBaseWhenClean(identity, { revision: 1, snapshot: base });
+    await state.queueSnapshot(identity, desired);
+    await database.mpcCalibrationDatasets.bulkPut(desired.datasets);
+    await database.mpcCalibrationCases.bulkPut(desired.cases);
+    await database.mpcCalibrationLinkStates.put({ formatVersion: 1, ...identity, updatedAt: 1 });
+    await database.mpcCalibrationCacheBindings.put({ id: "mpc-calibration-cache-binding", ...identity, revision: 1, updatedAt: 1 });
+    const transport: MpcCalibrationTransport = {
+      pair: async () => ({ ownerId: identity.ownerId, harnessId: identity.harnessId }),
+      unpair: async () => undefined,
+      getSession: async () => ({ ownerId: identity.ownerId, harnessId: identity.harnessId }),
+      getSnapshot: async () => ({ revision: 2, snapshot: remote }),
+      getBlob: async () => new Uint8Array(),
+      missingBlobs: async () => ({ missing: [] }),
+      putBlob: async () => ({ sha256: "unused", byteLength: 0, inserted: false }),
+      publishSnapshot: vi.fn(async () => ({ revision: 3, snapshot: desired })),
+    };
+    const deps = {
+      database,
+      createScope: createMpcCalibrationOperationScope,
+      admit: vi.fn((input: Parameters<typeof runMpcCalibrationInitialAdmissionWithIdentity>[0]) =>
+        runMpcCalibrationInitialAdmissionWithIdentity({ ...input, createWebTransport: () => transport })),
+      selectTransport: vi.fn(() => transport),
+      createQueueController: createMpcCalibrationQueueRecoveryController,
+      createRefreshScheduler: vi.fn(() => ({ start: vi.fn(async () => undefined), dispose: vi.fn() })),
+      disable: vi.fn(async () => ({ kind: "disabled" as const, target: "local" as const, previousTarget: "linked-web" as const })),
+    };
+    render(<MpcCalibrationSyncLifecycle dependencies={deps} />);
+    act(() => useMpcCalibrationSyncStore.getState().selectLinked("linked-web"));
+
+    await waitFor(() => expect(useMpcCalibrationSyncStore.getState().status).toBe("conflict"));
+    expect(transport.publishSnapshot).not.toHaveBeenCalled();
+    expect(await state.load(identity)).toMatchObject({
+      base: { revision: 1, snapshot: base },
+      queued: { generation: 1, snapshot: desired },
+    });
+    expect(await database.mpcCalibrationDatasets.get("dataset")).toMatchObject({ name: "Local desired", updatedAt: 2 });
+    expect(await database.mpcCalibrationCases.get("case")).toMatchObject({ source: { name: "Local desired" } });
   });
 });
