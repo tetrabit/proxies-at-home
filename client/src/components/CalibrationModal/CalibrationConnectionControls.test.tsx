@@ -130,6 +130,114 @@ describe("CalibrationConnectionControls", () => {
     expect(useMpcCalibrationSyncStore.getState().selection).toEqual({ kind: "linked", target: "linked-electron" });
   });
 
+  it("replaces configured Electron connection progress with the terminal conflict status", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect configured service" }));
+    expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("Connecting configured Electron service");
+
+    await act(async () => {
+      useMpcCalibrationSyncStore.getState().publishStatus("conflict");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Connection status: conflict.");
+    expect(message).not.toContain("Connecting configured Electron service");
+  });
+
+  it("replaces configured Electron connection progress with a successful sync status", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect configured service" }));
+    await act(async () => {
+      useMpcCalibrationSyncStore.getState().publishStatus("clean");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Connection status: clean.");
+    expect(message).not.toContain("Connecting configured Electron service");
+  });
+
+  it("does not retain Electron connection progress after the selected connection is replaced", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect configured service" }));
+    await act(async () => {
+      useMpcCalibrationSyncStore.getState().selectLinked("linked-web");
+    });
+
+    expect(screen.getByTestId("mpc-calibration-connection-message").textContent).not.toContain("Connecting configured Electron service");
+  });
+
+  it("shows a same-selection disable rejection instead of stale connection progress", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect configured service" }));
+    useMpcCalibrationSyncStore.getState().registerConnectionControl({
+      target: "linked-electron",
+      disable: async () => ({ kind: "rejected", target: "linked-electron", status: "unavailable" }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Disable calibration sync" }));
+
+    await waitFor(() => {
+      const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+      expect(message).toContain("Web pairing is unavailable.");
+      expect(message).not.toContain("Connecting configured Electron service");
+    });
+  });
+
+  it("shows new web pairing progress instead of same-selection paired progress", async () => {
+    const held = deferred<{ kind: "cancelled"; target: "linked-web" }>();
+    mockPair
+      .mockResolvedValueOnce({
+        kind: "paired",
+        target: "linked-web",
+        identity: { ownerId: "owner", harnessId: "harness", connectionId: "connection" },
+      })
+      .mockImplementationOnce(() => held.promise);
+    render(<CalibrationConnectionControls />);
+    const credential = screen.getByTestId("mpc-calibration-web-credential");
+    fireEvent.change(credential, { target: { value: "credential" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pair web service" }));
+
+    await waitFor(() => expect(useMpcCalibrationSyncStore.getState().selection).toEqual({ kind: "linked", target: "linked-web" }));
+    fireEvent.change(credential, { target: { value: "replacement-credential" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pair web service" }));
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Pairing web service");
+    expect(message).not.toContain("Web service paired. Connecting sync");
+
+    await act(async () => {
+      held.resolve({ kind: "cancelled", target: "linked-web" });
+      await held.promise;
+    });
+  });
+
+  it("does not resurface web pairing text after paired progress is invalidated", async () => {
+    mockPair.mockResolvedValue({
+      kind: "paired",
+      target: "linked-web",
+      identity: { ownerId: "owner", harnessId: "harness", connectionId: "connection" },
+    });
+    render(<CalibrationConnectionControls />);
+    fireEvent.change(screen.getByTestId("mpc-calibration-web-credential"), { target: { value: "credential" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pair web service" }));
+
+    await waitFor(() => expect(useMpcCalibrationSyncStore.getState().selection).toEqual({ kind: "linked", target: "linked-web" }));
+    await act(async () => {
+      useMpcCalibrationSyncStore.getState().selectLinked("linked-electron");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).not.toContain("Pairing web service");
+    expect(message).not.toContain("Web service paired. Connecting sync");
+  });
+
   it("does not fall back to web pairing for an incomplete Electron bridge", () => {
     vi.stubGlobal("electronAPI", {});
     render(<CalibrationConnectionControls />);

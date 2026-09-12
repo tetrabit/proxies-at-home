@@ -21,6 +21,12 @@ type ActivePairing = Readonly<{
   selection: ReturnType<typeof useMpcCalibrationSyncStore.getState>["selection"];
 }>;
 
+type ConnectionProgress = Readonly<{
+  selectionRevision: number;
+  target: "linked-web" | "linked-electron";
+  message: string;
+}>;
+
 function sameSelection(
   current: ReturnType<typeof useMpcCalibrationSyncStore.getState>,
   active: ActivePairing,
@@ -65,6 +71,7 @@ export function CalibrationConnectionControls() {
   const uiEpoch = useRef(0);
   const renderedUiKey = useRef<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [connectionProgress, setConnectionProgress] = useState<ConnectionProgress | null>(null);
   const [pairing, setPairing] = useState(false);
   const isElectron = electronRenderer();
   const uiKey = `${isElectron}:${selectionRevision}`;
@@ -92,6 +99,7 @@ export function CalibrationConnectionControls() {
     if (active === null) return;
     clearActiveCredential(active);
     abortActivePairing();
+    setConnectionProgress(null);
     setMessage("Web pairing cancelled.");
   };
 
@@ -113,6 +121,7 @@ export function CalibrationConnectionControls() {
 
   const beginWebPairing = () => {
     cancelPairing();
+    setConnectionProgress(null);
     const input = credentialInput.current;
     if (input === null) return;
     const state = useMpcCalibrationSyncStore.getState();
@@ -160,23 +169,44 @@ export function CalibrationConnectionControls() {
       if (!sameSelection(current, active)) return;
       if (result.kind === "paired") {
         selectLinked("linked-web");
-        setMessage("Web service paired. Connecting sync…");
+        const selected = useMpcCalibrationSyncStore.getState();
+        if (selected.selection.kind === "linked" && selected.selection.target === "linked-web") {
+          setMessage(null);
+          setConnectionProgress({
+            selectionRevision: selected.selectionRevision,
+            target: "linked-web",
+            message: "Web service paired. Connecting sync…",
+          });
+        }
         return;
       }
+      setConnectionProgress(null);
       setMessage(result.kind === "cancelled" ? "Web pairing cancelled." : pairingLabels[result.status]);
     });
   };
 
   const connectElectron = () => {
     if (!electronServiceAvailable()) {
+      setConnectionProgress(null);
       setMessage("Configured Electron service is unavailable.");
       return;
     }
+    setConnectionProgress(null);
+    setMessage(null);
     selectLinked("linked-electron");
-    setMessage("Connecting configured Electron service…");
+    const selected = useMpcCalibrationSyncStore.getState();
+    if (selected.selection.kind === "linked" && selected.selection.target === "linked-electron") {
+      setConnectionProgress({
+        selectionRevision: selected.selectionRevision,
+        target: "linked-electron",
+        message: "Connecting configured Electron service…",
+      });
+    }
   };
 
   const disable = () => {
+    setConnectionProgress(null);
+    setMessage(null);
     const epoch = uiEpoch.current;
     const selectionSnapshot = useMpcCalibrationSyncStore.getState().selectionRevision;
     const current = () => uiEpoch.current === epoch
@@ -201,6 +231,14 @@ export function CalibrationConnectionControls() {
   };
 
   const linked = selection.kind === "linked";
+  const connectionProgressIsCurrent = connectionProgress !== null
+    && selection.kind === "linked"
+    && selection.target === connectionProgress.target
+    && selectionRevision === connectionProgress.selectionRevision;
+  const displayedMessage = message
+    ?? (connectionProgressIsCurrent && status === "authenticating"
+      ? connectionProgress.message
+      : `Connection status: ${status}.`);
   return (
     <section className="mt-3 space-y-2" aria-label="Calibration sync connection controls">
       <div className="flex flex-wrap gap-2">
@@ -235,7 +273,7 @@ export function CalibrationConnectionControls() {
         ) : null}
       </div>
       <p data-testid="mpc-calibration-connection-message" className="text-xs text-gray-600 dark:text-gray-300" aria-live="polite">
-        {message ?? `Connection status: ${status}.`}
+        {displayedMessage}
       </p>
     </section>
   );
