@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: server/dockerfile
     environment:
+      - CALIBRATION_HARNESS_ALLOWED_WEB_ORIGINS=http://127.0.0.1:5173
       - PRINTER_CALIBRATION_BIN=/opt/printer-calibration-venv/bin/printer-calibration
       - PRINTER_CALIBRATION_PYTHON=/opt/printer-calibration-venv/bin/python
     ports:
