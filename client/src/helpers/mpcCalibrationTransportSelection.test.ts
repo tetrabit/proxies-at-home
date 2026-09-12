@@ -38,6 +38,29 @@ describe("calibration transport selection", () => {
     expect(webFactory).not.toHaveBeenCalled();
   });
 
+  it("rejects a missing local transport while allowing an explicit linked-web selection without a fabricated local", () => {
+    const linkedWeb = transport("web");
+    const webFactory = vi.fn(() => linkedWeb);
+
+    expect(() => selectMpcCalibrationTransport({} as never)).toThrow(TypeError);
+    expect(selectMpcCalibrationTransport({
+      target: "linked-web",
+      createWebTransport: webFactory,
+    })).toBe(linkedWeb);
+    expect(webFactory).toHaveBeenCalledOnce();
+  });
+
+  it("rejects null target without substituting the local default", () => {
+    const factory = vi.fn();
+    expect(() => selectMpcCalibrationTransport({ target: null as never, local: transport("local"), createWebTransport: factory }))
+      .toThrow(TypeError);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("rejects null local transport as missing required local input", () => {
+    expect(() => selectMpcCalibrationTransport({ target: "local", local: null as never })).toThrow(TypeError);
+  });
+
   it("selects linked web only when requested and returns its common transport interface unchanged", () => {
     const local = transport("local");
     const linkedWeb = transport("web");

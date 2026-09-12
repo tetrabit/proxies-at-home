@@ -17,16 +17,33 @@ export type MpcCalibrationTransportSelectionOptions = Readonly<{
   electronBridge?: MpcCalibrationElectronBridge;
 }>;
 
+/** Explicit linked callers do not need to fabricate an unused local transport. */
+export type MpcCalibrationLinkedTransportSelectionOptions = Readonly<{
+  target: Exclude<MpcCalibrationTransportTarget, "local">;
+  /** Retained only for callers migrating from the general selection shape. */
+  local?: MpcCalibrationTransport;
+  createWebTransport?: () => MpcCalibrationTransport;
+  electronBridge?: MpcCalibrationElectronBridge;
+}>;
+
 /**
  * Selects one existing common transport. Local is deliberate default and makes no
  * web or IPC probe; linked modes are an explicit caller choice for the future
  * common coordinator, not an independent cache or preference-sync sidecar.
  */
-export function selectMpcCalibrationTransport(options: MpcCalibrationTransportSelectionOptions): MpcCalibrationTransport {
-  const target = options.target ?? "local";
+export function selectMpcCalibrationTransport(options: MpcCalibrationTransportSelectionOptions): MpcCalibrationTransport;
+export function selectMpcCalibrationTransport(options: MpcCalibrationLinkedTransportSelectionOptions): MpcCalibrationTransport;
+export function selectMpcCalibrationTransport(
+  options: MpcCalibrationTransportSelectionOptions | MpcCalibrationLinkedTransportSelectionOptions
+): MpcCalibrationTransport {
+  const rawTarget = options.target;
+  const target = rawTarget === undefined ? "local" : rawTarget;
   switch (target) {
-    case "local":
-      return options.local;
+    case "local": {
+      const local = options.local;
+      if (local === undefined || local === null) throw new TypeError("Local calibration transport is required");
+      return local;
+    }
     case "linked-web":
       return (options.createWebTransport ?? createMpcCalibrationWebTransport)();
     case "linked-electron":
