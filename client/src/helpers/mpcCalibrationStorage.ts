@@ -6,6 +6,18 @@ import {
   type MpcCalibrationRunRecord,
 } from "@/db";
 import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
+import {
+  createMpcCalibrationMutationCoordinator,
+  type MpcCalibrationMutationScope,
+} from "./mpcCalibrationMutations";
+
+export type { MpcCalibrationMutationScope } from "./mpcCalibrationMutations";
+const mpcCalibrationMutations = createMpcCalibrationMutationCoordinator(db);
+
+/** Captures the non-secret physical-cache fence before caller-owned awaits. */
+export function captureMpcCalibrationMutationScope(): Promise<MpcCalibrationMutationScope> {
+  return mpcCalibrationMutations.captureScope();
+}
 
 export const MPC_CALIBRATION_DATASET_VERSION = 1;
 export const MPC_CALIBRATION_TARGET_CASE_COUNT = 9;
@@ -30,20 +42,25 @@ function now() {
 }
 
 export async function createMpcCalibrationDataset(
-  input: CreateMpcCalibrationDatasetInput
+  input: CreateMpcCalibrationDatasetInput,
+  scope?: MpcCalibrationMutationScope
 ): Promise<MpcCalibrationDatasetRecord> {
+  const capturedInput = structuredClone(input);
   const timestamp = now();
   const dataset: MpcCalibrationDatasetRecord = {
     id: crypto.randomUUID(),
-    name: input.name,
-    description: input.description,
-    targetCaseCount: input.targetCaseCount ?? MPC_CALIBRATION_TARGET_CASE_COUNT,
+    name: capturedInput.name,
+    description: capturedInput.description,
+    targetCaseCount: capturedInput.targetCaseCount ?? MPC_CALIBRATION_TARGET_CASE_COUNT,
     createdAt: timestamp,
     updatedAt: timestamp,
     version: MPC_CALIBRATION_DATASET_VERSION,
   };
 
-  await db.mpcCalibrationDatasets.add(dataset);
+  await mpcCalibrationMutations.mutate(async () => {
+    await db.mpcCalibrationDatasets.add(dataset);
+    return { value: undefined, changed: true };
+  }, scope);
   return dataset;
 }
 
@@ -54,12 +71,23 @@ export async function updateMpcCalibrationDataset(
       MpcCalibrationDatasetRecord,
       "name" | "description" | "targetCaseCount"
     >
-  >
+  >,
+  scope?: MpcCalibrationMutationScope
 ): Promise<void> {
-  await db.mpcCalibrationDatasets.update(datasetId, {
-    ...updates,
-    updatedAt: now(),
-  });
+  const capturedUpdates = structuredClone(updates);
+  await mpcCalibrationMutations.mutate(async () => {
+    const existing = await db.mpcCalibrationDatasets.get(datasetId);
+    if (existing === undefined) return { value: undefined, changed: false };
+    const changed = Object.entries(capturedUpdates).some(([key, value]) =>
+      existing[key as keyof typeof updates] !== value
+    );
+    if (!changed) return { value: undefined, changed: false };
+    await db.mpcCalibrationDatasets.update(datasetId, {
+      ...capturedUpdates,
+      updatedAt: now(),
+    });
+    return { value: undefined, changed: true };
+  }, scope);
 }
 
 export async function getMpcCalibrationDataset(
@@ -78,30 +106,51 @@ export async function saveMpcCalibrationCase(
   input: Omit<MpcCalibrationCaseRecord, "createdAt" | "updatedAt"> & {
     createdAt?: number;
     updatedAt?: number;
-  }
+  },
+  scope?: MpcCalibrationMutationScope
 ): Promise<MpcCalibrationCaseRecord> {
+  const capturedInput = structuredClone(input);
   const timestamp = now();
-  const existing = await db.mpcCalibrationCases.get(input.id);
-  const record: MpcCalibrationCaseRecord = {
-    ...input,
-    createdAt: existing?.createdAt ?? input.createdAt ?? timestamp,
-    updatedAt: input.updatedAt ?? timestamp,
-  };
-
-  await db.transaction(
-    "rw",
-    db.mpcCalibrationCases,
-    db.mpcCalibrationDatasets,
-    async () => {
-      await db.mpcCalibrationCases.put(record);
-      await db.mpcCalibrationDatasets.update(record.datasetId, {
-        updatedAt: timestamp,
-      });
-    }
-  );
-
+  const record = await mpcCalibrationMutations.mutate(async () => {
+    const existing = await db.mpcCalibrationCases.get(capturedInput.id);
+    const next: MpcCalibrationCaseRecord = {
+      ...capturedInput,
+      createdAt: existing?.createdAt ?? capturedInput.createdAt ?? timestamp,
+      updatedAt: capturedInput.updatedAt ?? timestamp,
+    };
+    await db.mpcCalibrationCases.put(next);
+    await db.mpcCalibrationDatasets.update(next.datasetId, { updatedAt: timestamp });
+    return { value: next, changed: true };
+  }, scope);
   markMpcPreferenceSyncDirty();
+  return record;
+}
 
+/** Saves a case and its complete asset set under one queue generation. */
+export async function saveMpcCalibrationCaseWithAssets(
+  input: Parameters<typeof saveMpcCalibrationCase>[0],
+  assets: readonly MpcCalibrationAssetRecord[],
+  scope?: MpcCalibrationMutationScope
+): Promise<MpcCalibrationCaseRecord> {
+  const capturedInput = structuredClone(input);
+  const capturedAssets = structuredClone(assets);
+  const timestamp = now();
+  const record = await mpcCalibrationMutations.mutate(async () => {
+    if (capturedAssets.some((asset) => asset.datasetId !== capturedInput.datasetId || asset.caseId !== capturedInput.id)) {
+      throw new Error("grouped calibration assets must belong to the saved case");
+    }
+    const existing = await db.mpcCalibrationCases.get(capturedInput.id);
+    const next: MpcCalibrationCaseRecord = {
+      ...capturedInput,
+      createdAt: existing?.createdAt ?? capturedInput.createdAt ?? timestamp,
+      updatedAt: capturedInput.updatedAt ?? timestamp,
+    };
+    await db.mpcCalibrationCases.put(next);
+    if (capturedAssets.length > 0) await db.mpcCalibrationAssets.bulkPut(capturedAssets);
+    await db.mpcCalibrationDatasets.update(next.datasetId, { updatedAt: timestamp });
+    return { value: next, changed: true };
+  }, scope);
+  markMpcPreferenceSyncDirty();
   return record;
 }
 
@@ -241,63 +290,36 @@ export async function getMpcCalibrationPreferenceProfile(input: {
   return undefined;
 }
 
-export async function deleteMpcCalibrationCase(caseId: string): Promise<void> {
-  const existing = await db.mpcCalibrationCases.get(caseId);
-  if (!existing) return;
-
-  await db.transaction(
-    "rw",
-    db.mpcCalibrationCases,
-    db.mpcCalibrationAssets,
-    db.mpcCalibrationRuns,
-    db.mpcCalibrationDatasets,
-    async () => {
-      await db.mpcCalibrationCases.delete(caseId);
-
-      const assetIds = await db.mpcCalibrationAssets
-        .where("caseId")
-        .equals(caseId)
-        .primaryKeys();
-      if (assetIds.length > 0) {
-        await db.mpcCalibrationAssets.bulkDelete(assetIds);
-      }
-
-      const runs = await db.mpcCalibrationRuns
-        .where("datasetId")
-        .equals(existing.datasetId)
-        .toArray();
-      const affectedRunIds = runs
-        .filter((run) => run.results.some((result) => result.caseId === caseId))
-        .map((run) => run.id);
-      if (affectedRunIds.length > 0) {
-        await db.mpcCalibrationRuns.bulkDelete(affectedRunIds);
-      }
-
-      await db.mpcCalibrationDatasets.update(existing.datasetId, {
-        updatedAt: now(),
-      });
-    }
-  );
-
-  markMpcPreferenceSyncDirty();
+export async function deleteMpcCalibrationCase(
+  caseId: string,
+  scope?: MpcCalibrationMutationScope
+): Promise<void> {
+  const changed = await mpcCalibrationMutations.mutate(async () => {
+    const existing = await db.mpcCalibrationCases.get(caseId);
+    if (existing === undefined) return { value: false, changed: false };
+    await db.mpcCalibrationCases.delete(caseId);
+    const assetIds = await db.mpcCalibrationAssets.where("caseId").equals(caseId).primaryKeys();
+    if (assetIds.length > 0) await db.mpcCalibrationAssets.bulkDelete(assetIds);
+    const runs = await db.mpcCalibrationRuns.where("datasetId").equals(existing.datasetId).toArray();
+    const affectedRunIds = runs.filter((run) => run.results.some((result) => result.caseId === caseId)).map((run) => run.id);
+    if (affectedRunIds.length > 0) await db.mpcCalibrationRuns.bulkDelete(affectedRunIds);
+    await db.mpcCalibrationDatasets.update(existing.datasetId, { updatedAt: now() });
+    return { value: true, changed: true };
+  }, scope);
+  if (changed) markMpcPreferenceSyncDirty();
 }
 
 export async function saveMpcCalibrationAssets(
-  assets: MpcCalibrationAssetRecord[]
+  assets: MpcCalibrationAssetRecord[],
+  scope?: MpcCalibrationMutationScope
 ): Promise<void> {
-  if (assets.length === 0) return;
-
-  await db.transaction(
-    "rw",
-    db.mpcCalibrationAssets,
-    db.mpcCalibrationDatasets,
-    async () => {
-      await db.mpcCalibrationAssets.bulkPut(assets);
-      await db.mpcCalibrationDatasets.update(assets[0].datasetId, {
-        updatedAt: now(),
-      });
-    }
-  );
+  const capturedAssets = structuredClone(assets);
+  if (capturedAssets.length === 0) return;
+  await mpcCalibrationMutations.mutate(async () => {
+    await db.mpcCalibrationAssets.bulkPut(capturedAssets);
+    await db.mpcCalibrationDatasets.update(capturedAssets[0]!.datasetId, { updatedAt: now() });
+    return { value: undefined, changed: true };
+  }, scope);
 }
 
 export async function listMpcCalibrationAssets(
@@ -317,26 +339,19 @@ export async function listMpcCalibrationAssets(
 }
 
 export async function saveMpcCalibrationRun(
-  input: Omit<MpcCalibrationRunRecord, "createdAt"> & { createdAt?: number }
+  input: Omit<MpcCalibrationRunRecord, "createdAt"> & { createdAt?: number },
+  scope?: MpcCalibrationMutationScope
 ): Promise<MpcCalibrationRunRecord> {
+  const capturedInput = structuredClone(input);
   const record: MpcCalibrationRunRecord = {
-    ...input,
-    createdAt: input.createdAt ?? now(),
+    ...capturedInput,
+    createdAt: capturedInput.createdAt ?? now(),
   };
-
-  await db.transaction(
-    "rw",
-    db.mpcCalibrationRuns,
-    db.mpcCalibrationDatasets,
-    async () => {
-      await db.mpcCalibrationRuns.put(record);
-      await db.mpcCalibrationDatasets.update(record.datasetId, {
-        updatedAt: now(),
-      });
-    }
-  );
-
-  return record;
+  return mpcCalibrationMutations.mutate(async () => {
+    await db.mpcCalibrationRuns.put(record);
+    await db.mpcCalibrationDatasets.update(record.datasetId, { updatedAt: now() });
+    return { value: record, changed: true };
+  }, scope);
 }
 
 export async function listMpcCalibrationRuns(
@@ -346,40 +361,19 @@ export async function listMpcCalibrationRuns(
 }
 
 export async function deleteMpcCalibrationDataset(
-  datasetId: string
+  datasetId: string,
+  scope?: MpcCalibrationMutationScope
 ): Promise<void> {
-  await db.transaction(
-    "rw",
-    db.mpcCalibrationDatasets,
-    db.mpcCalibrationCases,
-    db.mpcCalibrationAssets,
-    db.mpcCalibrationRuns,
-    async () => {
-      await db.mpcCalibrationDatasets.delete(datasetId);
-
-      const caseIds = await db.mpcCalibrationCases
-        .where("datasetId")
-        .equals(datasetId)
-        .primaryKeys();
-      if (caseIds.length > 0) {
-        await db.mpcCalibrationCases.bulkDelete(caseIds);
-      }
-
-      const assetIds = await db.mpcCalibrationAssets
-        .where("datasetId")
-        .equals(datasetId)
-        .primaryKeys();
-      if (assetIds.length > 0) {
-        await db.mpcCalibrationAssets.bulkDelete(assetIds);
-      }
-
-      const runIds = await db.mpcCalibrationRuns
-        .where("datasetId")
-        .equals(datasetId)
-        .primaryKeys();
-      if (runIds.length > 0) {
-        await db.mpcCalibrationRuns.bulkDelete(runIds);
-      }
-    }
-  );
+  await mpcCalibrationMutations.mutate(async () => {
+    const existing = await db.mpcCalibrationDatasets.get(datasetId);
+    if (existing === undefined) return { value: undefined, changed: false };
+    await db.mpcCalibrationDatasets.delete(datasetId);
+    const caseIds = await db.mpcCalibrationCases.where("datasetId").equals(datasetId).primaryKeys();
+    if (caseIds.length > 0) await db.mpcCalibrationCases.bulkDelete(caseIds);
+    const assetIds = await db.mpcCalibrationAssets.where("datasetId").equals(datasetId).primaryKeys();
+    if (assetIds.length > 0) await db.mpcCalibrationAssets.bulkDelete(assetIds);
+    const runIds = await db.mpcCalibrationRuns.where("datasetId").equals(datasetId).primaryKeys();
+    if (runIds.length > 0) await db.mpcCalibrationRuns.bulkDelete(runIds);
+    return { value: undefined, changed: true };
+  }, scope);
 }

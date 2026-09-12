@@ -1,5 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import "fake-indexeddb/auto";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const privateTestDatabaseName = vi.hoisted(() => `c6-storage-${crypto.randomUUID()}`);
+
+vi.mock("@/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db")>();
+  return {
+    ...actual,
+    db: new actual.ProxxiedDexie(privateTestDatabaseName),
+  };
+});
+
 import { db } from "@/db";
+import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 
 const mockMarkMpcPreferenceSyncDirty = vi.hoisted(() => vi.fn());
 
@@ -22,14 +35,18 @@ import {
   listMpcCalibrationRuns,
   saveMpcCalibrationAssets,
   saveMpcCalibrationCase,
+  saveMpcCalibrationCaseWithAssets,
   saveMpcCalibrationRun,
   updateMpcCalibrationDataset,
 } from "./mpcCalibrationStorage";
+import type { MpcCalibrationFrozenCandidate } from "@/db";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
+
+type FrozenCandidateFixture = MpcAutofillCard & Pick<MpcCalibrationFrozenCandidate, "imageUrl">;
 
 function makeCandidate(
   overrides: Partial<MpcAutofillCard> & Pick<MpcAutofillCard, "identifier">
-): MpcAutofillCard {
+): FrozenCandidateFixture {
   return {
     name: "Aven Mindcensor",
     rawName: "Aven Mindcensor",
@@ -47,12 +64,155 @@ function makeCandidate(
 }
 
 describe("mpcCalibrationStorage", () => {
+  afterAll(() => {
+    db.close();
+  });
+
   beforeEach(async () => {
     await db.mpcCalibrationRuns.clear();
     await db.mpcCalibrationAssets.clear();
     await db.mpcCalibrationCases.clear();
     await db.mpcCalibrationDatasets.clear();
+    await db.mpcCalibrationSyncStates.clear();
+    await db.mpcCalibrationCacheBindings.clear();
     mockMarkMpcPreferenceSyncDirty.mockClear();
+  });
+
+  it("uses an explicitly private UUID-named database fixture", () => {
+    expect(db.name).toBe(privateTestDatabaseName);
+  });
+
+  it("queues the final linked-cache snapshot in the same storage mutation", async () => {
+    const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
+    const state = createMpcCalibrationSyncStateStore(db, { now: () => 10 });
+    await state.storeBaseWhenClean(identity, {
+      revision: 1,
+      snapshot: { version: 1, retainedRoot: { preserved: ["root"] }, datasets: [], cases: [], assets: [], runs: [] },
+    });
+    await db.mpcCalibrationCacheBindings.put({
+      id: "mpc-calibration-cache-binding",
+      ...identity,
+      revision: 1,
+      updatedAt: 10,
+    });
+
+    const dataset = await createMpcCalibrationDataset({ name: "Queued dataset" });
+
+    const queued = await state.load(identity);
+    expect(queued).toMatchObject({
+      dirtyGeneration: 1,
+      queued: {
+        generation: 1,
+        snapshot: {
+          retainedRoot: { preserved: ["root"] },
+          datasets: [expect.objectContaining({ id: dataset.id, name: "Queued dataset" })],
+        },
+      },
+    });
+  });
+
+  it("writes a selected case and its successful asset subset under one queue generation", async () => {
+    const dataset = await createMpcCalibrationDataset({ name: "Grouped" });
+    const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
+    const state = createMpcCalibrationSyncStateStore(db, { now: () => 20 });
+    await state.storeBaseWhenClean(identity, {
+      revision: 1,
+      snapshot: { version: 1, datasets: [dataset as never], cases: [], assets: [], runs: [] },
+    });
+    await db.mpcCalibrationCacheBindings.put({ id: "mpc-calibration-cache-binding", ...identity, revision: 1, updatedAt: 20 });
+
+    await saveMpcCalibrationCaseWithAssets({
+      id: "grouped-case", datasetId: dataset.id, source: { name: "Card" }, candidates: [],
+    }, [{
+      id: "captured-asset", datasetId: dataset.id, caseId: "grouped-case", role: "source", mimeType: "image/png",
+      blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), createdAt: 1,
+    }]);
+
+    const queued = await state.load(identity);
+    expect(queued).toMatchObject({ dirtyGeneration: 1, queued: { generation: 1 } });
+    expect(queued!.queued!.snapshot.cases).toEqual([expect.objectContaining({ id: "grouped-case" })]);
+    expect(queued!.queued!.snapshot.assets).toEqual([expect.objectContaining({ id: "captured-asset", byteLength: 3 })]);
+    expect(mockMarkMpcPreferenceSyncDirty).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures a caller-owned case payload before the mutation transaction awaits", async () => {
+    const dataset = await createMpcCalibrationDataset({ name: "Captured payload" });
+    const input = {
+      id: "captured-case",
+      datasetId: dataset.id,
+      source: { name: "original", retained: { values: ["first"] } },
+      candidates: [],
+    };
+    const originalTransaction = db.transaction.bind(db);
+    let entered!: () => void;
+    let continueTransaction!: () => void;
+    const enteredTransaction = new Promise<void>((resolve) => { entered = resolve; });
+    const transactionGate = new Promise<void>((resolve) => { continueTransaction = resolve; });
+    const transaction = vi.spyOn(db, "transaction").mockImplementation((async (...args: unknown[]) => {
+      entered();
+      await transactionGate;
+      return Reflect.apply(originalTransaction, db, args);
+    }) as never);
+
+    try {
+      const saving = saveMpcCalibrationCase(input);
+      await enteredTransaction;
+      input.source.name = "mutated";
+      input.source.retained.values.push("late");
+      continueTransaction();
+      await saving;
+    } finally {
+      transaction.mockRestore();
+    }
+
+    expect(await getMpcCalibrationCase("captured-case")).toMatchObject({
+      source: { name: "original", retained: { values: ["first"] } },
+    });
+  });
+
+  it("does not invent bound queue generations for identical case, run, or asset saves at a fixed clock", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+    try {
+      const dataset = await createMpcCalibrationDataset({ name: "No-op" });
+      const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
+      const state = createMpcCalibrationSyncStateStore(db, { now: () => 100 });
+      await state.storeBaseWhenClean(identity, {
+        revision: 1,
+        snapshot: {
+          version: 1,
+          datasets: [{
+            id: dataset.id,
+            name: dataset.name,
+            targetCaseCount: dataset.targetCaseCount,
+            createdAt: dataset.createdAt,
+            updatedAt: dataset.updatedAt,
+            version: dataset.version,
+          }],
+          cases: [],
+          assets: [],
+          runs: [],
+        },
+      });
+      await db.mpcCalibrationCacheBindings.put({ id: "mpc-calibration-cache-binding", ...identity, revision: 1, updatedAt: 100 });
+      const caseInput = { id: "no-op-case", datasetId: dataset.id, source: { name: "Card" }, candidates: [] };
+      const asset = { id: "no-op-asset", datasetId: dataset.id, caseId: "no-op-case", role: "source" as const, mimeType: "image/png", blob: new Blob(["same"], { type: "image/png" }), createdAt: 100 };
+      const runInput = { id: "no-op-run", datasetId: dataset.id, algorithmId: "baseline", createdAt: 100, summary: { totalCases: 0, matchedCases: 0, mismatchedCases: 0, accuracy: 0 }, results: [] };
+
+      await saveMpcCalibrationCase(caseInput);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(1);
+      await saveMpcCalibrationCase(caseInput);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(1);
+      await saveMpcCalibrationRun(runInput);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(2);
+      await saveMpcCalibrationRun(runInput);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(2);
+      await saveMpcCalibrationAssets([asset]);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(3);
+      await saveMpcCalibrationAssets([asset]);
+      expect((await state.load(identity))!.dirtyGeneration).toBe(3);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("creates and lists datasets", async () => {
@@ -414,16 +574,14 @@ describe("mpcCalibrationStorage", () => {
   it("returns empty preference lookups when calibration tables are unavailable", async () => {
     const originalDatasets = db.mpcCalibrationDatasets;
     const originalCases = db.mpcCalibrationCases;
+    const runtimeDatabase = db as unknown as {
+      mpcCalibrationDatasets?: typeof originalDatasets;
+      mpcCalibrationCases?: typeof originalCases;
+    };
 
     try {
-      (db as typeof db & {
-        mpcCalibrationDatasets?: undefined;
-        mpcCalibrationCases?: undefined;
-      }).mpcCalibrationDatasets = undefined;
-      (db as typeof db & {
-        mpcCalibrationDatasets?: undefined;
-        mpcCalibrationCases?: undefined;
-      }).mpcCalibrationCases = undefined;
+      runtimeDatabase.mpcCalibrationDatasets = undefined;
+      runtimeDatabase.mpcCalibrationCases = undefined;
 
       await expect(listDefaultMpcCalibrationCases()).resolves.toEqual([]);
       await expect(
@@ -433,14 +591,8 @@ describe("mpcCalibrationStorage", () => {
         getMpcCalibrationPreferenceProfile({ name: "Sol Ring" })
       ).resolves.toBeUndefined();
     } finally {
-      (db as typeof db & {
-        mpcCalibrationDatasets: typeof originalDatasets;
-        mpcCalibrationCases: typeof originalCases;
-      }).mpcCalibrationDatasets = originalDatasets;
-      (db as typeof db & {
-        mpcCalibrationDatasets: typeof originalDatasets;
-        mpcCalibrationCases: typeof originalCases;
-      }).mpcCalibrationCases = originalCases;
+      runtimeDatabase.mpcCalibrationDatasets = originalDatasets;
+      runtimeDatabase.mpcCalibrationCases = originalCases;
     }
   });
 

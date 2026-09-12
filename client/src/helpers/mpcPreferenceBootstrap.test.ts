@@ -1,4 +1,32 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import "fake-indexeddb/auto";
+import { webcrypto } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const nativeBlob = vi.hoisted(async () => {
+  const { Blob: NodeBlob } = await import("node:buffer");
+  Object.defineProperty(globalThis, "Blob", { value: NodeBlob, configurable: true, writable: true });
+  if (typeof window !== "undefined") {
+    Object.defineProperty(window, "Blob", { value: NodeBlob, configurable: true, writable: true });
+  }
+  return NodeBlob;
+});
+const privateTestDatabaseName = vi.hoisted(
+  () => `c6-bootstrap-${crypto.randomUUID()}`
+);
+const mockMarkMpcPreferenceSyncDirty = vi.hoisted(() => vi.fn());
+
+vi.mock("@/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db")>();
+  return { ...actual, db: new actual.ProxxiedDexie(privateTestDatabaseName) };
+});
+
+vi.mock("./mpcPreferenceSync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./mpcPreferenceSync")>()),
+  markMpcPreferenceSyncDirty: mockMarkMpcPreferenceSyncDirty,
+}));
+
+if (!globalThis.crypto) globalThis.crypto = webcrypto as Crypto;
+void nativeBlob;
 import { db } from "@/db";
 import {
   buildBootstrapPreferenceDefaults,
@@ -19,6 +47,8 @@ import * as fsAccessPreferenceTargetModule from "./fsAccessPreferenceTarget";
 import * as mpcPreferenceSyncModule from "./mpcPreferenceSync";
 import recoveredPreferenceFixture from "../../tests/fixtures/mpc-preference-defaults.v1.json";
 import { IMPORT_CONFIG } from "./importConfig";
+import { MPC_CALIBRATION_CACHE_BINDING_ID } from "./mpcCalibrationMutations";
+import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
 
 function createDeferred<T>() {
@@ -51,11 +81,18 @@ function createMpcCandidate(name: string, sourceName = "Hathwellcrisping"): MpcA
 describe("mpcPreferenceBootstrap", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockMarkMpcPreferenceSyncDirty.mockClear();
     delete window.electronAPI;
     await db.mpcCalibrationRuns.clear();
     await db.mpcCalibrationAssets.clear();
     await db.mpcCalibrationCases.clear();
     await db.mpcCalibrationDatasets.clear();
+    await db.mpcCalibrationSyncStates.clear();
+    await db.mpcCalibrationCacheBindings.clear();
+  });
+
+  afterAll(() => {
+    db.close();
   });
 
   it("builds a bootstrap fixture using Hathwellcrisping and Chilli_Axe examples", () => {
@@ -340,6 +377,176 @@ describe("mpcPreferenceBootstrap", () => {
     } finally {
       (db as typeof db & { mpcCalibrationDatasets: typeof originalDatasets }).mpcCalibrationDatasets = originalDatasets;
     }
+  });
+
+  it("captures a mutation scope before reading bootstrap cases and forwards it to import", async () => {
+    const scope = { kind: "local" } as const;
+    const deferredScope = createDeferred<typeof scope>();
+    const captureScope = vi.fn(() => deferredScope.promise);
+    const listDefaultCases = vi.fn(async () => []);
+    const importFixture = vi.fn(async () => "bootstrap-preference-dataset");
+
+    vi.doMock("./mpcCalibrationStorage", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./mpcCalibrationStorage")>()),
+      captureMpcCalibrationMutationScope: captureScope,
+      listDefaultMpcCalibrationCases: listDefaultCases,
+    }));
+    vi.doMock("./mpcCalibrationImport", () => ({
+      importMpcCalibrationFixture: importFixture,
+    }));
+    vi.resetModules();
+
+    try {
+      const isolatedBootstrap = await import("./mpcPreferenceBootstrap");
+      const hydrating = isolatedBootstrap.hydrateMpcPreferences();
+
+      expect(captureScope).toHaveBeenCalledTimes(1);
+      expect(listDefaultCases).not.toHaveBeenCalled();
+
+      deferredScope.resolve(scope);
+      await hydrating;
+
+      expect(listDefaultCases).toHaveBeenCalledTimes(1);
+      expect(importFixture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dataset: expect.objectContaining({
+            id: "bootstrap-preference-dataset",
+          }),
+        }),
+        scope
+      );
+    } finally {
+      vi.doUnmock("./mpcCalibrationStorage");
+      vi.doUnmock("./mpcCalibrationImport");
+      vi.resetModules();
+    }
+  });
+
+  it("captures an explicit user fixture before deferred default-case reads", async () => {
+    const entered = createDeferred<void>();
+    const release = createDeferred<never[]>();
+    const orderBy = vi.spyOn(db.mpcCalibrationDatasets, "orderBy").mockImplementation((() => ({
+      reverse: () => ({
+        toArray: async () => {
+          entered.resolve();
+          return release.promise;
+        },
+      }),
+    })) as never);
+    const userFixture = {
+      version: 1,
+      exportedAt: new Date(9).toISOString(),
+      cases: [{
+        source: { name: "Captured user fixture" },
+        candidates: [],
+        expectedIdentifier: "captured-before-await",
+      }],
+    };
+
+    try {
+      const hydrating = hydrateMpcPreferences(userFixture, { kind: "local" });
+      await entered.promise;
+      userFixture.cases[0]!.expectedIdentifier = "mutated-after-await";
+      release.resolve([]);
+      await hydrating;
+
+      expect(
+        (await db.mpcCalibrationCases.toArray()).find(
+          (calibrationCase) => calibrationCase.source.name === "Captured user fixture"
+        )?.expectedIdentifier
+      ).toBe("captured-before-await");
+    } finally {
+      orderBy.mockRestore();
+    }
+  });
+
+  it("captures a bound scope before deferred bootstrap reads and lets the real import fence reject a refresh", async () => {
+    const identity = {
+      ownerId: "bootstrap-owner",
+      harnessId: "bootstrap-harness",
+      connectionId: "bootstrap-connection",
+    };
+    const state = createMpcCalibrationSyncStateStore(db, { now: () => 10 });
+    await state.storeBaseWhenClean(identity, {
+      revision: 1,
+      snapshot: { version: 1, datasets: [], cases: [], assets: [], runs: [] },
+    });
+    await db.mpcCalibrationCacheBindings.put({
+      id: MPC_CALIBRATION_CACHE_BINDING_ID,
+      ...identity,
+      revision: 1,
+      updatedAt: 10,
+    });
+    const entered = createDeferred<void>();
+    const release = createDeferred<never[]>();
+    const orderBy = vi.spyOn(db.mpcCalibrationDatasets, "orderBy").mockImplementation((() => ({
+      reverse: () => ({
+        toArray: async () => {
+          entered.resolve();
+          return release.promise;
+        },
+      }),
+    })) as never);
+
+    try {
+      const hydrating = hydrateMpcPreferences();
+      await entered.promise;
+      await db.mpcCalibrationCacheBindings.put({
+        id: MPC_CALIBRATION_CACHE_BINDING_ID,
+        ...identity,
+        revision: 2,
+        updatedAt: 11,
+      });
+      release.resolve([]);
+
+      await expect(hydrating).rejects.toThrow("captured cache binding was replaced");
+      expect(await db.mpcCalibrationDatasets.count()).toBe(0);
+      expect(await state.load(identity)).toMatchObject({ dirtyGeneration: 0, queued: null });
+      expect(mockMarkMpcPreferenceSyncDirty).not.toHaveBeenCalled();
+    } finally {
+      orderBy.mockRestore();
+    }
+  });
+
+  it("leaves a bound queue untouched when bootstrap finds an existing default case", async () => {
+    const identity = {
+      ownerId: "existing-owner",
+      harnessId: "existing-harness",
+      connectionId: "existing-connection",
+    };
+    const state = createMpcCalibrationSyncStateStore(db, { now: () => 10 });
+    await state.storeBaseWhenClean(identity, {
+      revision: 1,
+      snapshot: { version: 1, datasets: [], cases: [], assets: [], runs: [] },
+    });
+    await db.mpcCalibrationCacheBindings.put({
+      id: MPC_CALIBRATION_CACHE_BINDING_ID,
+      ...identity,
+      revision: 1,
+      updatedAt: 10,
+    });
+    await db.mpcCalibrationDatasets.put({
+      id: "existing-bootstrap-dataset",
+      name: MPC_CALIBRATION_DEFAULT_DATASET_NAME,
+      targetCaseCount: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      version: 1,
+    });
+    await db.mpcCalibrationCases.put({
+      id: "existing-bootstrap-case",
+      datasetId: "existing-bootstrap-dataset",
+      createdAt: 1,
+      updatedAt: 1,
+      source: { name: "existing bootstrap case" },
+      candidates: [],
+    });
+
+    await hydrateMpcPreferences(null);
+
+    expect(await state.load(identity)).toMatchObject({ dirtyGeneration: 0, queued: null });
+    expect(await db.mpcCalibrationCases.count()).toBe(1);
+    expect(mockMarkMpcPreferenceSyncDirty).not.toHaveBeenCalled();
   });
 
   it("seeds the default calibration dataset when none exists", async () => {

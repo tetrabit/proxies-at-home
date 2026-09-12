@@ -50,6 +50,7 @@ import {
   type MpcCalibrationEvaluationResult,
 } from "@/helpers/mpcCalibrationRunner";
 import {
+  captureMpcCalibrationMutationScope,
   createMpcCalibrationDataset,
   listMpcCalibrationAssets,
   listMpcCalibrationCases,
@@ -58,9 +59,9 @@ import {
   listDefaultMpcCalibrationCases,
   MPC_CALIBRATION_DATASET_VERSION,
   MPC_CALIBRATION_TARGET_CASE_COUNT,
-  saveMpcCalibrationAssets,
-  saveMpcCalibrationCase,
   saveMpcCalibrationRun,
+  saveMpcCalibrationCaseWithAssets,
+  type MpcCalibrationMutationScope,
 } from "@/helpers/mpcCalibrationStorage";
 import {
   getActivePreferenceSyncTarget,
@@ -135,7 +136,9 @@ function formatCandidateName(candidate: MpcAutofillCard) {
   return candidate.rawName ?? candidate.name;
 }
 
-async function ensureCalibrationDataset(): Promise<MpcCalibrationDatasetRecord> {
+async function ensureCalibrationDataset(
+  scope: MpcCalibrationMutationScope
+): Promise<MpcCalibrationDatasetRecord> {
   const datasets = await listMpcCalibrationDatasets();
   const existing = datasets.find(
     (dataset) => dataset.name === DEFAULT_DATASET_NAME
@@ -148,7 +151,7 @@ async function ensureCalibrationDataset(): Promise<MpcCalibrationDatasetRecord> 
     name: DEFAULT_DATASET_NAME,
     description: "Manual MPC calibration capture set",
     targetCaseCount: MPC_CALIBRATION_TARGET_CASE_COUNT,
-  });
+  }, scope);
 }
 
 export function CalibrationModal() {
@@ -217,7 +220,9 @@ export function CalibrationModal() {
     void (async () => {
       setPhase("loading");
       try {
-        const ensuredDataset = await ensureCalibrationDataset();
+        const openingScope = await captureMpcCalibrationMutationScope();
+        if (signal.aborted) return;
+        const ensuredDataset = await ensureCalibrationDataset(openingScope);
         if (signal.aborted) return;
 
         const activeTarget = await getActivePreferenceSyncTarget();
@@ -227,7 +232,7 @@ export function CalibrationModal() {
         if (signal.aborted) return;
 
         // Prepare Preference Model for scoring
-        await hydrateMpcPreferences();
+        await hydrateMpcPreferences(undefined, openingScope);
         if (signal.aborted) return;
 
         const calibrationCases = await listDefaultMpcCalibrationCases();
@@ -358,6 +363,7 @@ export function CalibrationModal() {
     setPhase("running");
     setStatus("Analyzing dataset...");
     try {
+      const scope = await captureMpcCalibrationMutationScope();
       const [loadedCases, loadedAssets] = await Promise.all([
         listMpcCalibrationCases(dataset.id),
         listMpcCalibrationAssets(dataset.id),
@@ -369,7 +375,6 @@ export function CalibrationModal() {
         { id: "current", label: "Current algorithm" },
         loadedAssets
       );
-      setCurrentResult(result);
       await saveMpcCalibrationRun({
         id: crypto.randomUUID(),
         datasetId: dataset.id,
@@ -378,7 +383,8 @@ export function CalibrationModal() {
         summary: result.summary,
         results: toMpcCalibrationRunResults(result.cases),
         createdAt: Date.now(),
-      });
+      }, scope);
+      setCurrentResult(result);
       await refreshDataset(dataset.id);
     } catch (error) {
       console.error(error);
@@ -440,6 +446,7 @@ export function CalibrationModal() {
       setPhase("capturing");
       setStatus(`Capturing expected choice: ${formatCandidateName(candidate)}...`);
       try {
+        const scope = await captureMpcCalibrationMutationScope();
         const latestCases = await listMpcCalibrationCases(dataset.id);
         setCases(latestCases);
 
@@ -455,8 +462,11 @@ export function CalibrationModal() {
           candidates: captureState.candidates,
           expectedIdentifier: candidate.identifier,
         });
-        await saveMpcCalibrationCase(captured.caseRecord);
-        await saveMpcCalibrationAssets(captured.assets);
+        await saveMpcCalibrationCaseWithAssets(
+          captured.caseRecord,
+          captured.assets,
+          scope
+        );
         setCurrentResult(null);
         setComparisonResult(null);
         setStatus(
@@ -489,11 +499,15 @@ export function CalibrationModal() {
       if (!file) return;
       setPhase("importing");
       try {
+        const scope = await captureMpcCalibrationMutationScope();
         const text = await file.text();
         const fixture = JSON.parse(text);
         const validFixture = validateMpcCalibrationFixture(fixture);
         if (validFixture) {
-          const importedDatasetId = await importMpcCalibrationFixture(validFixture);
+          const importedDatasetId = await importMpcCalibrationFixture(
+            validFixture,
+            scope
+          );
           setDataset(validFixture.dataset);
           setCurrentResult(null);
           setComparisonResult(null);

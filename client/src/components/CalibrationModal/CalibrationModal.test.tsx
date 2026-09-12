@@ -5,6 +5,7 @@ const {
   mockCalibrationState,
   mockListDatasets,
   mockCreateDataset,
+  mockCaptureMutationScope,
   mockListCases,
   mockListDefaultCases,
   mockListRuns,
@@ -14,6 +15,7 @@ const {
   mockCaptureCase,
   mockSaveCase,
   mockSaveAssets,
+  mockSaveCaseWithAssets,
   mockSaveRun,
   mockEvaluateDataset,
   mockCompareAlgorithms,
@@ -25,10 +27,12 @@ const {
   mockTrainMpcPreferenceModel,
   mockBuildMpcPreferenceScoreMap,
   mockHarvestSourcePreferenceCandidates,
+  mockHydrateMpcPreferences,
   mockBuildMpcSourceVisualProfiles,
   mockBuildMpcVisualPreferenceScoreMap,
   mockRankCandidates,
   mockGetSharedMpcPreferenceContext,
+  mockScopeSource,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
     open: true,
@@ -46,6 +50,7 @@ const {
   },
   mockListDatasets: vi.fn(),
   mockCreateDataset: vi.fn(),
+  mockCaptureMutationScope: vi.fn(),
   mockListCases: vi.fn(),
   mockListDefaultCases: vi.fn(),
   mockListRuns: vi.fn(),
@@ -55,6 +60,7 @@ const {
   mockCaptureCase: vi.fn(),
   mockSaveCase: vi.fn(),
   mockSaveAssets: vi.fn(),
+  mockSaveCaseWithAssets: vi.fn(),
   mockSaveRun: vi.fn(),
   mockEvaluateDataset: vi.fn(),
   mockCompareAlgorithms: vi.fn(),
@@ -66,6 +72,7 @@ const {
   mockTrainMpcPreferenceModel: vi.fn(() => null),
   mockBuildMpcPreferenceScoreMap: vi.fn(() => ({})),
   mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+  mockHydrateMpcPreferences: vi.fn().mockResolvedValue(undefined),
   mockBuildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
   mockBuildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
   mockRankCandidates: vi.fn().mockResolvedValue({
@@ -80,6 +87,9 @@ const {
     model: null,
     profiles: {},
   }),
+  mockScopeSource: {
+    current: { kind: "bound", identity: { ownerId: "owner-a", harnessId: "harness-a", connectionId: "connection-a" }, bindingRevision: 1 },
+  },
 }));
 
 vi.mock("@/store", () => ({
@@ -122,7 +132,7 @@ vi.mock("@/helpers/mpcPreferenceModel", () => ({
 vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: [],
   harvestSourcePreferenceCandidates: mockHarvestSourcePreferenceCandidates,
-  hydrateMpcPreferences: vi.fn().mockResolvedValue(undefined),
+  hydrateMpcPreferences: mockHydrateMpcPreferences,
 }));
 
 vi.mock("@/helpers/mpcVisualPreference", () => ({
@@ -135,6 +145,7 @@ vi.mock("@/helpers/mpcCalibrationCapture", () => ({
 }));
 
 vi.mock("@/helpers/mpcCalibrationStorage", () => ({
+  captureMpcCalibrationMutationScope: mockCaptureMutationScope,
   createMpcCalibrationDataset: mockCreateDataset,
   listMpcCalibrationDatasets: mockListDatasets,
   listMpcCalibrationCases: mockListCases,
@@ -143,6 +154,7 @@ vi.mock("@/helpers/mpcCalibrationStorage", () => ({
   listMpcCalibrationAssets: mockListAssets,
   saveMpcCalibrationCase: mockSaveCase,
   saveMpcCalibrationAssets: mockSaveAssets,
+  saveMpcCalibrationCaseWithAssets: mockSaveCaseWithAssets,
   saveMpcCalibrationRun: mockSaveRun,
   MPC_CALIBRATION_TARGET_CASE_COUNT: 9,
   MPC_CALIBRATION_DATASET_VERSION: 1,
@@ -210,6 +222,19 @@ describe("CalibrationModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCaptureMutationScope.mockReset();
+    mockScopeSource.current = {
+      kind: "bound",
+      identity: {
+        ownerId: "owner-a",
+        harnessId: "harness-a",
+        connectionId: "connection-a",
+      },
+      bindingRevision: 1,
+    };
+    mockCaptureMutationScope.mockImplementation(() =>
+      Promise.resolve(mockScopeSource.current)
+    );
     mockListDatasets.mockResolvedValue([dataset]);
     mockListCases.mockResolvedValue([]);
     mockListDefaultCases.mockResolvedValue([]);
@@ -252,6 +277,220 @@ describe("CalibrationModal", () => {
     ]);
   });
 
+  it("captures the dataset scope before listing datasets and uses it for creation", async () => {
+    let resolveDatasets!: (datasets: typeof dataset[]) => void;
+    const scopeA = mockScopeSource.current;
+    const scopeB = {
+      kind: "bound",
+      identity: {
+        ownerId: "owner-b",
+        harnessId: "harness-b",
+        connectionId: "connection-b",
+      },
+      bindingRevision: 2,
+    };
+    mockListDatasets.mockImplementationOnce(
+      () =>
+        new Promise<typeof dataset[]>((resolve) => {
+          resolveDatasets = resolve;
+        })
+    );
+    mockCreateDataset.mockResolvedValue(dataset);
+
+    render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+    });
+    mockScopeSource.current = scopeB;
+    resolveDatasets([]);
+
+    await waitFor(() => {
+      expect(mockCreateDataset).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "MPC Calibration Harness" }),
+        scopeA
+      );
+    });
+    expect(mockCreateDataset).not.toHaveBeenCalledWith(
+      expect.anything(),
+      scopeB
+    );
+  });
+
+  it("retains the opening dataset scope for deferred preference bootstrap", async () => {
+    let resolveDatasets!: (datasets: typeof dataset[]) => void;
+    const scopeA = mockScopeSource.current;
+    const scopeB = {
+      kind: "bound",
+      identity: {
+        ownerId: "bootstrap-owner-b",
+        harnessId: "bootstrap-harness-b",
+        connectionId: "bootstrap-connection-b",
+      },
+      bindingRevision: 7,
+    };
+    mockListDatasets.mockImplementationOnce(
+      () =>
+        new Promise<typeof dataset[]>((resolve) => {
+          resolveDatasets = resolve;
+        })
+    );
+
+    render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+    });
+    mockScopeSource.current = scopeB;
+    resolveDatasets([dataset]);
+
+    await waitFor(() => {
+      expect(mockHydrateMpcPreferences).toHaveBeenCalledWith(undefined, scopeA);
+    });
+    expect(mockHydrateMpcPreferences).not.toHaveBeenCalledWith(undefined, scopeB);
+    expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+  });
+
+  it("captures the import scope before file text and retains it across a later binding change", async () => {
+    let resolveScope!: (scope: typeof mockScopeSource.current) => void;
+    let resolveText!: (text: string) => void;
+    const scopeA = {
+      kind: "bound",
+      identity: {
+        ownerId: "import-owner-a",
+        harnessId: "import-harness-a",
+        connectionId: "import-connection-a",
+      },
+      bindingRevision: 8,
+    };
+    const scopeB = {
+      kind: "bound",
+      identity: {
+        ownerId: "import-owner-b",
+        harnessId: "import-harness-b",
+        connectionId: "import-connection-b",
+      },
+      bindingRevision: 9,
+    };
+    const fixture = { dataset, cases: [], assets: [], runs: [] };
+    const file = new File(["{}"], "calibration.json", {
+      type: "application/json",
+    });
+    const text = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveText = resolve;
+        })
+    );
+    Object.defineProperty(file, "text", { value: text });
+    mockValidateFixture.mockReturnValue(fixture);
+    mockImportFixture.mockResolvedValue(dataset.id);
+
+    render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockHydrateMpcPreferences).toHaveBeenCalled();
+    });
+    mockCaptureMutationScope.mockClear();
+    mockCaptureMutationScope.mockImplementationOnce(
+      () =>
+        new Promise<typeof mockScopeSource.current>((resolve) => {
+          resolveScope = resolve;
+        })
+    );
+
+    fireEvent.change(screen.getByTestId("mpc-calibration-import-input"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => {
+      expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+    });
+    expect(text).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Import" })
+    ).toHaveProperty("disabled", true);
+
+    resolveScope(scopeA);
+    await waitFor(() => {
+      expect(text).toHaveBeenCalledTimes(1);
+    });
+    mockScopeSource.current = scopeB;
+    resolveText("{}");
+
+    await waitFor(() => {
+      expect(mockImportFixture).toHaveBeenCalledWith(fixture, scopeA);
+    });
+    expect(mockImportFixture).not.toHaveBeenCalledWith(fixture, scopeB);
+    expect(screen.getByTestId("mpc-calibration-status").textContent).toContain(
+      "Cases captured: 0/9"
+    );
+  });
+
+  it("keeps import controls and dataset state local when the scoped writer rejects", async () => {
+    const fixture = { dataset, cases: [], assets: [], runs: [] };
+    const error = new Error("import persistence rejected");
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error");
+    mockValidateFixture.mockReturnValue(fixture);
+    mockImportFixture.mockRejectedValueOnce(error);
+
+    render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockHydrateMpcPreferences).toHaveBeenCalled();
+    });
+    const caseReadsBeforeImport = mockListCases.mock.calls.length;
+    const runReadsBeforeImport = mockListRuns.mock.calls.length;
+    const file = new File(["{}"], "calibration.json", {
+      type: "application/json",
+    });
+    Object.defineProperty(file, "text", {
+      value: () => Promise.resolve("{}"),
+    });
+
+    fireEvent.change(screen.getByTestId("mpc-calibration-import-input"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith("Failed to import fixture");
+      expect(errorSpy).toHaveBeenCalledWith(error);
+      expect(screen.getByRole("button", { name: "Import" })).toHaveProperty(
+        "disabled",
+        false
+      );
+    });
+    expect(mockListCases).toHaveBeenCalledTimes(caseReadsBeforeImport);
+    expect(mockListRuns).toHaveBeenCalledTimes(runReadsBeforeImport);
+    expect(screen.queryByTestId("mpc-calibration-status")).toBeNull();
+    errorSpy.mockRestore();
+    alertSpy.mockRestore();
+  });
+
+  it("reports bootstrap writer rejection without continuing into preference evaluation", async () => {
+    const error = new Error("bootstrap persistence rejected");
+    const errorSpy = vi.spyOn(console, "error");
+    mockHydrateMpcPreferences.mockRejectedValueOnce(error);
+
+    render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockHydrateMpcPreferences).toHaveBeenCalledWith(
+        undefined,
+        mockScopeSource.current
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        "CalibrationModal: Bootstrap error",
+        error
+      );
+      expect(screen.getByRole("button", { name: "Import" })).toHaveProperty(
+        "disabled",
+        false
+      );
+    });
+    expect(mockGetSharedMpcPreferenceContext).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it("requests the complete all-language MPC candidate pool", async () => {
     render(<CalibrationModal />);
 
@@ -265,7 +504,26 @@ describe("CalibrationModal", () => {
     });
   });
 
-  it("captures the selected expected candidate into the dataset", async () => {
+  it("captures one selected choice with its partial successful assets under the earlier scope", async () => {
+    let resolveLatestCases!: (cases: never[]) => void;
+    const scopeA = {
+      kind: "bound",
+      identity: {
+        ownerId: "capture-owner-a",
+        harnessId: "capture-harness-a",
+        connectionId: "capture-connection-a",
+      },
+      bindingRevision: 3,
+    };
+    const scopeB = {
+      kind: "bound",
+      identity: {
+        ownerId: "capture-owner-b",
+        harnessId: "capture-harness-b",
+        connectionId: "capture-connection-b",
+      },
+      bindingRevision: 4,
+    };
     mockCaptureCase.mockResolvedValue({
       caseRecord: {
         id: "case-1",
@@ -276,8 +534,17 @@ describe("CalibrationModal", () => {
         candidates: [],
         expectedIdentifier: "cand-1",
       },
-      assets: [],
-      assetErrors: [],
+      assets: [
+        {
+          id: "asset-1",
+          datasetId: dataset.id,
+          caseId: "case-1",
+          role: "source",
+          url: "https://example.invalid/source.png",
+          createdAt: 1,
+        },
+      ],
+      assetErrors: [{ asset: "candidate", error: "not found" }],
     });
 
     mockSearchMpcAutofill.mockResolvedValue([
@@ -308,7 +575,21 @@ describe("CalibrationModal", () => {
     const button = await screen.findByRole("button", {
       name: /use as expected choice/i,
     });
+    mockCaptureMutationScope.mockClear();
+    mockScopeSource.current = scopeA;
+    mockListCases.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((resolve) => {
+          resolveLatestCases = resolve;
+        })
+    );
     fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+    });
+    mockScopeSource.current = scopeB;
+    resolveLatestCases([]);
 
     await waitFor(() => {
       expect(mockCaptureCase).toHaveBeenCalled();
@@ -319,16 +600,24 @@ describe("CalibrationModal", () => {
         candidates: expect.any(Array),
         expectedIdentifier: "cand-1",
       });
-      expect(mockSaveCase).toHaveBeenCalledWith(
+      expect(mockSaveCaseWithAssets).toHaveBeenCalledWith(
         expect.objectContaining({
           id: "case-1",
           expectedIdentifier: "cand-1",
-        })
+        }),
+        [expect.objectContaining({ id: "asset-1", caseId: "case-1" })],
+        scopeA
       );
-      expect(mockSaveAssets).toHaveBeenCalledWith([]);
+      expect(mockSaveCaseWithAssets).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        scopeB
+      );
+      expect(mockSaveCase).not.toHaveBeenCalled();
+      expect(mockSaveAssets).not.toHaveBeenCalled();
       expect(
         screen.getByTestId("mpc-calibration-status").textContent
-      ).toContain("Captured expected choice");
+      ).toContain("1 asset warning");
     });
   });
 
@@ -371,9 +660,97 @@ describe("CalibrationModal", () => {
     expect(mockSaveAssets).not.toHaveBeenCalled();
   });
 
-  it("runs the current algorithm and updates the scoreboard", async () => {
+  it("keeps zero-asset capture failure local when the grouped write is rejected", async () => {
+    mockCaptureCase.mockResolvedValue({
+      caseRecord: {
+        id: "case-1",
+        datasetId: dataset.id,
+        createdAt: 1,
+        updatedAt: 1,
+        source: { name: "Sol Ring" },
+        candidates: [],
+        expectedIdentifier: "cand-1",
+      },
+      assets: [],
+      assetErrors: [],
+    });
+    mockSaveCaseWithAssets.mockRejectedValue(
+      new Error("case persistence rejected")
+    );
+
+    render(<CalibrationModal />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /use as expected choice/i })
+    );
+
+    await waitFor(() => {
+      expect(mockSaveCaseWithAssets).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "case-1" }),
+        [],
+        expect.anything()
+      );
+      expect(screen.getByTestId("mpc-calibration-status").textContent).toContain(
+        "case persistence rejected"
+      );
+    });
+    expect(screen.getByTestId("mpc-calibration-status").textContent).not.toContain(
+      "Captured expected choice"
+    );
+    expect(mockSaveCase).not.toHaveBeenCalled();
+    expect(mockSaveAssets).not.toHaveBeenCalled();
+    expect(mockListRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists a whole-dataset run with the scope captured before evaluation input reads", async () => {
+    let resolveEvaluation!: (result: {
+      algorithmId: string;
+      algorithmLabel: string;
+      summary: {
+        totalCases: number;
+        matchedCases: number;
+        mismatchedCases: number;
+        accuracy: number;
+      };
+      cases: never[];
+    }) => void;
+    const scopeA = {
+      kind: "bound",
+      identity: {
+        ownerId: "run-owner-a",
+        harnessId: "run-harness-a",
+        connectionId: "run-connection-a",
+      },
+      bindingRevision: 5,
+    };
+    const scopeB = {
+      kind: "bound",
+      identity: {
+        ownerId: "run-owner-b",
+        harnessId: "run-harness-b",
+        connectionId: "run-connection-b",
+      },
+      bindingRevision: 6,
+    };
     mockListCases.mockResolvedValue([frozenCase]);
-    mockEvaluateDataset.mockResolvedValue({
+    mockEvaluateDataset.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveEvaluation = resolve;
+        })
+    );
+
+    render(<CalibrationModal />);
+
+    const runButton = await screen.findByTestId("mpc-calibration-run");
+    mockCaptureMutationScope.mockClear();
+    mockScopeSource.current = scopeA;
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+    });
+    mockScopeSource.current = scopeB;
+    resolveEvaluation({
       algorithmId: "current",
       algorithmLabel: "Current algorithm",
       summary: {
@@ -384,11 +761,6 @@ describe("CalibrationModal", () => {
       },
       cases: [],
     });
-
-    render(<CalibrationModal />);
-
-    const runButton = await screen.findByTestId("mpc-calibration-run");
-    fireEvent.click(runButton);
 
     await waitFor(() => {
       expect(mockEvaluateDataset).toHaveBeenCalledWith(
@@ -403,12 +775,44 @@ describe("CalibrationModal", () => {
           algorithmId: "current",
           algorithmLabel: "Current algorithm",
           summary: expect.objectContaining({ matchedCases: 1 }),
-        })
+        }),
+        scopeA
       );
+      expect(mockSaveRun).not.toHaveBeenCalledWith(expect.anything(), scopeB);
       expect(
         screen.getByTestId("mpc-calibration-scoreboard").textContent
       ).toContain("1/1");
     });
+  });
+
+  it("keeps the evaluation scoreboard and dataset refresh unchanged when run persistence is rejected", async () => {
+    mockListCases.mockResolvedValue([frozenCase]);
+    mockEvaluateDataset.mockResolvedValue({
+      algorithmId: "current",
+      algorithmLabel: "Current algorithm",
+      summary: {
+        totalCases: 1,
+        matchedCases: 1,
+        mismatchedCases: 0,
+        accuracy: 1,
+      },
+      cases: [],
+    });
+    mockSaveRun.mockRejectedValue(new Error("run persistence rejected"));
+
+    render(<CalibrationModal />);
+
+    fireEvent.click(await screen.findByTestId("mpc-calibration-run"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-status").textContent).toContain(
+        "run persistence rejected"
+      );
+    });
+    expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toContain(
+      "0/9"
+    );
+    expect(mockListRuns).toHaveBeenCalledTimes(1);
   });
 
   it("shows baseline and current predictions after comparison", async () => {

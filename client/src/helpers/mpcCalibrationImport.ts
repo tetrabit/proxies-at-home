@@ -7,6 +7,10 @@ import type {
 import { db } from "@/db";
 import type { MpcPreferenceFixture } from "@/types";
 import {
+  createMpcCalibrationMutationCoordinator,
+  type MpcCalibrationMutationScope,
+} from "./mpcCalibrationMutations";
+import {
   getMpcCalibrationDataset,
   listMpcCalibrationAssets,
   listMpcCalibrationCases,
@@ -14,9 +18,12 @@ import {
 } from "./mpcCalibrationStorage";
 import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
 
+const mpcCalibrationMutations = createMpcCalibrationMutationCoordinator(db);
+
 export const MPC_CALIBRATION_FIXTURE_VERSION = 1;
 
 export interface SerializedMpcCalibrationAsset {
+  [key: string]: unknown;
   id: string;
   datasetId: string;
   caseId: string;
@@ -104,18 +111,14 @@ export async function buildMpcCalibrationFixture(
   ]);
 
   const serializedAssets = await Promise.all(
-    assets.map(async (asset) => ({
-      id: asset.id,
-      datasetId: asset.datasetId,
-      caseId: asset.caseId,
-      role: asset.role,
-      candidateIdentifier: asset.candidateIdentifier,
-      sourceUrl: asset.sourceUrl,
-      mimeType: asset.mimeType,
-      data: await blobToBase64(asset.blob),
-      createdAt: asset.createdAt,
-      hash: asset.hash,
-    }))
+    assets.map(async (asset) => {
+      const { blob, ...metadata } = asset as MpcCalibrationAssetRecord &
+        Record<string, unknown>;
+      return {
+        ...metadata,
+        data: await blobToBase64(blob),
+      } as SerializedMpcCalibrationAsset;
+    })
   );
 
   return {
@@ -239,14 +242,23 @@ export async function saveMpcCalibrationFixture(
 }
 
 export async function importMpcCalibrationFixture(
-  fixture: MpcCalibrationFixture
+  fixture: MpcCalibrationFixture,
+  scope?: MpcCalibrationMutationScope
 ): Promise<string> {
-  const validFixture = validateMpcCalibrationFixture(fixture);
+  const validFixture = structuredClone(validateMpcCalibrationFixture(fixture));
   const timestamp = Date.now();
+  const assets = validFixture.assets.map((asset) => {
+    const { data, ...metadata } = asset;
+    return {
+      ...metadata,
+      blob: base64ToBlob(data, asset.mimeType),
+    } as MpcCalibrationAssetRecord;
+  });
+  const mutationScope = scope === undefined
+    ? await mpcCalibrationMutations.captureScope()
+    : structuredClone(scope);
 
-  await db.transaction(
-    "rw",
-    [db.mpcCalibrationDatasets, db.mpcCalibrationCases, db.mpcCalibrationAssets, db.mpcCalibrationRuns],
+  const datasetId = await mpcCalibrationMutations.mutate(
     async () => {
       // 1. Update dataset
       await db.mpcCalibrationDatasets.put(validFixture.dataset);
@@ -259,18 +271,6 @@ export async function importMpcCalibrationFixture(
       await db.mpcCalibrationCases.bulkPut(casesWithTimestamp);
 
       // 3. Batch put assets
-      const assets = validFixture.assets.map((asset) => ({
-        id: asset.id,
-        datasetId: asset.datasetId,
-        caseId: asset.caseId,
-        role: asset.role,
-        candidateIdentifier: asset.candidateIdentifier,
-        sourceUrl: asset.sourceUrl,
-        mimeType: asset.mimeType,
-        blob: base64ToBlob(asset.data, asset.mimeType),
-        createdAt: asset.createdAt,
-        hash: asset.hash,
-      }));
       await db.mpcCalibrationAssets.bulkPut(assets);
 
       // 4. Batch put runs
@@ -280,10 +280,12 @@ export async function importMpcCalibrationFixture(
       await db.mpcCalibrationDatasets.update(validFixture.dataset.id, {
         updatedAt: timestamp,
       });
-    }
+      return { value: validFixture.dataset.id, changed: true };
+    },
+    mutationScope
   );
 
   markMpcPreferenceSyncDirty();
 
-  return validFixture.dataset.id;
+  return datasetId;
 }

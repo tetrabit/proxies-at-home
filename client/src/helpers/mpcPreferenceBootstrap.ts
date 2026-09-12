@@ -7,18 +7,12 @@ import { db } from "@/db";
 import recoveredFixture from "../../tests/fixtures/mpc-preference-defaults.v1.json";
 import { importMpcCalibrationFixture } from "./mpcCalibrationImport";
 import {
+  captureMpcCalibrationMutationScope,
   listDefaultMpcCalibrationCases,
   MPC_CALIBRATION_DEFAULT_DATASET_NAME,
+  type MpcCalibrationMutationScope,
 } from "./mpcCalibrationStorage";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
-import {
-  electronPreferenceSyncTarget,
-  isElectronPreferenceSyncAvailable,
-} from "./electronPreferenceSyncTarget";
-import {
-  fsAccessPreferenceTarget,
-  isFsAccessPreferenceSyncAvailable,
-} from "./fsAccessPreferenceTarget";
 import {
   loadActivePreferenceOverrides,
   serializeCurrentPreferenceFixture,
@@ -318,15 +312,24 @@ export function buildBootstrapPreferenceFixture(
 }
 
 export async function hydrateMpcPreferences(
-  userFixture?: MpcPreferenceFixture | null
+  userFixture?: MpcPreferenceFixture | null,
+  scope?: MpcCalibrationMutationScope
 ): Promise<void> {
   if (!db.mpcCalibrationDatasets || !db.mpcCalibrationCases) {
     return;
   }
 
+  const capturedUserFixture = userFixture === undefined
+    ? undefined
+    : userFixture === null
+      ? null
+      : structuredClone(userFixture);
+  const mutationScope = scope === undefined
+    ? await captureMpcCalibrationMutationScope()
+    : structuredClone(scope);
   const existingCases = await listDefaultMpcCalibrationCases();
   if (existingCases.length > 0) {
-    if (userFixture === undefined) {
+    if (capturedUserFixture === undefined) {
       const { target, fixture: activeFixture } = await loadActivePreferenceOverrides();
       if (target && !activeFixture) {
         if (target.describe() !== 'Local file') {
@@ -338,17 +341,20 @@ export async function hydrateMpcPreferences(
     return;
   }
 
-  const runtimeUserFixture = userFixture === undefined
+  const runtimeUserFixture = capturedUserFixture === undefined
     ? (await loadActivePreferenceOverrides()).fixture
-    : userFixture;
+    : capturedUserFixture;
 
   await importMpcCalibrationFixture(
-    buildBootstrapPreferenceFixture(runtimeUserFixture)
+    buildBootstrapPreferenceFixture(runtimeUserFixture),
+    mutationScope
   );
 }
 
-export async function ensureBootstrapPreferenceDataset(): Promise<void> {
-  await hydrateMpcPreferences();
+export async function ensureBootstrapPreferenceDataset(
+  scope?: MpcCalibrationMutationScope
+): Promise<void> {
+  await hydrateMpcPreferences(undefined, scope);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
