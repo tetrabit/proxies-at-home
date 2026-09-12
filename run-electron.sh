@@ -57,6 +57,24 @@ fi
 # emits flat closure files, preserving the staged native microservice package.
 node scripts/build-electron-main.mjs
 
+# The server's printer-calibration runner is Python, so development Electron
+# needs the same repository-local, hash-checked runtime as the production image.
+# Explicit operator runners are validated and kept authoritative; an invalid
+# configured /opt-style Docker path fails before the GUI starts rather than being
+# silently replaced by a different runner.
+if [[ -n "${PRINTER_CALIBRATION_BIN:-}" || -n "${PRINTER_CALIBRATION_PYTHON:-}" ]]; then
+  validated_printer_runner="$(node scripts/prepare-printer-calibration.mjs)"
+  if [[ -n "${PRINTER_CALIBRATION_BIN:-}" ]]; then
+    export PRINTER_CALIBRATION_BIN="$validated_printer_runner"
+  else
+    export PRINTER_CALIBRATION_PYTHON="$validated_printer_runner"
+  fi
+else
+  PRINTER_CALIBRATION_BIN="$(node scripts/prepare-printer-calibration.mjs)"
+  PRINTER_CALIBRATION_PYTHON="$(dirname -- "$PRINTER_CALIBRATION_BIN")/python"
+  export PRINTER_CALIBRATION_BIN PRINTER_CALIBRATION_PYTHON
+fi
+
 # This may download an Electron-compatible addon on the first run. It never
 # replaces the normal Node addon used by npm run dev or the server tests.
 PROXXIED_SQLITE_NATIVE_BINDING="$(node scripts/prepare-electron-sqlite.mjs)"

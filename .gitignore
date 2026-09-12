@@ -15,6 +15,7 @@ node_modules
 dist-app/
 electron/dist/
 electron/.native-cache/
+/.runtime/printer-calibration/
 shared/scryfall-client/dist/
 .todos/
 

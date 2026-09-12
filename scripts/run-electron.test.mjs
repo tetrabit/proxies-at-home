@@ -42,6 +42,13 @@ async function fixture({ omit } = {}) {
   }
   await file('node_modules/electron/dist/electron', 'fixture');
   await file('scripts/prepare-electron-sqlite.mjs', `console.log(${JSON.stringify(path.join(dir, 'electron-fixture.node'))});`);
+  await file('scripts/prepare-printer-calibration.mjs', `
+    import { appendFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    appendFileSync('printer-calibration-prepare.log', 'prepared\\n');
+    if (process.env.LAUNCHER_FIXTURE_PRINTER_PREP_FAIL) process.exit(31);
+    console.log(process.env.PRINTER_CALIBRATION_BIN || process.env.PRINTER_CALIBRATION_PYTHON || join(process.cwd(), 'printer-calibration-fixture', 'bin', 'printer-calibration'));
+  `);
   await file('scripts/build-electron-main.mjs', `
     import { appendFileSync, writeFileSync } from 'node:fs';
     import { join } from 'node:path';
@@ -75,6 +82,9 @@ async function fixture({ omit } = {}) {
     assert.equal(process.env.NODE_ENV, 'development');
     assert.equal(process.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(process.env.PROXXIED_SQLITE_NATIVE_BINDING, ${JSON.stringify(path.join(dir, 'electron-fixture.node'))});
+    const path = require('node:path');
+    assert.equal(process.env.PRINTER_CALIBRATION_BIN, process.env.FIXTURE_EXPECT_PRINTER_BIN || path.join(process.cwd(), 'printer-calibration-fixture', 'bin', 'printer-calibration'));
+    assert.equal(process.env.PRINTER_CALIBRATION_PYTHON, process.env.FIXTURE_EXPECT_PRINTER_PYTHON || path.join(process.cwd(), 'printer-calibration-fixture', 'bin', 'python'));
     assert.deepEqual(process.argv.slice(2), ['electron/dist/main.js']);
     assert.match(fs.readFileSync('electron/dist/main.js', 'utf8'), /registerCalibrationHarnessIpcHandlers/);
     assert.match(fs.readFileSync('electron/dist/preload.cjs', 'utf8'), /calibrationHarnessExecute/);
@@ -138,11 +148,36 @@ test('launcher refreshes the full Electron closure before it opens Electron', as
   assert.match(result.output, /FIXTURE_ELECTRON_OPENED/);
 });
 
+test('launcher keeps explicit validated printer runner paths', async () => {
+  const dir = await fixture();
+  const bin = path.join(dir, 'operator runtime', 'printer-calibration');
+  const python = path.join(dir, 'operator runtime', 'python');
+  const result = await launch(dir, {
+    env: {
+      PRINTER_CALIBRATION_BIN: bin,
+      PRINTER_CALIBRATION_PYTHON: python,
+      FIXTURE_EXPECT_PRINTER_BIN: bin,
+      FIXTURE_EXPECT_PRINTER_PYTHON: python,
+    },
+  });
+  assert.equal(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'printer-calibration-prepare.log'), 'utf8'), 'prepared\n');
+  assert.match(result.output, /FIXTURE_ELECTRON_OPENED/);
+});
+
 test('a failed Electron closure rebuild prevents frontend and Electron launch', async () => {
   const dir = await fixture();
   const result = await launch(dir, { env: { LAUNCHER_FIXTURE_BUILD_FAIL: '1' } });
   assert.notEqual(result.code, 0, result.output);
   assert.equal(await readFile(path.join(dir, 'electron-build.log'), 'utf8'), 'built\n');
+  assert.doesNotMatch(result.output, /FIXTURE_FRONTEND_READY|FIXTURE_ELECTRON_OPENED/);
+});
+
+test('a failed printer runtime preparation prevents frontend and Electron launch', async () => {
+  const dir = await fixture();
+  const result = await launch(dir, { env: { LAUNCHER_FIXTURE_PRINTER_PREP_FAIL: '1' } });
+  assert.notEqual(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'printer-calibration-prepare.log'), 'utf8'), 'prepared\n');
   assert.doesNotMatch(result.output, /FIXTURE_FRONTEND_READY|FIXTURE_ELECTRON_OPENED/);
 });
 
@@ -235,6 +270,7 @@ test('an occupied port fails early without starting or killing a process', async
     const result = await launch(dir);
     assert.notEqual(result.code, 0, result.output);
     assert.match(result.output, /Port 5173 is unavailable/);
+    await assert.rejects(readFile(path.join(dir, 'printer-calibration-prepare.log')), { code: 'ENOENT' });
     await assert.rejects(readFile(path.join(dir, 'client', 'frontend.pid')), { code: 'ENOENT' });
     assert.equal(server.listening, true);
   } finally {

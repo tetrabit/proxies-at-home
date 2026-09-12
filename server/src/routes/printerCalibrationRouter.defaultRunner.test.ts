@@ -155,4 +155,51 @@ exit 2
     expect(response.status).toBe(501);
     expect(response.body.error).toContain("Printer calibration unavailable");
   });
+
+  const realRuntime = process.env.PRINTER_CALIBRATION_REAL_BIN;
+  const realRuntimeTest = realRuntime ? it : it.skip;
+  realRuntimeTest("calculates and persists a profile through the installed runtime", async () => {
+    process.env.PRINTER_CALIBRATION_BIN = realRuntime;
+    process.env.PRINTER_CALIBRATION_PYTHON = process.env.PRINTER_CALIBRATION_REAL_PYTHON;
+    delete process.env.PRINTER_CALIBRATION_REPO;
+
+    const calculated = await request(app())
+      .post("/api/printer-calibration/calculate")
+      .send({
+        front_x_measured_mm: 0.25,
+        front_y_measured_mm: -0.5,
+        back_x_measured_mm: 0.75,
+        back_y_measured_mm: -1,
+      });
+    expect(calculated.status).toBe(200);
+    expect(calculated.body).toEqual({
+      front_x_mm: 107.7,
+      front_y_mm: 140.2,
+      back_x_mm: 107.2,
+      back_y_mm: 140.7,
+      paper_size: "letter",
+      duplex_mode: "long-edge",
+    });
+
+    const saved = await request(app())
+      .put("/api/printer-calibration/profiles/real-runtime")
+      .send(calculated.body);
+    expect(saved.status).toBe(200);
+    expect(saved.body).toEqual({
+      saved: true,
+      profile: {
+        name: "real-runtime",
+        paper_size: "letter",
+        duplex_mode: "long-edge",
+        ...calculated.body,
+      },
+    });
+
+    const listed = await request(app()).get("/api/printer-calibration/profiles");
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({ "real-runtime": saved.body.profile });
+    const readBack = await request(app()).get("/api/printer-calibration/profiles/real-runtime");
+    expect(readBack.status).toBe(200);
+    expect(readBack.body).toEqual(saved.body.profile);
+  });
 });
