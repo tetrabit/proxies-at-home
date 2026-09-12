@@ -219,11 +219,10 @@ describe("disableMpcCalibrationLink", () => {
     await database.mpcCalibrationLinkStates.put({ formatVersion: 1, ...identity, updatedAt: 1 });
     const scope = createMpcCalibrationOperationScope({ target: "linked-web", identity });
     const remove = database.mpcCalibrationLinkStates.delete.bind(database.mpcCalibrationLinkStates);
-    vi.spyOn(database.mpcCalibrationLinkStates, "delete").mockImplementation(async key => {
-      const outcome = await remove(key);
+    vi.spyOn(database.mpcCalibrationLinkStates, "delete").mockImplementation(key => remove(key).then(outcome => {
       scope.replaceAuthentication({ replacement: true });
       return outcome;
-    });
+    }));
 
     await expect(disableMpcCalibrationLink({ target: "linked-web", scope, identity, database, createWebTransport: () => transport() }))
       .resolves.toEqual({ kind: "cancelled", target: "linked-web" });
