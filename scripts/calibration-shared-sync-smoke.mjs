@@ -145,7 +145,7 @@ export async function buildSharedSyncService({ root: repositoryRoot = root, run 
   };
 }
 
-async function sourceBinding(scripts) {
+export async function sourceBinding(scripts) {
   const tracked = execFileSync('git', ['ls-files', '-z', '--', 'client/src', 'server/src', 'shared', 'client/package.json', 'client/package-lock.json', 'server/package.json', 'server/package-lock.json'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
   const inputs = Object.fromEntries(await Promise.all([...new Set([...tracked, ...scripts])].sort().map(async name => [name, await sha256(path.join(root, name))])));
   return { head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), inputs };

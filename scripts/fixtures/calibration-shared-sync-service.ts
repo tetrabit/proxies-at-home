@@ -15,13 +15,32 @@ export type SharedSyncService = Readonly<{
   close(): Promise<void>;
 }>;
 
+export type SharedSyncStartMode = "bootstrap" | "resume";
+
 type SharedSyncInput = Readonly<{
   root: string;
   run: string;
   data: string;
   browserCredentialFile: string;
   electronConnectionFile: string;
+  /** Optional defaults retain the Q1 direct-call and CLI contract. */
+  mode?: SharedSyncStartMode;
+  listenPort?: number;
 }>;
+
+export function serviceSeedDisposition(revision: number | null): "seed" | "preserve" {
+  if (revision === null) return "seed";
+  if (!Number.isSafeInteger(revision) || revision < 1) throw new TypeError("service current revision must be null or a positive safe integer");
+  return "preserve";
+}
+
+function validateStartMode(mode: unknown, listenPort: unknown): asserts mode is SharedSyncStartMode {
+  if (mode !== "bootstrap" && mode !== "resume") throw new TypeError("service mode must be bootstrap or resume");
+  if (!Number.isSafeInteger(listenPort) || (listenPort as number) < 0 || (listenPort as number) > 65535
+    || (mode === "resume" && listenPort === 0)) {
+    throw new TypeError("service listen port is invalid for its mode");
+  }
+}
 
 const credentialPattern = /^calibration_pair_[A-Za-z0-9_-]{43}$/;
 const token = () => `calibration_pair_${randomBytes(32).toString('base64url')}`;
@@ -38,6 +57,9 @@ async function closeListener(server: http.Server): Promise<void> {
 
 /** Starts the real calibration runtime and only reports ready after router, credential, and Vite middleware are usable. */
 export async function startSharedSyncService(input: SharedSyncInput): Promise<SharedSyncService> {
+  const mode = input.mode ?? "bootstrap";
+  const listenPort = input.listenPort ?? 0;
+  validateStartMode(mode, listenPort);
   await stage(input.run, 'directories');
   for (const directory of [input.run, input.data, path.dirname(input.browserCredentialFile), path.dirname(input.electronConnectionFile)]) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -50,7 +72,7 @@ export async function startSharedSyncService(input: SharedSyncInput): Promise<Sh
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
+      server.listen(listenPort, '127.0.0.1', () => {
         server.off('error', reject);
         resolve();
       });
@@ -61,24 +83,33 @@ export async function startSharedSyncService(input: SharedSyncInput): Promise<Sh
     await stage(input.run, 'listener-ready');
 
     runtime = createCalibrationHarnessRuntime({ dataDirectory: input.data, allowedWebOrigins: [origin] });
-    createCalibrationHarnessStore(runtime.database).publish('q1-synthetic-owner', 'q1-shared-harness', null, {
-      version: 1, datasets: [], cases: [], assets: [], runs: [],
-    });
-    const credential = createCalibrationHarnessCredentialStore(runtime.database).provision({
-      ownerId: 'q1-synthetic-owner',
-      harnessId: 'q1-shared-harness',
-      expiresAt: Date.now() + 10 * 60_000,
-    });
-    if (!credentialPattern.test(credential)) throw new Error('production credential store returned invalid synthetic credential');
-    await writeFile(input.browserCredentialFile, `${credential}\n`, { mode: 0o600 });
-    await chmod(input.browserCredentialFile, 0o600);
-    await writeFile(input.electronConnectionFile, JSON.stringify({
-      version: 1,
-      backendOrigin: origin,
-      harnessId: 'q1-shared-harness',
-      credential,
-    }), { mode: 0o600 });
-    await chmod(input.electronConnectionFile, 0o600);
+    const store = createCalibrationHarnessStore(runtime.database);
+    const current = store.getCurrent('q1-synthetic-owner', 'q1-shared-harness');
+    if (mode === 'bootstrap') {
+      if (serviceSeedDisposition(current?.revision ?? null) !== 'seed') {
+        throw new Error('bootstrap refuses an existing calibration harness revision');
+      }
+      store.publish('q1-synthetic-owner', 'q1-shared-harness', null, {
+        version: 1, datasets: [], cases: [], assets: [], runs: [],
+      });
+      const credential = createCalibrationHarnessCredentialStore(runtime.database).provision({
+        ownerId: 'q1-synthetic-owner',
+        harnessId: 'q1-shared-harness',
+        expiresAt: Date.now() + 10 * 60_000,
+      });
+      if (!credentialPattern.test(credential)) throw new Error('production credential store returned invalid synthetic credential');
+      await writeFile(input.browserCredentialFile, `${credential}\n`, { mode: 0o600 });
+      await chmod(input.browserCredentialFile, 0o600);
+      await writeFile(input.electronConnectionFile, JSON.stringify({
+        version: 1,
+        backendOrigin: origin,
+        harnessId: 'q1-shared-harness',
+        credential,
+      }), { mode: 0o600 });
+      await chmod(input.electronConnectionFile, 0o600);
+    } else if (serviceSeedDisposition(current?.revision ?? null) !== 'preserve') {
+      throw new Error('resume requires an existing calibration harness revision');
+    }
     await stage(input.run, 'runtime-ready');
 
     app.use('/api/calibration-harness', runtime.router);
@@ -88,6 +119,13 @@ export async function startSharedSyncService(input: SharedSyncInput): Promise<Sh
         : '';
       response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
       response.type('html').send(`<!doctype html><main><h1>Shared calibration Q1</h1>${webControls}<button data-action="electron-edit">Electron edit</button><output id="status">ready</output><script type="module" src="/scripts/fixtures/calibration-shared-sync-browser.mjs"></script></main>`);
+    });
+    app.get('/calibration-shared-sync-restart.html', (request, response) => {
+      const webControls = request.query.role === 'browser'
+        ? '<label>Credential <input id="credential" type="password" autocomplete="off"></label><button id="q2-start" type="button">Start</button>'
+        : '';
+      response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+      response.type('html').send(`<!doctype html><main>${webControls}<output id="status">ready</output><script type="module" src="/scripts/fixtures/calibration-shared-sync-restart-browser.mjs"></script></main>`);
     });
     vite = await createViteServer({
       configFile: false,
@@ -124,11 +162,24 @@ export async function startSharedSyncService(input: SharedSyncInput): Promise<Sh
 }
 
 async function runCli(): Promise<void> {
-  const [root, run, data, browserCredentialFile, electronConnectionFile] = process.argv.slice(3);
+  const [root, run, data, browserCredentialFile, electronConnectionFile, ...options] = process.argv.slice(3);
   if (![root, run, data, browserCredentialFile, electronConnectionFile].every((value) => typeof value === 'string' && path.isAbsolute(value))) {
     throw new Error('service requires absolute owned paths');
   }
-  const service = await startSharedSyncService({ root, run, data, browserCredentialFile, electronConnectionFile });
+  const parsed = options.map((value) => /^--(mode|port)=(.*)$/.exec(value));
+  if (parsed.some((match) => match === null || match[2].length === 0)) {
+    throw new Error('service options must be --mode=bootstrap|resume and --port=<integer>');
+  }
+  const optionMap = new Map(parsed.map(match => [match![1], match![2]]));
+  if (optionMap.size !== options.length || ![...optionMap.keys()].every(key => key === 'mode' || key === 'port')) {
+    throw new Error('service options must be unique --mode=bootstrap|resume and --port=<integer>');
+  }
+  const mode = optionMap.get('mode') ?? 'bootstrap';
+  const portText = optionMap.get('port') ?? '0';
+  if (!/^(?:0|[1-9][0-9]{0,4})$/.test(portText)) throw new Error('service port must be an integer');
+  const listenPort = Number(portText);
+  validateStartMode(mode, listenPort);
+  const service = await startSharedSyncService({ root, run, data, browserCredentialFile, electronConnectionFile, mode, listenPort });
   process.stdout.write(`${JSON.stringify({ kind: 'ready', origin: service.origin })}\n`);
   let stopping: Promise<void> | null = null;
   const stop = () => {
