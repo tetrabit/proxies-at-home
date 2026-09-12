@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "child_process";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { createServer } from "net";
 import path from "path";
 import fs from "fs";
 import { app } from "electron";
@@ -59,6 +60,7 @@ export class MicroserviceManager {
   private healthySince: number | null = null;
   private startPromise: Promise<number> | null = null;
   private isShuttingDown = false;
+  private readonly instanceId = randomUUID();
 
   constructor(
     private readonly config: MicroserviceConfig,
@@ -82,6 +84,7 @@ export class MicroserviceManager {
   }
 
   private async startInternal(): Promise<number> {
+    if (this.config.port === 0) await this.ensurePort();
     const launch = this.getLaunch();
     const env = { ...process.env } as NodeJS.ProcessEnv;
     delete env.DATABASE_URL;
@@ -89,6 +92,7 @@ export class MicroserviceManager {
     Object.assign(env, {
       API_HOST: "127.0.0.1",
       API_PORT: String(this.config.port),
+      INSTANCE_ID: this.instanceId,
       SQLITE_PATH: this.getDatabasePath(),
       // Desktop lifecycle must never trigger an import or refresh: the smoke owns an
       // empty SQLite profile and must remain offline even when its parent has policy.
@@ -272,8 +276,8 @@ export class MicroserviceManager {
         response.on("data", (chunk) => { body += chunk.toString(); });
         response.on("end", () => {
           try {
-            const health = JSON.parse(body) as { service?: unknown; status?: unknown; version?: unknown };
-            finish(response.statusCode === 200 && health.service === "scryfall-cache" && health.status === "healthy" && typeof health.version === "string");
+            const health = JSON.parse(body) as { service?: unknown; status?: unknown; version?: unknown; instance_id?: unknown };
+            finish(response.statusCode === 200 && health.service === "scryfall-cache" && health.status === "healthy" && typeof health.version === "string" && health.instance_id === this.instanceId);
           } catch {
             finish(false);
           }
@@ -310,12 +314,36 @@ export class MicroserviceManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private async ensurePort(): Promise<void> {
+    if (this.config.port !== 0) return;
+
+    const server = createServer();
+    try {
+      const port = await new Promise<number>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen({ host: "127.0.0.1", port: 0 }, () => {
+          const address = server.address();
+          if (!address || typeof address === "string") {
+            reject(new Error("unable to determine allocated microservice port"));
+            return;
+          }
+          resolve(address.port);
+        });
+      });
+      this.config.port = port;
+    } finally {
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      }
+    }
+  }
+
   isRunning(): boolean { return this.process !== null && !this.process.killed; }
   getPid(): number | undefined { return this.process?.pid; }
   getPort(): number { return this.config.port; }
 }
 
-export function createScryfallMicroservice(port = 8080): MicroserviceManager {
+export function createScryfallMicroservice(port = 0): MicroserviceManager {
   return new MicroserviceManager({
     name: "Scryfall Cache",
     binaryName: "scryfall-cache",

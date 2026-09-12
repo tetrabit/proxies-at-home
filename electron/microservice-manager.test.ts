@@ -34,7 +34,13 @@ function controlledChild() {
 }
 function respond(callback: (response: EventEmitter & { statusCode: number }) => void, statusCode: number, body: unknown) {
   const response = new EventEmitter() as EventEmitter & { statusCode: number };
-  response.statusCode = statusCode; callback(response); response.emit("data", JSON.stringify(body)); response.emit("end");
+  const instanceId = spawnMock.mock.calls.at(-1)?.[2]?.env?.INSTANCE_ID;
+  const health = body && typeof body === "object" && "service" in body && "instance_id" in body
+    ? body
+    : body && typeof body === "object" && "service" in body
+      ? { ...body, instance_id: instanceId }
+      : body;
+  response.statusCode = statusCode; callback(response); response.emit("data", JSON.stringify(health)); response.emit("end");
 }
 function manifest(root: string, bytes: Buffer, overrides: Record<string, unknown> = {}) {
   return JSON.stringify({ schemaVersion: 2, runtime: "desktopSQLite", backend: "sqlite", platform: process.platform, profile: "release", binary: { sourcePath: "/producer/never-used/scryfall-cache", fileName: process.platform === "win32" ? "scryfall-cache.exe" : "scryfall-cache", sha256: sha256(bytes) }, sourceBuild: SOURCE_BUILD, ...overrides });
@@ -42,7 +48,7 @@ function manifest(root: string, bytes: Buffer, overrides: Record<string, unknown
 function healthyRequest() {
   requestMock.mockImplementation((_options: unknown, callback: (response: EventEmitter & { statusCode: number }) => void) => {
     const request = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
-    request.end = vi.fn(() => { const response = new EventEmitter() as EventEmitter & { statusCode: number }; response.statusCode = 200; callback(response); response.emit("data", JSON.stringify({ service: "scryfall-cache", status: "healthy", version: "fixture" })); response.emit("end"); });
+    request.end = vi.fn(() => respond(callback, 200, { service: "scryfall-cache", status: "healthy", version: "fixture" }));
     request.destroy = vi.fn(); return request;
   });
 }
@@ -60,6 +66,44 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     const { createScryfallMicroservice } = await import("./microservice-manager");
     const manager = createScryfallMicroservice(8122);
     expect(manager.getPort()).toBe(8122); expect(manager.isRunning()).toBe(false);
+  });
+
+  it("allocates a default loopback port before spawning and returns that selected port", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const { createScryfallMicroservice } = await import("./microservice-manager");
+      const manager = createScryfallMicroservice();
+      expect(manager.getPort()).toBe(0);
+      const selectedPort = await manager.start();
+      const instanceId = spawnMock.mock.calls[0][2].env.INSTANCE_ID;
+      expect(selectedPort).toBeGreaterThan(0); expect(selectedPort).not.toBe(8080); expect(manager.getPort()).toBe(selectedPort);
+      expect(instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      expect(spawnMock.mock.calls[0][2].env).toMatchObject({ API_HOST: "127.0.0.1", API_PORT: String(selectedPort), INSTANCE_ID: instanceId });
+      expect(requestMock).toHaveBeenCalledWith(expect.objectContaining({ hostname: "127.0.0.1", port: selectedPort }), expect.any(Function));
+      expect(logSpy.mock.calls.flat()).not.toContain(instanceId);
+      await manager.stop();
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it("does not allocate or spawn when a default manager is stopped before startup", async () => {
+    const { createScryfallMicroservice } = await import("./microservice-manager");
+    const manager = createScryfallMicroservice();
+    await manager.stop();
+    expect(manager.getPort()).toBe(0); expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("reuses one allocated port and instance identity through an owned-child retry", async () => {
+    const first = child(); const second = child(); const children = [first, second]; spawnMock.mockImplementation(() => children.shift()); healthyRequest();
+    const { createScryfallMicroservice } = await import("./microservice-manager");
+    const manager = createScryfallMicroservice();
+    const selectedPort = await manager.start();
+    vi.useFakeTimers();
+    try {
+      first.emit("exit", 1, null); await vi.advanceTimersByTimeAsync(2000);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      expect(spawnMock.mock.calls[1][2].env).toMatchObject({ API_PORT: String(selectedPort), INSTANCE_ID: spawnMock.mock.calls[0][2].env.INSTANCE_ID });
+      expect(manager.getPort()).toBe(selectedPort); await manager.stop();
+    } finally { vi.useRealTimers(); }
   });
 
   it("proves the emitted development v2 manifest selects a verified staged binary", () => {
@@ -133,6 +177,31 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     const { MicroserviceManager } = await import("./microservice-manager");
     const manager = new MicroserviceManager({ name: "fixture", binaryName: "scryfall-cache", port: 8128, healthCheckPath: "/health", healthCheckInterval: 60_000, maxRestarts: 0, restartDelay: 1 }, { resolveLaunch: () => ({ command: process.execPath, args: ["fixture"] }) });
     await manager.start(); expect(spawnMock.mock.calls[0][0]).toBe(process.execPath); expect(spawnMock.mock.calls[0][2].env.DATABASE_URL).toBeUndefined(); await manager.stop(); expect(manager.isRunning()).toBe(false);
+  });
+
+  it("rejects foreign-compatible startup health, terminates only its spawned child, and accepts the exact instance", async () => {
+    vi.useFakeTimers();
+    try {
+      const foreignChild = child(); spawnMock.mockReturnValueOnce(foreignChild);
+      requestMock.mockImplementation((_options: unknown, callback: (response: EventEmitter & { statusCode: number }) => void) => {
+        const request = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+        request.destroy = vi.fn(); request.end = vi.fn(() => respond(callback, 200, { service: "scryfall-cache", status: "healthy", version: "fixture", instance_id: "foreign-compatible-instance" })); return request;
+      });
+      const { MicroserviceManager } = await import("./microservice-manager");
+      const foreignManager = new MicroserviceManager({ name: "fixture", binaryName: "scryfall-cache", port: 81282, healthCheckPath: "/health", healthCheckInterval: 60_000, maxRestarts: 0, restartDelay: 1 }, { resolveLaunch: () => ({ command: process.execPath, args: [] }) });
+      const rejectedStart = foreignManager.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(rejectedStart).rejects.toThrow(/failed to become healthy/i);
+      expect(foreignChild.kill).toHaveBeenCalledWith("SIGTERM"); expect(foreignManager.isRunning()).toBe(false);
+
+      const matchingChild = child(); spawnMock.mockReturnValueOnce(matchingChild);
+      requestMock.mockImplementation((_options: unknown, callback: (response: EventEmitter & { statusCode: number }) => void) => {
+        const request = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+        request.destroy = vi.fn(); request.end = vi.fn(() => respond(callback, 200, { service: "scryfall-cache", status: "healthy", version: "fixture", instance_id: spawnMock.mock.calls.at(-1)?.[2]?.env?.INSTANCE_ID })); return request;
+      });
+      const matchingManager = new MicroserviceManager({ name: "fixture", binaryName: "scryfall-cache", port: 81283, healthCheckPath: "/health", healthCheckInterval: 60_000, maxRestarts: 0, restartDelay: 1 }, { resolveLaunch: () => ({ command: process.execPath, args: [] }) });
+      await expect(matchingManager.start()).resolves.toBe(81283); await matchingManager.stop();
+    } finally { vi.useRealTimers(); }
   });
 
   it("returns the configured port without spawning again when already running", async () => {
@@ -212,18 +281,18 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("kills its owned child when a normal periodic health probe becomes unhealthy", async () => {
+  it("kills only its owned child when periodic health reports a foreign-compatible instance", async () => {
     vi.useFakeTimers();
     try {
       const running = child(); spawnMock.mockReturnValue(running);
       let probes = 0;
       requestMock.mockImplementation((_options: unknown, callback: (response: EventEmitter & { statusCode: number }) => void) => {
         const request = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
-        request.destroy = vi.fn(); request.end = vi.fn(() => { probes += 1; respond(callback, probes === 1 ? 200 : 503, { service: "scryfall-cache", status: "healthy", version: "fixture" }); }); return request;
+        request.destroy = vi.fn(); request.end = vi.fn(() => { probes += 1; respond(callback, 200, { service: "scryfall-cache", status: "healthy", version: "fixture", instance_id: probes === 1 ? spawnMock.mock.calls.at(-1)?.[2]?.env?.INSTANCE_ID : "foreign-compatible-instance" }); }); return request;
       });
       const { MicroserviceManager } = await import("./microservice-manager");
       const manager = new MicroserviceManager({ name: "fixture", binaryName: "scryfall-cache", port: 81321, healthCheckPath: "/health", healthCheckInterval: 100, maxRestarts: 1, restartDelay: 10 }, { resolveLaunch: () => ({ command: process.execPath, args: [] }) });
-      await manager.start(); await vi.advanceTimersByTimeAsync(100);
+      await manager.start(); await vi.advanceTimersByTimeAsync(100); await Promise.resolve();
       expect(running.kill).toHaveBeenCalledWith("SIGTERM"); await manager.stop();
     } finally { vi.useRealTimers(); }
   });
