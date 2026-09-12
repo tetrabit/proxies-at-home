@@ -1,7 +1,15 @@
 import "fake-indexeddb/auto";
-import { Blob as NodeBlob } from "node:buffer";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+const nativeBlob = vi.hoisted(async () => {
+  const { Blob: NodeBlob } = await import("node:buffer");
+  Object.defineProperty(globalThis, "Blob", { value: NodeBlob, configurable: true, writable: true });
+  if (typeof window !== "undefined") {
+    Object.defineProperty(window, "Blob", { value: NodeBlob, configurable: true, writable: true });
+  }
+  return NodeBlob;
+});
 const privateTestDatabaseName = vi.hoisted(() => `c6-integration-${crypto.randomUUID()}`);
 const mockMarkMpcPreferenceSyncDirty = vi.hoisted(() => vi.fn());
 
@@ -32,6 +40,8 @@ import {
   saveMpcCalibrationRun,
   updateMpcCalibrationDataset,
 } from "./mpcCalibrationStorage";
+
+void nativeBlob;
 
 const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
 
@@ -178,14 +188,14 @@ describe("C6 real bound storage mutation protocol", () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const asset: MpcCalibrationAssetRecord = {
       id: "asset-real", datasetId: dataset.id, caseId: "case-assets", role: "source", mimeType: "image/png",
-      blob: new NodeBlob([bytes], { type: "image/png" }), createdAt: 2,
+      blob: new NativeBlob([bytes], { type: "image/png" }), createdAt: 2,
     };
     await saveMpcCalibrationCaseWithAssets({ id: "case-assets", datasetId: dataset.id, source: { name: "Assets" }, candidates: [] }, [asset], scope);
     expect(await queuedGeneration()).toBe(4);
     await expectQueuedRowsToMatchCanonical();
     await saveMpcCalibrationAssets([{
       id: "asset-extra", datasetId: dataset.id, caseId: "case-zero", role: "source",
-      mimeType: "image/png", blob: new NodeBlob([new Uint8Array([5])], { type: "image/png" }), createdAt: 3,
+      mimeType: "image/png", blob: new NativeBlob([new Uint8Array([5])], { type: "image/png" }), createdAt: 3,
     }], scope);
     expect(await queuedGeneration()).toBe(5);
     await expectQueuedRowsToMatchCanonical();
@@ -223,9 +233,9 @@ describe("C6 real bound storage mutation protocol", () => {
     const originalHash = await sha256(original);
     await saveMpcCalibrationCaseWithAssets({
       id: "asset-case", datasetId: dataset.id, source: { name: "Asset", nestedUnknown: { order: ["first", "second"] } } as MpcCalibrationSourceCardSnapshot & Record<string, unknown>, candidates: [], unknownCase: { retained: true },
-    } as Parameters<typeof saveMpcCalibrationCaseWithAssets>[0] & Record<string, unknown>, [{ id: "asset", datasetId: dataset.id, caseId: "asset-case", role: "source", mimeType: "image/png", blob: new NodeBlob([original], { type: "image/png" }), createdAt: 1, unknownAsset: { preserve: true } } as MpcCalibrationAssetRecord], scope);
+    } as Parameters<typeof saveMpcCalibrationCaseWithAssets>[0] & Record<string, unknown>, [{ id: "asset", datasetId: dataset.id, caseId: "asset-case", role: "source", mimeType: "image/png", blob: new NativeBlob([original], { type: "image/png" }), createdAt: 1, unknownAsset: { preserve: true } } as MpcCalibrationAssetRecord], scope);
     await expect(flushMpcCalibrationOutbox({ database: db, transport: remote, identity })).resolves.toMatchObject({ status: "published", revision: 2 });
-    await saveMpcCalibrationAssets([{ id: "asset", datasetId: dataset.id, caseId: "asset-case", role: "source", mimeType: "image/png", blob: new NodeBlob([replacement], { type: "image/png" }), createdAt: 1, unknownAsset: { preserve: true } } as MpcCalibrationAssetRecord], scope);
+    await saveMpcCalibrationAssets([{ id: "asset", datasetId: dataset.id, caseId: "asset-case", role: "source", mimeType: "image/png", blob: new NativeBlob([replacement], { type: "image/png" }), createdAt: 1, unknownAsset: { preserve: true } } as MpcCalibrationAssetRecord], scope);
     const replacementHash = await sha256(replacement);
     const beforeFlush = (await createMpcCalibrationSyncStateStore(db).load(identity))!.queued!.snapshot;
     expect(beforeFlush.cases.find(entry => entry.id === "asset-case")).toMatchObject({ unknownCase: { retained: true }, source: { nestedUnknown: { order: ["first", "second"] } } });
@@ -316,7 +326,7 @@ describe("C6 real bound storage mutation protocol", () => {
     const scope = await captureMpcCalibrationMutationScope();
     const dataset = await createMpcCalibrationDataset({ name: "rollback dataset" }, scope);
     await saveMpcCalibrationCaseWithAssets({ id: "prior-case", datasetId: dataset.id, source: { name: "prior" }, candidates: [] }, [{
-      id: "prior-asset", datasetId: dataset.id, caseId: "prior-case", role: "source", mimeType: "image/png", blob: new NodeBlob([new Uint8Array([1, 2, 3])], { type: "image/png" }), createdAt: 1,
+      id: "prior-asset", datasetId: dataset.id, caseId: "prior-case", role: "source", mimeType: "image/png", blob: new NativeBlob([new Uint8Array([1, 2, 3])], { type: "image/png" }), createdAt: 1,
     }], scope);
     await saveMpcCalibrationRun({ id: "prior-run", datasetId: dataset.id, algorithmId: "prior", summary: { totalCases: 1, matchedCases: 1, mismatchedCases: 0, accuracy: 1 }, results: [{ caseId: "prior-case", matched: true }] }, scope);
     await flushMpcCalibrationOutbox({ database: db, transport: remote, identity });
@@ -329,7 +339,7 @@ describe("C6 real bound storage mutation protocol", () => {
     }) as unknown as typeof actualPut);
     try {
       await expect(saveMpcCalibrationCaseWithAssets({ id: "prior-case", datasetId: dataset.id, source: { name: "replaced" }, candidates: [] }, [{
-        id: "prior-asset", datasetId: dataset.id, caseId: "prior-case", role: "source", mimeType: "image/png", blob: new NodeBlob([new Uint8Array([9, 8, 7])], { type: "image/png" }), createdAt: 2,
+        id: "prior-asset", datasetId: dataset.id, caseId: "prior-case", role: "source", mimeType: "image/png", blob: new NativeBlob([new Uint8Array([9, 8, 7])], { type: "image/png" }), createdAt: 2,
       }], scope)).rejects.toThrow("injected C6 rejection after same-key C1 write");
       expect(put).toHaveBeenCalledOnce();
     } finally {
@@ -344,7 +354,7 @@ describe("C6 real bound storage mutation protocol", () => {
     const scope = await captureMpcCalibrationMutationScope();
     const dataset = await createMpcCalibrationDataset({ name: `state-${kind}` }, scope);
     await saveMpcCalibrationCaseWithAssets({ id: `case-${kind}`, datasetId: dataset.id, source: { name: kind }, candidates: [] }, [{
-      id: `asset-${kind}`, datasetId: dataset.id, caseId: `case-${kind}`, role: "source", mimeType: "image/png", blob: new NodeBlob([new Uint8Array([4, 5, 6])], { type: "image/png" }), createdAt: 1,
+      id: `asset-${kind}`, datasetId: dataset.id, caseId: `case-${kind}`, role: "source", mimeType: "image/png", blob: new NativeBlob([new Uint8Array([4, 5, 6])], { type: "image/png" }), createdAt: 1,
     }], scope);
     await flushMpcCalibrationOutbox({ database: db, transport: remote, identity });
     const current = await db.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId]);
@@ -367,18 +377,18 @@ describe("C6 real bound storage mutation protocol", () => {
     const remote = await hydrateBase();
     const boundScope = await captureMpcCalibrationMutationScope();
     const dataset = await createMpcCalibrationDataset({ name: "blob admission" }, boundScope);
-    const originalRead = NodeBlob.prototype.arrayBuffer;
+    const originalRead = NativeBlob.prototype.arrayBuffer;
     let active = 0;
     let maximum = 0;
-    const read = vi.spyOn(NodeBlob.prototype, "arrayBuffer").mockImplementation(function (this: Blob) {
+    const read = vi.spyOn(NativeBlob.prototype, "arrayBuffer").mockImplementation(function (this: Blob) {
       active += 1;
       maximum = Math.max(maximum, active);
       return originalRead.call(this).finally(() => { active -= 1; });
     });
     try {
       await saveMpcCalibrationCaseWithAssets({ id: "blob-case", datasetId: dataset.id, source: { name: "blob" }, candidates: [] }, [
-        { id: "blob-source", datasetId: dataset.id, caseId: "blob-case", role: "source", mimeType: "image/png", blob: new NodeBlob([new Uint8Array([1])], { type: "image/png" }), createdAt: 1 },
-        { id: "blob-art", datasetId: dataset.id, caseId: "blob-case", role: "source-art", mimeType: "image/png", blob: new NodeBlob([new Uint8Array([2])], { type: "image/png" }), createdAt: 1 },
+        { id: "blob-source", datasetId: dataset.id, caseId: "blob-case", role: "source", mimeType: "image/png", blob: new NativeBlob([new Uint8Array([1])], { type: "image/png" }), createdAt: 1 },
+        { id: "blob-art", datasetId: dataset.id, caseId: "blob-case", role: "source-art", mimeType: "image/png", blob: new NativeBlob([new Uint8Array([2])], { type: "image/png" }), createdAt: 1 },
       ], boundScope);
       expect(maximum).toBe(1);
       expect(active).toBe(0);
@@ -394,10 +404,10 @@ describe("C6 real bound storage mutation protocol", () => {
       ? { ...asset, sha256: replacementHash, byteLength: replacementBytes.byteLength, createdAt: 2 }
       : asset);
     expect(() => validateCalibrationHarnessSnapshot(validReplacement)).not.toThrow();
-    const oversizedRead = vi.spyOn(NodeBlob.prototype, "arrayBuffer").mockRejectedValue(new Error("oversized C6 byte admission"));
-    const oversizedSize = vi.spyOn(NodeBlob.prototype, "size", "get").mockReturnValue(CALIBRATION_HARNESS_LIMITS.maxAssetBytes + 1);
+    const oversizedRead = vi.spyOn(NativeBlob.prototype, "arrayBuffer").mockRejectedValue(new Error("oversized C6 byte admission"));
+    const oversizedSize = vi.spyOn(NativeBlob.prototype, "size", "get").mockReturnValue(CALIBRATION_HARNESS_LIMITS.maxAssetBytes + 1);
     try {
-      await expect(saveMpcCalibrationAssets([{ id: "blob-art", datasetId: dataset.id, caseId: "blob-case", role: "source-art", mimeType: "image/png", blob: new NodeBlob([replacementBytes], { type: "image/png" }), createdAt: 2 }], boundScope)).rejects.toThrow("per-asset limit");
+      await expect(saveMpcCalibrationAssets([{ id: "blob-art", datasetId: dataset.id, caseId: "blob-case", role: "source-art", mimeType: "image/png", blob: new NativeBlob([replacementBytes], { type: "image/png" }), createdAt: 2 }], boundScope)).rejects.toThrow("per-asset limit");
       expect(oversizedRead).not.toHaveBeenCalled();
     } finally {
       oversizedSize.mockRestore();

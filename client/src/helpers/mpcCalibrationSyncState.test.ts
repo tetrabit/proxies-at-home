@@ -1,10 +1,13 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
 import {
   createMpcCalibrationSyncStateStore,
   MpcCalibrationSyncStateError,
 } from "./mpcCalibrationSyncState";
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 const snapshot = {
   version: 1 as const,

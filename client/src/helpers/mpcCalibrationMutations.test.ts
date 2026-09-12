@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MpcCalibrationAssetRecord, MpcCalibrationCaseRecord, MpcCalibrationDatasetRecord } from "@/db";
 import { ProxxiedDexie } from "@/db";
@@ -8,6 +9,8 @@ import {
   MpcCalibrationMutationError,
   createMpcCalibrationMutationCoordinator,
 } from "./mpcCalibrationMutations";
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
 const handles: ProxxiedDexie[] = [];

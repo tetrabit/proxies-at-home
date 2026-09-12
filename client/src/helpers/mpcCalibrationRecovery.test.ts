@@ -1,10 +1,13 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProxxiedDexie } from "@/db";
 import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import { recoverAndFlushMpcCalibration } from "./mpcCalibrationRecovery";
 import { MpcCalibrationTransportError, type MpcCalibrationTransport } from "./mpcCalibrationTransport";
 import type { CalibrationHarnessSnapshot } from "../../../shared/calibrationHarness";
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 const identity = { ownerId: "owner", harnessId: "harness", connectionId: "connection" };
 const assetBytes = new Uint8Array([1, 2, 3, 4]);

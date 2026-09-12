@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { Blob as NativeBlob } from "node:buffer";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const privateTestDatabaseName = vi.hoisted(() => `c6-storage-${crypto.randomUUID()}`);
@@ -41,6 +42,8 @@ import {
 } from "./mpcCalibrationStorage";
 import type { MpcCalibrationFrozenCandidate } from "@/db";
 import type { MpcAutofillCard } from "./mpcAutofillApi";
+
+globalThis.Blob = NativeBlob as unknown as typeof Blob;
 
 type FrozenCandidateFixture = MpcAutofillCard & Pick<MpcCalibrationFrozenCandidate, "imageUrl">;
 
