@@ -230,4 +230,81 @@ describe("CalibrationModal IndexedDB integration", () => {
       expect(screen.getByText("Frozen Cases (2)")).toBeTruthy();
     });
   });
+
+  it("shows same-ID committed case and run replacement from IndexedDB", async () => {
+    render(<CalibrationModal />);
+
+    await waitForModalReady(/[1-9]\d*/);
+    const initialDataset = await db.mpcCalibrationDatasets.get(
+      "bootstrap-preference-dataset"
+    );
+    expect(initialDataset).toBeTruthy();
+    const sameIdDataset = {
+      ...initialDataset!,
+      description: "C3 same-ID remote replacement",
+      updatedAt: initialDataset!.updatedAt + 1,
+    };
+    const sameIdCases = [
+      {
+        id: "same-id-remote-case-1",
+        datasetId: sameIdDataset.id,
+        createdAt: 31,
+        updatedAt: 31,
+        source: { name: "Same-ID Remote Sol Ring" },
+        candidates: [],
+        expectedIdentifier: "same-id-remote-choice-1",
+      },
+      {
+        id: "same-id-remote-case-2",
+        datasetId: sameIdDataset.id,
+        createdAt: 32,
+        updatedAt: 32,
+        source: { name: "Same-ID Remote Arcane Signet" },
+        candidates: [],
+        expectedIdentifier: "same-id-remote-choice-2",
+      },
+    ];
+    const sameIdRun = {
+      id: "same-id-remote-run-1",
+      datasetId: sameIdDataset.id,
+      algorithmId: "remote",
+      algorithmLabel: "Remote algorithm",
+      summary: { totalCases: 2, matchedCases: 2, mismatchedCases: 0, accuracy: 1 },
+      results: [],
+      createdAt: 33,
+    };
+
+    await act(async () => {
+      await db.transaction(
+        "rw",
+        [
+          db.mpcCalibrationDatasets,
+          db.mpcCalibrationCases,
+          db.mpcCalibrationRuns,
+        ],
+        async () => {
+          await Promise.all([
+            db.mpcCalibrationDatasets.put(sameIdDataset),
+            db.mpcCalibrationCases.clear(),
+            db.mpcCalibrationRuns.clear(),
+          ]);
+          await db.mpcCalibrationCases.bulkAdd(sameIdCases);
+          await db.mpcCalibrationRuns.add(sameIdRun);
+        }
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-dataset").getAttribute("data-dataset-id")).toBe(
+        sameIdDataset.id
+      );
+      expect(screen.getByText("2 cases captured · Target: 9")).toBeTruthy();
+      expect(screen.getByText("Frozen Cases (2)")).toBeTruthy();
+      expect(screen.getByText("Same-ID Remote Sol Ring")).toBeTruthy();
+      expect(screen.getByText("Same-ID Remote Arcane Signet")).toBeTruthy();
+    });
+    await act(async () => {
+      expect(await db.mpcCalibrationRuns.get(sameIdRun.id)).toEqual(sameIdRun);
+    });
+  });
 });

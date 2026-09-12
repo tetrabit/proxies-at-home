@@ -523,20 +523,40 @@ describe("CalibrationModal", () => {
     expect(mockRankCandidates).not.toHaveBeenCalled();
   });
 
-  it("does not let a deferred cases-and-runs refresh publish after a live replacement", async () => {
+  it("does not let a deferred cases-and-runs refresh overwrite a newer same-ID snapshot", async () => {
     let resolveCases!: (cases: typeof frozenCase[]) => void;
-    let resolveRuns!: (runs: []) => void;
+    let resolveRuns!: (runs: Array<{ id: string; datasetId: string; createdAt: number }>) => void;
     const replacementDataset = {
       ...dataset,
-      id: "remote-dataset-after-refresh",
       updatedAt: 2,
     };
     const replacementCase = {
       ...frozenCase,
-      id: "remote-case-after-refresh",
-      datasetId: replacementDataset.id,
-      source: { name: "Refresh Remote Sol Ring", set: "C21", collectorNumber: "267" },
+      id: "same-id-remote-case-after-refresh",
+      source: { name: "Same-ID Remote Sol Ring", set: "C21", collectorNumber: "267" },
     };
+    const replacementRun = {
+      id: "same-id-remote-run-after-refresh",
+      datasetId: dataset.id,
+      createdAt: 2,
+    };
+    const staleRun = {
+      id: "stale-run-before-refresh",
+      datasetId: dataset.id,
+      createdAt: 1,
+    };
+    let resolveDatasets!: (datasets: typeof dataset[]) => void;
+    mockListDatasets.mockImplementationOnce(
+      () =>
+        new Promise<typeof dataset[]>((resolve) => {
+          resolveDatasets = resolve;
+        })
+    );
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [dataset],
+      calibrationCases: [frozenCase],
+      calibrationRuns: [staleRun],
+    } as never);
     mockListCases.mockImplementationOnce(
       () =>
         new Promise<typeof frozenCase[]>((resolve) => {
@@ -545,12 +565,18 @@ describe("CalibrationModal", () => {
     );
     mockListRuns.mockImplementationOnce(
       () =>
-        new Promise<[]>((resolve) => {
+        new Promise<Array<typeof staleRun>>((resolve) => {
           resolveRuns = resolve;
         })
     );
 
     const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(screen.getByText("Frozen Cases (1)")).toBeTruthy();
+    });
+    await act(async () => {
+      resolveDatasets([dataset]);
+    });
     await waitFor(() => {
       expect(mockListCases).toHaveBeenCalledWith(dataset.id);
       expect(mockListRuns).toHaveBeenCalledWith(dataset.id);
@@ -559,20 +585,20 @@ describe("CalibrationModal", () => {
     mockUseLiveQuery.mockReturnValue({
       datasets: [replacementDataset],
       calibrationCases: [replacementCase],
-      calibrationRuns: [],
+      calibrationRuns: [replacementRun],
     } as never);
     view.rerender(<CalibrationModal />);
     await waitFor(() => {
-      expect(screen.getByText("Refresh Remote Sol Ring")).toBeTruthy();
+      expect(screen.getByText("Same-ID Remote Sol Ring")).toBeTruthy();
     });
 
     await act(async () => {
       resolveCases([frozenCase]);
-      resolveRuns([]);
+      resolveRuns([staleRun]);
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Refresh Remote Sol Ring")).toBeTruthy();
+      expect(screen.getByText("Same-ID Remote Sol Ring")).toBeTruthy();
       expect(screen.queryByText("Sol Ring")).toBeNull();
     });
   });

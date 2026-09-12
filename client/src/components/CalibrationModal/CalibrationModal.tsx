@@ -82,6 +82,12 @@ type CaptureState = {
   candidates: MpcAutofillCard[];
 };
 
+type VisibleDatasetPublication = {
+  datasetId: string;
+  generation: number;
+  snapshotRevision: number;
+};
+
 function runLabel(result: MpcCalibrationEvaluationResult | null) {
   if (!result) return `0/${MPC_CALIBRATION_TARGET_CASE_COUNT}`;
   return `${result.summary.matchedCases}/${result.summary.totalCases}`;
@@ -195,6 +201,8 @@ export function CalibrationModal() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const visibleDatasetIdRef = useRef<string | null>(null);
   const visibleDatasetGenerationRef = useRef(0);
+  const visibleDatasetSnapshotRevisionRef = useRef(0);
+  const visibleSnapshotRef = useRef<object | null>(null);
   const capturedChoiceKeys = useMemo(() => toCapturedChoiceKeySet(cases), [cases]);
   const liveCalibrationSnapshot = useLiveQuery(
     async () => {
@@ -221,10 +229,23 @@ export function CalibrationModal() {
     undefined
   );
 
+  const captureVisibleDatasetPublication = useCallback((datasetId: string): VisibleDatasetPublication => ({
+    datasetId,
+    generation: visibleDatasetGenerationRef.current,
+    snapshotRevision: visibleDatasetSnapshotRevisionRef.current,
+  }), []);
+
+  const canPublishVisibleDataset = useCallback((publication: VisibleDatasetPublication) => (
+    visibleDatasetGenerationRef.current === publication.generation &&
+    visibleDatasetSnapshotRevisionRef.current === publication.snapshotRevision &&
+    (visibleDatasetIdRef.current === null ||
+      visibleDatasetIdRef.current === publication.datasetId)
+  ), []);
+
   const refreshDataset = useCallback(async (
     datasetId: string,
     signal?: AbortSignal,
-    expectedGeneration = visibleDatasetGenerationRef.current
+    expectedPublication = captureVisibleDatasetPublication(datasetId)
   ) => {
     const [loadedCases, loadedRuns] = await Promise.all([
       listMpcCalibrationCases(datasetId),
@@ -232,19 +253,20 @@ export function CalibrationModal() {
     ]);
     if (
       signal?.aborted ||
-      visibleDatasetGenerationRef.current !== expectedGeneration ||
-      (visibleDatasetIdRef.current !== null && visibleDatasetIdRef.current !== datasetId)
+      !canPublishVisibleDataset(expectedPublication)
     ) {
       return;
     }
     setCases(loadedCases);
     setRuns(loadedRuns.sort((left, right) => right.createdAt - left.createdAt));
-  }, []);
+  }, [canPublishVisibleDataset, captureVisibleDatasetPublication]);
 
   useEffect(() => {
     if (!open) {
       visibleDatasetIdRef.current = null;
       visibleDatasetGenerationRef.current += 1;
+      visibleDatasetSnapshotRevisionRef.current += 1;
+      visibleSnapshotRef.current = null;
       return;
     }
     if (!liveCalibrationSnapshot) return;
@@ -260,13 +282,19 @@ export function CalibrationModal() {
       null;
 
     const nextDatasetId = selectedDataset?.id ?? null;
+    const previousDatasetId = visibleDatasetIdRef.current;
+    const hasNewLiveSnapshot = visibleSnapshotRef.current !== liveCalibrationSnapshot;
     if (
-      visibleDatasetIdRef.current !== null &&
-      visibleDatasetIdRef.current !== nextDatasetId
+      previousDatasetId !== null &&
+      previousDatasetId !== nextDatasetId
     ) {
       visibleDatasetGenerationRef.current += 1;
+      visibleDatasetSnapshotRevisionRef.current += 1;
+    } else if (hasNewLiveSnapshot && previousDatasetId !== null) {
+      visibleDatasetSnapshotRevisionRef.current += 1;
     }
     visibleDatasetIdRef.current = nextDatasetId;
+    visibleSnapshotRef.current = liveCalibrationSnapshot;
     const selectionChanged = selectedDataset?.id !== dataset?.id;
     setDataset(selectedDataset);
     setCases(
@@ -318,19 +346,18 @@ export function CalibrationModal() {
         const ensuredDataset = await ensureCalibrationDataset(openingScope);
         if (signal.aborted) return;
 
-        const openingDatasetGeneration = visibleDatasetGenerationRef.current;
+        const openingPublication = captureVisibleDatasetPublication(
+          ensuredDataset.id
+        );
         const canPublishOpeningDataset = () =>
-          !signal.aborted &&
-          visibleDatasetGenerationRef.current === openingDatasetGeneration &&
-          (visibleDatasetIdRef.current === null ||
-            visibleDatasetIdRef.current === ensuredDataset.id);
+          !signal.aborted && canPublishVisibleDataset(openingPublication);
         if (!canPublishOpeningDataset()) return;
 
         const activeTarget = await getActivePreferenceSyncTarget();
         if (!canPublishOpeningDataset()) return;
         setDataset(ensuredDataset);
         setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
-        await refreshDataset(ensuredDataset.id, signal, openingDatasetGeneration);
+        await refreshDataset(ensuredDataset.id, signal, openingPublication);
         if (!canPublishOpeningDataset()) return;
 
         const calibrationCases = await listDefaultMpcCalibrationCases();
@@ -455,10 +482,17 @@ export function CalibrationModal() {
       controller.abort();
       unsubscribeSync();
     };
-  }, [open, card, refreshDataset]);
+  }, [
+    canPublishVisibleDataset,
+    captureVisibleDatasetPublication,
+    open,
+    card,
+    refreshDataset,
+  ]);
 
   const runCalibration = useCallback(async () => {
     if (!dataset) return;
+    const publication = captureVisibleDatasetPublication(dataset.id);
     setPhase("running");
     setStatus("Analyzing dataset...");
     try {
@@ -467,7 +501,9 @@ export function CalibrationModal() {
         listMpcCalibrationCases(dataset.id),
         listMpcCalibrationAssets(dataset.id),
       ]);
-      setCases(loadedCases);
+      if (canPublishVisibleDataset(publication)) {
+        setCases(loadedCases);
+      }
       const result = await evaluateMpcCalibrationDataset(
         dataset,
         loadedCases,
@@ -483,7 +519,9 @@ export function CalibrationModal() {
         results: toMpcCalibrationRunResults(result.cases),
         createdAt: Date.now(),
       }, scope);
-      setCurrentResult(result);
+      if (canPublishVisibleDataset(publication)) {
+        setCurrentResult(result);
+      }
       await refreshDataset(dataset.id);
     } catch (error) {
       console.error(error);
@@ -493,10 +531,16 @@ export function CalibrationModal() {
     } finally {
       setPhase("idle");
     }
-  }, [dataset, refreshDataset]);
+  }, [
+    canPublishVisibleDataset,
+    captureVisibleDatasetPublication,
+    dataset,
+    refreshDataset,
+  ]);
 
   const compareAlgorithms = useCallback(async () => {
     if (!dataset) return;
+    const publication = captureVisibleDatasetPublication(dataset.id);
     setPhase("running");
     setStatus("Comparing algorithms...");
     try {
@@ -504,7 +548,9 @@ export function CalibrationModal() {
         listMpcCalibrationCases(dataset.id),
         listMpcCalibrationAssets(dataset.id),
       ]);
-      setCases(loadedCases);
+      if (canPublishVisibleDataset(publication)) {
+        setCases(loadedCases);
+      }
       const result = await compareMpcCalibrationAlgorithms(
         dataset,
         loadedCases,
@@ -516,7 +562,9 @@ export function CalibrationModal() {
         { id: "current", label: "Current algorithm" },
         loadedAssets
       );
-      setComparisonResult(result);
+      if (canPublishVisibleDataset(publication)) {
+        setComparisonResult(result);
+      }
     } catch (error) {
       console.error(error);
       setStatus(
@@ -525,11 +573,12 @@ export function CalibrationModal() {
     } finally {
       setPhase("idle");
     }
-  }, [dataset]);
+  }, [canPublishVisibleDataset, captureVisibleDatasetPublication, dataset]);
 
   const captureCase = useCallback(
     async (candidate: MpcAutofillCard) => {
       if (!dataset || !card?.imageId || !captureState.imageRecord) return;
+      const publication = captureVisibleDatasetPublication(dataset.id);
       const choiceKey = buildCapturedChoiceKey({
         name: card.name,
         set: card.set,
@@ -547,6 +596,7 @@ export function CalibrationModal() {
       try {
         const scope = await captureMpcCalibrationMutationScope();
         const latestCases = await listMpcCalibrationCases(dataset.id);
+        if (!canPublishVisibleDataset(publication)) return;
         setCases(latestCases);
 
         if (choiceKey && toCapturedChoiceKeySet(latestCases).has(choiceKey)) {
@@ -566,13 +616,15 @@ export function CalibrationModal() {
           captured.assets,
           scope
         );
-        setCurrentResult(null);
-        setComparisonResult(null);
-        setStatus(
-          captured.assetErrors.length > 0
-            ? `Captured expected choice with ${captured.assetErrors.length} asset warning${captured.assetErrors.length === 1 ? "" : "s"}.`
-            : `Captured expected choice: ${formatCandidateName(candidate)}.`
-        );
+        if (canPublishVisibleDataset(publication)) {
+          setCurrentResult(null);
+          setComparisonResult(null);
+          setStatus(
+            captured.assetErrors.length > 0
+              ? `Captured expected choice with ${captured.assetErrors.length} asset warning${captured.assetErrors.length === 1 ? "" : "s"}.`
+              : `Captured expected choice: ${formatCandidateName(candidate)}.`
+          );
+        }
         await refreshDataset(dataset.id);
       } catch (error) {
         console.error(error);
@@ -583,7 +635,15 @@ export function CalibrationModal() {
         setPhase("idle");
       }
     },
-    [card, dataset, captureState, capturedChoiceKeys, refreshDataset]
+    [
+      canPublishVisibleDataset,
+      card,
+      captureVisibleDatasetPublication,
+      dataset,
+      captureState,
+      capturedChoiceKeys,
+      refreshDataset,
+    ]
   );
 
   const exportFixture = useCallback(async () => {
