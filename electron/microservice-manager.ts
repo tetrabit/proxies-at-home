@@ -60,6 +60,7 @@ export class MicroserviceManager {
   private healthySince: number | null = null;
   private startPromise: Promise<number> | null = null;
   private isShuttingDown = false;
+  private lifecycleGeneration = 0;
   private readonly instanceId = randomUUID();
 
   constructor(
@@ -74,7 +75,8 @@ export class MicroserviceManager {
     // A caller may deliberately start again after a completed stop. Restart callbacks
     // never reach this point while shutdown is active because stop clears their timer.
     this.isShuttingDown = false;
-    const promise = this.startInternal();
+    const generation = ++this.lifecycleGeneration;
+    const promise = this.startInternal(generation);
     this.startPromise = promise;
     void promise.then(
       () => { if (this.startPromise === promise) this.startPromise = null; },
@@ -83,8 +85,16 @@ export class MicroserviceManager {
     return promise;
   }
 
-  private async startInternal(): Promise<number> {
-    if (this.config.port === 0) await this.ensurePort();
+  private async startInternal(generation: number): Promise<number> {
+    if (this.config.port === 0) {
+      const allocatedPort = await this.ensurePort();
+      // A stop can win while the asynchronous loopback allocation is pending. The
+      // allocation result belongs only to the generation that requested it, so a
+      // stale start neither claims its port nor admits a child after shutdown.
+      if (!this.isCurrentStart(generation)) return this.config.port;
+      this.config.port = allocatedPort;
+    }
+    if (!this.isCurrentStart(generation)) return this.config.port;
     const launch = this.getLaunch();
     const env = { ...process.env } as NodeJS.ProcessEnv;
     delete env.DATABASE_URL;
@@ -146,7 +156,7 @@ export class MicroserviceManager {
     try {
       await Promise.race([this.waitForHealthy(), spawnError, startupExit]);
       startupSettled = true;
-      if (this.process !== childProcess) {
+      if (this.process !== childProcess || !this.isCurrentStart(generation)) {
         throw new Error(`${this.config.name} exited before becoming healthy`);
       }
       this.startHealthCheck(childProcess);
@@ -168,6 +178,11 @@ export class MicroserviceManager {
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
+    // Invalidate all pre-stop async continuations before inspecting the child. This
+    // lets a subsequent start own a distinct generation while an old allocator is
+    // still unwinding, and the identity-aware finally cannot clear that new promise.
+    this.lifecycleGeneration += 1;
+    this.startPromise = null;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -314,8 +329,12 @@ export class MicroserviceManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async ensurePort(): Promise<void> {
-    if (this.config.port !== 0) return;
+  private isCurrentStart(generation: number): boolean {
+    return !this.isShuttingDown && this.lifecycleGeneration === generation;
+  }
+
+  private async ensurePort(): Promise<number> {
+    if (this.config.port !== 0) return this.config.port;
 
     const server = createServer();
     try {
@@ -330,7 +349,7 @@ export class MicroserviceManager {
           resolve(address.port);
         });
       });
-      this.config.port = port;
+      return port;
     } finally {
       if (server.listening) {
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

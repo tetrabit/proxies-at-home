@@ -8,6 +8,7 @@ const appMock = { isPackaged: false, getPath: vi.fn(() => "/owned/user-data") };
 const fsMock = { existsSync: vi.fn(), mkdirSync: vi.fn(), readFileSync: vi.fn(), lstatSync: vi.fn() };
 const spawnMock = vi.fn();
 const requestMock = vi.fn();
+const { netMock } = vi.hoisted(() => ({ netMock: { createServer: vi.fn() } }));
 const SOURCE_BUILD = {
   kind: "nativeSqliteIsolated", sourceCommit: "dcb2825257e196be190d3739560eb92a64db0e8b", sourceTree: "dc8dbfb8b8a3dbd8453e99ef3b03d0c1f75dcdf1",
   sourceArchiveSha256: "e7b959549f88943dabb242ec6e50788b06e4876e61a0bb6e0fa38c99103f4c16", sourceLockSha256: "976bab6b945b691bb24abd693541f80aebb01c9e0ee530cc8c5167bf44bf5aed", patchSha256: "cfdae2db9613af918e3aced537de532b728f718f4e28d71833e2b8e8cc19e6a7",
@@ -19,6 +20,7 @@ vi.mock("electron", () => ({ app: appMock }));
 vi.mock("fs", () => ({ default: fsMock }));
 vi.mock("child_process", () => ({ spawn: spawnMock }));
 vi.mock("http", () => ({ default: { request: requestMock } }));
+vi.mock("net", () => ({ createServer: netMock.createServer }));
 
 function child() {
   const process = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; killed: boolean; kill: ReturnType<typeof vi.fn> };
@@ -31,6 +33,15 @@ function controlledChild() {
   process.stdout = new EventEmitter(); process.stderr = new EventEmitter(); process.killed = false;
   process.kill = vi.fn((signal?: string) => { process.killed = !!signal; return true; });
   return process;
+}
+function immediateAllocator(port = 43123) {
+  const server = Object.assign(new EventEmitter(), {
+    listening: true,
+    listen: vi.fn((_options: unknown, callback: () => void) => callback()),
+    address: vi.fn(() => ({ address: "127.0.0.1", family: "IPv4", port })),
+    close: vi.fn((callback: (error?: Error) => void) => { server.listening = false; callback(); }),
+  });
+  return server;
 }
 function respond(callback: (response: EventEmitter & { statusCode: number }) => void, statusCode: number, body: unknown) {
   const response = new EventEmitter() as EventEmitter & { statusCode: number };
@@ -60,6 +71,7 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     fsMock.readFileSync.mockImplementation((file: string) => file.endsWith("microservice-artifact.json") ? Buffer.from(manifest("", bytes)) : bytes);
     fsMock.lstatSync.mockReturnValue({ isFile: () => true }); fsMock.existsSync.mockReturnValue(false); fsMock.mkdirSync.mockReturnValue(undefined);
     spawnMock.mockImplementation(() => child()); healthyRequest();
+    netMock.createServer.mockImplementation(() => immediateAllocator() as never);
   });
 
   it("creates the default Scryfall manager with its configured port while stopped", async () => {
@@ -90,6 +102,73 @@ describe("MicroserviceManager desktop SQLite artifact resolver", () => {
     const manager = createScryfallMicroservice();
     await manager.stop();
     expect(manager.getPort()).toBe(0); expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("prevents a later spawn when stop wins during pending default-port allocation", async () => {
+    let finishAllocation: (() => void) | undefined;
+    const allocationServer = Object.assign(new EventEmitter(), {
+      listening: true,
+      listen: vi.fn((_options: unknown, callback: () => void) => { finishAllocation = callback; }),
+      address: vi.fn(() => ({ address: "127.0.0.1", family: "IPv4", port: 43123 })),
+      close: vi.fn((callback: (error?: Error) => void) => { allocationServer.listening = false; callback(); }),
+    });
+    netMock.createServer.mockReturnValueOnce(allocationServer as never);
+
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager(
+      { name: "fixture", binaryName: "scryfall-cache", port: 0, healthCheckPath: "/health", healthCheckInterval: 60_000, maxRestarts: 0, restartDelay: 1 },
+      { resolveLaunch: () => ({ command: process.execPath, args: [] }) }
+    );
+    const starting = manager.start();
+    await Promise.resolve();
+    await manager.stop();
+    expect(finishAllocation).toBeTypeOf("function");
+    finishAllocation?.();
+    await starting;
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(manager.getPort()).toBe(0);
+    expect(allocationServer.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a replacement start authoritative while an invalidated allocator unwinds", async () => {
+    const pendingAllocator = (port: number) => {
+      let finishAllocation: (() => void) | undefined;
+      const server = Object.assign(new EventEmitter(), {
+        listening: true,
+        listen: vi.fn((_options: unknown, callback: () => void) => { finishAllocation = callback; }),
+        address: vi.fn(() => ({ address: "127.0.0.1", family: "IPv4", port })),
+        close: vi.fn((callback: (error?: Error) => void) => { server.listening = false; callback(); }),
+      });
+      return { server, finish: () => finishAllocation?.(), isPending: () => finishAllocation };
+    };
+    const oldAllocator = pendingAllocator(43123);
+    const replacementAllocator = pendingAllocator(43124);
+    netMock.createServer.mockReturnValueOnce(oldAllocator.server as never).mockReturnValueOnce(replacementAllocator.server as never);
+
+    const { MicroserviceManager } = await import("./microservice-manager");
+    const manager = new MicroserviceManager(
+      { name: "fixture", binaryName: "scryfall-cache", port: 0, healthCheckPath: "/health", healthCheckInterval: 60_000, maxRestarts: 0, restartDelay: 1 },
+      { resolveLaunch: () => ({ command: process.execPath, args: [] }) }
+    );
+    const oldStarting = manager.start();
+    await Promise.resolve();
+    await manager.stop();
+    const replacementStarting = manager.start();
+    expect(replacementStarting).not.toBe(oldStarting);
+    expect(oldAllocator.isPending()).toBeTypeOf("function");
+    expect(replacementAllocator.isPending()).toBeTypeOf("function");
+
+    oldAllocator.finish();
+    await oldStarting;
+    expect(manager.getPort()).toBe(0);
+    expect(manager.start()).toBe(replacementStarting);
+
+    replacementAllocator.finish();
+    await expect(replacementStarting).resolves.toBe(43124);
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock.mock.calls[0][2].env.API_PORT).toBe("43124");
+    await manager.stop();
   });
 
   it("reuses one allocated port and instance identity through an owned-child retry", async () => {
