@@ -42,6 +42,22 @@ async function fixture({ omit } = {}) {
   }
   await file('node_modules/electron/dist/electron', 'fixture');
   await file('scripts/prepare-electron-sqlite.mjs', `console.log(${JSON.stringify(path.join(dir, 'electron-fixture.node'))});`);
+  await file('scripts/build-electron-main.mjs', `
+    import { appendFileSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    appendFileSync('electron-build.log', 'built\\n');
+    if (process.env.LAUNCHER_FIXTURE_BUILD_FAIL) process.exit(29);
+    for (const [name, contents] of Object.entries({
+      'main.js': 'registerCalibrationHarnessIpcHandlers',
+      'preload.cjs': 'calibrationHarnessExecute',
+      'preload-api.js': 'preload api',
+      'microservice-manager.js': 'microservice manager',
+      'quit-gate.js': 'quit gate',
+      'mpc-preferences.js': 'mpc preferences',
+      'calibration-harness-ipc.js': 'calibration ipc',
+      'package.json': '{"type":"module"}\\n',
+    })) writeFileSync(join('electron', 'dist', name), contents);
+  `);
   await file('client/node_modules/vite/bin/vite.js', `
     const assert = require('node:assert/strict');
     assert.deepEqual(process.argv.slice(2), ['--host', '::1', '--port', '5173', '--strictPort']);
@@ -54,11 +70,14 @@ async function fixture({ omit } = {}) {
   `);
   await file('node_modules/electron/cli.js', `
     const assert = require('node:assert/strict');
-    require('node:fs').writeFileSync('electron.pid', String(process.pid));
+    const fs = require('node:fs');
+    fs.writeFileSync('electron.pid', String(process.pid));
     assert.equal(process.env.NODE_ENV, 'development');
     assert.equal(process.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(process.env.PROXXIED_SQLITE_NATIVE_BINDING, ${JSON.stringify(path.join(dir, 'electron-fixture.node'))});
     assert.deepEqual(process.argv.slice(2), ['electron/dist/main.js']);
+    assert.match(fs.readFileSync('electron/dist/main.js', 'utf8'), /registerCalibrationHarnessIpcHandlers/);
+    assert.match(fs.readFileSync('electron/dist/preload.cjs', 'utf8'), /calibrationHarnessExecute/);
     fetch('http://localhost:5173').then(async response => {
       assert.equal(await response.text(), 'fixture frontend');
       console.log('FIXTURE_ELECTRON_OPENED');
@@ -104,6 +123,27 @@ test('launcher works from another cwd with spaces, waits for frontend, and clean
   assert.match(result.output, /FIXTURE_FRONTEND_READY/);
   assert.match(result.output, /FIXTURE_ELECTRON_OPENED/);
   await assertFrontendGone(dir);
+});
+
+test('launcher refreshes the full Electron closure before it opens Electron', async () => {
+  const dir = await fixture();
+  const result = await launch(dir);
+  assert.equal(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'electron-build.log'), 'utf8'), 'built\n');
+  assert.match(await readFile(path.join(dir, 'electron', 'dist', 'main.js'), 'utf8'), /registerCalibrationHarnessIpcHandlers/);
+  assert.match(await readFile(path.join(dir, 'electron', 'dist', 'preload.cjs'), 'utf8'), /calibrationHarnessExecute/);
+  for (const name of ['preload-api.js', 'microservice-manager.js', 'quit-gate.js', 'mpc-preferences.js', 'calibration-harness-ipc.js', 'package.json']) {
+    await readFile(path.join(dir, 'electron', 'dist', name), 'utf8');
+  }
+  assert.match(result.output, /FIXTURE_ELECTRON_OPENED/);
+});
+
+test('a failed Electron closure rebuild prevents frontend and Electron launch', async () => {
+  const dir = await fixture();
+  const result = await launch(dir, { env: { LAUNCHER_FIXTURE_BUILD_FAIL: '1' } });
+  assert.notEqual(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'electron-build.log'), 'utf8'), 'built\n');
+  assert.doesNotMatch(result.output, /FIXTURE_FRONTEND_READY|FIXTURE_ELECTRON_OPENED/);
 });
 
 test('headless Chromium reaches distinct frontends at both preserved origins', async () => {

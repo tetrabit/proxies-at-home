@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the desktop app using the existing Electron/server/native builds.
+# Run the desktop app using current server/native builds and a fresh Electron closure.
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ for dependency in \
   fi
 done
 
-for artifact in electron/dist/main.js electron/dist/preload.cjs server/dist/server/src/index.js; do
+for artifact in server/dist/server/src/index.js; do
   if [[ ! -f "$artifact" ]]; then
     printf 'Missing build: %s\nRun npm run build:parallel first.\n' "$artifact" >&2
     exit 1
@@ -51,6 +51,11 @@ if ! node --input-type=module -e '
   printf 'Port 5173 is unavailable on IPv6 loopback (::1). Enable IPv6 loopback or stop its competing dev server, then try again. The IPv4 Docker client may remain running. Nothing was stopped.\n' >&2
   exit 1
 fi
+
+# Rebuild the complete JavaScript closure from current Electron sources before any
+# GUI or service process starts. The builder validates its input graph and only
+# emits flat closure files, preserving the staged native microservice package.
+node scripts/build-electron-main.mjs
 
 # This may download an Electron-compatible addon on the first run. It never
 # replaces the normal Node addon used by npm run dev or the server tests.
