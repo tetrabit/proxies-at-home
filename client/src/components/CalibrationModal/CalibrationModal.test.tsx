@@ -32,7 +32,9 @@ const {
   mockBuildMpcVisualPreferenceScoreMap,
   mockRankCandidates,
   mockGetSharedMpcPreferenceContext,
+  mockGetActivePreferenceSyncTarget,
   mockScopeSource,
+  mockUseLiveQuery,
   linkedSync,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
@@ -88,9 +90,13 @@ const {
     model: null,
     profiles: {},
   }),
+  mockGetActivePreferenceSyncTarget: vi.fn().mockResolvedValue({
+    describe: () => "Mock Sync Target",
+  }),
   mockScopeSource: {
     current: { kind: "bound", identity: { ownerId: "owner-a", harnessId: "harness-a", connectionId: "connection-a" }, bindingRevision: 1 },
   },
+  mockUseLiveQuery: vi.fn(() => undefined),
   linkedSync: {
     status: "unpaired",
     selection: { kind: "unselected" as const },
@@ -107,6 +113,10 @@ vi.mock("@/store", () => ({
 
 vi.mock("@/store/mpcCalibrationSync", () => ({
   useMpcCalibrationSyncStore: (selector: (state: typeof linkedSync) => unknown) => selector(linkedSync),
+}));
+
+vi.mock("dexie-react-hooks", () => ({
+  useLiveQuery: mockUseLiveQuery,
 }));
 
 vi.mock("@/db", () => ({
@@ -192,9 +202,7 @@ vi.mock("@/helpers/mpcCalibrationImport", () => ({
 }));
 
 vi.mock("@/helpers/mpcPreferenceSync", () => ({
-  getActivePreferenceSyncTarget: vi.fn().mockResolvedValue({
-    describe: () => "Mock Sync Target",
-  }),
+  getActivePreferenceSyncTarget: mockGetActivePreferenceSyncTarget,
   getMpcPreferenceSyncStatus: vi.fn(() => ({
     targetLabel: "Mock Sync Target",
     saveStateLabel: "Idle",
@@ -233,6 +241,7 @@ describe("CalibrationModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseLiveQuery.mockReturnValue(undefined);
     linkedSync.status = "unpaired";
     mockCaptureMutationScope.mockReset();
     mockScopeSource.current = {
@@ -361,6 +370,251 @@ describe("CalibrationModal", () => {
     });
     expect(mockHydrateMpcPreferences).not.toHaveBeenCalledWith(undefined, scopeB);
     expect(mockCaptureMutationScope).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a late opening dataset load overwrite a live replacement", async () => {
+    let resolveInitialCases!: (cases: typeof frozenCase[]) => void;
+    const replacementDataset = {
+      ...dataset,
+      id: "remote-dataset",
+      updatedAt: 2,
+    };
+    const replacementCase = {
+      ...frozenCase,
+      id: "remote-case",
+      datasetId: replacementDataset.id,
+      source: { name: "Remote Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockListCases.mockImplementationOnce(
+      () =>
+        new Promise<typeof frozenCase[]>((resolve) => {
+          resolveInitialCases = resolve;
+        })
+    );
+
+    const view = render(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(mockListCases).toHaveBeenCalledWith(dataset.id);
+    });
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [replacementDataset],
+      calibrationCases: [replacementCase],
+      calibrationRuns: [],
+    } as never);
+    view.rerender(<CalibrationModal />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-dataset").getAttribute("data-dataset-id")).toBe(
+        replacementDataset.id
+      );
+      expect(screen.getByText("Remote Sol Ring")).toBeTruthy();
+    });
+
+    resolveInitialCases([frozenCase]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Remote Sol Ring")).toBeTruthy();
+      expect(screen.queryByText("Sol Ring")).toBeNull();
+    });
+  });
+
+  it("does not let a deferred sync-target read resume an opening dataset after a live replacement", async () => {
+    let resolveTarget!: (target: { describe: () => string } | null) => void;
+    const replacementDataset = {
+      ...dataset,
+      id: "remote-dataset-after-target",
+      updatedAt: 2,
+    };
+    const replacementCase = {
+      ...frozenCase,
+      id: "remote-case-after-target",
+      datasetId: replacementDataset.id,
+      source: { name: "Target Remote Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockGetActivePreferenceSyncTarget.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTarget = resolve;
+        })
+    );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockGetActivePreferenceSyncTarget).toHaveBeenCalledTimes(1);
+    });
+
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [replacementDataset],
+      calibrationCases: [replacementCase],
+      calibrationRuns: [],
+    } as never);
+    view.rerender(<CalibrationModal />);
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-dataset").getAttribute("data-dataset-id")).toBe(
+        replacementDataset.id
+      );
+    });
+
+    await act(async () => {
+      resolveTarget({ describe: () => "Deferred target" });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-dataset").getAttribute("data-dataset-id")).toBe(
+        replacementDataset.id
+      );
+      expect(screen.getByText("Target Remote Sol Ring")).toBeTruthy();
+    });
+    expect(mockListCases).not.toHaveBeenCalledWith(dataset.id);
+  });
+
+  it("does not publish a deferred preference model after the live dataset changes", async () => {
+    let resolveContext!: (value: {
+      calibrationCases: [];
+      model: { sourceStats: Record<string, { selections: number; appearances: number }> };
+      profiles: Record<string, never>;
+    }) => void;
+    const replacementDataset = {
+      ...dataset,
+      id: "remote-dataset-after-model",
+      updatedAt: 2,
+    };
+    const replacementCase = {
+      ...frozenCase,
+      id: "remote-case-after-model",
+      datasetId: replacementDataset.id,
+      source: { name: "Model Remote Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockGetSharedMpcPreferenceContext.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveContext = resolve;
+        })
+    );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledTimes(1);
+    });
+
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [replacementDataset],
+      calibrationCases: [replacementCase],
+      calibrationRuns: [],
+    } as never);
+    view.rerender(<CalibrationModal />);
+    await waitFor(() => {
+      expect(screen.getByText("Model Remote Sol Ring")).toBeTruthy();
+    });
+
+    await act(async () => {
+      resolveContext({
+        calibrationCases: [],
+        model: { sourceStats: { MPC: { selections: 1, appearances: 1 } } },
+        profiles: {},
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Model Remote Sol Ring")).toBeTruthy();
+    });
+    expect(mockDbImagesGet).not.toHaveBeenCalled();
+    expect(mockRankCandidates).not.toHaveBeenCalled();
+  });
+
+  it("does not let a deferred cases-and-runs refresh publish after a live replacement", async () => {
+    let resolveCases!: (cases: typeof frozenCase[]) => void;
+    let resolveRuns!: (runs: []) => void;
+    const replacementDataset = {
+      ...dataset,
+      id: "remote-dataset-after-refresh",
+      updatedAt: 2,
+    };
+    const replacementCase = {
+      ...frozenCase,
+      id: "remote-case-after-refresh",
+      datasetId: replacementDataset.id,
+      source: { name: "Refresh Remote Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockListCases.mockImplementationOnce(
+      () =>
+        new Promise<typeof frozenCase[]>((resolve) => {
+          resolveCases = resolve;
+        })
+    );
+    mockListRuns.mockImplementationOnce(
+      () =>
+        new Promise<[]>((resolve) => {
+          resolveRuns = resolve;
+        })
+    );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockListCases).toHaveBeenCalledWith(dataset.id);
+      expect(mockListRuns).toHaveBeenCalledWith(dataset.id);
+    });
+
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [replacementDataset],
+      calibrationCases: [replacementCase],
+      calibrationRuns: [],
+    } as never);
+    view.rerender(<CalibrationModal />);
+    await waitFor(() => {
+      expect(screen.getByText("Refresh Remote Sol Ring")).toBeTruthy();
+    });
+
+    await act(async () => {
+      resolveCases([frozenCase]);
+      resolveRuns([]);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Refresh Remote Sol Ring")).toBeTruthy();
+      expect(screen.queryByText("Sol Ring")).toBeNull();
+    });
+  });
+
+  it("does not publish a closed opening load after the modal reopens", async () => {
+    let resolveClosedLoad!: (cases: typeof frozenCase[]) => void;
+    let resolveReopenedLoad!: (cases: typeof frozenCase[]) => void;
+    mockListCases
+      .mockImplementationOnce(
+        () =>
+          new Promise<typeof frozenCase[]>((resolve) => {
+            resolveClosedLoad = resolve;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<typeof frozenCase[]>((resolve) => {
+            resolveReopenedLoad = resolve;
+          })
+      );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockListCases).toHaveBeenCalledTimes(1);
+    });
+
+    mockCalibrationState.open = false;
+    view.rerender(<CalibrationModal />);
+    mockCalibrationState.open = true;
+    view.rerender(<CalibrationModal />);
+    await waitFor(() => {
+      expect(mockListCases).toHaveBeenCalledTimes(2);
+    });
+
+    resolveClosedLoad([frozenCase]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("Frozen Cases (0)")).toBeTruthy();
+
+    resolveReopenedLoad([]);
+    await waitFor(() => {
+      expect(screen.getByText("Frozen Cases (0)")).toBeTruthy();
+    });
   });
 
   it("captures the import scope before file text and retains it across a later binding change", async () => {

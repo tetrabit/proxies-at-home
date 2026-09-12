@@ -1,6 +1,7 @@
 /* v8 ignore file -- residual browser/runtime integration surface is covered by targeted behavior tests and external runtime contracts; keep the 100% unit gate focused on deterministic seams. @preserve */
 import { Button, Modal, ModalBody, ModalHeader, Spinner } from "flowbite-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
 import { useCalibrationModalStore } from "@/store";
 import {
   db,
@@ -192,16 +193,101 @@ export function CalibrationModal() {
     getMpcPreferenceSyncStatus().saveStateLabel
   );
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const visibleDatasetIdRef = useRef<string | null>(null);
+  const visibleDatasetGenerationRef = useRef(0);
   const capturedChoiceKeys = useMemo(() => toCapturedChoiceKeySet(cases), [cases]);
+  const liveCalibrationSnapshot = useLiveQuery(
+    async () => {
+      if (!open) return null;
+      return db.transaction(
+        "r",
+        [
+          db.mpcCalibrationDatasets,
+          db.mpcCalibrationCases,
+          db.mpcCalibrationRuns,
+        ],
+        async () => {
+          const datasets = await db.mpcCalibrationDatasets
+            .orderBy("updatedAt")
+            .reverse()
+            .toArray();
+          const calibrationCases = await db.mpcCalibrationCases.toArray();
+          const calibrationRuns = await db.mpcCalibrationRuns.toArray();
+          return { datasets, calibrationCases, calibrationRuns };
+        }
+      );
+    },
+    [open],
+    undefined
+  );
 
-  const refreshDataset = useCallback(async (datasetId: string) => {
+  const refreshDataset = useCallback(async (
+    datasetId: string,
+    signal?: AbortSignal,
+    expectedGeneration = visibleDatasetGenerationRef.current
+  ) => {
     const [loadedCases, loadedRuns] = await Promise.all([
       listMpcCalibrationCases(datasetId),
       listMpcCalibrationRuns(datasetId),
     ]);
+    if (
+      signal?.aborted ||
+      visibleDatasetGenerationRef.current !== expectedGeneration ||
+      (visibleDatasetIdRef.current !== null && visibleDatasetIdRef.current !== datasetId)
+    ) {
+      return;
+    }
     setCases(loadedCases);
     setRuns(loadedRuns.sort((left, right) => right.createdAt - left.createdAt));
   }, []);
+
+  useEffect(() => {
+    if (!open) {
+      visibleDatasetIdRef.current = null;
+      visibleDatasetGenerationRef.current += 1;
+      return;
+    }
+    if (!liveCalibrationSnapshot) return;
+
+    const selectedDataset =
+      liveCalibrationSnapshot.datasets.find(
+        (candidate) => candidate.id === dataset?.id
+      ) ??
+      liveCalibrationSnapshot.datasets.find(
+        (candidate) => candidate.name === DEFAULT_DATASET_NAME
+      ) ??
+      liveCalibrationSnapshot.datasets[0] ??
+      null;
+
+    const nextDatasetId = selectedDataset?.id ?? null;
+    if (
+      visibleDatasetIdRef.current !== null &&
+      visibleDatasetIdRef.current !== nextDatasetId
+    ) {
+      visibleDatasetGenerationRef.current += 1;
+    }
+    visibleDatasetIdRef.current = nextDatasetId;
+    const selectionChanged = selectedDataset?.id !== dataset?.id;
+    setDataset(selectedDataset);
+    setCases(
+      selectedDataset
+        ? liveCalibrationSnapshot.calibrationCases.filter(
+            (calibrationCase) => calibrationCase.datasetId === selectedDataset.id
+          )
+        : []
+    );
+    setRuns(
+      selectedDataset
+        ? liveCalibrationSnapshot.calibrationRuns
+            .filter((run) => run.datasetId === selectedDataset.id)
+            .sort((left, right) => right.createdAt - left.createdAt)
+        : []
+    );
+    if (selectionChanged) {
+      setCurrentResult(null);
+      setComparisonResult(null);
+    }
+  }, [dataset?.id, liveCalibrationSnapshot, open]);
 
   useEffect(() => {
     const unsubscribeSync = subscribeToMpcPreferenceSyncStatus((syncStatus) => {
@@ -226,20 +312,29 @@ export function CalibrationModal() {
       try {
         const openingScope = await captureMpcCalibrationMutationScope();
         if (signal.aborted) return;
-        const ensuredDataset = await ensureCalibrationDataset(openingScope);
-        if (signal.aborted) return;
-
-        const activeTarget = await getActivePreferenceSyncTarget();
-        setDataset(ensuredDataset);
-        setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
-        await refreshDataset(ensuredDataset.id);
-        if (signal.aborted) return;
-
-        // Prepare Preference Model for scoring
         await hydrateMpcPreferences(undefined, openingScope);
         if (signal.aborted) return;
 
+        const ensuredDataset = await ensureCalibrationDataset(openingScope);
+        if (signal.aborted) return;
+
+        const openingDatasetGeneration = visibleDatasetGenerationRef.current;
+        const canPublishOpeningDataset = () =>
+          !signal.aborted &&
+          visibleDatasetGenerationRef.current === openingDatasetGeneration &&
+          (visibleDatasetIdRef.current === null ||
+            visibleDatasetIdRef.current === ensuredDataset.id);
+        if (!canPublishOpeningDataset()) return;
+
+        const activeTarget = await getActivePreferenceSyncTarget();
+        if (!canPublishOpeningDataset()) return;
+        setDataset(ensuredDataset);
+        setSyncTargetLabel(activeTarget ? activeTarget.describe() : "Unavailable");
+        await refreshDataset(ensuredDataset.id, signal, openingDatasetGeneration);
+        if (!canPublishOpeningDataset()) return;
+
         const calibrationCases = await listDefaultMpcCalibrationCases();
+        if (!canPublishOpeningDataset()) return;
         const preferenceContext = await getSharedMpcPreferenceContext(
           {
             dataset: {
@@ -281,7 +376,7 @@ export function CalibrationModal() {
           },
           signal
         );
-        if (signal.aborted) return;
+        if (!canPublishOpeningDataset()) return;
 
         const model = preferenceContext.model;
         setPrefModel(model);
@@ -293,7 +388,7 @@ export function CalibrationModal() {
               includeAllLanguages: true,
             }),
           ]);
-          if (signal.aborted) return;
+          if (!canPublishOpeningDataset()) return;
 
           const filtered = filterByExactName(matches, card.name);
           setCaptureState({
@@ -311,7 +406,7 @@ export function CalibrationModal() {
               model,
               signal
             );
-            if (signal.aborted) return;
+            if (!canPublishOpeningDataset()) return;
 
             const unseenScores = Object.fromEntries(
               filtered.map((candidate) => [
@@ -335,7 +430,7 @@ export function CalibrationModal() {
               unseenPreferenceScores: unseenScores,
               signal,
             });
-            if (signal.aborted) return;
+            if (!canPublishOpeningDataset()) return;
             setRecommendations(recs);
           }
         } else {
@@ -557,7 +652,11 @@ export function CalibrationModal() {
         <div className="space-y-6">
           <div className="flex items-center justify-between border-b pb-4 dark:border-gray-700">
             <div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+              <h3
+                className="text-lg font-semibold text-gray-900 dark:text-white"
+                data-testid="mpc-calibration-dataset"
+                data-dataset-id={dataset?.id}
+              >
                 {dataset?.name}
               </h3>
               <p className="text-sm text-gray-500 dark:text-gray-400">
