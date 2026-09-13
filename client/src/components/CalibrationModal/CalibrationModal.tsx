@@ -88,6 +88,93 @@ type VisibleDatasetPublication = {
   snapshotRevision: number;
 };
 
+type CalibrationLiveSnapshot = {
+  datasets: MpcCalibrationDatasetRecord[];
+  calibrationCases: MpcCalibrationCaseRecord[];
+  calibrationRuns: MpcCalibrationRunRecord[];
+};
+
+type OwnCommitExpectation = {
+  publication: VisibleDatasetPublication;
+  baseline: CalibrationLiveSnapshot;
+  kind: "run" | "case";
+  run?: MpcCalibrationRunRecord;
+  calibrationCase?: MpcCalibrationCaseRecord;
+  acknowledgedSnapshotRevision: number | null;
+};
+
+function canonicalizeCalibrationValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeCalibrationValue);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalizeCalibrationValue(entry)])
+    );
+  }
+  return value;
+}
+
+function sameCalibrationRows(
+  left: Array<{ id: string }>,
+  right: Array<{ id: string }>
+) {
+  if (left.length !== right.length) return false;
+  const serialize = (rows: Array<{ id: string }>) => JSON.stringify(
+    rows
+      .map(canonicalizeCalibrationValue)
+      .sort((first, second) => String((first as { id: string }).id).localeCompare(String((second as { id: string }).id)))
+  );
+  return serialize(left) === serialize(right);
+}
+
+function sameDatasetExceptUpdatedAt(
+  left: MpcCalibrationDatasetRecord,
+  right: MpcCalibrationDatasetRecord
+) {
+  const { updatedAt: _leftUpdatedAt, ...leftWithoutUpdatedAt } = left;
+  const { updatedAt: _rightUpdatedAt, ...rightWithoutUpdatedAt } = right;
+  return JSON.stringify(canonicalizeCalibrationValue(leftWithoutUpdatedAt)) ===
+    JSON.stringify(canonicalizeCalibrationValue(rightWithoutUpdatedAt));
+}
+
+function snapshotAcknowledgesOwnCommit(
+  snapshot: CalibrationLiveSnapshot,
+  expectation: OwnCommitExpectation
+) {
+  const baselineDatasetById = new Map(
+    expectation.baseline.datasets.map((dataset) => [dataset.id, dataset])
+  );
+  if (snapshot.datasets.length !== expectation.baseline.datasets.length) return false;
+  for (const dataset of snapshot.datasets) {
+    const baselineDataset = baselineDatasetById.get(dataset.id);
+    if (!baselineDataset) return false;
+    if (dataset.id === expectation.publication.datasetId) {
+      if (!sameDatasetExceptUpdatedAt(dataset, baselineDataset)) return false;
+    } else if (!sameCalibrationRows([dataset], [baselineDataset])) {
+      return false;
+    }
+  }
+
+  if (expectation.kind === "run") {
+    const expectedRuns = expectation.baseline.calibrationRuns.filter(
+      (run) => run.id !== expectation.run!.id
+    );
+    expectedRuns.push(expectation.run!);
+    return sameCalibrationRows(snapshot.calibrationCases, expectation.baseline.calibrationCases) &&
+      sameCalibrationRows(snapshot.calibrationRuns, expectedRuns);
+  }
+
+  const expectedCases = expectation.baseline.calibrationCases.filter(
+    (calibrationCase) => calibrationCase.id !== expectation.calibrationCase!.id
+  );
+  expectedCases.push(expectation.calibrationCase!);
+  return sameCalibrationRows(snapshot.calibrationCases, expectedCases) &&
+    sameCalibrationRows(snapshot.calibrationRuns, expectation.baseline.calibrationRuns);
+}
+
 function runLabel(result: MpcCalibrationEvaluationResult | null) {
   if (!result) return `0/${MPC_CALIBRATION_TARGET_CASE_COUNT}`;
   return `${result.summary.matchedCases}/${result.summary.totalCases}`;
@@ -203,6 +290,8 @@ export function CalibrationModal() {
   const visibleDatasetGenerationRef = useRef(0);
   const visibleDatasetSnapshotRevisionRef = useRef(0);
   const visibleSnapshotRef = useRef<object | null>(null);
+  const visibleLiveSnapshotRef = useRef<CalibrationLiveSnapshot | null>(null);
+  const pendingOwnCommitRef = useRef<OwnCommitExpectation | null>(null);
   const capturedChoiceKeys = useMemo(() => toCapturedChoiceKeySet(cases), [cases]);
   const liveCalibrationSnapshot = useLiveQuery(
     async () => {
@@ -242,6 +331,40 @@ export function CalibrationModal() {
       visibleDatasetIdRef.current === publication.datasetId)
   ), []);
 
+  const beginOwnCommit = useCallback((
+    publication: VisibleDatasetPublication,
+    change: Pick<OwnCommitExpectation, "kind" | "run" | "calibrationCase">
+  ) => {
+    const baseline = visibleLiveSnapshotRef.current;
+    if (!baseline || !canPublishVisibleDataset(publication)) return null;
+    const expectation: OwnCommitExpectation = {
+      publication,
+      baseline,
+      ...change,
+      acknowledgedSnapshotRevision: null,
+    };
+    pendingOwnCommitRef.current = expectation;
+    return expectation;
+  }, [canPublishVisibleDataset]);
+
+  const canPublishOwnCommit = useCallback((
+    publication: VisibleDatasetPublication,
+    expectation: OwnCommitExpectation | null
+  ) => {
+    if (canPublishVisibleDataset(publication)) return true;
+    return expectation !== null &&
+      pendingOwnCommitRef.current === expectation &&
+      expectation.acknowledgedSnapshotRevision === visibleDatasetSnapshotRevisionRef.current &&
+      expectation.publication.generation === visibleDatasetGenerationRef.current &&
+      expectation.publication.datasetId === visibleDatasetIdRef.current;
+  }, [canPublishVisibleDataset]);
+
+  const clearOwnCommit = useCallback((expectation: OwnCommitExpectation | null) => {
+    if (pendingOwnCommitRef.current === expectation) {
+      pendingOwnCommitRef.current = null;
+    }
+  }, []);
+
   const refreshDataset = useCallback(async (
     datasetId: string,
     signal?: AbortSignal,
@@ -267,6 +390,8 @@ export function CalibrationModal() {
       visibleDatasetGenerationRef.current += 1;
       visibleDatasetSnapshotRevisionRef.current += 1;
       visibleSnapshotRef.current = null;
+      visibleLiveSnapshotRef.current = null;
+      pendingOwnCommitRef.current = null;
       return;
     }
     if (!liveCalibrationSnapshot) return;
@@ -293,8 +418,21 @@ export function CalibrationModal() {
     } else if (hasNewLiveSnapshot && previousDatasetId !== null) {
       visibleDatasetSnapshotRevisionRef.current += 1;
     }
+    const pendingOwnCommit = pendingOwnCommitRef.current;
+    if (
+      pendingOwnCommit &&
+      previousDatasetId === pendingOwnCommit.publication.datasetId &&
+      visibleDatasetGenerationRef.current === pendingOwnCommit.publication.generation &&
+      visibleDatasetSnapshotRevisionRef.current === pendingOwnCommit.publication.snapshotRevision + 1 &&
+      visibleLiveSnapshotRef.current === pendingOwnCommit.baseline &&
+      snapshotAcknowledgesOwnCommit(liveCalibrationSnapshot, pendingOwnCommit)
+    ) {
+      pendingOwnCommit.acknowledgedSnapshotRevision =
+        visibleDatasetSnapshotRevisionRef.current;
+    }
     visibleDatasetIdRef.current = nextDatasetId;
     visibleSnapshotRef.current = liveCalibrationSnapshot;
+    visibleLiveSnapshotRef.current = liveCalibrationSnapshot;
     const selectionChanged = selectedDataset?.id !== dataset?.id;
     setDataset(selectedDataset);
     setCases(
@@ -495,6 +633,7 @@ export function CalibrationModal() {
     const publication = captureVisibleDatasetPublication(dataset.id);
     setPhase("running");
     setStatus("Analyzing dataset...");
+    let ownCommit: OwnCommitExpectation | null = null;
     try {
       const scope = await captureMpcCalibrationMutationScope();
       const [loadedCases, loadedAssets] = await Promise.all([
@@ -510,7 +649,7 @@ export function CalibrationModal() {
         { id: "current", label: "Current algorithm" },
         loadedAssets
       );
-      await saveMpcCalibrationRun({
+      const run: MpcCalibrationRunRecord = {
         id: crypto.randomUUID(),
         datasetId: dataset.id,
         algorithmId: result.algorithmId,
@@ -518,22 +657,28 @@ export function CalibrationModal() {
         summary: result.summary,
         results: toMpcCalibrationRunResults(result.cases),
         createdAt: Date.now(),
-      }, scope);
-      if (canPublishVisibleDataset(publication)) {
+      };
+      ownCommit = beginOwnCommit(publication, { kind: "run", run });
+      await saveMpcCalibrationRun(run, scope);
+      if (canPublishOwnCommit(publication, ownCommit)) {
         setCurrentResult(result);
+        await refreshDataset(dataset.id);
       }
-      await refreshDataset(dataset.id);
     } catch (error) {
       console.error(error);
       setStatus(
         error instanceof Error ? error.message : "Failed to run calibration"
       );
     } finally {
+      clearOwnCommit(ownCommit);
       setPhase("idle");
     }
   }, [
+    beginOwnCommit,
+    canPublishOwnCommit,
     canPublishVisibleDataset,
     captureVisibleDatasetPublication,
+    clearOwnCommit,
     dataset,
     refreshDataset,
   ]);
@@ -593,6 +738,7 @@ export function CalibrationModal() {
 
       setPhase("capturing");
       setStatus(`Capturing expected choice: ${formatCandidateName(candidate)}...`);
+      let ownCommit: OwnCommitExpectation | null = null;
       try {
         const scope = await captureMpcCalibrationMutationScope();
         const latestCases = await listMpcCalibrationCases(dataset.id);
@@ -611,12 +757,16 @@ export function CalibrationModal() {
           candidates: captureState.candidates,
           expectedIdentifier: candidate.identifier,
         });
+        ownCommit = beginOwnCommit(publication, {
+          kind: "case",
+          calibrationCase: captured.caseRecord,
+        });
         await saveMpcCalibrationCaseWithAssets(
           captured.caseRecord,
           captured.assets,
           scope
         );
-        if (canPublishVisibleDataset(publication)) {
+        if (canPublishOwnCommit(publication, ownCommit)) {
           setCurrentResult(null);
           setComparisonResult(null);
           setStatus(
@@ -624,21 +774,25 @@ export function CalibrationModal() {
               ? `Captured expected choice with ${captured.assetErrors.length} asset warning${captured.assetErrors.length === 1 ? "" : "s"}.`
               : `Captured expected choice: ${formatCandidateName(candidate)}.`
           );
+          await refreshDataset(dataset.id);
         }
-        await refreshDataset(dataset.id);
       } catch (error) {
         console.error(error);
         setStatus(
           error instanceof Error ? error.message : "Failed to capture expected choice"
         );
       } finally {
+        clearOwnCommit(ownCommit);
         setPhase("idle");
       }
     },
     [
+      beginOwnCommit,
+      canPublishOwnCommit,
       canPublishVisibleDataset,
       card,
       captureVisibleDatasetPublication,
+      clearOwnCommit,
       dataset,
       captureState,
       capturedChoiceKeys,

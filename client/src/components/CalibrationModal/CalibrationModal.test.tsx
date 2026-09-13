@@ -952,6 +952,74 @@ describe("CalibrationModal", () => {
     expect(mockSaveAssets).not.toHaveBeenCalled();
   });
 
+  it("reports capture success when its own same-ID live snapshot arrives before save resolves", async () => {
+    const existingCase = {
+      ...frozenCase,
+      id: "existing-case-before-capture",
+      source: { name: "Existing Case", set: "C21", collectorNumber: "267" },
+      expectedIdentifier: "other-choice",
+    };
+    const capturedCase = {
+      ...frozenCase,
+      id: "own-case-after-capture",
+      source: { name: "Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [dataset],
+      calibrationCases: [existingCase],
+      calibrationRuns: [],
+    } as never);
+    mockListCases.mockResolvedValue([existingCase]);
+    mockEvaluateDataset.mockResolvedValue({
+      algorithmId: "current",
+      algorithmLabel: "Current algorithm",
+      summary: { totalCases: 1, matchedCases: 1, mismatchedCases: 0, accuracy: 1 },
+      cases: [],
+    });
+    mockSaveRun.mockResolvedValue(undefined);
+    mockCaptureCase.mockResolvedValue({
+      caseRecord: capturedCase,
+      assets: [],
+      assetErrors: [],
+    });
+    let resolveSave!: () => void;
+    mockSaveCaseWithAssets.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveSave = resolve; })
+    );
+
+    const view = render(<CalibrationModal />);
+    const captureButton = await screen.findByRole("button", { name: /use as expected choice/i });
+    fireEvent.click(screen.getByTestId("mpc-calibration-run"));
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toBe("1/1");
+      expect(captureButton).toHaveProperty("disabled", false);
+    });
+    fireEvent.click(captureButton);
+    await waitFor(() => expect(mockSaveCaseWithAssets).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      mockUseLiveQuery.mockReturnValue({
+        datasets: [{ ...dataset, updatedAt: dataset.updatedAt + 1 }],
+        calibrationCases: [existingCase, capturedCase],
+        calibrationRuns: [],
+      } as never);
+      mockListCases.mockResolvedValue([existingCase, capturedCase]);
+      view.rerender(<CalibrationModal />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      resolveSave();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-status").textContent).toContain(
+        "Captured expected choice: Sol Ring [C21] {267}."
+      );
+      expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toBe("0/9");
+      expect(screen.getByText("Frozen Cases (2)")).toBeTruthy();
+    });
+  });
+
   it("keeps zero-asset capture failure local when the grouped write is rejected", async () => {
     mockCaptureCase.mockResolvedValue({
       caseRecord: {
@@ -1074,6 +1142,106 @@ describe("CalibrationModal", () => {
       expect(
         screen.getByTestId("mpc-calibration-scoreboard").textContent
       ).toContain("1/1");
+    });
+  });
+
+  it("publishes a successful run when its own same-ID live snapshot arrives before save resolves", async () => {
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [dataset],
+      calibrationCases: [frozenCase],
+      calibrationRuns: [],
+    } as never);
+    mockListCases.mockResolvedValue([frozenCase]);
+    mockEvaluateDataset.mockResolvedValue({
+      algorithmId: "current",
+      algorithmLabel: "Current algorithm",
+      summary: {
+        totalCases: 1,
+        matchedCases: 1,
+        mismatchedCases: 0,
+        accuracy: 1,
+      },
+      cases: [],
+    });
+    let resolveSave!: () => void;
+    mockSaveRun.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveSave = resolve; })
+    );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => {
+      expect(screen.getByText("Frozen Cases (1)")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId("mpc-calibration-run"));
+    await waitFor(() => expect(mockSaveRun).toHaveBeenCalledTimes(1));
+    const savedRun = mockSaveRun.mock.calls[0]![0];
+
+    await act(async () => {
+      mockUseLiveQuery.mockReturnValue({
+        datasets: [{ ...dataset, updatedAt: dataset.updatedAt + 1 }],
+        calibrationCases: [frozenCase],
+        calibrationRuns: [savedRun],
+      } as never);
+      view.rerender(<CalibrationModal />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      resolveSave();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toContain("1/1");
+    });
+  });
+
+  it.each(["replacement", "coalesced-own-run"])("does not publish a run result after an external same-ID %s changes cases while its save is pending", async (change) => {
+    const externalCase = {
+      ...frozenCase,
+      id: "external-case-during-run",
+      source: { name: "External Sol Ring", set: "C21", collectorNumber: "267" },
+    };
+    mockUseLiveQuery.mockReturnValue({
+      datasets: [dataset],
+      calibrationCases: [frozenCase],
+      calibrationRuns: [],
+    } as never);
+    mockListCases.mockResolvedValue([frozenCase]);
+    mockEvaluateDataset.mockResolvedValue({
+      algorithmId: "current",
+      algorithmLabel: "Current algorithm",
+      summary: { totalCases: 1, matchedCases: 1, mismatchedCases: 0, accuracy: 1 },
+      cases: [],
+    });
+    let resolveSave!: () => void;
+    mockSaveRun.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveSave = resolve; })
+    );
+
+    const view = render(<CalibrationModal />);
+    await waitFor(() => expect(screen.getByText("Frozen Cases (1)")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("mpc-calibration-run"));
+    await waitFor(() => expect(mockSaveRun).toHaveBeenCalledTimes(1));
+    const savedRun = mockSaveRun.mock.calls[0]![0];
+
+    await act(async () => {
+      mockUseLiveQuery.mockReturnValue({
+        datasets: [{ ...dataset, updatedAt: dataset.updatedAt + 1 }],
+        calibrationCases: [externalCase],
+        calibrationRuns: change === "coalesced-own-run"
+          ? [savedRun]
+          : [{ ...savedRun, id: "external-run-during-run" }],
+      } as never);
+      view.rerender(<CalibrationModal />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      resolveSave();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("External Sol Ring")).toBeTruthy();
+      expect(screen.queryByText("Sol Ring")).toBeNull();
+      expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toContain("0/9");
     });
   });
 

@@ -1,7 +1,33 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { db } from "@/db";
+import { evaluateMpcCalibrationDataset } from "@/helpers/mpcCalibrationRunner";
+import { saveMpcCalibrationRun } from "@/helpers/mpcCalibrationStorage";
+
+const liveObservations = vi.hoisted(() => ({ snapshots: [] as unknown[] }));
+
+vi.mock("dexie-react-hooks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("dexie-react-hooks")>();
+  return {
+    ...actual,
+    useLiveQuery(...args: Parameters<typeof actual.useLiveQuery>) {
+      const snapshot = actual.useLiveQuery(...args);
+      liveObservations.snapshots.push(snapshot);
+      return snapshot;
+    },
+  };
+});
+
+vi.mock("@/helpers/mpcCalibrationStorage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/helpers/mpcCalibrationStorage")>();
+  return { ...actual, saveMpcCalibrationRun: vi.fn(actual.saveMpcCalibrationRun) };
+});
+
+vi.mock("@/helpers/mpcCalibrationRunner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/helpers/mpcCalibrationRunner")>();
+  return { ...actual, evaluateMpcCalibrationDataset: vi.fn() };
+});
 
 const modalState = vi.hoisted(() => ({
   open: true,
@@ -124,6 +150,8 @@ describe("CalibrationModal IndexedDB integration", () => {
     modalState.open = true;
     modalState.card = null;
     modalState.closeModal.mockReset();
+    liveObservations.snapshots = [];
+    vi.mocked(saveMpcCalibrationRun).mockClear();
   });
 
   afterEach(async () => {
@@ -229,6 +257,57 @@ describe("CalibrationModal IndexedDB integration", () => {
       expect(screen.getByText("2 cases captured · Target: 9")).toBeTruthy();
       expect(screen.getByText("Frozen Cases (2)")).toBeTruthy();
     });
+  });
+
+  it("publishes a run after its real IndexedDB commit is observed before the writer returns", async () => {
+    const actualStorage = await vi.importActual<typeof import("@/helpers/mpcCalibrationStorage")>(
+      "@/helpers/mpcCalibrationStorage"
+    );
+    let releaseWriter!: () => void;
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    vi.mocked(saveMpcCalibrationRun).mockImplementationOnce(async (...args) => {
+      // Hold only the completed writer's return, never an active Dexie transaction.
+      const saved = await actualStorage.saveMpcCalibrationRun(...args);
+      await writerGate;
+      return saved;
+    });
+    vi.mocked(evaluateMpcCalibrationDataset).mockResolvedValueOnce({
+      algorithmId: "current",
+      algorithmLabel: "Current algorithm",
+      summary: { totalCases: 1, matchedCases: 1, mismatchedCases: 0, accuracy: 1 },
+      cases: [],
+    });
+    await db.mpcCalibrationDatasets.add(manualDataset);
+    await db.mpcCalibrationCases.add(manualCase);
+    render(<CalibrationModal />);
+    await waitForModalReady(1);
+
+    try {
+      fireEvent.click(screen.getByTestId("mpc-calibration-run"));
+      await waitFor(() => expect(saveMpcCalibrationRun).toHaveBeenCalledTimes(1));
+      const writtenRun = vi.mocked(saveMpcCalibrationRun).mock.calls[0]![0];
+      await waitFor(() => {
+        // Observe the real hook result without substituting the query or its rows.
+        expect(liveObservations.snapshots).toContainEqual(expect.objectContaining({
+          calibrationRuns: [writtenRun],
+          calibrationCases: [manualCase],
+          datasets: [expect.objectContaining({ id: manualDataset.id })],
+        }));
+      });
+      await act(async () => {
+        expect(await db.mpcCalibrationRuns.get(writtenRun.id)).toEqual(writtenRun);
+        expect((await db.mpcCalibrationDatasets.get(manualDataset.id))!.updatedAt)
+          .toBeGreaterThan(manualDataset.updatedAt);
+      });
+      expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toBe("0/9");
+      await act(async () => { releaseWriter(); });
+      await waitFor(() => {
+        expect(screen.getByTestId("mpc-calibration-scoreboard").textContent).toBe("1/1");
+        expect(screen.getByTestId("mpc-calibration-run")).toHaveProperty("disabled", false);
+      });
+    } finally {
+      await act(async () => { releaseWriter(); });
+    }
   });
 
   it("shows same-ID committed case and run replacement from IndexedDB", async () => {
