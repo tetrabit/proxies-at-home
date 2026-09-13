@@ -22,6 +22,7 @@ import {
 } from "./microservice-manager.js";
 import { registerMicroserviceQuitGate } from "./quit-gate.js";
 import { registerCalibrationHarnessIpcHandlers } from "./calibration-harness-ipc.js";
+import { registerMpcBulkConsoleForwarding } from "./mpc-bulk-console.js";
 
 export const electronMainRuntime = {
   importServerModule(serverScript: string): Promise<Record<string, unknown>> {
@@ -474,6 +475,11 @@ function createWindow() {
       contextIsolation: true,
     },
   });
+  const mpcBulkConsole = registerMpcBulkConsoleForwarding({
+    webContents: mainWindow.webContents,
+    getMainWebContents: () => mainWindow?.webContents ?? null,
+    expectedRendererUrl: getExpectedRendererUrl,
+  });
 
   // Force system theme
   nativeTheme.themeSource = "system";
@@ -542,6 +548,7 @@ function createWindow() {
   Menu.setApplicationMenu(menu);
 
   mainWindow.on("closed", () => {
+    mpcBulkConsole.dispose();
     mainWindow = null;
   });
 }

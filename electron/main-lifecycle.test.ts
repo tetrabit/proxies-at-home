@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import { createCalibrationHarnessFixtureProvider } from "../server/src/testUtils/calibrationHarnessFixtures.js";
+import { formatMpcBulkLogEvent } from "../shared/mpcBulkUpgradeLogging.js";
 
 let readyCallback: (() => Promise<void>) | undefined;
 const updaterHandlers = new Map<string, (...args: unknown[]) => void>();
@@ -74,12 +75,31 @@ const createScryfallMicroservice = vi.fn(() => microservice);
 
 class BrowserWindowMock {
   static getAllWindows = vi.fn(() => windows);
+  private readonly webContentsListeners = new Map<
+    string,
+    Set<(...args: unknown[]) => void>
+  >();
 
   webContents = {
     send: vi.fn(),
     openDevTools: vi.fn(),
-    mainFrame: { url: "" },
+    mainFrame: { url: "", frames: [] as object[] },
+    isDestroyed: vi.fn(() => false),
+    on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+      const listeners = this.webContentsListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      this.webContentsListeners.set(event, listeners);
+    }),
+    removeListener: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+      this.webContentsListeners.get(event)?.delete(listener);
+    }),
   };
+
+  emitConsoleMessage(details: unknown): void {
+    for (const listener of this.webContentsListeners.get("console-message") ?? []) {
+      listener(details);
+    }
+  }
 
   loadURL = vi.fn();
   loadFile = vi.fn();
@@ -283,6 +303,52 @@ describe("electron main lifecycle", () => {
     );
     expect(windows[0].webContents.send).toHaveBeenCalledWith("show-about");
     expect(autoUpdaterMock.checkForUpdatesAndNotify).toHaveBeenCalledOnce();
+  });
+
+  it("wires one native console-message forwarder before the trusted renderer loads", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await importAndRunReady();
+    logSpy.mockClear();
+
+    const window = windows[0];
+    window.webContents.mainFrame.url = "http://localhost:5173/?serverPort=3001";
+    const record = formatMpcBulkLogEvent({
+      event: "started",
+      runId: "window-run",
+      elapsedMs: 0,
+      reason: "https://private.example/path Bearer terminal-secret",
+    });
+    window.emitConsoleMessage({
+      message: record,
+      level: "info",
+      frame: window.webContents.mainFrame,
+    });
+    window.emitConsoleMessage({
+      message: "unrelated renderer message",
+      level: "info",
+      frame: window.webContents.mainFrame,
+    });
+    window.emitConsoleMessage({ message: record, level: "info", frame: {} });
+
+    expect(window.webContents.on).toHaveBeenCalledWith(
+      "console-message",
+      expect.any(Function)
+    );
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith(
+      formatMpcBulkLogEvent({
+        event: "started",
+        runId: "window-run",
+        elapsedMs: 0,
+        reason: "[redacted-url] [redacted]",
+      })
+    );
+    window.close?.();
+    expect(window.webContents.removeListener).toHaveBeenCalledWith(
+      "console-message",
+      expect.any(Function)
+    );
+    logSpy.mockRestore();
   });
 
   it("shows a loading shell while required services settle, gates dependent URLs, and only loads the renderer after readiness", async () => {

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseMpcBulkLogMessage } from "../../../shared/mpcBulkUpgradeLogging";
 
 const mockDbCards = vi.hoisted(() => ({
   where: vi.fn().mockReturnThis(),
@@ -242,6 +243,11 @@ describe("bulkUpgradeToMpcAutofill", () => {
         return callback();
       }
     );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("batches Lich Lord Scryfall fronts without live bootstrap searches", async () => {
@@ -627,6 +633,7 @@ describe("bulkUpgradeToMpcAutofill", () => {
   });
 
   it("records a no-match outcome when MPC search results do not exactly match the card name", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const card = makeCardOption({
       uuid: "card-3",
       name: "Sol Ring",
@@ -661,6 +668,11 @@ describe("bulkUpgradeToMpcAutofill", () => {
     });
     expect(mockAddRemoteImage).not.toHaveBeenCalled();
     expect(mockDbCards.bulkUpdate).not.toHaveBeenCalled();
+    expect(info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: "group-completed", cardName: "Sol Ring", candidateCount: 1, exactMatchCount: 0, reason: "no-exact-match", skipped: 1 }),
+      ])
+    );
   });
 
   it("skips non-Scryfall images before attempting an MPC search", async () => {
@@ -798,7 +810,7 @@ describe("bulkUpgradeToMpcAutofill", () => {
     );
     mockAddRemoteImage.mockResolvedValue("new-image-id");
     mockDb.transaction.mockRejectedValueOnce(new Error("write failed"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     const result = await bulkUpgradeToMpcAutofill();
 
@@ -809,12 +821,12 @@ describe("bulkUpgradeToMpcAutofill", () => {
       errors: 1,
     });
     expect(mockInferImageSource).toHaveBeenCalledWith("scryfall-img-001");
-    expect(warn).toHaveBeenCalledWith(
-      "[MPC Bulk Upgrade] Failed to apply upgrade:",
-      "Sol Ring",
-      expect.any(Error)
+    expect(info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: "group-completed", reason: "persistence", errorName: "Error", errors: 1 }),
+        expect.objectContaining({ event: "failed", reason: "group-errors", errors: 1 }),
+      ])
     );
-    warn.mockRestore();
   });
 
   it("skips token cards when MPC returns no searchable results", async () => {
@@ -890,5 +902,138 @@ describe("bulkUpgradeToMpcAutofill", () => {
       errors: 0,
     });
     expect(mockSearchMpcAutofill).not.toHaveBeenCalled();
+  });
+
+  it("logs and heartbeats before the initial card read settles", async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    let resolveCards!: (cards: ReturnType<typeof makeCardOption>[]) => void;
+    mockDbCards.toArray.mockImplementationOnce(() => new Promise(resolve => { resolveCards = resolve; }));
+    const run = bulkUpgradeToMpcAutofill({ projectId: "proj-1" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const pending = info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message));
+    resolveCards([]);
+    await run;
+    expect(pending).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "started", projectId: "proj-1" }),
+      expect.objectContaining({ event: "heartbeat", phase: "card-loading" }),
+    ]));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])("retains the actual failure phase and group while image acquisition rejects (aborted=%s)", async (aborted) => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const controller = new AbortController();
+    mockDbCards.toArray.mockResolvedValue([makeCardOption({ uuid: "failed-image" })]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockBatchSearchMpcAutofill.mockResolvedValue({ "Sol Ring": [makeMpcCard()] });
+    const error = new Error("private failure text https://private.example/token");
+    if (aborted) error.name = "AbortError";
+    mockAddRemoteImage.mockImplementationOnce(async () => {
+      if (aborted) controller.abort();
+      throw error;
+    });
+    await expect(bulkUpgradeToMpcAutofill({ signal: controller.signal })).rejects.toBe(error);
+    const events = info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event: aborted ? "cancelled" : "failed", phase: "image-acquisition", cardName: "Sol Ring", groupIndex: 1,
+        reason: aborted ? "aborted" : "image-acquisition", processedImages: 0,
+      }),
+    ]));
+    expect(JSON.stringify(info.mock.calls)).not.toContain(error.message);
+  });
+
+  it("emits correlated phases, matching details, and one completed terminal event", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const card = makeCardOption({ uuid: "logged-card", set: "C21", number: "267" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockBatchSearchMpcAutofill.mockResolvedValue({ "Sol Ring": [makeMpcCard()] });
+    mockGetMpcAutofillImageUrl.mockImplementation((identifier: string) => `https://mpc.test/${identifier}`);
+    mockAddRemoteImage.mockResolvedValue("logged-image");
+    mockDbImages.get.mockResolvedValue({ refCount: 1 });
+
+    await bulkUpgradeToMpcAutofill({ projectId: "proj-1" });
+
+    const events = info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message));
+    const nonNullEvents = events.filter((event) => event !== null);
+    const runIds = new Set(nonNullEvents.map((event) => event.runId));
+    expect(runIds.size).toBe(1);
+    expect(nonNullEvents.map((event) => event.event)).toEqual(expect.arrayContaining([
+      "started", "phase-started", "phase-completed", "group-started", "group-completed", "completed",
+    ]));
+    expect(nonNullEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "phase-completed", phase: "card-loading", inputCards: 1, eligibleCards: 1, totalImages: 1 }),
+      expect.objectContaining({ event: "group-started", cardName: "Sol Ring", candidateCount: 1, exactMatchCount: 1 }),
+      expect.objectContaining({ event: "group-completed", selectedIdentifier: "match-1", sourceName: "test", dpi: 600, reason: expect.stringMatching(/^set_collector_/) }),
+      expect.objectContaining({ event: "completed", outcome: "completed", processedImages: 1, totalCards: 1, upgraded: 1, skipped: 0, errors: 0 }),
+    ]));
+    expect(nonNullEvents.filter((event) => ["completed", "cancelled", "failed"].includes(event.event))).toHaveLength(1);
+  });
+
+  it("emits heartbeat during a deferred prefetch and no heartbeat after late cancellation settles", async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const controller = new AbortController();
+    const card = makeCardOption({ uuid: "deferred-card" });
+    mockDbCards.toArray.mockResolvedValue([card]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    let resolveSearch!: (value: Record<string, ReturnType<typeof makeMpcCard>[]>) => void;
+    mockBatchSearchMpcAutofill.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSearch = resolve;
+    }));
+
+    const run = bulkUpgradeToMpcAutofill({ signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(10_000);
+    const duringPrefetch = info.mock.calls
+      .map(([message]) => parseMpcBulkLogMessage(message))
+      .filter((event) => event !== null);
+    expect(duringPrefetch).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "heartbeat", phase: "prefetch", processedImages: 0, totalImages: 1 }),
+    ]));
+
+    controller.abort();
+    resolveSearch({ "Sol Ring": [makeMpcCard()] });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(run).resolves.toEqual({ totalCards: 1, upgraded: 0, skipped: 0, errors: 0 });
+    const beforeExtraTime = info.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    const events = info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message)).filter((event) => event !== null);
+    expect(info.mock.calls).toHaveLength(beforeExtraTime);
+    expect(events.filter((event) => event.event === "cancel-requested")).toHaveLength(1);
+    expect(events.filter((event) => event.event === "cancelled")).toHaveLength(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "cancelled", outcome: "cancelled", processedImages: 0 }),
+    ]));
+    expect(events.filter((event) => ["completed", "cancelled", "failed"].includes(event.event))).toHaveLength(1);
+  });
+
+  it("emits terminal outcomes for empty, pre-aborted, and callback failure paths", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    mockDbCards.toArray.mockResolvedValue([]);
+    await bulkUpgradeToMpcAutofill();
+
+    const controller = new AbortController();
+    controller.abort();
+    mockDbCards.toArray.mockResolvedValue([makeCardOption({ uuid: "pre-aborted" })]);
+    await bulkUpgradeToMpcAutofill({ signal: controller.signal });
+
+    mockDbCards.toArray.mockResolvedValue([makeCardOption({ uuid: "callback-throws" })]);
+    mockDbImages.bulkGet.mockResolvedValue([{ source: "scryfall" }]);
+    mockBatchSearchMpcAutofill.mockResolvedValue({ "Sol Ring": [makeMpcCard()] });
+    await expect(bulkUpgradeToMpcAutofill({ onProgress: () => { throw new Error("callback failed"); } })).rejects.toThrow("callback failed");
+
+    const events = info.mock.calls.map(([message]) => parseMpcBulkLogMessage(message)).filter((event) => event !== null);
+    const terminalsByRun = new Map<string, string[]>();
+    for (const event of events) {
+      if (["completed", "cancelled", "failed"].includes(event.event)) {
+        terminalsByRun.set(event.runId, [...(terminalsByRun.get(event.runId) ?? []), event.event]);
+      }
+    }
+    expect(Array.from(terminalsByRun.values())).toEqual([["completed"], ["cancelled"], ["failed"]]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "failed", outcome: "failed", errorName: "Error", reason: "callback" }),
+    ]));
   });
 });

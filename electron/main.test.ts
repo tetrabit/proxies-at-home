@@ -27,6 +27,10 @@ vi.mock("electron", () => ({
     webContents = {
       send: vi.fn(),
       openDevTools: vi.fn(),
+      mainFrame: { url: "", frames: [] as object[] },
+      isDestroyed: vi.fn(() => false),
+      on: vi.fn(),
+      removeListener: vi.fn(),
     };
 
     loadURL = vi.fn();
