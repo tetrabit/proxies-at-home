@@ -77,9 +77,12 @@ import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
 const DEFAULT_DATASET_NAME = "MPC Calibration Harness";
 
+type CandidateImageState = "ready" | "failed";
+
 type CaptureState = {
   imageRecord: Image | null;
   candidates: MpcAutofillCard[];
+  candidateImageStates: ReadonlyMap<string, CandidateImageState>;
 };
 
 type VisibleDatasetPublication = {
@@ -269,6 +272,7 @@ export function CalibrationModal() {
   const [captureState, setCaptureState] = useState<CaptureState>({
     imageRecord: null,
     candidates: [],
+    candidateImageStates: new Map(),
   });
   const [recommendations, setRecommendations] =
     useState<RankedRecommendations | null>(null);
@@ -293,6 +297,17 @@ export function CalibrationModal() {
   const visibleLiveSnapshotRef = useRef<CalibrationLiveSnapshot | null>(null);
   const pendingOwnCommitRef = useRef<OwnCommitExpectation | null>(null);
   const capturedChoiceKeys = useMemo(() => toCapturedChoiceKeySet(cases), [cases]);
+
+  // A new capture target starts with no loaded candidates; readiness state is
+  // never carried across cards because each CardImageSvg re-observes and
+  // re-reports for the new image URLs.
+  useEffect(() => {
+    setCaptureState((previous) =>
+      previous.candidates.length === 0
+        ? previous
+        : { ...previous, candidateImageStates: new Map() }
+    );
+  }, [card]);
   const liveCalibrationSnapshot = useLiveQuery(
     async () => {
       if (!open) return null;
@@ -463,7 +478,11 @@ export function CalibrationModal() {
 
     if (!open) {
       setStatus(null);
-      setCaptureState({ imageRecord: null, candidates: [] });
+      setCaptureState({
+        imageRecord: null,
+        candidates: [],
+        candidateImageStates: new Map(),
+      });
       setRecommendations(null);
       setRawPrefScores({});
       setPhase("idle");
@@ -556,9 +575,13 @@ export function CalibrationModal() {
           if (!canPublishOpeningDataset()) return;
 
           const filtered = filterByExactName(matches, card.name);
+          // Publish the candidate gallery as soon as the search resolves so
+          // each candidate's "Use as Expected Choice" can activate when its own
+          // image loads, while recommendation work continues in the background.
           setCaptureState({
             imageRecord: imageRecord ?? null,
             candidates: filtered,
+            candidateImageStates: new Map(),
           });
 
           // Compute recommendations if model and candidates exist
@@ -599,7 +622,11 @@ export function CalibrationModal() {
             setRecommendations(recs);
           }
         } else {
-          setCaptureState({ imageRecord: null, candidates: [] });
+          setCaptureState({
+            imageRecord: null,
+            candidates: [],
+            candidateImageStates: new Map(),
+          });
           setRecommendations(null);
           setRawPrefScores({});
         }
@@ -799,6 +826,28 @@ export function CalibrationModal() {
       refreshDataset,
     ]
   );
+
+  const markCandidateImageReady = useCallback((identifier: string) => {
+    setCaptureState((previous) => {
+      if (previous.candidateImageStates.get(identifier) === "ready") {
+        return previous;
+      }
+      const nextStates = new Map(previous.candidateImageStates);
+      nextStates.set(identifier, "ready");
+      return { ...previous, candidateImageStates: nextStates };
+    });
+  }, []);
+
+  const markCandidateImageFailed = useCallback((identifier: string) => {
+    setCaptureState((previous) => {
+      if (previous.candidateImageStates.get(identifier) === "failed") {
+        return previous;
+      }
+      const nextStates = new Map(previous.candidateImageStates);
+      nextStates.set(identifier, "failed");
+      return { ...previous, candidateImageStates: nextStates };
+    });
+  }, []);
 
   const exportFixture = useCallback(async () => {
     if (!dataset) return;
@@ -1006,6 +1055,11 @@ export function CalibrationModal() {
                       key={candidate.identifier}
                       className={`rounded-lg border p-3 dark:border-gray-700 ${rec && recommendations?.fullProcess[0].card.identifier === candidate.identifier ? 'bg-purple-50 dark:bg-purple-900/20 border-purple-300 dark:border-purple-800 shadow-sm' : 'bg-white dark:bg-gray-800 border-gray-200'}`}
                       data-testid={`mpc-calibration-candidate-${candidate.identifier}`}
+                      data-image-state={
+                        captureState.candidateImageStates.get(
+                          candidate.identifier
+                        ) ?? "loading"
+                      }
                     >
                       <div className="aspect-[63/88] overflow-hidden rounded-md bg-gray-100 dark:bg-gray-800 relative">
                         <CardImageSvg
@@ -1013,6 +1067,12 @@ export function CalibrationModal() {
                           url={
                             candidate.smallThumbnailUrl ||
                             candidate.mediumThumbnailUrl
+                          }
+                          onLoad={() =>
+                            markCandidateImageReady(candidate.identifier)
+                          }
+                          onError={() =>
+                            markCandidateImageFailed(candidate.identifier)
                           }
                         />
                         {rec && recommendations?.fullProcess[0].card.identifier === candidate.identifier && (
@@ -1076,7 +1136,14 @@ export function CalibrationModal() {
                         size="xs"
                         color={rec && recommendations?.fullProcess[0].card.identifier === candidate.identifier ? "purple" : "light"}
                         onClick={() => void captureCase(candidate)}
-                        disabled={phase !== "idle" || alreadyCaptured}
+                        disabled={
+                          alreadyCaptured ||
+                          phase === "capturing" ||
+                          phase === "running" ||
+                          captureState.candidateImageStates.get(
+                            candidate.identifier
+                          ) !== "ready"
+                        }
                       >
                         {alreadyCaptured
                           ? "Expected Choice Captured"

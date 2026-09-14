@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 interface CardImageSvgProps {
     /** Primary image URL */
@@ -18,6 +18,10 @@ interface CardImageSvgProps {
     };
     /** Whether to round corners (default: true) */
     rounded?: boolean;
+    /** Called when the current image successfully loads */
+    onLoad?: () => void;
+    /** Called when neither the primary nor fallback image can load */
+    onError?: () => void;
 }
 
 /**
@@ -31,11 +35,30 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
     id,
     bleed,
     rounded = true,
+    onLoad,
+    onError,
 }) => {
     const svgRef = useRef<SVGSVGElement>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [hasLoaded, setHasLoaded] = useState(false);
     const [useFallback, setUseFallback] = useState(false);
+    const loadTokenRef = useRef(0);
+    const onLoadRef = useRef(onLoad);
+    const onErrorRef = useRef(onError);
+    useEffect(() => {
+        onLoadRef.current = onLoad;
+        onErrorRef.current = onError;
+    }, [onLoad, onError]);
+    const notifyLoad = useCallback((token: number) => {
+        if (token === loadTokenRef.current) {
+            onLoadRef.current?.();
+        }
+    }, []);
+    const notifyError = useCallback((token: number) => {
+        if (token === loadTokenRef.current) {
+            onErrorRef.current?.();
+        }
+    }, []);
 
     // Standard card dimensions
     const CARD_WIDTH = 63;
@@ -50,7 +73,10 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
     const clipId = `clip-${id}`;
 
     // Reset states when URL changes (including isVisible for re-sorted cards)
+    // A new load attempt is started so late callbacks from the previous image
+    // are ignored instead of being reported as the current image's result.
     useEffect(() => {
+        loadTokenRef.current += 1;
         setHasLoaded(false);
         setUseFallback(false);
         // Don't reset isVisible here - it's managed by IntersectionObserver
@@ -145,12 +171,17 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
                     preserveAspectRatio="xMidYMid slice"
                     clipPath={rounded ? `url(#${clipId})` : undefined}
                     style={{ opacity: hasLoaded ? 1 : 0 }}
-                    onLoad={() => setHasLoaded(true)}
+                    onLoad={() => {
+                        setHasLoaded(true);
+                        notifyLoad(loadTokenRef.current);
+                    }}
                     onError={() => {
                         // Switch to fallback URL if available and not already using it
                         if (fallbackUrl && !useFallback) {
                             setUseFallback(true);
                             setHasLoaded(false); // Reset to show placeholder while fallback loads
+                        } else {
+                            notifyError(loadTokenRef.current);
                         }
                     }}
                 />

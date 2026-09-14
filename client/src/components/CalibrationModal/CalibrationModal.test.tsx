@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 
 const {
   mockCalibrationState,
@@ -36,6 +37,9 @@ const {
   mockScopeSource,
   mockUseLiveQuery,
   linkedSync,
+  mockDeferredImageIds,
+  mockAutoLoadedImageIds,
+  mockImageCallbacks,
 } = vi.hoisted(() => ({
   mockCalibrationState: {
     open: true,
@@ -97,6 +101,9 @@ const {
     current: { kind: "bound", identity: { ownerId: "owner-a", harnessId: "harness-a", connectionId: "connection-a" }, bindingRevision: 1 },
   },
   mockUseLiveQuery: vi.fn(() => undefined),
+  mockDeferredImageIds: new Set<string>(),
+  mockAutoLoadedImageIds: new Set<string>(),
+  mockImageCallbacks: new Map<string, { onLoad?: () => void; onError?: () => void }>(),
   linkedSync: {
     status: "unpaired",
     selection: { kind: "unselected" as const },
@@ -214,7 +221,29 @@ vi.mock("@/helpers/mpcPreferenceSync", () => ({
 }));
 
 vi.mock("@/components/common/CardImageSvg", () => ({
-  CardImageSvg: ({ id }: { id: string }) => <div data-testid={id}>image</div>,
+  CardImageSvg: ({
+    id,
+    onLoad,
+    onError,
+  }: {
+    id: string;
+    onLoad?: () => void;
+    onError?: () => void;
+  }) => {
+    useEffect(() => {
+      mockImageCallbacks.set(id, { onLoad, onError });
+      if (!mockDeferredImageIds.has(id) && !mockAutoLoadedImageIds.has(id)) {
+        // Fire at most once per image id, matching the real CardImageSvg which
+        // reports a successful load a single time for the current image.
+        mockAutoLoadedImageIds.add(id);
+        onLoad?.();
+      }
+      return () => {
+        mockImageCallbacks.delete(id);
+      };
+    }, [id, onError, onLoad]);
+    return <div data-testid={id}>image</div>;
+  },
 }));
 
 import { CalibrationModal } from "./CalibrationModal";
@@ -241,6 +270,9 @@ describe("CalibrationModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDeferredImageIds.clear();
+    mockAutoLoadedImageIds.clear();
+    mockImageCallbacks.clear();
     mockUseLiveQuery.mockReturnValue(undefined);
     linkedSync.status = "unpaired";
     mockCaptureMutationScope.mockReset();
@@ -793,6 +825,134 @@ describe("CalibrationModal", () => {
         false,
         { includeAllLanguages: true }
       );
+    });
+  });
+
+  it("publishes candidates as soon as the search resolves, before recommendations settle", async () => {
+    // A non-null model starts the recommendation pipeline so we can prove the
+    // candidate gallery is usable while it is still running.
+    mockGetSharedMpcPreferenceContext.mockResolvedValueOnce({
+      calibrationCases: [],
+      model: { id: "model-1" },
+      profiles: {},
+    });
+    // The recommendation never settles during this test; the gallery must be
+    // usable regardless.
+    const recommendationsNeverSettle = new Promise<{
+      fullProcess: never[];
+      exactPrinting: never[];
+      artMatch: never[];
+      fullCard: never[];
+      allMatches: never[];
+    }>(() => undefined);
+    mockRankCandidates.mockImplementationOnce(() => recommendationsNeverSettle);
+    mockDeferredImageIds.add("calibration-cand-1");
+
+    render(<CalibrationModal />);
+
+    const card = await screen.findByTestId("mpc-calibration-candidate-cand-1");
+    // The candidate gallery is published as soon as the search resolves, while
+    // this candidate's image is still loading and recommendations are pending.
+    expect(card.getAttribute("data-image-state")).toBe("loading");
+    expect(mockRankCandidates).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: /use as expected choice/i })
+    ).toHaveProperty("disabled", true);
+
+    // This candidate's image loads independently of the recommendation work.
+    await act(async () => {
+      mockImageCallbacks.get("calibration-cand-1")?.onLoad?.();
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-calibration-candidate-cand-1").getAttribute(
+          "data-image-state"
+        )
+      ).toBe("ready");
+      expect(
+        screen.getByRole("button", { name: /use as expected choice/i })
+      ).toHaveProperty("disabled", false);
+    });
+    // The button became enabled before the recommendation settled (rank never
+    // resolves in this test), which is exactly the async behavior required.
+    expect(mockRankCandidates).toHaveBeenCalledTimes(1);
+  });
+
+  it("enables each ready candidate independently while other thumbnails are still loading", async () => {
+    const makeCandidate = (suffix: string, name: string) => ({
+      identifier: `cand-${suffix}`,
+      name,
+      rawName: `${name} [C21] {267}`,
+      smallThumbnailUrl: "thumb",
+      mediumThumbnailUrl: "thumb",
+      dpi: 600,
+      tags: [],
+      sourceName: "MPC",
+      source: "mpc",
+      extension: "png",
+      size: 100,
+    });
+    mockSearchMpcAutofill.mockResolvedValue([
+      makeCandidate("1", "Sol Ring"),
+      makeCandidate("2", "Sol Ring"),
+    ]);
+    mockFilterByExactName.mockReturnValue([
+      makeCandidate("1", "Sol Ring"),
+      makeCandidate("2", "Sol Ring"),
+    ]);
+    mockDeferredImageIds.add("calibration-cand-2");
+
+    render(<CalibrationModal />);
+
+    // Both candidates render as soon as the search resolves, each with its own
+    // independent image state: cand-1 has already loaded, cand-2 is still
+    // loading. The ready candidate is clickable while the other is not.
+    const buttons = await screen.findAllByRole("button", {
+      name: /use as expected choice/i,
+    });
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]).toHaveProperty("disabled", false);
+    expect(buttons[1]).toHaveProperty("disabled", true);
+
+    const cardOne = screen.getByTestId("mpc-calibration-candidate-cand-1");
+    const cardTwo = screen.getByTestId("mpc-calibration-candidate-cand-2");
+    expect(cardOne.getAttribute("data-image-state")).toBe("ready");
+    expect(cardTwo.getAttribute("data-image-state")).toBe("loading");
+
+    fireEvent.click(buttons[0]);
+    await waitFor(() => {
+      expect(mockCaptureCase).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedIdentifier: "cand-1",
+        })
+      );
+    });
+  });
+
+  it("keeps a candidate whose image fails disabled until a fresh load succeeds", async () => {
+    render(<CalibrationModal />);
+
+    const card = await screen.findByTestId("mpc-calibration-candidate-cand-1");
+    const button = await screen.findByRole("button", {
+      name: /use as expected choice/i,
+    });
+
+    await act(async () => {
+      mockImageCallbacks.get("calibration-cand-1")?.onError?.();
+    });
+    await waitFor(() => {
+      expect(card.getAttribute("data-image-state")).toBe("failed");
+      expect(button).toHaveProperty("disabled", true);
+    });
+    expect(mockCaptureCase).not.toHaveBeenCalled();
+
+    // A fresh load attempt for the same candidate re-arms the callback.
+    await act(async () => {
+      mockImageCallbacks.get("calibration-cand-1")?.onLoad?.();
+    });
+    await waitFor(() => {
+      expect(card.getAttribute("data-image-state")).toBe("ready");
+      expect(button).toHaveProperty("disabled", false);
     });
   });
 
