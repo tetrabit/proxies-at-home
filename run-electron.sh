@@ -38,6 +38,10 @@ export NODE_ENV=development
 # Electron launched from another Electron-based terminal must still open a GUI.
 unset ELECTRON_RUN_AS_NODE
 
+# KWin's XWayland clipboard proxy does not bridge selections; run native
+# Wayland when the session supports it so clipboard sharing works.
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+
 # Docker owns IPv4 loopback; Electron keeps its localhost origin on IPv6.
 # Refuse an existing IPv6 frontend instead of reusing an untrusted page.
 if ! node --input-type=module -e '
