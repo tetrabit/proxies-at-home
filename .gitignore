@@ -35,6 +35,7 @@ electron/.tsbuildinfo/
 # Repository-local runtime data and retained review artifacts
 /data/
 /.recovery/
+.scratch/
 .review-artifacts/
 .review-artifacts-*.log
 /.td-qa-lifecycle.lock
