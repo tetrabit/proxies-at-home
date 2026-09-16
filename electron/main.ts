@@ -22,6 +22,12 @@ import {
 } from "./microservice-manager.js";
 import { registerMicroserviceQuitGate } from "./quit-gate.js";
 import { registerCalibrationHarnessIpcHandlers } from "./calibration-harness-ipc.js";
+import {
+  ensureHarnessCredentialProvisioned,
+  loadCalibrationHarnessConfig,
+  retargetLoopbackHarnessOrigin,
+  type CalibrationHarnessCredentialStore,
+} from "./calibration-harness-config.js";
 import { registerMpcBulkConsoleForwarding } from "./mpc-bulk-console.js";
 
 export const electronMainRuntime = {
@@ -367,6 +373,11 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled Rejection:", reason);
 });
 
+type DesktopServerRuntime = {
+  port: number;
+  calibrationHarness?: Readonly<{ database?: unknown }> | null;
+};
+
 let mainWindow: BrowserWindow | null = null;
 let serverPort = 3001; // Default port, will be updated if server starts successfully
 let microserviceManager: MicroserviceManager | null = null;
@@ -677,6 +688,8 @@ app.whenReady().then(async () => {
     getMainWebContents: () => mainWindow?.webContents ?? null,
     expectedRendererUrl: getExpectedRendererUrl,
     configPath: () => path.join(app.getPath("userData"), "calibration-harness.connection.json"),
+    loadConfig: async (filename) =>
+      retargetLoopbackHarnessOrigin(await loadCalibrationHarnessConfig(filename), serverPort),
   });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -760,10 +773,63 @@ app.whenReady().then(async () => {
         createSingleBearerVerifier as CreateSingleBearerVerifier
       );
       const privateCredentialVerifier = desktopCredentialSession.verifier;
-      serverPort = await (startServer as StartServer)(0, {
-        host: "127.0.0.1",
-        privateCredentialVerifier,
-      }); // 0 = random available port
+      const startServerRuntime = serverModule.startServerRuntime;
+      // 0 = random available port. The harness runtime is enabled so the
+      // configured "Connect configured service" backend (this app's own
+      // /api/calibration-harness routes) exists; without it every request
+      // gets the 404 disabled stub.
+      if (typeof startServerRuntime === "function") {
+        const runtime = await (startServerRuntime as (
+          port: number,
+          options: {
+            host: string;
+            privateCredentialVerifier: PrivateCredentialVerifier;
+            calibrationHarness: {
+              allowedWebOrigins: readonly string[];
+              dataDirectory: string;
+            };
+          },
+        ) => Promise<DesktopServerRuntime>)(0, {
+          host: "127.0.0.1",
+          privateCredentialVerifier,
+          calibrationHarness: {
+            allowedWebOrigins: [
+              "http://localhost:5173",
+              "http://[::1]:5173",
+            ],
+            dataDirectory: path.join(app.getPath("userData"), "calibration-harness"),
+          },
+        });
+        serverPort = runtime.port;
+        const harness = runtime.calibrationHarness ?? null;
+        if (harness !== null && harness.database !== undefined && harness.database !== null) {
+          try {
+            const identityModule = await electronMainRuntime.importServerModule(
+              path.join(path.dirname(serverScript), "auth", "calibrationHarnessIdentity.js"),
+            );
+            const createStore = identityModule.createCalibrationHarnessCredentialStore;
+            if (typeof createStore === "function") {
+              const outcome = await ensureHarnessCredentialProvisioned(
+                path.join(app.getPath("userData"), "calibration-harness.connection.json"),
+                createStore as (database: unknown) => CalibrationHarnessCredentialStore,
+                harness.database,
+              );
+              if (outcome === "provisioned") {
+                console.log("[Electron] Provisioned replacement calibration harness credential");
+              }
+            }
+          } catch (error) {
+            // Self-healing is best-effort; the connect flow reports the
+            // precise error if the credential still does not verify.
+            console.error("[Electron] Calibration harness credential self-healing failed:", error);
+          }
+        }
+      } else {
+        serverPort = await (startServer as StartServer)(0, {
+          host: "127.0.0.1",
+          privateCredentialVerifier,
+        }); // 0 = random available port
+      }
       desktopPrivateBootstrap = {
         baseUrl: `http://127.0.0.1:${serverPort}`,
         bearer: desktopCredentialSession.bearer,

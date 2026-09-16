@@ -1,15 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CALIBRATION_HARNESS_CONFIG_MAX_BYTES,
+  calibrationHarnessPrivateValues,
+  ensureHarnessCredentialProvisioned,
   loadCalibrationHarnessConfig,
   parseCalibrationHarnessConfig,
+  replaceCalibrationHarnessConfigCredential,
+  retargetLoopbackHarnessOrigin,
+  type CalibrationHarnessCredentialStore,
 } from "./calibration-harness-config.js";
 
 const credential = `calibration_pair_${"a".repeat(43)}`;
+const replacementCredential = `calibration_pair_${"b".repeat(43)}`;
 const base = { version: 1, backendOrigin: "https://calibration.example.test", harnessId: "harness-a", credential };
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -148,5 +154,135 @@ describe("calibration harness private config", () => {
     await expect(fixtureDirectory(symlinkedParent)).rejects.toThrow("fixture ancestor is unsafe");
     await expect(fixtureDirectory(path.resolve(repositoryRoot, "..", "fixture-escape"))).rejects
       .toThrow("fixture parent escapes module-anchored repository root");
+  });
+});
+
+function fakeCredentialStore(existing: readonly string[] = []): {
+  store: CalibrationHarnessCredentialStore;
+  provisions: Array<Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>>;
+} {
+  const tokens = new Set(existing);
+  const provisions: Array<Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>> = [];
+  return {
+    store: {
+      provision(input) {
+        provisions.push({ ...input });
+        tokens.add(replacementCredential);
+        return replacementCredential;
+      },
+      verifyBearer(token) {
+        return tokens.has(token) ? { ownerId: "desktop-local", harnessId: "harness-a" } : null;
+      },
+    },
+    provisions,
+  };
+}
+
+describe("desktop harness loopback origin retargeting", () => {
+  it("retargets a stale loopback origin at the live local port and preserves identity fields", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const loaded = await loadCalibrationHarnessConfig(filename);
+    expect(loaded.kind).toBe("configured");
+    const retargeted = retargetLoopbackHarnessOrigin(loaded, 54321);
+    expect(retargeted.kind).toBe("configured");
+    if (loaded.kind === "configured" && retargeted.kind === "configured") {
+      expect(retargeted.config.harnessId).toBe(loaded.config.harnessId);
+      expect(calibrationHarnessPrivateValues(retargeted.config).backendOrigin).toBe("http://127.0.0.1:54321");
+      expect(calibrationHarnessPrivateValues(retargeted.config).credential).toBe(credential);
+      expect(calibrationHarnessPrivateValues(loaded.config).backendOrigin).toBe("http://127.0.0.1:3001");
+    }
+  });
+
+  it("preserves the bracketed IPv6 loopback form when retargeting", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://[::1]:3001" });
+    const loaded = await loadCalibrationHarnessConfig(filename);
+    const retargeted = retargetLoopbackHarnessOrigin(loaded, 61771);
+    expect(retargeted.kind).toBe("configured");
+    if (retargeted.kind === "configured") {
+      expect(calibrationHarnessPrivateValues(retargeted.config).backendOrigin).toBe("http://[::1]:61771");
+    }
+  });
+
+  it("passes already-correct, remote, and not-configured results through unchanged", async () => {
+    const exactFixture = await fixtureDirectory();
+    const exact = await privateConfig(exactFixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const exactLoaded = await loadCalibrationHarnessConfig(exact);
+    expect(retargetLoopbackHarnessOrigin(exactLoaded, 3001)).toBe(exactLoaded);
+
+    const remoteFixture = await fixtureDirectory();
+    const remote = await privateConfig(remoteFixture.directory, base);
+    const remoteLoaded = await loadCalibrationHarnessConfig(remote);
+    expect(retargetLoopbackHarnessOrigin(remoteLoaded, 54321)).toBe(remoteLoaded);
+
+    const notConfigured = Object.freeze({ kind: "not-configured" as const });
+    expect(retargetLoopbackHarnessOrigin(notConfigured, 54321)).toBe(notConfigured);
+  });
+});
+
+describe("desktop harness credential self-healing", () => {
+  it("rewrites only the credential of an operator-provisioned loopback config", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    await replaceCalibrationHarnessConfigCredential(filename, replacementCredential);
+    const reloaded = await loadCalibrationHarnessConfig(filename);
+    expect(reloaded.kind).toBe("configured");
+    if (reloaded.kind === "configured") {
+      expect(reloaded.config.harnessId).toBe("harness-a");
+      expect(calibrationHarnessPrivateValues(reloaded.config).backendOrigin).toBe("http://127.0.0.1:3001");
+      expect(calibrationHarnessPrivateValues(reloaded.config).credential).toBe(replacementCredential);
+      expect((await lstat(filename)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("refuses malformed replacement credentials without touching the file", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory);
+    const before = await readFile(filename, "utf8");
+    await expect(replaceCalibrationHarnessConfigCredential(filename, "not-a-credential")).rejects
+      .toThrow("invalid private configuration");
+    expect(await readFile(filename, "utf8")).toBe(before);
+  });
+
+  it("leaves a still-valid provisioned credential untouched", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const before = await readFile(filename, "utf8");
+    const fake = fakeCredentialStore([credential]);
+    const outcome = await ensureHarnessCredentialProvisioned(filename, () => fake.store, {});
+    expect(outcome).toBe("already-valid");
+    expect(fake.provisions).toEqual([]);
+    expect(await readFile(filename, "utf8")).toBe(before);
+  });
+
+  it("provisions a replacement for an orphaned credential and rewrites the config atomically", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const fake = fakeCredentialStore();
+    const outcome = await ensureHarnessCredentialProvisioned(filename, () => fake.store, {});
+    expect(outcome).toBe("provisioned");
+    expect(fake.provisions).toEqual([{ ownerId: "desktop-local", harnessId: "harness-a", noExpiry: true }]);
+    const reloaded = await loadCalibrationHarnessConfig(filename);
+    expect(reloaded.kind).toBe("configured");
+    if (reloaded.kind === "configured") {
+      expect(calibrationHarnessPrivateValues(reloaded.config).credential).toBe(replacementCredential);
+      expect(fake.store.verifyBearer(replacementCredential)).not.toBeNull();
+    }
+    const entries = await readdir(fixture.directory);
+    expect(entries.find((entry) => entry.endsWith(".tmp"))).toBeUndefined();
+  });
+
+  it("reports absent and invalid configs without provisioning", async () => {
+    const fixture = await fixtureDirectory();
+    const fake = fakeCredentialStore();
+    expect(await ensureHarnessCredentialProvisioned(path.join(fixture.directory, "absent.json"), () => fake.store, {}))
+      .toBe("absent");
+
+    const invalidFilename = path.join(fixture.directory, "invalid.json");
+    await writeFile(invalidFilename, "not json", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    expect(await ensureHarnessCredentialProvisioned(invalidFilename, () => fake.store, {}))
+      .toBe("invalid");
+    expect(fake.provisions).toEqual([]);
   });
 });

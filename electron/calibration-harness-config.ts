@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 
 export const CALIBRATION_HARNESS_CONFIG_MAX_BYTES = 16 * 1024;
 
@@ -237,4 +238,119 @@ export async function loadCalibrationHarnessConfig(filename: string): Promise<Ca
 /** Available to the Node-main module for diagnostics-free identity capture only. */
 export function calibrationHarnessConfigFileIdentity(config: CalibrationHarnessPrivateConfig): FileIdentity | undefined {
   return fileIdentities.get(config);
+}
+
+/**
+ * The desktop harness backend is this app's own local server, which binds a
+ * random loopback port at startup. A provisioned loopback origin can only be
+ * stale in its port, so retarget it at the live server. Operator-provisioned
+ * remote (non-loopback) origins are left untouched.
+ */
+export function retargetLoopbackHarnessOrigin(
+  result: CalibrationHarnessConfigLoadResult,
+  localPort: number,
+): CalibrationHarnessConfigLoadResult {
+  if (result.kind !== "configured") return result;
+  if (!Number.isSafeInteger(localPort) || localPort <= 0 || localPort > 65535) return result;
+  const values = calibrationHarnessPrivateValues(result.config);
+  let parsed: URL;
+  try {
+    parsed = new URL(values.backendOrigin);
+  } catch {
+    return result;
+  }
+  const isLoopback = parsed.protocol === "http:"
+    && (parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "::1");
+  if (!isLoopback) return result;
+  const remapped = `http://${parsed.hostname === "::1" ? "[::1]" : parsed.hostname}:${localPort}`;
+  if (remapped === values.backendOrigin) return result;
+  const next = CalibrationHarnessPrivateConfig.fromValues({
+    ...values,
+    backendOrigin: remapped,
+  });
+  return Object.freeze({
+    kind: "configured" as const,
+    config: next,
+    file: result.file,
+    platformSecurity: result.platformSecurity,
+  });
+}
+
+/** Credential-store shape required by self-healing provisioning. */
+export type CalibrationHarnessCredentialStore = Readonly<{
+  provision(input: Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>): string;
+  verifyBearer(token: string): unknown;
+}>
+
+export type EnsureHarnessCredentialOutcome =
+  | "absent"
+  | "invalid"
+  | "already-valid"
+  | "provisioned";
+
+/**
+ * Rewrites the operator-provisioned file with a replacement credential while
+ * preserving every other field. The replacement is atomic (temp + rename) and
+ * keeps the private-file contract (0600, same directory) that the loader
+ * enforces on the next read.
+ */
+export async function replaceCalibrationHarnessConfigCredential(
+  filename: string,
+  credential: string,
+): Promise<void> {
+  if (typeof credential !== "string" || !CREDENTIAL_PATTERN.test(credential)) {
+    return configError("invalid-config");
+  }
+  const loaded = await loadCalibrationHarnessConfig(filename);
+  if (loaded.kind !== "configured") return configError("invalid-config");
+  const values = calibrationHarnessPrivateValues(loaded.config);
+  const tempFilename = `${filename}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(
+      tempFilename,
+      `${JSON.stringify({
+        version: 1,
+        backendOrigin: values.backendOrigin,
+        credential,
+        harnessId: values.harnessId,
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    await rename(tempFilename, filename);
+  } catch (error) {
+    await unlink(tempFilename).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * The connection file is operator-provisioned, but the harness database it
+ * references is owned by this app. When the provisioned credential no longer
+ * verifies (fresh install, database reset), provision a replacement for the
+ * same harness identity and rewrite the file so "Connect configured service"
+ * can authenticate. Invalid or untrusted files are left for the operator.
+ */
+export async function ensureHarnessCredentialProvisioned(
+  configFilename: string,
+  createCredentialStore: (database: unknown) => CalibrationHarnessCredentialStore,
+  database: unknown,
+  provisionOwnerId = "desktop-local",
+): Promise<EnsureHarnessCredentialOutcome> {
+  let loaded: CalibrationHarnessConfigLoadResult;
+  try {
+    loaded = await loadCalibrationHarnessConfig(configFilename);
+  } catch {
+    return "invalid";
+  }
+  if (loaded.kind !== "configured") return "absent";
+  const values = calibrationHarnessPrivateValues(loaded.config);
+  const store = createCredentialStore(database);
+  if (store.verifyBearer(values.credential) !== null) return "already-valid";
+  const credential = store.provision({
+    ownerId: provisionOwnerId,
+    harnessId: values.harnessId,
+    noExpiry: true,
+  });
+  await replaceCalibrationHarnessConfigCredential(configFilename, credential);
+  return "provisioned";
 }
