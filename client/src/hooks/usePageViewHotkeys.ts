@@ -18,13 +18,12 @@ async function copySelectedCardNames(uuids: string[]): Promise<number> {
     try {
         // Fetch cards from database
         const cards = await db.cards.bulkGet(uuids);
-        const validCards = cards.filter((c): c is NonNullable<typeof c> => c != null);
+        const cardsToExport = cards.filter((c): c is NonNullable<typeof c> => c != null);
 
-        // Filter out default cardbacks (cards with usesDefaultCardback: true)
-        // But keep custom back cards (like Forest with Swamp on back)
-        const cardsToExport = validCards.filter(c => !c.usesDefaultCardback);
-
-        if (cardsToExport.length === 0) return 0;
+        if (cardsToExport.length === 0) {
+            useToastStore.getState().showErrorToast('No cards to copy');
+            return 0;
+        }
 
         // Group cards by name+set+number and count
         // Key format: "name|set|number" to ensure unique grouping
@@ -68,6 +67,7 @@ async function copySelectedCardNames(uuids: string[]): Promise<number> {
         return cardCount;
     } catch (err) {
         console.error('Failed to copy card names to clipboard:', err);
+        useToastStore.getState().showErrorToast('Copy failed: the clipboard write was rejected');
         return 0;
     }
 }

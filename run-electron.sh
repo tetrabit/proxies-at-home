@@ -40,7 +40,15 @@ unset ELECTRON_RUN_AS_NODE
 
 # KWin's XWayland clipboard proxy does not bridge selections; run native
 # Wayland when the session supports it so clipboard sharing works.
-export ELECTRON_OZONE_PLATFORM_HINT=auto
+# Electron 39 ignores ELECTRON_OZONE_PLATFORM_HINT, and its default auto
+# detection only prefers Wayland when XDG_SESSION_TYPE=wayland is present.
+# Pass the ozone platform explicitly so Wayland sessions get native Wayland
+# even without XDG_SESSION_TYPE, while X11-only sessions keep X11.
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  ELECTRON_OZONE_FLAGS=(--ozone-platform=wayland)
+else
+  ELECTRON_OZONE_FLAGS=(--ozone-platform=x11)
+fi
 
 # Docker owns IPv4 loopback; Electron keeps its localhost origin on IPv6.
 # Refuse an existing IPv6 frontend instead of reusing an untrusted page.
@@ -85,7 +93,9 @@ PROXXIED_SQLITE_NATIVE_BINDING="$(node scripts/prepare-electron-sqlite.mjs)"
 export PROXXIED_SQLITE_NATIVE_BINDING
 
 printf 'Starting Proxxied. Close the Electron window or press Ctrl+C to stop.\n'
+ELECTRON_COMMAND="node node_modules/wait-on/bin/wait-on --timeout 60000 --httpTimeout 2000 \"http-get://[::1]:5173\" && node node_modules/electron/cli.js ${ELECTRON_OZONE_FLAGS[*]} electron/dist/main.js"
+
 exec node node_modules/concurrently/dist/bin/concurrently.js \
   --names frontend,electron --kill-others --kill-timeout 5000 --success command-electron \
   'cd client && node node_modules/vite/bin/vite.js --host ::1 --port 5173 --strictPort' \
-  'node node_modules/wait-on/bin/wait-on --timeout 60000 --httpTimeout 2000 "http-get://[::1]:5173" && node node_modules/electron/cli.js electron/dist/main.js'
+  "$ELECTRON_COMMAND"

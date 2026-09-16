@@ -3,6 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { usePageViewHotkeys } from "./usePageViewHotkeys";
 import { useSelectionStore } from "../store/selection";
 import { useUndoRedoStore } from "../store/undoRedo";
+import { db } from "../db";
 
 // Mock the stores
 vi.mock("../store/selection", () => ({
@@ -44,6 +45,17 @@ vi.mock("../db", () => ({
                 )
             ),
         },
+    },
+}));
+
+const mockShowCopyToast = vi.fn();
+const mockShowErrorToast = vi.fn();
+vi.mock("../store/toast", () => ({
+    useToastStore: {
+        getState: vi.fn(() => ({
+            showCopyToast: mockShowCopyToast,
+            showErrorToast: mockShowErrorToast,
+        })),
     },
 }));
 
@@ -219,6 +231,32 @@ describe("usePageViewHotkeys", () => {
 
             await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalled());
             expect(mockClipboardWriteText).toHaveBeenCalledWith("1x Sol Ring (cmd) 235\n1x Island (lea) 1");
+        });
+
+        it("should copy cards with default cardbacks (decklist parity)", async () => {
+            vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
+                { name: "Forest", set: "lea", number: "245", usesDefaultCardback: true },
+            ]);
+
+            renderHook(() => usePageViewHotkeys(["card-1"], true));
+
+            const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true });
+            document.dispatchEvent(event);
+
+            await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalled());
+            expect(mockClipboardWriteText).toHaveBeenCalledWith("1x Forest (lea) 245");
+        });
+
+        it("should show an error toast when the clipboard write is rejected", async () => {
+            mockClipboardWriteText.mockRejectedValueOnce(new Error("No serial found for selection"));
+
+            renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+            const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true });
+            document.dispatchEvent(event);
+
+            await waitFor(() => expect(mockShowErrorToast).toHaveBeenCalled());
+            expect(mockShowErrorToast).toHaveBeenCalledWith("Copy failed: the clipboard write was rejected");
         });
 
         it("should open shortcuts modal on Ctrl+/ and delete selected cards on Ctrl+Delete", async () => {
