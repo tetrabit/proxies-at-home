@@ -9,6 +9,7 @@ import {
   dispatchMpcCalibrationQueuedRecovery,
   type MpcCalibrationQueuedRecoveryResult,
 } from "./mpcCalibrationQueuedRecovery";
+import { identityLogFields, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 import { createMpcCalibrationQueueTrigger, type MpcCalibrationQueueTrigger } from "./mpcCalibrationQueueTrigger";
 import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
@@ -132,6 +133,7 @@ export function createMpcCalibrationQueueRecoveryController(
       operation: captured.operation,
       onFailure: captured.onFailure,
       async drain() {
+        mpcCalibrationLogInfo("queue recovery trigger fired", { target: captured.target, ...identityLogFields(captured.identity) });
         const result = await dispatchMpcCalibrationQueuedRecovery({
           database: captured.database,
           target: captured.target,

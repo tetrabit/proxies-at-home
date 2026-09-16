@@ -29,6 +29,10 @@ import {
   type CalibrationHarnessCredentialStore,
 } from "./calibration-harness-config.js";
 import { registerMpcBulkConsoleForwarding } from "./mpc-bulk-console.js";
+import {
+  createRendererConsoleSink,
+  registerRendererConsoleSink,
+} from "./calibration-console-sink.js";
 
 export const electronMainRuntime = {
   importServerModule(serverScript: string): Promise<Record<string, unknown>> {
@@ -558,8 +562,18 @@ function createWindow() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 
+  const rendererConsoleSink = createRendererConsoleSink({
+    logDirectory: app.getPath("userData"),
+  });
+  const rendererConsoleSinkRegistration = registerRendererConsoleSink(
+    mainWindow.webContents,
+    rendererConsoleSink,
+  );
+
   mainWindow.on("closed", () => {
     mpcBulkConsole.dispose();
+    rendererConsoleSinkRegistration.dispose();
+    void rendererConsoleSink.dispose();
     mainWindow = null;
   });
 }

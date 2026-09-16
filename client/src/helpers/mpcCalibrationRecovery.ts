@@ -9,6 +9,7 @@ import {
 } from "../../../shared/calibrationHarnessRecoveryState";
 import { mergeCalibrationHarnessSnapshots } from "../../../shared/calibrationHarnessMerge";
 import { applyMpcCalibrationRecoveryCache } from "./mpcCalibrationCache";
+import { identityLogFields, mpcCalibrationLogInfo, mpcCalibrationLogWarn } from "./mpcCalibrationLog";
 import { flushMpcCalibrationOutbox } from "./mpcCalibrationOutbox";
 import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
@@ -183,6 +184,28 @@ async function applyRecovery(
  * observation: only C4's exact publish response can create an acknowledgement.
  */
 export async function recoverAndFlushMpcCalibration(suppliedInput: MpcCalibrationRecoveryInput): Promise<MpcCalibrationRecoveryResult> {
+  const result = await recoverAndFlushMpcCalibrationImpl(suppliedInput);
+  if (result.status === "conflict") {
+    mpcCalibrationLogWarn("recovery conflict", {
+      status: result.status,
+      reason: result.reason,
+      generation: result.generation,
+      revision: result.revision,
+      ...identityLogFields(suppliedInput.identity),
+    });
+  } else {
+    mpcCalibrationLogInfo("recovery outcome", {
+      status: result.status,
+      reason: result.reason,
+      generation: result.generation,
+      revision: result.revision,
+      ...identityLogFields(suppliedInput.identity),
+    });
+  }
+  return result;
+}
+
+async function recoverAndFlushMpcCalibrationImpl(suppliedInput: MpcCalibrationRecoveryInput): Promise<MpcCalibrationRecoveryResult> {
   let identity: CalibrationHarnessPersistenceIdentity;
   let input: CapturedInput;
   try {

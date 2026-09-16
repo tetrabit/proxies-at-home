@@ -259,6 +259,7 @@ export function CalibrationModal() {
   const card = useCalibrationModalStore((state) => state.card);
   const closeModal = useCalibrationModalStore((state) => state.closeModal);
   const calibrationSyncStatus = useMpcCalibrationSyncStore((state) => state.status);
+  const calibrationSyncStatusReason = useMpcCalibrationSyncStore((state) => state.statusReason);
 
   const [dataset, setDataset] = useState<MpcCalibrationDatasetRecord | null>(
     null
@@ -944,7 +945,7 @@ export function CalibrationModal() {
                 </span>
               </div>
               <div data-testid="mpc-calibration-linked-sync-status">
-                <CalibrationSyncStatus status={calibrationSyncStatus} />
+                <CalibrationSyncStatus status={calibrationSyncStatus} reason={calibrationSyncStatusReason} />
               </div>
               <CalibrationConnectionControls />
               {status ? (

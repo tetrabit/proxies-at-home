@@ -22,6 +22,7 @@ import {
   type MpcCalibrationUnionMergeDelta,
 } from "./mpcCalibrationReconciliation";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
+import { mpcCalibrationLogError, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 
 export type MpcCalibrationReconciliationErrorCode =
   | "missing-binding"
@@ -97,6 +98,31 @@ function identityFromBinding(binding: {
  * snapshot.
  */
 export async function reconcileMpcCalibrationMerge(supplied: Readonly<{
+  database: ProxxiedDexie;
+  transport: MpcCalibrationTransport;
+  now?: () => number;
+}>): Promise<MpcCalibrationReconcileMergeResult> {
+  try {
+    const result = await reconcileMpcCalibrationMergeImpl(supplied);
+    mpcCalibrationLogInfo("merge outcome", {
+      status: "ok",
+      baseRevision: result.baseRevision,
+      datasets: result.delta.datasets,
+      cases: result.delta.cases,
+      runs: result.delta.runs,
+      assets: result.delta.assets,
+      localWins: result.delta.localWins,
+    });
+    return result;
+  } catch (error) {
+    if (error instanceof MpcCalibrationReconciliationError) {
+      mpcCalibrationLogError("merge failed", error, { code: error.code });
+    }
+    throw error;
+  }
+}
+
+async function reconcileMpcCalibrationMergeImpl(supplied: Readonly<{
   database: ProxxiedDexie;
   transport: MpcCalibrationTransport;
   now?: () => number;
@@ -277,5 +303,6 @@ export async function resetMpcCalibrationToRemote(
       ]);
     },
   );
+  mpcCalibrationLogInfo("reset outcome", { status: "ok", clearedTables: 8 });
   return { clearedTables: 8 };
 }

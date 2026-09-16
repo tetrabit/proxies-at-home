@@ -10,6 +10,7 @@ import {
   type MpcCalibrationQueueRecoveryController,
 } from "@/helpers/mpcCalibrationQueueRecoveryController";
 import type { MpcCalibrationQueuedRecoveryResult } from "@/helpers/mpcCalibrationQueuedRecovery";
+import { mpcCalibrationLogError } from "@/helpers/mpcCalibrationLog";
 import { createMpcCalibrationSyncStateStore } from "@/helpers/mpcCalibrationSyncState";
 import {
   createMpcCalibrationRefreshScheduler,
@@ -77,35 +78,37 @@ function statusFromDurableState(
   return "paired-not-hydrated";
 }
 
-function schedulerStatus(status: MpcCalibrationRefreshSchedulerStatus): MpcCalibrationSyncStatus | undefined {
+type TerminalOutcome = Readonly<{ status: MpcCalibrationSyncStatus; reason?: string }>;
+
+function schedulerStatus(status: MpcCalibrationRefreshSchedulerStatus): TerminalOutcome | undefined {
   switch (status.kind) {
     case "hydrated":
     case "no-newer":
-      return "clean";
+      return { status: "clean" };
     case "retrying":
-      return "offline";
+      return { status: "offline" };
     case "needs-reconciliation":
-      return "conflict";
+      return { status: "conflict", reason: status.reason };
     case "blocked":
-      return "blocked";
+      return { status: "blocked", reason: status.reason };
     case "unavailable":
-      return "failed";
+      return { status: "failed", reason: status.reason };
     default:
       return undefined;
   }
 }
 
-function admittedStatus(result: MpcCalibrationInitialAdmissionWithIdentityResult): MpcCalibrationSyncStatus | undefined {
+function admittedOutcome(result: MpcCalibrationInitialAdmissionWithIdentityResult): TerminalOutcome | undefined {
   switch (result.kind) {
     case "hydrated":
     case "no-remote":
-      return "clean";
+      return { status: "clean" };
     case "needs-reconciliation":
-      return "conflict";
+      return { status: "conflict", reason: result.reason };
     case "blocked":
-      return "blocked";
+      return { status: "blocked", reason: result.reason };
     case "failed":
-      return "failed";
+      return { status: "failed", reason: "transport-unavailable" };
     default:
       return undefined;
   }
@@ -140,24 +143,25 @@ async function hasBoundQueuedRecovery(
       binding !== undefined &&
       binding.ownerId === identity.ownerId && binding.harnessId === identity.harnessId && binding.connectionId === identity.connectionId &&
       binding.revision === state.base.revision;
-  } catch {
+  } catch (error) {
     // Malformed, foreign, or inaccessible durable rows are not queue admission.
+    mpcCalibrationLogError("queue recovery eligibility check failed", error);
     return false;
   }
 }
 
-function queuedRecoveryStatus(result: MpcCalibrationQueuedRecoveryResult): MpcCalibrationSyncStatus | undefined {
-  if (result.kind === "rejected") return "failed";
+function queuedRecoveryStatus(result: MpcCalibrationQueuedRecoveryResult): TerminalOutcome | undefined {
+  if (result.kind === "rejected") return { status: "failed", reason: "transport-unavailable" };
   if (result.kind !== "recovery") return undefined;
   switch (result.status) {
     case "published":
-      return "clean";
+      return { status: "clean" };
     case "conflict":
-      return "conflict";
+      return { status: "conflict", reason: result.reason };
     case "blocked":
-      return "blocked";
+      return { status: "blocked", reason: result.reason };
     case "failed":
-      return "failed";
+      return { status: "failed", reason: result.reason };
     default:
       return undefined;
   }
@@ -191,12 +195,13 @@ export function MpcCalibrationSyncLifecycle({
     let unsubscribe: (() => void) | undefined;
     let connectionControl: ReturnType<typeof useMpcCalibrationSyncStore.getState>["connectionControl"];
     let latestRow: SyncRow;
-    let terminalOutcome: MpcCalibrationSyncStatus | undefined;
+    let terminalOutcome: TerminalOutcome | undefined;
 
     const publish = () => {
       if (!disposed && selectionIsCurrent()) {
         useMpcCalibrationSyncStore.getState().publishStatus(
-          statusFromDurableState(latestRow, terminalOutcome),
+          statusFromDurableState(latestRow, terminalOutcome?.status),
+          terminalOutcome?.reason,
         );
       }
     };
@@ -241,11 +246,11 @@ export function MpcCalibrationSyncLifecycle({
       onAuthenticated(identity) {
         if (disposed || !selectionIsCurrent() || !admissionOperation.isCurrent()) return;
         handedOffIdentity = identity;
-        if (selectionIsCurrent()) useMpcCalibrationSyncStore.getState().publishStatus("paired-not-hydrated");
+        if (selectionIsCurrent()) useMpcCalibrationSyncStore.getState().publishStatus("paired-not-hydrated", undefined);
       },
     }).then(async (result) => {
       if (disposed || !selectionIsCurrent() || !admissionOperation.isCurrent()) return;
-      const initial = admittedStatus(result);
+      const initial = admittedOutcome(result);
       const identity = handedOffIdentity;
       const resultIdentity = "identity" in result ? result.identity : undefined;
       const ordinaryAdmission = admitsConnection(result, identity, target) &&
@@ -257,7 +262,7 @@ export function MpcCalibrationSyncLifecycle({
         await hasBoundQueuedRecovery(dependencies.database, identity);
       if (disposed || !selectionIsCurrent() || !admissionOperation.isCurrent()) return;
       if (!ordinaryAdmission && !queuedAdmission || identity === undefined) {
-        if (initial !== undefined && selectionIsCurrent()) useMpcCalibrationSyncStore.getState().publishStatus(initial);
+        if (initial !== undefined && selectionIsCurrent()) useMpcCalibrationSyncStore.getState().publishStatus(initial.status, initial.reason);
         return;
       }
 
@@ -297,8 +302,9 @@ export function MpcCalibrationSyncLifecycle({
       let transport;
       try {
         transport = dependencies.selectTransport({ target });
-      } catch {
-        terminalOutcome = "failed";
+      } catch (error) {
+        mpcCalibrationLogError("transport selection failed", error, { reason: "transport-unavailable" });
+        terminalOutcome = { status: "failed", reason: "transport-unavailable" };
         publish();
         return;
       }
@@ -316,7 +322,7 @@ export function MpcCalibrationSyncLifecycle({
         },
         error() {
           if (disposed || !selectionIsCurrent() || !queueOperation.isCurrent()) return;
-          terminalOutcome = "blocked";
+          terminalOutcome = { status: "blocked", reason: "sync-state-unreadable" };
           publish();
         },
       }).unsubscribe;
@@ -327,7 +333,7 @@ export function MpcCalibrationSyncLifecycle({
         transport,
         onFailure() {
           if (disposed || !selectionIsCurrent() || !queueOperation.isCurrent()) return;
-          terminalOutcome = "failed";
+          terminalOutcome = { status: "failed", reason: "queue-trigger-failed" };
           publish();
         },
         onResult(result) {

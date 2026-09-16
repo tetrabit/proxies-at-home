@@ -18,6 +18,7 @@ import {
 import type {
   CalibrationHarnessPersistenceIdentity,
 } from "../../../shared/calibrationHarnessLocalState";
+import { identityLogFields, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 import {
   captureCalibrationHarnessRevision,
   validateCalibrationHarnessLocalState,
@@ -299,6 +300,22 @@ function sessionMatches(
  * revision fences are rechecked inside the final Dexie transaction.
  */
 export async function hydrateMpcCalibrationCache(
+  input: MpcCalibrationCacheHydrationInput
+): Promise<MpcCalibrationCacheHydrationResult> {
+  const startedAt = Date.now();
+  mpcCalibrationLogInfo("hydration start", identityLogFields(input.identity));
+  const result = await hydrateMpcCalibrationCacheImpl(input);
+  mpcCalibrationLogInfo("hydration outcome", {
+    status: result.status,
+    revision: result.revision,
+    reason: result.reason,
+    durationMs: Date.now() - startedAt,
+    ...identityLogFields(input.identity),
+  });
+  return result;
+}
+
+async function hydrateMpcCalibrationCacheImpl(
   input: MpcCalibrationCacheHydrationInput
 ): Promise<MpcCalibrationCacheHydrationResult> {
   const database = input.database;
@@ -623,6 +640,19 @@ async function prepareRecoveryAssets(
  * cache. It never publishes or fabricates acknowledgement evidence.
  */
 export async function applyMpcCalibrationRecoveryCache(
+  input: MpcCalibrationRecoveryCacheInput,
+): Promise<MpcCalibrationRecoveryCacheResult> {
+  const result = await applyMpcCalibrationRecoveryCacheImpl(input);
+  mpcCalibrationLogInfo("recovery cache outcome", {
+    status: result.status,
+    revision: result.revision,
+    reason: result.reason,
+    ...identityLogFields(input.identity),
+  });
+  return result;
+}
+
+async function applyMpcCalibrationRecoveryCacheImpl(
   input: MpcCalibrationRecoveryCacheInput,
 ): Promise<MpcCalibrationRecoveryCacheResult> {
   const database = input.database;

@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import type Database from 'better-sqlite3';
 
 import {
   CALIBRATION_HARNESS_LIMITS,
   CalibrationHarnessValidationError,
+  canonicalHarnessJson,
   type CalibrationHarnessSnapshot,
   validateCalibrationHarnessSnapshot,
 } from '../../../shared/calibrationHarness.js';
@@ -140,6 +142,20 @@ function isBusy(error: unknown): boolean {
     && 'code' in error && (error as { code?: unknown }).code === 'SQLITE_BUSY';
 }
 
+/** Log-safe identity prefix: never logs full owner/harness/connection ids. */
+function shortId(value: unknown): string {
+  return typeof value === 'string' && value.length >= 8 ? value.slice(0, 8) : 'unknown';
+}
+
+/** Log-safe snapshot digest prefix for correlating publishes with the harness history. */
+function snapshotDigestPrefix(snapshot: CalibrationHarnessSnapshot): string {
+  try {
+    return createHash('sha256').update(canonicalHarnessJson(snapshot), 'utf8').digest('hex').slice(0, 8);
+  } catch {
+    return 'unknown';
+  }
+}
+
 const fixedRoutePaths = new Set(['/pair', '/unpair', '/session', '/snapshot']);
 
 function rejectUnhandledNamespaceRequest(request: Request, response: Response): void {
@@ -227,18 +243,42 @@ export function createCalibrationHarnessRouter(options: CalibrationHarnessRouter
         for (const asset of snapshot.assets) {
           const metadata = findBlobMetadata.get(identity.ownerId, asset.sha256) as BlobMetadata | undefined;
           if (!isStoredReference(metadata, asset.byteLength)) {
+            console.warn(
+              `[calibration-harness] publish rejected owner=${shortId(identity.ownerId)} harness=${shortId(identity.harnessId)} ` +
+              `reason=invalid_asset_reference asset=${asset.sha256} expectedLength=${asset.byteLength}`,
+            );
             sendError(response, 400, 'invalid_asset_reference');
             return;
           }
         }
         const revision = store.publish(identity.ownerId, identity.harnessId, expectedRevision, snapshot);
+        console.info(
+          `[calibration-harness] publish acknowledged owner=${shortId(identity.ownerId)} harness=${shortId(identity.harnessId)} ` +
+          `expectedRevision=${expectedRevision} revision=${revision.revision} digest=${snapshotDigestPrefix(snapshot)} ` +
+          `cases=${snapshot.cases.length} assets=${snapshot.assets.length}`,
+        );
         response.setHeader('ETag', calibrationHarnessRevisionEtag(revision.revision));
         response.status(expectedRevision === null ? 201 : 200).json(revision);
       } catch (error) {
         if (error instanceof CalibrationHarnessRevisionPreconditionError) {
+          let currentRevision = 'unknown';
+          try {
+            const current = store.getCurrent(identity.ownerId, identity.harnessId);
+            currentRevision = current === null ? 'none' : String(current.revision);
+          } catch {
+            // The 412 stands on its own; the observed revision is diagnostic only.
+          }
+          console.warn(
+            `[calibration-harness] publish precondition failed owner=${shortId(identity.ownerId)} harness=${shortId(identity.harnessId)} ` +
+            `expectedRevision=${expectedRevision} currentRevision=${currentRevision} submittedDigest=${snapshotDigestPrefix(snapshot)}`,
+          );
           sendError(response, 412, 'precondition_failed');
           return;
         }
+        console.warn(
+          `[calibration-harness] publish storage failure owner=${shortId(identity.ownerId)} harness=${shortId(identity.harnessId)} ` +
+          `expectedRevision=${expectedRevision} error=${error instanceof Error ? error.message : String(error)}`,
+        );
         sendError(response, isBusy(error) ? 503 : 500, isBusy(error) ? 'storage_unavailable' : 'storage_error');
       }
     },

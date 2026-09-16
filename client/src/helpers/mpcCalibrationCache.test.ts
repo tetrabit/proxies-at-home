@@ -833,3 +833,49 @@ describe("hydrateMpcCalibrationCache", () => {
     expect((await database.mpcCalibrationSyncStates.get(key))!.base!.revision).toBe(3);
   });
 });
+
+describe("hydrateMpcCalibrationCache logging", () => {
+  it("logs the hydration start and outcome with revision", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const database = freshDatabase();
+    await database.mpcCalibrationCacheBindings.put({
+      id: "mpc-calibration-cache-binding",
+      ...identity,
+      revision: 0,
+      updatedAt: 1,
+    });
+
+    const result = await hydrateMpcCalibrationCache({ database, transport: transport(1), identity });
+    expect(result).toMatchObject({ status: "hydrated", revision: 1 });
+
+    const lines = info.mock.calls.map((call) => String(call[0]));
+    const startLine = lines.find((line) => line.includes("hydration start"));
+    const outcomeLine = lines.find((line) => line.includes("hydration outcome"));
+    expect(startLine).toBeDefined();
+    expect(outcomeLine).toBeDefined();
+    expect(outcomeLine).toContain("status=hydrated");
+    expect(outcomeLine).toContain("revision=1");
+  });
+
+  it("logs the failed outcome with its reason", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    info.mockClear();
+    warn.mockClear();
+    const database = freshDatabase();
+    const corrupt = transport(1);
+    corrupt.getSnapshot = async () => { throw new Error("corrupt response"); };
+
+    const result = await hydrateMpcCalibrationCache({ database, transport: corrupt, identity });
+    expect(result).toMatchObject({ status: "failed" });
+
+    const lines = [
+      ...info.mock.calls,
+      ...warn.mock.calls,
+    ].map((call) => String(call[0]));
+    const outcomeLine = lines.find((line) => line.includes("hydration outcome"));
+    expect(outcomeLine).toBeDefined();
+    expect(outcomeLine).toContain("status=failed");
+    expect(outcomeLine).toContain(`reason=${result.reason}`);
+  });
+});

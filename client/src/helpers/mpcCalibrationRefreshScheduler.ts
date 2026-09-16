@@ -8,6 +8,7 @@ import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import { MpcCalibrationTransportError, type MpcCalibrationTransport } from "./mpcCalibrationTransport";
 import type { MpcCalibrationElectronBridge } from "./mpcCalibrationElectronTransport";
 import { selectMpcCalibrationTransport, type MpcCalibrationTransportTarget } from "./mpcCalibrationTransportSelection";
+import { identityLogFields, mpcCalibrationLogError, mpcCalibrationLogInfo, mpcCalibrationLogWarn } from "./mpcCalibrationLog";
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 type TimerHost = Readonly<{
@@ -24,7 +25,25 @@ export type MpcCalibrationRefreshSchedulerStatus =
   | Readonly<{ kind: "hydrated"; revision: number }>
   | Readonly<{ kind: "no-newer" }>
   | Readonly<{ kind: "retrying"; attempt: number; delayMs: number }>
-  | Readonly<{ kind: "blocked" | "needs-reconciliation" | "unavailable" | "cancelled" }>;
+  | Readonly<{ kind: "blocked"; reason?: string }>
+  | Readonly<{ kind: "needs-reconciliation"; reason?: string }>
+  | Readonly<{ kind: "unavailable"; reason?: string }>
+  | Readonly<{ kind: "cancelled" }>;
+
+/** Why a terminal scheduler outcome refused to continue. Surfaces verbatim in the UI. */
+export type MpcCalibrationRefreshSchedulerTerminalReason =
+  | "missing-identity-or-database"
+  | "transport-unavailable"
+  | "service-unavailable"
+  | "retries-exhausted"
+  | "session-identity-mismatch"
+  | "stale-local-base"
+  | "remote-diverged"
+  | (string & {});
+type C3Classification =
+  | Readonly<{ kind: "no-newer" }>
+  | Readonly<{ kind: "blocked"; reason: "stale-local-base" | "session-identity-mismatch" | "remote-diverged" }>
+  | Readonly<{ kind: "retry" }>;
 
 export type MpcCalibrationRefreshSchedulerOptions = Readonly<{
   database?: ProxxiedDexie;
@@ -170,18 +189,28 @@ export function createMpcCalibrationRefreshScheduler(
     database: ProxxiedDexie,
     identity: CalibrationHarnessPersistenceIdentity,
     isRunCurrent: () => boolean,
-    ): Promise<"no-newer" | "blocked" | "retry"> => {
+    ): Promise<C3Classification> => {
     try {
       const base = cleanBase(await createMpcCalibrationSyncStateStore(database, { now }).load(identity));
       const binding = await database.mpcCalibrationCacheBindings.get("mpc-calibration-cache-binding");
-      if (!isRunCurrent() || base === undefined || binding === undefined || !sameIdentity(binding, identity)) return "blocked";
+      if (!isRunCurrent() || base === undefined || binding === undefined || !sameIdentity(binding, identity)) {
+        return { kind: "blocked", reason: "stale-local-base" };
+      }
       const session = await transport.getSession({ signal: operation.signal });
-      if (!isRunCurrent() || session.ownerId !== identity.ownerId || session.harnessId !== identity.harnessId) return "blocked";
+      if (!isRunCurrent() || session.ownerId !== identity.ownerId || session.harnessId !== identity.harnessId) {
+        return { kind: "blocked", reason: "session-identity-mismatch" };
+      }
       const remote = await transport.getSnapshot({ signal: operation.signal });
-      if (!isRunCurrent() || remote === null || remote.revision !== base.revision) return "blocked";
-      return canonicalHarnessJson(remote.snapshot) === canonicalHarnessJson(base.snapshot) ? "no-newer" : "blocked";
+      if (!isRunCurrent() || remote === null || remote.revision !== base.revision) {
+        return { kind: "blocked", reason: "remote-diverged" };
+      }
+      return canonicalHarnessJson(remote.snapshot) === canonicalHarnessJson(base.snapshot)
+        ? { kind: "no-newer" }
+        : { kind: "blocked", reason: "remote-diverged" };
     } catch (error) {
-      return transientOutcome(error) === undefined ? "blocked" : "retry";
+      return transientOutcome(error) === undefined
+        ? { kind: "blocked", reason: "stale-local-base" }
+        : { kind: "retry" };
     }
   };
 
@@ -209,8 +238,7 @@ export function createMpcCalibrationRefreshScheduler(
       const decision = getMpcCalibrationRetryDecision(outcome, retryAttempts);
       if (decision.kind !== "retry") {
         retryExhausted = true;
-        emit(operation, { kind: "unavailable" });
-        stopOwnedTriggers();
+        terminal({ kind: "unavailable", reason: "retries-exhausted" });
         return false;
       }
       retryAttempts = decision.nextAttempt;
@@ -231,6 +259,9 @@ export function createMpcCalibrationRefreshScheduler(
       return true;
     };
     const terminal = (status: Extract<MpcCalibrationRefreshSchedulerStatus, { kind: "blocked" | "needs-reconciliation" | "unavailable" | "cancelled" }>) => {
+      const reason = "reason" in status ? status.reason : undefined;
+      if (status.kind === "cancelled") mpcCalibrationLogInfo("refresh terminal outcome", { kind: status.kind, ...identityLogFields(operation.identity ?? undefined) });
+      else mpcCalibrationLogWarn("refresh terminal outcome", { kind: status.kind, reason, ...identityLogFields(operation.identity ?? undefined) });
       emit(operation, status);
       stopOwnedTriggers();
     };
@@ -250,14 +281,15 @@ export function createMpcCalibrationRefreshScheduler(
       const identity = operation.identity;
       if (!isRunCurrent(operation)) return;
       if (identity === null || database === undefined) {
-        terminal({ kind: "blocked" });
+        terminal({ kind: "blocked", reason: "missing-identity-or-database" });
         return;
       }
       let selected: MpcCalibrationTransport;
       try {
         selected = selectMpcCalibrationTransport({ target, createWebTransport, electronBridge });
-      } catch {
-        terminal({ kind: "unavailable" });
+      } catch (error) {
+        mpcCalibrationLogError("transport selection threw", error, { reason: "transport-unavailable" });
+        terminal({ kind: "unavailable", reason: "transport-unavailable" });
         return;
       }
       let c3Transient: "offline" | "timeout" | undefined;
@@ -282,7 +314,7 @@ export function createMpcCalibrationRefreshScheduler(
         const session = await transport.getSession({ signal: operation.signal });
         if (!isRunCurrent(operation)) return;
         if (session.ownerId !== identity.ownerId || session.harnessId !== identity.harnessId) {
-          terminal({ kind: "blocked" });
+          terminal({ kind: "blocked", reason: "session-identity-mismatch" });
           return;
         }
       } catch (error) {
@@ -291,7 +323,7 @@ export function createMpcCalibrationRefreshScheduler(
         if (outcome !== undefined) {
           scheduleRetry(outcome);
         } else {
-          terminal({ kind: "unavailable" });
+          terminal({ kind: "unavailable", reason: "service-unavailable" });
         }
         return;
       }
@@ -311,22 +343,24 @@ export function createMpcCalibrationRefreshScheduler(
       } else if (result.status === "blocked") {
         const classification = await classifyC3Block(operation, transport, database, identity, () => isRunCurrent(operation));
         if (!isRunCurrent(operation)) return;
-        if (classification === "no-newer") {
+        if (classification.kind === "no-newer") {
           retryAttempts = 0;
           emit(operation, { kind: "no-newer" });
-        } else if (classification === "retry") {
+        } else if (classification.kind === "retry") {
           scheduleRetry(c3Transient ?? "offline");
         } else {
-          terminal({ kind: "blocked" });
+          terminal({ kind: "blocked", reason: classification.reason });
         }
       } else if (result.status === "failed" && c3Transient !== undefined) {
         scheduleRetry(c3Transient);
       } else if (result.status === "needs-reconciliation") {
-        terminal({ kind: "needs-reconciliation" });
+        terminal({ kind: "needs-reconciliation", reason: result.reason });
       } else if (result.status === "cancelled") {
         terminal({ kind: "cancelled" });
+      } else if (result.status === "failed") {
+        terminal({ kind: "unavailable", reason: result.reason ?? "refresh-failed" });
       } else {
-        terminal({ kind: "unavailable" });
+        terminal({ kind: "unavailable", reason: "unspecified" });
       }
     } finally {
       running = false;

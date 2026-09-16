@@ -259,7 +259,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
       target: "linked-web",
       operation,
       createWebTransport: () => transport,
-    })).resolves.toEqual({ kind: "blocked", target: "linked-web" });
+    })).resolves.toEqual({ kind: "blocked", target: "linked-web", reason: "foreign-physical-binding" });
 
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(await database.mpcCalibrationCacheBindings.get("mpc-calibration-cache-binding")).toEqual(foreignBinding);
@@ -316,7 +316,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
       target: "linked-web",
       operation,
       createWebTransport: () => transport,
-    })).resolves.toEqual({ kind: "needs-reconciliation", target: "linked-web" });
+    })).resolves.toEqual({ kind: "needs-reconciliation", target: "linked-web", reason: "unbased-or-dirty-local-harness" });
 
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(await database.mpcCalibrationDatasets.get("manual")).toEqual(manual);
@@ -360,7 +360,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
 
     await expect(runMpcCalibrationInitialAdmission({
       database, target: "linked-web", operation: secondOperation, createWebTransport: () => second,
-    })).resolves.toEqual({ kind: "needs-reconciliation", target: "linked-web" });
+    })).resolves.toEqual({ kind: "needs-reconciliation", target: "linked-web", reason: "unbased-local-sync-state-is-not-clean" });
 
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(await database.mpcCalibrationSyncStates.get(key)).toEqual(beforeState);
@@ -424,7 +424,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
       target: "linked-web",
       operation,
       createWebTransport: () => transport,
-    })).resolves.toEqual({ kind: "blocked", target: "linked-web" });
+    })).resolves.toEqual({ kind: "blocked", target: "linked-web", reason: "identity-changed" });
 
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(await database.mpcCalibrationLinkStates.get(["owner-a", "harness-a"])).toMatchObject({
@@ -558,6 +558,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
     })).resolves.toEqual({
       kind: "blocked",
       target: "linked-web",
+      reason: "identity-changed",
       identity: expect.objectContaining({ ownerId: "owner-a", harnessId: "harness-a" }),
     });
 
@@ -592,6 +593,7 @@ describe("runMpcCalibrationInitialAdmission", () => {
     })).resolves.toEqual({
       kind: "needs-reconciliation",
       target: "linked-web",
+      reason: "unbased-or-dirty-local-harness",
       identity: expect.objectContaining({ ownerId: "owner-a", harnessId: "harness-a" }),
     });
 

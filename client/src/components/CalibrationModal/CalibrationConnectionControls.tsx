@@ -9,7 +9,7 @@ import {
   reconcileMpcCalibrationMerge,
   resetMpcCalibrationToRemote,
 } from "@/helpers/mpcCalibrationReconcileAction";
-import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
+import { mpcCalibrationStatusReasonText, useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
 const pairingLabels = {
   offline: "Web service is offline.",
@@ -69,6 +69,7 @@ export function CalibrationConnectionControls() {
   const selection = useMpcCalibrationSyncStore((state) => state.selection);
   const selectionRevision = useMpcCalibrationSyncStore((state) => state.selectionRevision);
   const status = useMpcCalibrationSyncStore((state) => state.status);
+  const statusReason = useMpcCalibrationSyncStore((state) => state.statusReason);
   const selectLinked = useMpcCalibrationSyncStore((state) => state.selectLinked);
   const disableCurrentConnection = useMpcCalibrationSyncStore((state) => state.disableCurrentConnection);
   const credentialInput = useRef<HTMLInputElement | null>(null);
@@ -298,10 +299,13 @@ export function CalibrationConnectionControls() {
     && selection.kind === "linked"
     && selection.target === connectionProgress.target
     && selectionRevision === connectionProgress.selectionRevision;
+  const statusReasonText = (status === "blocked" || status === "conflict" || status === "failed")
+    ? mpcCalibrationStatusReasonText(statusReason)
+    : undefined;
   const displayedMessage = message
     ?? (connectionProgressIsCurrent && status === "authenticating"
       ? connectionProgress.message
-      : `Connection status: ${status}.`);
+      : `Connection status: ${status}.${statusReasonText === undefined ? "" : ` ${statusReasonText}`}`);
   return (
     <section className="mt-3 space-y-2" aria-label="Calibration sync connection controls">
       <div className="flex flex-wrap gap-2">

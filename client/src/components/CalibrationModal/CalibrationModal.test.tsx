@@ -120,6 +120,8 @@ vi.mock("@/store", () => ({
 
 vi.mock("@/store/mpcCalibrationSync", () => ({
   useMpcCalibrationSyncStore: (selector: (state: typeof linkedSync) => unknown) => selector(linkedSync),
+  mpcCalibrationStatusReasonText: (reason: string | undefined) =>
+    reason === undefined || reason === "" ? undefined : reason,
 }));
 
 vi.mock("dexie-react-hooks", () => ({

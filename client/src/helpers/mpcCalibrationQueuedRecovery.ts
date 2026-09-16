@@ -9,6 +9,7 @@ import {
   type MpcCalibrationRecoveryResult,
   type MpcCalibrationRecoveryStatus,
 } from "./mpcCalibrationRecovery";
+import { identityLogFields, mpcCalibrationLogError, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import type { MpcCalibrationCapturedOperation } from "./mpcCalibrationOperationScope";
 import type { MpcCalibrationTransport } from "./mpcCalibrationTransport";
@@ -29,6 +30,7 @@ export type MpcCalibrationQueuedRecoveryResult =
     status: MpcCalibrationDispatchStatus;
     generation?: number;
     revision?: number;
+    reason?: string;
   }>;
 
 export type MpcCalibrationQueuedRecoveryInput = Readonly<{
@@ -111,26 +113,52 @@ function boundedPositiveInteger(value: unknown): number | undefined {
   return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : undefined;
 }
 
+/**
+ * Closed set of C5 reasons that are safe to surface in the bounded dispatch
+ * result. Free-form reasons (merge-conflict detail, transport error messages)
+ * carry private data and are dropped here; they remain available in logs.
+ */
+const SURFACEABLE_RECOVERY_REASONS = new Set([
+  "committed-operation-cancelled",
+  "corrupt-sync-state",
+  "empty-snapshot-requires-reconciliation",
+  "generation-overflow",
+  "invalid-cycle-budget",
+  "invalid-input",
+  "missing-recorded-base",
+  "missing-recorded-base-or-queue",
+  "operation-not-current",
+  "precondition-failed",
+  "recovery-cycle-budget-exhausted",
+  "remote-base-regressed-or-diverged",
+  "remote-missing-after-base",
+  "transport-failure",
+  "unresolved-inflight",
+]);
+
 function mapResult(target: MpcCalibrationLinkedTransportTarget, result: MpcCalibrationRecoveryResult): MpcCalibrationQueuedRecoveryResult {
   try {
-    if (result === null || typeof result !== "object") return { kind: "recovery", target, status: "failed" };
-    const candidate = result as Readonly<{ status?: unknown; generation?: unknown; revision?: unknown }>;
+    if (result === null || typeof result !== "object") return { kind: "recovery", target, status: "failed", reason: "invalid-recovery-result" };
+    const candidate = result as Readonly<{ status?: unknown; generation?: unknown; revision?: unknown; reason?: unknown }>;
     const status = candidate.status;
     if (status === "no-queued") return { kind: "no-queued-work", target };
     if (status !== "published" && status !== "conflict" && status !== "blocked" && status !== "cancelled" && status !== "pending" && status !== "failed") {
-      return { kind: "recovery", target, status: "failed" };
+      return { kind: "recovery", target, status: "failed", reason: "invalid-recovery-status" };
     }
     const generation = boundedPositiveInteger(candidate.generation);
     const revision = boundedPositiveInteger(candidate.revision);
+    const reason = typeof candidate.reason === "string" && SURFACEABLE_RECOVERY_REASONS.has(candidate.reason) ? candidate.reason : undefined;
     return {
       kind: "recovery",
       target,
       status,
       ...(generation === undefined ? {} : { generation }),
       ...(revision === undefined ? {} : { revision }),
+      ...(reason === undefined ? {} : { reason }),
     };
-  } catch {
-    return { kind: "recovery", target, status: "failed" };
+  } catch (error) {
+    mpcCalibrationLogError("queued recovery result mapping failed", error, { target });
+    return { kind: "recovery", target, status: "failed", reason: "invalid-recovery-result" };
   }
 }
 
@@ -224,10 +252,11 @@ export async function dispatchMpcCalibrationQueuedRecovery(
   let loaded: Awaited<ReturnType<typeof load>>;
   try {
     loaded = await load(identity);
-  } catch {
+  } catch (error) {
     // C1 rejects corrupt rows and owner/key mismatches without normalizing them.
+    mpcCalibrationLogError("queued recovery sync-state read failed", error, { target, ...identityLogFields(identity) });
     if (!current(signal, isCurrent)) return cancelledResult(target);
-    return { kind: "recovery", target, status: "blocked" };
+    return { kind: "recovery", target, status: "blocked", reason: "sync-state-unreadable" };
   }
   if (!current(signal, isCurrent)) return cancelledResult(target);
   if (loaded === undefined || loaded.queued === null) return { kind: "no-queued-work", target };
@@ -241,11 +270,22 @@ export async function dispatchMpcCalibrationQueuedRecovery(
       signal,
       operation: c5Operation,
     });
-  } catch {
+  } catch (error) {
     if (!current(signal, isCurrent)) return cancelledResult(target);
-    return { kind: "recovery", target, status: "failed" };
+    mpcCalibrationLogError("queued recovery threw", error, { target, ...identityLogFields(identity) });
+    return { kind: "recovery", target, status: "failed", reason: "recovery-threw" };
   }
   const mapped = mapResult(target, result);
+  if (mapped.kind === "recovery") {
+    mpcCalibrationLogInfo("queued recovery outcome", {
+      target,
+      status: mapped.status,
+      generation: mapped.generation,
+      revision: mapped.revision,
+      reason: mapped.reason,
+      ...identityLogFields(identity),
+    });
+  }
   if (!current(signal, isCurrent)) return cancelledResult(target, mapped);
   return mapped;
 }

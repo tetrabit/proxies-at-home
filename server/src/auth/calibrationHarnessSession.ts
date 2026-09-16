@@ -321,6 +321,7 @@ export function createCalibrationHarnessSessionAuth(
       const parsedCookie = parseSessionCookie(request);
       const authorizationPresent = hasAuthorizationHeader(request);
       if (authorizationPresent && (parsedCookie.invalid || parsedCookie.token !== null)) {
+        console.warn('[calibration-harness] authentication denied path=/' + request.path + ' reason=ambiguous-credentials');
         denyUnauthorized(response);
         return;
       }
@@ -328,7 +329,16 @@ export function createCalibrationHarnessSessionAuth(
       const identity = authorizationPresent
         ? authenticatePairBearer(request)
         : authenticateSession(request)?.identity ?? null;
-      if (identity === null || !hasMatchingHarnessParam(request, identity)) {
+      if (identity === null) {
+        console.warn('[calibration-harness] authentication denied path=/' + request.path + ' reason=invalid-credential');
+        denyUnauthorized(response);
+        return;
+      }
+      if (!hasMatchingHarnessParam(request, identity)) {
+        console.warn(
+          '[calibration-harness] authentication denied path=/' + request.path + ' reason=harness-mismatch owner='
+          + (identity.ownerId.length >= 8 ? identity.ownerId.slice(0, 8) : 'unknown'),
+        );
         denyUnauthorized(response);
         return;
       }

@@ -19,6 +19,7 @@ import {
   type MpcCalibrationSession,
   type MpcCalibrationTransport,
 } from "./mpcCalibrationTransport";
+import { identityLogFields, mpcCalibrationLogError, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 
 const CACHE_BINDING_ID = "mpc-calibration-cache-binding";
 const MISSING_BLOB_CHUNK_SIZE = 512;
@@ -410,6 +411,12 @@ export async function flushMpcCalibrationOutbox(input: MpcCalibrationOutboxInput
     assertOperationCurrent(context);
     const inFlight = await markExactGeneration(context, generation, snapshot, expectedBaseRevision);
     await assertOutboundReady(context);
+    mpcCalibrationLogInfo("publish attempt", {
+      generation,
+      expectedRevision: inFlight.expectedBaseRevision,
+      assets: specs.length,
+      ...identityLogFields(context.identity),
+    });
     const published = captureRevision(
       await context.publishSnapshot(structuredClone(inFlight.snapshot), inFlight.expectedBaseRevision, { signal: context.signal }),
       inFlight.snapshot,
@@ -419,9 +426,30 @@ export async function flushMpcCalibrationOutbox(input: MpcCalibrationOutboxInput
     assertAuthenticatedSession(captureSession(await context.getSession({ signal: context.signal })), context.identity);
     assertOperationCurrent(context);
     await acknowledgeExactGeneration(context, inFlight.generation, inFlight.snapshot, inFlight.expectedBaseRevision, published);
+    mpcCalibrationLogInfo("acknowledge", {
+      generation: inFlight.generation,
+      revision: published.revision,
+      ...identityLogFields(context.identity),
+    });
+    mpcCalibrationLogInfo("publish result", {
+      status: "published",
+      generation: inFlight.generation,
+      revision: published.revision,
+      expectedRevision: inFlight.expectedBaseRevision,
+      ...identityLogFields(context.identity),
+    });
     return { status: "published", generation: inFlight.generation, revision: published.revision };
   } catch (error) {
-    return resultForError(error, context);
+    const result = resultForError(error, context);
+    if (result.status !== "no-queued") {
+      mpcCalibrationLogError("publish failed", error, {
+        status: result.status,
+        reason: result.reason,
+        errorCode: "errorCode" in result ? result.errorCode : undefined,
+        ...identityLogFields(context.identity),
+      });
+    }
+    return result;
   }
 }
 

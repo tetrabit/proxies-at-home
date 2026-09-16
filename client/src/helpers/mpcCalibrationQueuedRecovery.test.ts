@@ -175,7 +175,7 @@ describe("dispatchMpcCalibrationQueuedRecovery", () => {
     const recover = vi.fn(async (): Promise<MpcCalibrationRecoveryResult> => ({ status: "published", generation: 1, revision: 2 }));
 
     await expect(dispatchMpcCalibrationQueuedRecovery({ database, target: "linked-web", identity, transport: transport(), recover }))
-      .resolves.toEqual({ kind: "recovery", target: "linked-web", status: "blocked" });
+      .resolves.toEqual({ kind: "recovery", target: "linked-web", status: "blocked", reason: "sync-state-unreadable" });
     expect(recover).not.toHaveBeenCalled();
     expect(await database.mpcCalibrationSyncStates.get([identity.ownerId, identity.harnessId, identity.connectionId])).toEqual(corrupt);
   });
@@ -475,7 +475,7 @@ describe("dispatchMpcCalibrationQueuedRecovery", () => {
       expect(mapped).toEqual({ kind: "recovery", target: "linked-web", status: "pending", generation: 1 });
       expect(reads).toBe(1);
     } else {
-      expect(mapped).toEqual({ kind: "recovery", target: "linked-web", status: "failed" });
+      expect(mapped).toEqual({ kind: "recovery", target: "linked-web", status: "failed", reason: "invalid-recovery-result" });
     }
   });
 

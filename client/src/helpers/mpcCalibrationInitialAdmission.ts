@@ -19,6 +19,7 @@ import {
   selectMpcCalibrationTransport,
   type MpcCalibrationTransportTarget,
 } from "./mpcCalibrationTransportSelection";
+import { identityLogFields, mpcCalibrationLogError, mpcCalibrationLogInfo } from "./mpcCalibrationLog";
 
 type LinkedTarget = Exclude<MpcCalibrationTransportTarget, "local">;
 type CapturedTransport = Pick<MpcCalibrationTransport, "getSession" | "getSnapshot" | "getBlob">;
@@ -46,12 +47,70 @@ export type MpcCalibrationInitialAdmissionWithIdentityInput =
     onAuthenticated?: (identity: Readonly<CalibrationHarnessPersistenceIdentity>) => void;
   }>;
 
+/**
+ * Why admission refused the cache. The hydration layer already produces these
+ * codes; admission adds the two identity-level codes it detects itself. They
+ * surface verbatim in the UI so a blocked/conflict state is diagnosable
+ * without database forensics.
+ */
+export type MpcCalibrationAdmissionBlockedReason =
+  | "unspecified"
+  | "foreign-physical-binding"
+  | "identity-changed"
+  | "invalid-identity"
+  | "session-identity-mismatch"
+  | "corrupt-sync-state"
+  | "physical-cache-bound-to-different-identity"
+  | "remote-revision-not-newer"
+  | "session-identity-replaced";
+
+export type MpcCalibrationAdmissionNeedsReconciliationReason =
+  | "unspecified"
+  | "unbased-local-sync-state-is-not-clean"
+  | "unbased-or-dirty-local-harness"
+  | "unbound-physical-cache";
+
+export type MpcCalibrationAdmissionReason =
+  | MpcCalibrationAdmissionBlockedReason
+  | MpcCalibrationAdmissionNeedsReconciliationReason;
+
+const KNOWN_BLOCKED_REASONS: ReadonlySet<string> = new Set<MpcCalibrationAdmissionBlockedReason>([
+  "unspecified",
+  "foreign-physical-binding",
+  "identity-changed",
+  "invalid-identity",
+  "session-identity-mismatch",
+  "corrupt-sync-state",
+  "physical-cache-bound-to-different-identity",
+  "remote-revision-not-newer",
+  "session-identity-replaced",
+]);
+
+const KNOWN_NEEDS_RECONCILIATION_REASONS: ReadonlySet<string> = new Set<MpcCalibrationAdmissionNeedsReconciliationReason>([
+  "unspecified",
+  "unbased-local-sync-state-is-not-clean",
+  "unbased-or-dirty-local-harness",
+  "unbound-physical-cache",
+]);
+
+function blockedReasonFromHydration(reason: unknown): MpcCalibrationAdmissionBlockedReason {
+  return typeof reason === "string" && KNOWN_BLOCKED_REASONS.has(reason)
+    ? reason as MpcCalibrationAdmissionBlockedReason
+    : "unspecified";
+}
+
+function needsReconciliationReasonFromHydration(reason: unknown): MpcCalibrationAdmissionNeedsReconciliationReason {
+  return typeof reason === "string" && KNOWN_NEEDS_RECONCILIATION_REASONS.has(reason)
+    ? reason as MpcCalibrationAdmissionNeedsReconciliationReason
+    : "unspecified";
+}
+
 export type MpcCalibrationInitialAdmissionResult =
   | Readonly<{ kind: "local"; target: "local" }>
   | Readonly<{ kind: "hydrated"; target: LinkedTarget; revision?: number }>
   | Readonly<{ kind: "no-remote"; target: LinkedTarget }>
-  | Readonly<{ kind: "blocked"; target: LinkedTarget }>
-  | Readonly<{ kind: "needs-reconciliation"; target: LinkedTarget }>
+  | Readonly<{ kind: "blocked"; target: LinkedTarget; reason: MpcCalibrationAdmissionBlockedReason }>
+  | Readonly<{ kind: "needs-reconciliation"; target: LinkedTarget; reason: MpcCalibrationAdmissionNeedsReconciliationReason }>
   | Readonly<{ kind: "cancelled"; target: LinkedTarget }>
   | Readonly<{ kind: "failed"; target?: LinkedTarget; code: "invalid-operation" | "unavailable" }>;
 
@@ -190,6 +249,7 @@ function resultFromHydration(
   target: LinkedTarget,
   status: MpcCalibrationHydrationStatus,
   revision: unknown,
+  reason: unknown,
 ): MpcCalibrationInitialAdmissionResult {
   switch (status) {
     case "hydrated":
@@ -199,9 +259,9 @@ function resultFromHydration(
     case "no-remote-snapshot":
       return { kind: "no-remote", target };
     case "blocked":
-      return { kind: "blocked", target };
+      return { kind: "blocked", target, reason: blockedReasonFromHydration(reason) };
     case "needs-reconciliation":
-      return { kind: "needs-reconciliation", target };
+      return { kind: "needs-reconciliation", target, reason: needsReconciliationReasonFromHydration(reason) };
     case "cancelled":
       return { kind: "cancelled", target };
     case "failed":
@@ -277,7 +337,8 @@ async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput
       signal: captured.signal,
       operation: { isCurrent: captured.isCurrent },
     });
-  } catch {
+  } catch (error) {
+    mpcCalibrationLogError("session restoration threw", error, { target });
     return completed({ kind: "failed", target, code: "unavailable" });
   }
 
@@ -291,7 +352,7 @@ async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput
       // The restoration status remains the bounded failure when its state cannot be read.
     }
     if (!current(captured)) return completed({ kind: "cancelled", target });
-    if (foreignPhysicalBinding(binding, authenticatedSession)) return completed({ kind: "blocked", target });
+    if (foreignPhysicalBinding(binding, authenticatedSession)) return completed({ kind: "blocked", target, reason: "foreign-physical-binding" });
     return { result: { kind: "failed", target, code: "unavailable" }, restorationStatus };
   }
   if (restored.kind !== "restored") return completed({ kind: "failed", target, code: "unavailable" });
@@ -301,7 +362,7 @@ async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput
     connectionId: restored.identity.connectionId,
   });
   if (captured.priorIdentity !== undefined && captured.priorIdentity !== null && !sameIdentity(captured.priorIdentity, restoredIdentity)) {
-    return { result: { kind: "blocked", target }, restoredIdentity };
+    return { result: { kind: "blocked", target, reason: "identity-changed" }, restoredIdentity };
   }
   if (captured.onAuthenticated !== undefined) {
     try {
@@ -322,8 +383,9 @@ async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput
       now: captured.now,
     });
     if (!current(captured) && hydrated.status !== "cancelled") return completed({ kind: "cancelled", target });
-    return { result: resultFromHydration(target, hydrated.status, hydrated.revision), restoredIdentity };
-  } catch {
+    return { result: resultFromHydration(target, hydrated.status, hydrated.revision, hydrated.reason), restoredIdentity };
+  } catch (error) {
+    mpcCalibrationLogError("hydration threw", error, { target, ...identityLogFields(restoredIdentity) });
     return { result: { kind: "failed", target, code: "unavailable" }, restoredIdentity };
   }
 }
@@ -333,13 +395,25 @@ async function runCapturedMpcCalibrationInitialAdmission(captured: CapturedInput
  * authenticated session and durable non-secret identity first, then lets C3
  * independently recheck that server identity before any cache admission.
  */
+function admissionLogFields(result: MpcCalibrationInitialAdmissionResult): Readonly<Record<string, string | number | undefined>> {
+  return {
+    target: "target" in result ? result.target : undefined,
+    kind: result.kind,
+    code: "code" in result ? result.code : undefined,
+    reason: "reason" in result ? result.reason : undefined,
+    revision: "revision" in result ? result.revision : undefined,
+  };
+}
+
 export async function runMpcCalibrationInitialAdmission(
   input: MpcCalibrationInitialAdmissionInput,
 ): Promise<MpcCalibrationInitialAdmissionResult> {
   const captured = captureInput(input);
-  return captured === undefined
+  const result: MpcCalibrationInitialAdmissionResult = captured === undefined
     ? { kind: "failed", code: "invalid-operation" }
     : (await runCapturedMpcCalibrationInitialAdmission(captured)).result;
+  mpcCalibrationLogInfo("admission outcome", admissionLogFields(result));
+  return result;
 }
 
 export type MpcCalibrationInitialAdmissionWithIdentityResult =
@@ -351,6 +425,7 @@ export type MpcCalibrationInitialAdmissionWithIdentityResult =
     kind: "hydrated" | "no-remote" | "blocked" | "needs-reconciliation";
     target: LinkedTarget;
     revision?: number;
+    reason?: MpcCalibrationAdmissionReason;
     identity: Readonly<CalibrationHarnessPersistenceIdentity>;
   }>;
 
@@ -374,8 +449,12 @@ export async function runMpcCalibrationInitialAdmissionWithIdentity(
   input: MpcCalibrationInitialAdmissionWithIdentityInput,
 ): Promise<MpcCalibrationInitialAdmissionWithIdentityResult> {
   const captured = captureInput(input);
-  if (captured === undefined) return { kind: "failed", code: "invalid-operation" };
+  if (captured === undefined) {
+    mpcCalibrationLogInfo("admission outcome", { kind: "failed", code: "invalid-operation" });
+    return { kind: "failed", code: "invalid-operation" };
+  }
   const outcome = await runCapturedMpcCalibrationInitialAdmission(captured);
+  mpcCalibrationLogInfo("admission outcome", { ...admissionLogFields(outcome.result), ...identityLogFields(outcome.restoredIdentity) });
   if (outcome.result.kind === "failed") {
     return outcome.restorationStatus === undefined
       ? outcome.result

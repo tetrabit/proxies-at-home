@@ -176,6 +176,69 @@ describe("CalibrationConnectionControls", () => {
     expect(message).not.toContain("Connecting configured Electron service");
   });
 
+  it("explains a conflict status with its reason text", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    await act(async () => {
+      useMpcCalibrationSyncStore
+        .getState()
+        .publishStatus("conflict", "unbased-local-sync-state-is-not-clean");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Connection status: conflict.");
+    expect(message).toContain(
+      "The local sync record has unsent changes without a recorded base.",
+    );
+  });
+
+  it("explains a blocked status with its reason text", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    await act(async () => {
+      useMpcCalibrationSyncStore
+        .getState()
+        .publishStatus("blocked", "foreign-physical-binding");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Connection status: blocked.");
+    expect(message).toContain(
+      "The local calibration cache is bound to a different owner or service than the current connection.",
+    );
+  });
+
+  it("explains a failed status with its reason text", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    await act(async () => {
+      useMpcCalibrationSyncStore
+        .getState()
+        .publishStatus("failed", "service-unavailable");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toContain("Connection status: failed.");
+    expect(message).toContain("The calibration service is not reachable.");
+  });
+
+  it("does not attach a reason explanation to non-terminal statuses", async () => {
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    render(<CalibrationConnectionControls />);
+
+    await act(async () => {
+      useMpcCalibrationSyncStore
+        .getState()
+        .publishStatus("queued", "remote-diverged");
+    });
+
+    const message = screen.getByTestId("mpc-calibration-connection-message").textContent;
+    expect(message).toBe("Connection status: queued.");
+  });
+
   it("does not retain Electron connection progress after the selected connection is replaced", async () => {
     vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
     render(<CalibrationConnectionControls />);

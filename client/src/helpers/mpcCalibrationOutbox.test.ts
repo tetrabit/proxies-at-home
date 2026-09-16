@@ -568,3 +568,51 @@ describe("flushMpcCalibrationOutbox", () => {
     await expect(stateG2.load(identity)).resolves.toMatchObject({ queued: { generation: 2, snapshot: newer }, inFlight: null });
   });
 });
+
+describe("flushMpcCalibrationOutbox logging", () => {
+  it("logs the publish CAS outcome, acknowledgement, and publish result", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const database = freshDatabase();
+    await queueBoundSnapshot(database);
+    const remote = transport();
+
+    const result = await flushMpcCalibrationOutbox({ database, transport: remote, identity });
+    expect(result).toEqual({ status: "published", generation: 1, revision: 2 });
+
+    const lines = info.mock.calls.map((call) => String(call[0]));
+    const attemptLine = lines.find((line) => line.includes("publish attempt"));
+    const ackLine = lines.find((line) => line.includes("acknowledge"));
+    const resultLine = lines.find((line) => line.includes("publish result"));
+    expect(attemptLine).toBeDefined();
+    expect(ackLine).toBeDefined();
+    expect(resultLine).toBeDefined();
+    expect(attemptLine).toContain("expectedRevision=1");
+    expect(ackLine).toContain("generation=1");
+    expect(ackLine).toContain("revision=2");
+    expect(resultLine).toContain("status=published");
+    expect(resultLine).toContain("revision=2");
+    expect(resultLine).toContain("expectedRevision=1");
+  });
+
+  it("logs a publish failure with its reason and error", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    warn.mockClear();
+    error.mockClear();
+    const database = freshDatabase();
+    await queueBoundSnapshot(database);
+    const remote = transport();
+    remote.publishSnapshot = async () => { throw new MpcCalibrationTransportError("http", 412); };
+
+    const result = await flushMpcCalibrationOutbox({ database, transport: remote, identity });
+    expect(result).toEqual({ status: "conflict", reason: "precondition-failed", errorCode: "http" });
+
+    const failedLine = [
+      ...warn.mock.calls,
+      ...error.mock.calls,
+    ].map((call) => String(call[0])).find((line) => line.includes("publish failed"));
+    expect(failedLine).toBeDefined();
+    expect(failedLine).toContain("status=conflict");
+    expect(failedLine).toContain("reason=precondition-failed");
+  });
+});

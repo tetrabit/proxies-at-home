@@ -1,3 +1,5 @@
+import { mpcCalibrationStatusReasonText } from "@/store/mpcCalibrationSync";
+
 export type CalibrationSyncStatusValue =
   | "unpaired"
   | "authenticating"
@@ -12,6 +14,8 @@ export type CalibrationSyncStatusValue =
 
 export type CalibrationSyncStatusProps = {
   status: CalibrationSyncStatusValue;
+  /** Closed, non-secret reason code for a terminal status; rendered as an explanation. */
+  reason?: string;
 };
 
 function statusLabel(status: CalibrationSyncStatusValue): string {
@@ -41,9 +45,18 @@ function statusLabel(status: CalibrationSyncStatusValue): string {
   }
 }
 
+const TERMINAL_STATUSES: ReadonlySet<CalibrationSyncStatusValue> = new Set([
+  "conflict",
+  "blocked",
+  "failed",
+  "offline",
+]);
+
 export function CalibrationSyncStatus({
   status,
+  reason,
 }: CalibrationSyncStatusProps) {
+  const explanation = reason === undefined ? undefined : mpcCalibrationStatusReasonText(reason);
   return (
     <p
       role="status"
@@ -52,6 +65,9 @@ export function CalibrationSyncStatus({
       className="text-xs text-gray-600 dark:text-gray-300"
     >
       {statusLabel(status)}
+      {TERMINAL_STATUSES.has(status) && explanation !== undefined && (
+        <span className="block">{explanation}</span>
+      )}
     </p>
   );
 }

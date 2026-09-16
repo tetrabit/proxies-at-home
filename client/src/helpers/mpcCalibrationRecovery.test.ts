@@ -635,3 +635,63 @@ describe("recoverAndFlushMpcCalibration", () => {
     expect(malformedPublish).not.toHaveBeenCalled();
   });
 });
+
+describe("recoverAndFlushMpcCalibration logging", () => {
+  it("logs the recovery outcome with status, generation, and revision", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { database, base } = await (async () => {
+      const database = fresh();
+      const base = snapshot("base");
+      const local = structuredClone(base);
+      local.cases[0]!.notes = "local edit";
+      const state = createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+      await state.storeBaseWhenClean(identity, { revision: 1, snapshot: base });
+      await state.queueSnapshot(identity, local);
+      await database.mpcCalibrationDatasets.bulkPut(local.datasets as never);
+      await database.mpcCalibrationCases.bulkPut(local.cases as never);
+      await database.mpcCalibrationCacheBindings.put({ id: "mpc-calibration-cache-binding", ...identity, revision: 1, updatedAt: 1 });
+      return { database, base };
+    })();
+    const transport = remote(base, 1);
+
+    const result = await recoverAndFlushMpcCalibration({ database, transport, identity, maxCycles: 4 });
+    expect(result).toMatchObject({ status: "published" });
+
+    const outcomeCall = info.mock.calls.find(
+      (call) => typeof call[0] === "string" && (call[0] as string).includes("recovery outcome"),
+    );
+    expect(outcomeCall).toBeDefined();
+    expect(outcomeCall![0]).toContain("status=published");
+    expect(outcomeCall![0]).toContain(`revision=${result.revision}`);
+  });
+
+  it("logs a recovery conflict with its reason", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    info.mockClear();
+    warn.mockClear();
+    const database = fresh();
+    const base = snapshot("base");
+    const local = structuredClone(base);
+    local.cases[0]!.notes = "local A";
+    const state = createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    await state.storeBaseWhenClean(identity, { revision: 1, snapshot: base });
+    await state.queueSnapshot(identity, local);
+    await database.mpcCalibrationDatasets.bulkPut(local.datasets as never);
+    await database.mpcCalibrationCases.bulkPut(local.cases as never);
+    await database.mpcCalibrationCacheBindings.put({ id: "mpc-calibration-cache-binding", ...identity, revision: 1, updatedAt: 1 });
+    const advanced = structuredClone(base);
+    advanced.cases[0]!.notes = "remote advance";
+    const transport = remote(advanced, 2);
+
+    const result = await recoverAndFlushMpcCalibration({ database, transport, identity, maxCycles: 4 });
+    expect(result).toMatchObject({ status: "conflict" });
+
+    const conflictCall = [
+      ...info.mock.calls,
+      ...warn.mock.calls,
+    ].find((call) => typeof call[0] === "string" && (call[0] as string).includes("recovery conflict"));
+    expect(conflictCall).toBeDefined();
+    expect(conflictCall![0]).toContain("status=conflict");
+  });
+});
