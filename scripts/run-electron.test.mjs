@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile, symlink } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, writeFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
@@ -37,9 +38,26 @@ async function fixture({ omit } = {}) {
     await mkdir(path.join(dir, 'node_modules'), { recursive: true });
     await symlink(path.join(root, 'node_modules', name), path.join(dir, 'node_modules', name));
   }
-  for (const name of ['electron/dist/main.js', 'electron/dist/preload.cjs', 'server/dist/server/src/index.js', 'electron/dist/microservice-package/microservice-artifact.json']) {
+  for (const name of ['electron/dist/main.js', 'electron/dist/preload.cjs']) {
     if (name !== omit) await file(name, '{}');
   }
+  if (omit !== 'server/dist/server/src/index.js') {
+    await file('server/dist/server/src/index.js', 'export async function startServer() {}\nexport async function startServerRuntime() {}\n');
+  }
+  if (omit !== 'electron/dist/microservice-package/microservice-artifact.json') {
+    const binaryContents = 'fixture native binary\n';
+    await file('electron/dist/microservice-package/scryfall-cache-fixture', binaryContents);
+    await chmod(path.join(dir, 'electron', 'dist', 'microservice-package', 'scryfall-cache-fixture'), 0o755);
+    await file('electron/dist/microservice-package/microservice-artifact.json', JSON.stringify({
+      schemaVersion: 2,
+      binary: { fileName: 'scryfall-cache-fixture', sha256: createHash('sha256').update(binaryContents).digest('hex') },
+    }));
+  }
+  await file('scripts/verify-electron-services.mjs', `
+    import { appendFileSync } from 'node:fs';
+    appendFileSync('verify-services.log', 'verified\\n');
+    if (process.env.LAUNCHER_FIXTURE_VERIFY_FAIL) process.exit(28);
+  `);
   await file('node_modules/electron/dist/electron', 'fixture');
   await file('scripts/prepare-electron-sqlite.mjs', `console.log(${JSON.stringify(path.join(dir, 'electron-fixture.node'))});`);
   await file('scripts/prepare-printer-calibration.mjs', `
@@ -85,7 +103,11 @@ async function fixture({ omit } = {}) {
     const path = require('node:path');
     assert.equal(process.env.PRINTER_CALIBRATION_BIN, process.env.FIXTURE_EXPECT_PRINTER_BIN || path.join(process.cwd(), 'printer-calibration-fixture', 'bin', 'printer-calibration'));
     assert.equal(process.env.PRINTER_CALIBRATION_PYTHON, process.env.FIXTURE_EXPECT_PRINTER_PYTHON || path.join(process.cwd(), 'printer-calibration-fixture', 'bin', 'python'));
-    assert.deepEqual(process.argv.slice(2), ['electron/dist/main.js']);
+    // The launcher may pass an explicit ozone platform flag before the entrypoint.
+    const argv = process.argv.slice(2);
+    const ozone = argv.filter((arg) => arg.startsWith('--ozone-platform='));
+    assert.equal(argv.length, ozone.length + 1, JSON.stringify(argv));
+    assert.equal(argv[argv.length - 1], 'electron/dist/main.js');
     assert.match(fs.readFileSync('electron/dist/main.js', 'utf8'), /registerCalibrationHarnessIpcHandlers/);
     assert.match(fs.readFileSync('electron/dist/preload.cjs', 'utf8'), /calibrationHarnessExecute/);
     fetch('http://localhost:5173').then(async response => {
@@ -130,9 +152,18 @@ test('launcher works from another cwd with spaces, waits for frontend, and clean
   const dir = await fixture();
   const result = await launch(dir);
   assert.equal(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'verify-services.log'), 'utf8'), 'verified\n');
   assert.match(result.output, /FIXTURE_FRONTEND_READY/);
   assert.match(result.output, /FIXTURE_ELECTRON_OPENED/);
   await assertFrontendGone(dir);
+});
+
+test('a failed service verification prevents frontend and Electron launch', async () => {
+  const dir = await fixture();
+  const result = await launch(dir, { env: { LAUNCHER_FIXTURE_VERIFY_FAIL: '1' } });
+  assert.notEqual(result.code, 0, result.output);
+  assert.equal(await readFile(path.join(dir, 'verify-services.log'), 'utf8'), 'verified\n');
+  assert.doesNotMatch(result.output, /FIXTURE_FRONTEND_READY|FIXTURE_ELECTRON_OPENED/);
 });
 
 test('launcher refreshes the full Electron closure before it opens Electron', async () => {

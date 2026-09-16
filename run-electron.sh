@@ -34,6 +34,12 @@ if [[ ! -f electron/dist/microservice-package/microservice-artifact.json ]]; the
   exit 1
 fi
 
+# Verify the services the desktop app depends on before anything starts: the
+# server build must expose the expected entrypoints, the staged native
+# microservice binary must be intact, and the optional calibration harness
+# connection is reported (configured/invalid/stale) without blocking launch.
+node scripts/verify-electron-services.mjs --project-dir "$project_dir"
+
 export NODE_ENV=development
 # Electron launched from another Electron-based terminal must still open a GUI.
 unset ELECTRON_RUN_AS_NODE
