@@ -2,12 +2,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
-const { mockPair } = vi.hoisted(() => ({
+const { mockPair, mockMerge, mockReset, ReconciliationErrorMock } = vi.hoisted(() => ({
   mockPair: vi.fn(),
+  mockMerge: vi.fn(),
+  mockReset: vi.fn(),
+  ReconciliationErrorMock: class extends Error {
+    readonly code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = "MpcCalibrationReconciliationError";
+      this.code = code;
+    }
+  },
 }));
 
 vi.mock("@/helpers/mpcCalibrationWebPairing", () => ({
   pairMpcCalibrationWeb: mockPair,
+}));
+
+vi.mock("@/helpers/mpcCalibrationReconcileAction", () => ({
+  MpcCalibrationReconciliationError: ReconciliationErrorMock,
+  reconcileMpcCalibrationMerge: mockMerge,
+  resetMpcCalibrationToRemote: mockReset,
 }));
 
 import { CalibrationConnectionControls } from "./CalibrationConnectionControls";
@@ -332,5 +348,93 @@ describe("CalibrationConnectionControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disable calibration sync" }));
 
     await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("Unable to disable"));
+  });
+});
+
+describe("CalibrationConnectionControls conflict recovery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    vi.stubGlobal("electronAPI", { calibrationHarnessExecute: vi.fn() });
+    useMpcCalibrationSyncStore.getState().clearSelection();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const selectLinkedElectronAndPublish = (status: "conflict" | "blocked" | "clean") => {
+    act(() => {
+      useMpcCalibrationSyncStore.getState().selectLinked("linked-electron");
+    });
+    act(() => {
+      useMpcCalibrationSyncStore.getState().publishStatus(status);
+    });
+  };
+
+  it("offers merge and reset only in the conflict state", () => {
+    selectLinkedElectronAndPublish("conflict");
+    render(<CalibrationConnectionControls />);
+
+    expect(screen.getByRole("button", { name: "Merge local and remote" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset to remote" })).toBeTruthy();
+  });
+
+  it("offers only reset in the blocked state", () => {
+    selectLinkedElectronAndPublish("blocked");
+    render(<CalibrationConnectionControls />);
+
+    expect(screen.queryByRole("button", { name: "Merge local and remote" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Reset to remote" })).toBeTruthy();
+  });
+
+  it("offers neither action in the clean state", () => {
+    selectLinkedElectronAndPublish("clean");
+    render(<CalibrationConnectionControls />);
+
+    expect(screen.queryByRole("button", { name: "Merge local and remote" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset to remote" })).toBeNull();
+  });
+
+  it("merge re-selects the linked target with a delta summary after success", async () => {
+    mockMerge.mockResolvedValue({
+      baseRevision: 1,
+      delta: { datasets: 0, cases: 1, runs: 2, assets: 4, localWins: 0 },
+    });
+    selectLinkedElectronAndPublish("conflict");
+    render(<CalibrationConnectionControls />);
+    const revisionBefore = useMpcCalibrationSyncStore.getState().selectionRevision;
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge local and remote" }));
+
+    expect(mockMerge).toHaveBeenCalledTimes(1);
+    expect(mockMerge.mock.calls[0][0].transport).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("1 remote case, 4 assets added"));
+    expect(useMpcCalibrationSyncStore.getState().selectionRevision).toBeGreaterThan(revisionBefore);
+  });
+
+  it("merge surfaces the typed reconciliation error without re-selecting", async () => {
+    mockMerge.mockRejectedValue(new ReconciliationErrorMock("identity-mismatch", "The service identity does not match this local cache; use Reset to remote."));
+    selectLinkedElectronAndPublish("conflict");
+    render(<CalibrationConnectionControls />);
+    const revisionBefore = useMpcCalibrationSyncStore.getState().selectionRevision;
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge local and remote" }));
+
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("does not match this local cache"));
+    expect(useMpcCalibrationSyncStore.getState().selectionRevision).toBe(revisionBefore);
+  });
+
+  it("reset clears through the action and re-selects the linked target", async () => {
+    mockReset.mockResolvedValue({ clearedTables: 8 });
+    selectLinkedElectronAndPublish("blocked");
+    render(<CalibrationConnectionControls />);
+    const revisionBefore = useMpcCalibrationSyncStore.getState().selectionRevision;
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset to remote" }));
+
+    expect(mockReset).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("cleared"));
+    expect(useMpcCalibrationSyncStore.getState().selectionRevision).toBeGreaterThan(revisionBefore);
   });
 });

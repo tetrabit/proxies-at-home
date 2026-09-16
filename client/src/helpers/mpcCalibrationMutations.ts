@@ -226,3 +226,14 @@ export function createMpcCalibrationMutationCoordinator(
     },
   };
 }
+
+/**
+ * Builds the validated snapshot of the current local calibration rows. The
+ * snapshot root carries only the format version; callers that publish or
+ * merge adopt the remote root metadata separately.
+ */
+export async function buildLocalCalibrationSnapshot(
+  database: ProxxiedDexie,
+): Promise<CalibrationHarnessSnapshot> {
+  return finalSnapshot(database, {});
+}

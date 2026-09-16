@@ -3,6 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { db } from "@/db";
 import { pairMpcCalibrationWeb } from "@/helpers/mpcCalibrationWebPairing";
 import { createMpcCalibrationOperationScope } from "@/helpers/mpcCalibrationOperationScope";
+import { selectMpcCalibrationTransport } from "@/helpers/mpcCalibrationTransportSelection";
+import {
+  MpcCalibrationReconciliationError,
+  reconcileMpcCalibrationMerge,
+  resetMpcCalibrationToRemote,
+} from "@/helpers/mpcCalibrationReconcileAction";
 import { useMpcCalibrationSyncStore } from "@/store/mpcCalibrationSync";
 
 const pairingLabels = {
@@ -73,6 +79,7 @@ export function CalibrationConnectionControls() {
   const [message, setMessage] = useState<string | null>(null);
   const [connectionProgress, setConnectionProgress] = useState<ConnectionProgress | null>(null);
   const [pairing, setPairing] = useState(false);
+  const [reconciling, setReconciling] = useState<"merge" | "reset" | null>(null);
   const isElectron = electronRenderer();
   const uiKey = `${isElectron}:${selectionRevision}`;
   if (renderedUiKey.current !== uiKey) {
@@ -118,6 +125,62 @@ export function CalibrationConnectionControls() {
       if (input !== null) input.value = "";
     };
   }, []);
+
+  useEffect(() => {
+    // A re-selection (or any lifecycle re-run) supersedes an in-flight
+    // reconciliation; the new admission owns the queue/hydration from here.
+    setReconciling(null);
+  }, [selectionRevision]);
+
+  /**
+   * Explicit conflict recovery. "merge" keeps every local row, adds the
+   * remote-only rows, and queues the union for the existing publish path;
+   * "reset" discards the local calibration tables so the next admission
+   * re-pairs and re-hydrates from the remote snapshot. Both re-select the
+   * linked target so the lifecycle re-admits.
+   */
+  const reconcile = (mode: "merge" | "reset") => {
+    const state = useMpcCalibrationSyncStore.getState();
+    if (state.selection.kind !== "linked") return;
+    const target = state.selection.target;
+    const epoch = uiEpoch.current;
+    const selectionSnapshot = state.selectionRevision;
+    const stillCurrent = () => uiEpoch.current === epoch
+      && useMpcCalibrationSyncStore.getState().selectionRevision === selectionSnapshot;
+    setReconciling(mode);
+    const finish = (nextMessage: string) => {
+      if (!stillCurrent()) return;
+      setMessage(nextMessage);
+      useMpcCalibrationSyncStore.getState().selectLinked(target);
+    };
+    const fail = (caught: unknown) => {
+      if (!stillCurrent()) return;
+      setMessage(
+        caught instanceof MpcCalibrationReconciliationError
+          ? caught.message
+          : "Reconciliation failed unexpectedly; try Reset to remote.",
+      );
+    };
+    const done = () => {
+      if (stillCurrent()) setReconciling(null);
+    };
+    if (mode === "merge") {
+      void reconcileMpcCalibrationMerge({
+        database: db,
+        transport: selectMpcCalibrationTransport({ target }),
+      })
+        .then((result) => finish(
+          `Merged local and remote (${result.delta.cases} remote case${result.delta.cases === 1 ? "" : "s"}, ${result.delta.assets} assets added); publishing…`,
+        ))
+        .catch(fail)
+        .finally(done);
+      return;
+    }
+    void resetMpcCalibrationToRemote(db)
+      .then(() => finish("Local calibration data cleared. Reconnecting to the remote snapshot…"))
+      .catch(fail)
+      .finally(done);
+  };
 
   const beginWebPairing = () => {
     cancelPairing();
@@ -271,7 +334,31 @@ export function CalibrationConnectionControls() {
             Disable calibration sync
           </Button>
         ) : null}
+        {linked && (status === "conflict" || status === "blocked") && reconciling === null ? (
+          <>
+            {status === "conflict" ? (
+              <Button size="xs" color="purple" onClick={() => reconcile("merge")}>
+                Merge local and remote
+              </Button>
+            ) : null}
+            <Button size="xs" color="light" onClick={() => reconcile("reset")}>
+              Reset to remote
+            </Button>
+          </>
+        ) : null}
+        {linked && reconciling !== null ? (
+          <Button size="xs" color="light" disabled>
+            {reconciling === "merge" ? "Merging…" : "Resetting…"}
+          </Button>
+        ) : null}
       </div>
+      {linked && (status === "conflict" || status === "blocked") && reconciling === null ? (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          {status === "conflict"
+            ? "Merge keeps every local capture and adds the remote-only rows."
+            : "Reset discards local calibration data and re-downloads the remote snapshot."}
+        </p>
+      ) : null}
       <p data-testid="mpc-calibration-connection-message" className="text-xs text-gray-600 dark:text-gray-300" aria-live="polite">
         {displayedMessage}
       </p>

@@ -111,7 +111,7 @@ export default defineConfig(({ mode }) => {
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/vitest.setup.ts'],
-    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**'],
+    exclude: ['**/node_modules/**', '**/dist/**', 'tests/e2e/**', '**/.review-artifacts/**'],
     // Increase timeout to prevent flaky failures during coverage runs
     testTimeout: 60000,
     hookTimeout: 60000,

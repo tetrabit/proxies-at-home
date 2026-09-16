@@ -6,6 +6,10 @@ import { ProxxiedDexie } from "./db";
 import type { CardOption } from "@/types";
 import { validateCalibrationHarnessLocalState } from "../../shared/calibrationHarnessLocalState";
 
+// fake-indexeddb preserves the platform Blob brand through IDB structured
+// clone; jsdom's Blob shim serializes to a plain object, unlike a browser Blob.
+globalThis.Blob = NodeBlob as unknown as typeof Blob;
+
 const cardsV21Schema =
   "&uuid, imageId, order, name, needsEnrichment, needs_token, linkedFrontId, linkedBackId, projectId, oracle_id, scryfall_id";
 
