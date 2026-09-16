@@ -142,4 +142,45 @@ describe('CardImageSvg', () => {
     act(() => MockIntersectionObserver.instances.at(-1)!.intersect(svg));
     expect(container.querySelector('image')!.getAttribute('href')).toBe('two.png');
   });
+
+  it('renders no image element at all while the URL is empty', () => {
+    const { container, rerender } = render(<CardImageSvg id="card-empty" url="" />);
+    const svg = screen.getByRole('img', { name: 'Card image for card-empty' });
+
+    // Visible, but no URL: no <image href=""> may reach the DOM.
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
+    expect(container.querySelector('image')).toBeNull();
+
+    // Hydrating the URL later renders the image normally.
+    rerender(<CardImageSvg id="card-empty" url="hydrated.png" />);
+    act(() => MockIntersectionObserver.instances.at(-1)!.intersect(svg));
+    expect(container.querySelector('image')!.getAttribute('href')).toBe('hydrated.png');
+  });
+
+  it('renders the fallback directly when the primary URL is empty', () => {
+    const { container } = render(
+      <CardImageSvg id="card-fallback" url="" fallbackUrl="fallback.png" />
+    );
+    const svg = screen.getByRole('img', { name: 'Card image for card-fallback' });
+
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
+    expect(container.querySelector('image')!.getAttribute('href')).toBe('fallback.png');
+  });
+
+  it('reports a terminal error for an empty primary instead of cycling fallbacks', () => {
+    const onError = vi.fn();
+    const { container } = render(
+      <CardImageSvg id="card-fallback-error" url="" fallbackUrl="fallback.png" onError={onError} />
+    );
+    const svg = screen.getByRole('img', { name: 'Card image for card-fallback-error' });
+
+    act(() => MockIntersectionObserver.instances[0].intersect(svg));
+    const image = container.querySelector('image')!;
+    expect(image.getAttribute('href')).toBe('fallback.png');
+
+    fireEvent.error(image);
+    expect(onError).toHaveBeenCalledTimes(1);
+    // Still the fallback: no second attempt was scheduled.
+    expect(image.getAttribute('href')).toBe('fallback.png');
+  });
 });

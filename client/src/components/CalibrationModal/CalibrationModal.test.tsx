@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
+import type { CardOption } from "../../../../shared/types";
 
 const {
   mockCalibrationState,
@@ -509,6 +510,7 @@ describe("CalibrationModal", () => {
       model: { sourceStats: Record<string, { selections: number; appearances: number }> };
       profiles: Record<string, never>;
     }) => void;
+    let resolveSearch!: (value: unknown[]) => void;
     const replacementDataset = {
       ...dataset,
       id: "remote-dataset-after-model",
@@ -524,6 +526,14 @@ describe("CalibrationModal", () => {
       () =>
         new Promise((resolve) => {
           resolveContext = resolve;
+        })
+    );
+    // Hold the in-flight candidate search until after the live replacement so
+    // its join lands after the opening publication is invalidated.
+    mockSearchMpcAutofill.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSearch = resolve;
         })
     );
 
@@ -543,6 +553,7 @@ describe("CalibrationModal", () => {
     });
 
     await act(async () => {
+      resolveSearch([]);
       resolveContext({
         calibrationCases: [],
         model: { sourceStats: { MPC: { selections: 1, appearances: 1 } } },
@@ -553,7 +564,11 @@ describe("CalibrationModal", () => {
     await waitFor(() => {
       expect(screen.getByText("Model Remote Sol Ring")).toBeTruthy();
     });
-    expect(mockDbImagesGet).not.toHaveBeenCalled();
+    // The search and preference context both settled after the opening
+    // publication was invalidated: no candidate gallery, no ranking, no
+    // preference stats may leak into the UI.
+    expect(screen.queryByTestId("mpc-calibration-candidate-cand-1")).toBeNull();
+    expect(screen.queryByText(/Source Win Rate/i)).toBeNull();
     expect(mockRankCandidates).not.toHaveBeenCalled();
   });
 
@@ -1201,9 +1216,15 @@ describe("CalibrationModal", () => {
     );
 
     render(<CalibrationModal />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: /use as expected choice/i })
-    );
+    const expectedChoiceButton = await screen.findByRole("button", {
+      name: /use as expected choice/i,
+    });
+    // The choice button activates only once this candidate's own image is
+    // ready; wait for that instead of racing the click against it.
+    await waitFor(() => {
+      expect(expectedChoiceButton.hasAttribute("disabled")).toBe(false);
+    });
+    fireEvent.click(expectedChoiceButton);
 
     await waitFor(() => {
       expect(mockSaveCaseWithAssets).toHaveBeenCalledWith(
@@ -1624,5 +1645,218 @@ describe("CalibrationModal", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(mockRankCandidates).not.toHaveBeenCalled();
+
+    // Restore the shared store fixture so later tests open on a fresh modal.
+    mockCalibrationState.open = true;
+  });
+
+  describe("cold-start candidate search", () => {
+    beforeEach(() => {
+      mockCalibrationState.open = true;
+    });
+    const coldCandidate = {
+      identifier: "cand-1",
+      name: "Sol Ring",
+      rawName: "Sol Ring [C21] {267}",
+      smallThumbnailUrl: "thumb",
+      mediumThumbnailUrl: "thumb",
+      dpi: 600,
+      tags: [],
+      sourceName: "MPC",
+      source: "mpc",
+      extension: "png",
+      size: 100,
+    };
+
+    it("dispatches the candidate search immediately, before the dataset refresh resolves", async () => {
+      let resolveDatasets!: () => void;
+      const callOrder: string[] = [];
+      mockListDatasets.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            callOrder.push("listDatasets");
+            resolveDatasets = () => {
+              callOrder.push("listDatasets:resolved");
+              resolve([dataset]);
+            };
+          })
+      );
+      mockSearchMpcAutofill.mockImplementationOnce(async () => {
+        callOrder.push("search");
+        return [coldCandidate];
+      });
+      mockGetSharedMpcPreferenceContext.mockImplementationOnce(async () => {
+        callOrder.push("preferenceContext");
+        return { calibrationCases: [], model: null, profiles: {} };
+      });
+
+      render(<CalibrationModal />);
+
+      // The search must be in flight while the dataset refresh is still
+      // pending and the preference context has not even started.
+      await waitFor(() => {
+        expect(mockSearchMpcAutofill).toHaveBeenCalledTimes(1);
+      });
+      expect(callOrder[0]).toBe("search");
+      expect(callOrder).not.toContain("listDatasets:resolved");
+      expect(mockGetSharedMpcPreferenceContext).not.toHaveBeenCalled();
+
+      // Completing the dataset chain still dispatches the preference context
+      // without waiting for the search to settle.
+      await act(async () => {
+        resolveDatasets();
+      });
+      await waitFor(() => {
+        expect(mockGetSharedMpcPreferenceContext).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it("searches and publishes candidates for a card whose imageId is not yet hydrated", async () => {
+      const originalCard = mockCalibrationState.card;
+      try {
+        // A card whose image record has not been hydrated carries no imageId.
+        (mockCalibrationState as { card: CardOption }).card = {
+          uuid: "card-1",
+          name: "Sol Ring",
+          order: 1,
+          isUserUpload: false,
+          set: "C21",
+          number: "267",
+        };
+
+        render(<CalibrationModal />);
+
+        // The candidate gallery publishes from the name search alone, even
+        // though the image record never hydrates.
+        const candidate = await screen.findByTestId(
+          "mpc-calibration-candidate-cand-1"
+        );
+        expect(candidate).toBeTruthy();
+        expect(mockSearchMpcAutofill).toHaveBeenCalledWith(
+          "Sol Ring",
+          "CARD",
+          false,
+          { includeAllLanguages: true }
+        );
+        expect(mockDbImagesGet).not.toHaveBeenCalled();
+        expect(
+          screen.getByTestId("mpc-calibration-candidate-search-status").textContent
+        ).toContain("1 candidates found");
+
+        // The source tile stays on its placeholder instead of an empty href.
+        expect(
+          screen.getByTestId("source-card-1").textContent
+        ).toBe("image");
+      } finally {
+        mockCalibrationState.card = originalCard;
+      }
+    });
+
+    it("shows an active search status while the candidate search is in flight", async () => {
+      let resolveSearch!: (value: unknown[]) => void;
+      mockSearchMpcAutofill.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSearch = resolve;
+          })
+      );
+
+      render(<CalibrationModal />);
+
+      const status = await screen.findByTestId(
+        "mpc-calibration-candidate-search-status"
+      );
+      expect(status.textContent).toContain("Searching MPC Autofill candidates...");
+      expect(screen.queryByText("0 candidates found")).toBeNull();
+
+      await act(async () => {
+        resolveSearch([coldCandidate]);
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("mpc-calibration-candidate-search-status").textContent
+        ).toContain("1 candidates found");
+      });
+    });
+
+    it("refines scores and top picks asynchronously after candidates are published", async () => {
+      let resolveContext!: (value: {
+        calibrationCases: [];
+        model: unknown;
+        profiles: Record<string, never>;
+      }) => void;
+      mockGetSharedMpcPreferenceContext.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveContext = resolve;
+          })
+      );
+      mockRankCandidates.mockResolvedValueOnce({
+        fullProcess: [
+          {
+            card: coldCandidate,
+            score: 4.2,
+            breakdown: {
+              metadata: 1,
+              visual: 2,
+              preference: 0.5,
+              dpi: 0.7,
+            },
+          },
+        ],
+        exactPrinting: [],
+        artMatch: [],
+        fullCard: [],
+        allMatches: [],
+      });
+      mockDeferredImageIds.add("calibration-cand-1");
+
+      render(<CalibrationModal />);
+
+      // The gallery is published while the preference context is still
+      // training; ranking has not started.
+      const candidate = await screen.findByTestId(
+        "mpc-calibration-candidate-cand-1"
+      );
+      expect(candidate).toBeTruthy();
+      expect(mockRankCandidates).not.toHaveBeenCalled();
+
+      // Once the candidate's own image is ready, the choice button is live.
+      await act(async () => {
+        mockImageCallbacks.get("calibration-cand-1")?.onLoad?.();
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("mpc-calibration-candidate-cand-1").getAttribute(
+            "data-image-state"
+          )
+        ).toBe("ready");
+        expect(
+          screen.getByRole("button", { name: /use as expected choice/i })
+        ).toHaveProperty("disabled", false);
+      });
+
+      // When the preference context settles, ranking runs and the top pick
+      // populates without re-publishing the candidate gallery.
+      await act(async () => {
+        resolveContext({
+          calibrationCases: [],
+          model: {
+            id: "model-1",
+            sourceStats: { MPC: { selections: 1, appearances: 2 } },
+          },
+          profiles: {},
+        });
+      });
+      await waitFor(() => {
+        expect(mockRankCandidates).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("mpc-calibration-candidate-cand-1").textContent
+        ).toContain("TOP PICK");
+      });
+      expect(screen.getAllByTestId("mpc-calibration-candidate-cand-1")).toHaveLength(1);
+    });
   });
 });

@@ -116,8 +116,12 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
         };
     }, [url]);
 
-    // Determine actual URL to use (primary or fallback)
-    const actualUrl = useFallback && fallbackUrl ? fallbackUrl : url;
+    // Determine actual URL to use (primary or fallback). When the primary is
+    // unresolved (empty), fall straight back to the fallback instead of relying
+    // on an empty-href load error to trigger the switch.
+    const actualUrl = url
+        ? (useFallback && fallbackUrl ? fallbackUrl : url)
+        : (fallbackUrl ?? '');
     const renderUrl = isVisible ? actualUrl : '';
 
     return (
@@ -159,8 +163,10 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
                 />
             )}
 
-            {/* Only render image element when visible, hide until loaded */}
-            {isVisible && (
+            {/* Only render image element when visible AND a URL is resolved.
+                An empty href renders <image href=""> which browsers warn about
+                and may attempt to load as the document URL. */}
+            {isVisible && renderUrl && (
                 <image
                     href={renderUrl}
                     x="0"
@@ -176,8 +182,10 @@ export const CardImageSvg: React.FC<CardImageSvgProps> = ({
                         notifyLoad(loadTokenRef.current);
                     }}
                     onError={() => {
-                        // Switch to fallback URL if available and not already using it
-                        if (fallbackUrl && !useFallback) {
+                        // Switch to the fallback URL only when a non-empty
+                        // primary was in flight. An already-fallback (or
+                        // empty-primary) render reports a terminal failure.
+                        if (url && fallbackUrl && !useFallback) {
                             setUseFallback(true);
                             setHasLoaded(false); // Reset to show placeholder while fallback loads
                         } else {

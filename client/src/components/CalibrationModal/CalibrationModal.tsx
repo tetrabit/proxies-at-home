@@ -34,6 +34,7 @@ import {
   buildMpcVisualPreferenceScoreMap,
 } from "@/helpers/mpcVisualPreference";
 import { getSharedMpcPreferenceContext } from "@/helpers/mpcPreferenceContextBuilder";
+import type { MpcPreferenceContext } from "@/helpers/mpcPreferenceContext";
 import { captureMpcCalibrationCase } from "@/helpers/mpcCalibrationCapture";
 import {
   buildMpcCalibrationFixture,
@@ -281,6 +282,8 @@ export function CalibrationModal() {
     useState<Record<string, number>>({});
   const [prefModel, setPrefModel] = useState<MpcPreferenceModel | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [candidateSearchInFlight, setCandidateSearchInFlight] =
+    useState(false);
   const [phase, setPhase] = useState<
     "idle" | "loading" | "capturing" | "running" | "importing"
   >("idle");
@@ -486,6 +489,7 @@ export function CalibrationModal() {
       });
       setRecommendations(null);
       setRawPrefScores({});
+      setCandidateSearchInFlight(false);
       setPhase("idle");
       return unsubscribeSync;
     }
@@ -495,6 +499,21 @@ export function CalibrationModal() {
 
     void (async () => {
       setPhase("loading");
+
+      // Dispatch the candidate search immediately, in parallel with the
+      // dataset refresh and preference context training below. It only needs
+      // the card name, so it must not wait for the image record to hydrate
+      // or for preference training to finish.
+      const searchPromise = card?.name
+        ? searchMpcAutofill(card.name, "CARD", false, {
+            includeAllLanguages: true,
+          })
+        : null;
+      if (searchPromise) {
+        setCandidateSearchInFlight(true);
+      }
+      const imagePromise = card?.imageId ? db.images.get(card.imageId) : null;
+
       try {
         const openingScope = await captureMpcCalibrationMutationScope();
         if (signal.aborted) return;
@@ -520,7 +539,11 @@ export function CalibrationModal() {
 
         const calibrationCases = await listDefaultMpcCalibrationCases();
         if (!canPublishOpeningDataset()) return;
-        const preferenceContext = await getSharedMpcPreferenceContext(
+
+        // Preference training is heavy (seed harvest + visual profiles). Dispatch
+        // it in parallel with the in-flight candidate search so it never delays
+        // candidate publication; scores and top picks populate when it settles.
+        const preferenceContextPromise = getSharedMpcPreferenceContext(
           {
             dataset: {
               calibrationCases,
@@ -561,32 +584,71 @@ export function CalibrationModal() {
           },
           signal
         );
-        if (!canPublishOpeningDataset()) return;
 
-        const model = preferenceContext.model;
-        setPrefModel(model);
-
-        if (card?.imageId) {
-          const [imageRecord, matches] = await Promise.all([
-            db.images.get(card.imageId),
-            searchMpcAutofill(card.name, "CARD", false, {
-              includeAllLanguages: true,
-            }),
+        let filtered: MpcAutofillCard[] = [];
+        let imageRecord: Image | null = null;
+        if (searchPromise && card) {
+          // Join the in-flight search (and the image hydration when present)
+          // and publish the candidate gallery as soon as it resolves, so each
+          // candidate's "Use as Expected Choice" can activate when its own
+          // image loads, while recommendation work continues in the
+          // background.
+          const [loadedImage, matches] = await Promise.all([
+            imagePromise ?? Promise.resolve(null),
+            searchPromise,
           ]);
           if (!canPublishOpeningDataset()) return;
 
-          const filtered = filterByExactName(matches, card.name);
-          // Publish the candidate gallery as soon as the search resolves so
-          // each candidate's "Use as Expected Choice" can activate when its own
-          // image loads, while recommendation work continues in the background.
+          filtered = filterByExactName(matches, card.name);
+          imageRecord = loadedImage ?? null;
           setCaptureState({
             imageRecord: imageRecord ?? null,
             candidates: filtered,
             candidateImageStates: new Map(),
           });
+          setCandidateSearchInFlight(false);
 
-          // Compute recommendations if model and candidates exist
-          if (model && filtered.length > 0) {
+          // Candidates and dataset are loaded; release bootstrap loading phase
+          // now so controls and candidate buttons become interactive
+          // immediately while recommendation ranking finishes.
+          setPhase((current) => (current === "loading" ? "idle" : current));
+        } else {
+          setCaptureState({
+            imageRecord: null,
+            candidates: [],
+            candidateImageStates: new Map(),
+          });
+          setRecommendations(null);
+          setRawPrefScores({});
+        }
+
+        let preferenceContext: MpcPreferenceContext = {
+          calibrationCases,
+          model: null,
+          profiles: {},
+        };
+        try {
+          preferenceContext = await preferenceContextPromise;
+        } catch (prefErr) {
+          if (!signal.aborted) {
+            console.debug(
+              "CalibrationModal: Preference model unavailable",
+              prefErr
+            );
+          }
+        }
+        if (!canPublishOpeningDataset()) return;
+
+        const model = preferenceContext.model;
+        setPrefModel(model);
+
+        // Compute recommendations if candidates exist. The gallery is already
+        // published and interactive; scores and top picks populate when this
+        // settles without blocking candidate rendering or selection.
+        if (searchPromise && card && filtered.length > 0) {
+          let unseenScores: Record<string, number> = {};
+
+          if (model) {
             const metadataScores = buildMpcPreferenceScoreMap(model, filtered);
 
             const visualScores = await buildMpcVisualPreferenceScoreMap(
@@ -597,7 +659,7 @@ export function CalibrationModal() {
             );
             if (!canPublishOpeningDataset()) return;
 
-            const unseenScores = Object.fromEntries(
+            unseenScores = Object.fromEntries(
               filtered.map((candidate) => [
                 candidate.identifier,
                 (metadataScores[candidate.identifier] ?? 0) +
@@ -605,31 +667,23 @@ export function CalibrationModal() {
               ])
             );
             setRawPrefScores(unseenScores);
-
-            const recs = await rankCandidates({
-              candidates: filtered,
-              set: card.set,
-              collectorNumber: card.number,
-              sourceImageUrl: imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0],
-              getMpcImageUrl: (identifier) => {
-                const c = filtered.find(f => f.identifier === identifier);
-                return c?.smallThumbnailUrl || c?.mediumThumbnailUrl || "";
-              },
-              ssimCompare: createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE),
-              unseenPreferenceScores: unseenScores,
-              signal,
-            });
-            if (!canPublishOpeningDataset()) return;
-            setRecommendations(recs);
           }
-        } else {
-          setCaptureState({
-            imageRecord: null,
-            candidates: [],
-            candidateImageStates: new Map(),
+
+          const recs = await rankCandidates({
+            candidates: filtered,
+            set: card.set,
+            collectorNumber: card.number,
+            sourceImageUrl: imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0],
+            getMpcImageUrl: (identifier) => {
+              const c = filtered.find(f => f.identifier === identifier);
+              return c?.smallThumbnailUrl || c?.mediumThumbnailUrl || "";
+            },
+            ssimCompare: createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE),
+            unseenPreferenceScores: unseenScores,
+            signal,
           });
-          setRecommendations(null);
-          setRawPrefScores({});
+          if (!canPublishOpeningDataset()) return;
+          setRecommendations(recs);
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -639,7 +693,13 @@ export function CalibrationModal() {
         }
       } finally {
         if (!signal.aborted) {
-          setPhase("idle");
+          setCandidateSearchInFlight(false);
+          // Only demote the bootstrap's own "loading" phase. A capture or
+          // calibration run may have started while recommendation work was
+          // still settling (image loads have no timeout); demoting here would
+          // re-enable the choice buttons mid-mutation. Each mutation flow sets
+          // "idle" from its own finally.
+          setPhase((current) => (current === "loading" ? "idle" : current));
         }
       }
     })();
@@ -1007,8 +1067,20 @@ export function CalibrationModal() {
                 <h4 className="text-md font-medium text-gray-900 dark:text-white">
                   Active Capture: {card.name}
                 </h4>
-                <div className="text-xs text-gray-500">
-                  {captureState.candidates.length} candidates found
+                <div
+                  className="text-xs text-gray-500 dark:text-gray-400"
+                  data-testid="mpc-calibration-candidate-search-status"
+                >
+                  {candidateSearchInFlight ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Spinner size="xs" />
+                      Searching MPC Autofill candidates...
+                    </span>
+                  ) : (
+                    <>
+                      {captureState.candidates.length} candidates found
+                    </>
+                  )}
                 </div>
               </div>
 
