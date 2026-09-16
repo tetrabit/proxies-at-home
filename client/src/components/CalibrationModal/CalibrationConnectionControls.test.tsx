@@ -488,6 +488,18 @@ describe("CalibrationConnectionControls conflict recovery", () => {
     expect(useMpcCalibrationSyncStore.getState().selectionRevision).toBe(revisionBefore);
   });
 
+  it("merge surfaces any unmasked underlying Error message without re-selecting", async () => {
+    mockMerge.mockRejectedValue(new Error("Underlying sync failure"));
+    selectLinkedElectronAndPublish("conflict");
+    render(<CalibrationConnectionControls />);
+    const revisionBefore = useMpcCalibrationSyncStore.getState().selectionRevision;
+
+    fireEvent.click(screen.getByRole("button", { name: "Merge local and remote" }));
+
+    await waitFor(() => expect(screen.getByTestId("mpc-calibration-connection-message").textContent).toContain("Underlying sync failure"));
+    expect(useMpcCalibrationSyncStore.getState().selectionRevision).toBe(revisionBefore);
+  });
+
   it("reset clears through the action and re-selects the linked target", async () => {
     mockReset.mockResolvedValue({ clearedTables: 8 });
     selectLinkedElectronAndPublish("blocked");

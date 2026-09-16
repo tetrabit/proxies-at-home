@@ -5,18 +5,27 @@ import type {
   MpcCalibrationRunRecord,
   ProxxiedDexie,
 } from "@/db";
-import type {
-  CalibrationHarnessSnapshot,
+import {
+  canonicalHarnessJson,
+  type CalibrationHarnessRevision,
+  type CalibrationHarnessSnapshot,
 } from "../../../shared/calibrationHarness";
 import {
+  validateCalibrationHarnessLocalState,
   validateCalibrationHarnessPersistenceIdentity,
   type CalibrationHarnessPersistenceIdentity,
 } from "../../../shared/calibrationHarnessLocalState";
 import {
+  CALIBRATION_HARNESS_RECOVERY_STATE_VERSION,
+  convertCalibrationHarnessLocalStateToRecoveryState,
+  validateCalibrationHarnessRecoveryState,
+  type CalibrationHarnessAnyLocalState,
+  type CalibrationHarnessRecoveryState,
+} from "../../../shared/calibrationHarnessRecoveryState";
+import {
   buildLocalCalibrationSnapshot,
   MPC_CALIBRATION_CACHE_BINDING_ID,
 } from "./mpcCalibrationMutations";
-import { createMpcCalibrationSyncStateStore } from "./mpcCalibrationSyncState";
 import {
   unionMergeCalibrationSnapshots,
   type MpcCalibrationUnionMergeDelta,
@@ -31,7 +40,9 @@ export type MpcCalibrationReconciliationErrorCode =
   | "invalid-local-snapshot"
   | "invalid-remote-snapshot"
   | "invalid-merged-snapshot"
-  | "blob-verification-failed";
+  | "blob-verification-failed"
+  | "base-regression"
+  | "divergent-base";
 
 export class MpcCalibrationReconciliationError extends Error {
   readonly code: MpcCalibrationReconciliationErrorCode;
@@ -217,7 +228,7 @@ async function reconcileMpcCalibrationMergeImpl(supplied: Readonly<{
     );
   }
 
-  const stateStore = createMpcCalibrationSyncStateStore(database, { now });
+  let nextBaseRevision = remote.revision;
   await database.transaction(
     "rw",
     [
@@ -248,26 +259,119 @@ async function reconcileMpcCalibrationMergeImpl(supplied: Readonly<{
       }
       if (assetRecords.length > 0) await database.mpcCalibrationAssets.bulkPut(assetRecords);
 
-      // Anchor the base at the observed remote revision, align the binding,
-      // then queue the merged snapshot. The existing queue-recovery owner
-      // publishes it against this base and settles the state to clean.
-      await stateStore.storeBaseWhenClean(identity, {
-        revision: remote.revision,
-        snapshot: remote.snapshot,
-      });
+      const syncKey: [string, string, string] = [identity.ownerId, identity.harnessId, identity.connectionId];
+      const rawCurrent = await database.mpcCalibrationSyncStates.get(syncKey);
+      let currentState: CalibrationHarnessRecoveryState;
+      if (rawCurrent === undefined) {
+        currentState = {
+          formatVersion: CALIBRATION_HARNESS_RECOVERY_STATE_VERSION,
+          ownerId: identity.ownerId,
+          harnessId: identity.harnessId,
+          connectionId: identity.connectionId,
+          base: null,
+          queued: null,
+          inFlight: null,
+          lastAcknowledgement: null,
+          settledGeneration: 0,
+          lastRecovery: null,
+          dirtyGeneration: 0,
+          sentGeneration: 0,
+          acknowledgedGeneration: 0,
+          updatedAt: now(),
+        };
+      } else {
+        let anyState: CalibrationHarnessAnyLocalState;
+        try {
+          try {
+            anyState = validateCalibrationHarnessLocalState(rawCurrent);
+          } catch {
+            anyState = validateCalibrationHarnessRecoveryState(rawCurrent);
+          }
+        } catch (error) {
+          throw new MpcCalibrationReconciliationError(
+            "invalid-local-snapshot",
+            `Local sync state is malformed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        currentState = anyState.formatVersion === CALIBRATION_HARNESS_RECOVERY_STATE_VERSION
+          ? anyState
+          : convertCalibrationHarnessLocalStateToRecoveryState(anyState);
+      }
+
+      let nextBase: CalibrationHarnessRevision;
+      if (currentState.base === null) {
+        nextBase = {
+          revision: remote.revision,
+          snapshot: clone(remote.snapshot),
+        };
+      } else {
+        if (remote.revision < currentState.base.revision) {
+          throw new MpcCalibrationReconciliationError(
+            "base-regression",
+            `Remote revision (${remote.revision}) has regressed behind the local base revision (${currentState.base.revision}); use Reset to remote instead.`,
+          );
+        }
+        if (remote.revision === currentState.base.revision) {
+          if (canonicalHarnessJson(remote.snapshot) !== canonicalHarnessJson(currentState.base.snapshot)) {
+            throw new MpcCalibrationReconciliationError(
+              "divergent-base",
+              `Remote snapshot at revision ${remote.revision} diverged from the local base snapshot; use Reset to remote instead.`,
+            );
+          }
+          nextBase = currentState.base;
+        } else {
+          nextBase = {
+            revision: remote.revision,
+            snapshot: clone(remote.snapshot),
+          };
+        }
+      }
+
+      nextBaseRevision = nextBase.revision;
+
+      if (currentState.dirtyGeneration === Number.MAX_SAFE_INTEGER) {
+        throw new MpcCalibrationReconciliationError(
+          "invalid-local-snapshot",
+          "Dirty generation counter reached maximum safe integer.",
+        );
+      }
+      const nextDirty = Math.max(currentState.dirtyGeneration, currentState.settledGeneration) + 1;
+
+      const nextState: CalibrationHarnessRecoveryState = {
+        ...currentState,
+        base: nextBase,
+        queued: {
+          generation: nextDirty,
+          snapshot: clone(merged.snapshot),
+        },
+        inFlight: null,
+        dirtyGeneration: nextDirty,
+        sentGeneration: currentState.settledGeneration,
+        updatedAt: now(),
+      };
+
+      try {
+        validateCalibrationHarnessRecoveryState(nextState);
+      } catch (error) {
+        throw new MpcCalibrationReconciliationError(
+          "invalid-local-snapshot",
+          `Reconciled sync state failed validation: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      await database.mpcCalibrationSyncStates.put(nextState);
       await database.mpcCalibrationCacheBindings.put({
         id: MPC_CALIBRATION_CACHE_BINDING_ID,
         ownerId: identity.ownerId,
         harnessId: identity.harnessId,
         connectionId: identity.connectionId,
-        revision: remote.revision,
+        revision: nextBase.revision,
         updatedAt: now(),
       });
-      await stateStore.queueSnapshot(identity, merged.snapshot);
     },
   );
 
-  return { baseRevision: remote.revision, delta: merged.delta };
+  return { baseRevision: nextBaseRevision, delta: merged.delta };
 }
 
 /**

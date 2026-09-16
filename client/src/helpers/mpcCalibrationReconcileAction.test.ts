@@ -172,6 +172,182 @@ describe("reconcileMpcCalibrationMerge", () => {
       acknowledgedGeneration: 1,
     });
   });
+
+  it("reconciles unbased queued state (base === null, queued !== null) and flushes cleanly", async () => {
+    const { database, base } = await seeded();
+    const transport = remote(base, 1);
+    const localSnap = snapshot("local-only", false);
+    await database.mpcCalibrationSyncStates.put({
+      formatVersion: 2,
+      ...identity,
+      base: null,
+      queued: { generation: 1, snapshot: localSnap },
+      inFlight: null,
+      lastAcknowledgement: null,
+      settledGeneration: 0,
+      lastRecovery: null,
+      dirtyGeneration: 1,
+      sentGeneration: 0,
+      acknowledgedGeneration: 0,
+      updatedAt: 1,
+    });
+
+    const result = await reconcileMpcCalibrationMerge({ database, transport });
+    expect(result).toMatchObject({ baseRevision: 1, delta: { cases: 1, assets: 1 } });
+
+    const stateStore = createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const reconciled = await stateStore.load(identity);
+    expect(reconciled).toMatchObject({
+      base: { revision: 1 },
+      queued: { generation: 2 },
+      inFlight: null,
+      dirtyGeneration: 2,
+    });
+    expect(reconciled?.queued?.snapshot.cases.map((c) => c.id).sort()).toEqual(["a", "b"]);
+
+    const flush = await recoverAndFlushMpcCalibration({ database, transport, identity, maxCycles: 4 });
+    expect(flush).toMatchObject({ status: "published", generation: 2 });
+    expect(await stateStore.load(identity)).toMatchObject({
+      base: { revision: 2 },
+      queued: null,
+      inFlight: null,
+      acknowledgedGeneration: 2,
+    });
+  });
+
+  it("advances base when remote.revision > base.revision, supersedes queued, and flushes cleanly", async () => {
+    const { database, base } = await seeded();
+    const base1 = snapshot("base1", false);
+    const transport = remote(base, 2);
+    await database.mpcCalibrationSyncStates.put({
+      formatVersion: 2,
+      ...identity,
+      base: { revision: 1, snapshot: base1 },
+      queued: { generation: 1, snapshot: base1 },
+      inFlight: null,
+      lastAcknowledgement: null,
+      settledGeneration: 0,
+      lastRecovery: null,
+      dirtyGeneration: 1,
+      sentGeneration: 0,
+      acknowledgedGeneration: 0,
+      updatedAt: 1,
+    });
+
+    const result = await reconcileMpcCalibrationMerge({ database, transport });
+    expect(result).toMatchObject({ baseRevision: 2, delta: { cases: 1, assets: 1 } });
+
+    const stateStore = createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const reconciled = await stateStore.load(identity);
+    expect(reconciled).toMatchObject({
+      base: { revision: 2 },
+      queued: { generation: 2 },
+      inFlight: null,
+      dirtyGeneration: 2,
+    });
+
+    const flush = await recoverAndFlushMpcCalibration({ database, transport, identity, maxCycles: 4 });
+    expect(flush).toMatchObject({ status: "published", generation: 2 });
+    expect(await stateStore.load(identity)).toMatchObject({
+      base: { revision: 3 },
+      queued: null,
+      inFlight: null,
+      acknowledgedGeneration: 2,
+    });
+  });
+
+  it("preserves matching base when remote.revision === base.revision, supersedes queued, and flushes cleanly", async () => {
+    const { database, base } = await seeded();
+    const transport = remote(base, 1);
+    await database.mpcCalibrationSyncStates.put({
+      formatVersion: 2,
+      ...identity,
+      base: { revision: 1, snapshot: base },
+      queued: { generation: 1, snapshot: snapshot("base", false) },
+      inFlight: null,
+      lastAcknowledgement: null,
+      settledGeneration: 0,
+      lastRecovery: null,
+      dirtyGeneration: 1,
+      sentGeneration: 0,
+      acknowledgedGeneration: 0,
+      updatedAt: 1,
+    });
+
+    const result = await reconcileMpcCalibrationMerge({ database, transport });
+    expect(result).toMatchObject({ baseRevision: 1 });
+
+    const stateStore = createMpcCalibrationSyncStateStore(database, { now: () => 10 });
+    const reconciled = await stateStore.load(identity);
+    expect(reconciled).toMatchObject({
+      base: { revision: 1 },
+      queued: { generation: 2 },
+      inFlight: null,
+      dirtyGeneration: 2,
+    });
+
+    const flush = await recoverAndFlushMpcCalibration({ database, transport, identity, maxCycles: 4 });
+    expect(flush).toMatchObject({ status: "published", generation: 2 });
+    expect(await stateStore.load(identity)).toMatchObject({
+      base: { revision: 2 },
+      queued: null,
+      inFlight: null,
+      acknowledgedGeneration: 2,
+    });
+  });
+
+  it("rejects regression when remote.revision < base.revision with a typed error", async () => {
+    const { database, base } = await seeded();
+    await database.mpcCalibrationSyncStates.put({
+      formatVersion: 2,
+      ...identity,
+      base: { revision: 2, snapshot: base },
+      queued: { generation: 1, snapshot: base },
+      inFlight: null,
+      lastAcknowledgement: null,
+      settledGeneration: 0,
+      lastRecovery: null,
+      dirtyGeneration: 1,
+      sentGeneration: 0,
+      acknowledgedGeneration: 0,
+      updatedAt: 1,
+    });
+    const transport = remote(base, 1);
+
+    await expect(
+      reconcileMpcCalibrationMerge({ database, transport }),
+    ).rejects.toMatchObject({
+      name: "MpcCalibrationReconciliationError",
+      code: "base-regression",
+    });
+  });
+
+  it("rejects divergence when remote.revision === base.revision but snapshots differ", async () => {
+    const { database, base } = await seeded();
+    const localBaseSnap = snapshot("different-tag", true);
+    await database.mpcCalibrationSyncStates.put({
+      formatVersion: 2,
+      ...identity,
+      base: { revision: 1, snapshot: localBaseSnap },
+      queued: { generation: 1, snapshot: localBaseSnap },
+      inFlight: null,
+      lastAcknowledgement: null,
+      settledGeneration: 0,
+      lastRecovery: null,
+      dirtyGeneration: 1,
+      sentGeneration: 0,
+      acknowledgedGeneration: 0,
+      updatedAt: 1,
+    });
+    const transport = remote(base, 1);
+
+    await expect(
+      reconcileMpcCalibrationMerge({ database, transport }),
+    ).rejects.toMatchObject({
+      name: "MpcCalibrationReconciliationError",
+      code: "divergent-base",
+    });
+  });
 });
 
 describe("resetMpcCalibrationToRemote", () => {

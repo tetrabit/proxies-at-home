@@ -5,7 +5,6 @@ import { pairMpcCalibrationWeb } from "@/helpers/mpcCalibrationWebPairing";
 import { createMpcCalibrationOperationScope } from "@/helpers/mpcCalibrationOperationScope";
 import { selectMpcCalibrationTransport } from "@/helpers/mpcCalibrationTransportSelection";
 import {
-  MpcCalibrationReconciliationError,
   reconcileMpcCalibrationMerge,
   resetMpcCalibrationToRemote,
 } from "@/helpers/mpcCalibrationReconcileAction";
@@ -157,7 +156,7 @@ export function CalibrationConnectionControls() {
     const fail = (caught: unknown) => {
       if (!stillCurrent()) return;
       setMessage(
-        caught instanceof MpcCalibrationReconciliationError
+        caught instanceof Error
           ? caught.message
           : "Reconciliation failed unexpectedly; try Reset to remote.",
       );
