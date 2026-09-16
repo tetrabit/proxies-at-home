@@ -280,6 +280,12 @@ export function retargetLoopbackHarnessOrigin(
 export type CalibrationHarnessCredentialStore = Readonly<{
   provision(input: Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>): string;
   verifyBearer(token: string): unknown;
+  /**
+   * Optional identity-continuity probe: the owner that already owns the
+   * configured harness in this database. Server stores provide it; test
+   * fakes may omit it, in which case the default owner is used.
+   */
+  ownerForHarness?(harnessId: string): string | null;
 }>
 
 export type EnsureHarnessCredentialOutcome =
@@ -346,8 +352,20 @@ export async function ensureHarnessCredentialProvisioned(
   const values = calibrationHarnessPrivateValues(loaded.config);
   const store = createCredentialStore(database);
   if (store.verifyBearer(values.credential) !== null) return "already-valid";
+  // When the harness database already owns the configured harness under an
+  // existing identity, provision the replacement credential for that identity
+  // instead of the default. This preserves continuity for client calibration
+  // state that is durably bound to the original owner (for example after the
+  // operator restored or moved the harness database).
+  let ownerId = provisionOwnerId;
+  try {
+    const adopted = store.ownerForHarness?.(values.harnessId);
+    if (adopted !== undefined && adopted !== null) ownerId = adopted;
+  } catch {
+    ownerId = provisionOwnerId;
+  }
   const credential = store.provision({
-    ownerId: provisionOwnerId,
+    ownerId,
     harnessId: values.harnessId,
     noExpiry: true,
   });

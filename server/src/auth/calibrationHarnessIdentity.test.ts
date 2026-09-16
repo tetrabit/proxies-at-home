@@ -223,4 +223,30 @@ describe('createCalibrationHarnessCredentialStore', () => {
       reopened.close();
     }
   });
+
+  it('reports the existing owner for a configured harness and null otherwise', () => {
+    const database = createExclusiveDatabase();
+    const now = 1_700_000_000_000;
+    try {
+      const store = createCalibrationHarnessCredentialStore(database, { now: () => now });
+      expect(store.ownerForHarness('harness-missing')).toBeNull();
+      expect(store.ownerForHarness('x'.repeat(129))).toBeNull();
+      expect(store.ownerForHarness('has\ncontrol')).toBeNull();
+
+      database.prepare(`
+        INSERT INTO mpc_harnesses (owner_id, harness_id, revision, snapshot_json, updated_at)
+        VALUES (?, ?, 1, '{}', ?)
+      `).run('owner-existing', 'harness-existing', now);
+      database.prepare(`
+        INSERT INTO mpc_harnesses (owner_id, harness_id, revision, snapshot_json, updated_at)
+        VALUES (?, ?, 1, '{}', ?)
+      `).run('owner-other', 'harness-other', now);
+
+      expect(store.ownerForHarness('harness-existing')).toBe('owner-existing');
+      expect(store.ownerForHarness('harness-other')).toBe('owner-other');
+      expect(store.ownerForHarness('harness-missing')).toBeNull();
+    } finally {
+      database.close();
+    }
+  });
 });

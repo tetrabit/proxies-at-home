@@ -125,6 +125,7 @@ export function createCalibrationHarnessCredentialStore(
 ): {
   provision(input: ProvisionInput): string;
   verifyBearer(token: string): CalibrationHarnessIdentity | null;
+  ownerForHarness(harnessId: string): string | null;
 } {
   const now = options.now ?? Date.now;
   const insertSession = database.prepare(`
@@ -137,7 +138,28 @@ export function createCalibrationHarnessCredentialStore(
     WHERE token_hash = ?
   `);
 
+  const findHarnessOwner = database.prepare(`
+    SELECT owner_id FROM mpc_harnesses WHERE harness_id = ? LIMIT 1
+  `);
+
   return {
+    /**
+     * Reports the owner that already owns the configured harness in this
+     * database, so operator re-provisioning can preserve the existing
+     * identity instead of minting a foreign one. Returns null when the
+     * harness is unknown or the row is malformed.
+     */
+    ownerForHarness(harnessId: string): string | null {
+      if (!isBoundedIdentity(harnessId)) return null;
+      let row: { owner_id: unknown } | undefined;
+      try {
+        row = findHarnessOwner.get(harnessId) as typeof row;
+      } catch {
+        return null;
+      }
+      return row !== undefined && isBoundedIdentity(row.owner_id) ? row.owner_id : null;
+    },
+
     provision(input: ProvisionInput): string {
       const { ownerId, harnessId } = input;
       assertBoundedIdentity(ownerId, 'ownerId');

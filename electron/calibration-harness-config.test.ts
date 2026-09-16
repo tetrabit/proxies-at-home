@@ -157,25 +157,29 @@ describe("calibration harness private config", () => {
   });
 });
 
-function fakeCredentialStore(existing: readonly string[] = []): {
+function fakeCredentialStore(
+  existing: readonly string[] = [],
+  ownerForHarness?: (harnessId: string) => string | null,
+): {
   store: CalibrationHarnessCredentialStore;
   provisions: Array<Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>>;
 } {
   const tokens = new Set(existing);
   const provisions: Array<Readonly<{ ownerId: string; harnessId: string; noExpiry: boolean }>> = [];
-  return {
-    store: {
-      provision(input) {
-        provisions.push({ ...input });
-        tokens.add(replacementCredential);
-        return replacementCredential;
-      },
-      verifyBearer(token) {
-        return tokens.has(token) ? { ownerId: "desktop-local", harnessId: "harness-a" } : null;
-      },
+  const store: CalibrationHarnessCredentialStore = {
+    provision(input) {
+      provisions.push({ ...input });
+      tokens.add(replacementCredential);
+      return replacementCredential;
     },
-    provisions,
+    verifyBearer(token) {
+      return tokens.has(token) ? { ownerId: "desktop-local", harnessId: "harness-a" } : null;
+    },
   };
+  if (ownerForHarness !== undefined) {
+    store.ownerForHarness = ownerForHarness;
+  }
+  return { store, provisions };
 }
 
 describe("desktop harness loopback origin retargeting", () => {
@@ -271,6 +275,37 @@ describe("desktop harness credential self-healing", () => {
     }
     const entries = await readdir(fixture.directory);
     expect(entries.find((entry) => entry.endsWith(".tmp"))).toBeUndefined();
+  });
+
+  it("preserves the existing harness owner when re-provisioning a replaced database", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const fake = fakeCredentialStore([], () => "8826a106-72a7-420a-b63b-b0e250e9e409");
+    const outcome = await ensureHarnessCredentialProvisioned(filename, () => fake.store, {});
+    expect(outcome).toBe("provisioned");
+    expect(fake.provisions).toEqual([
+      { ownerId: "8826a106-72a7-420a-b63b-b0e250e9e409", harnessId: "harness-a", noExpiry: true },
+    ]);
+  });
+
+  it("falls back to the default owner when the database does not own the harness", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const fake = fakeCredentialStore([], () => null);
+    const outcome = await ensureHarnessCredentialProvisioned(filename, () => fake.store, {});
+    expect(outcome).toBe("provisioned");
+    expect(fake.provisions).toEqual([{ ownerId: "desktop-local", harnessId: "harness-a", noExpiry: true }]);
+  });
+
+  it("ignores a failing owner probe instead of breaking self-healing", async () => {
+    const fixture = await fixtureDirectory();
+    const filename = await privateConfig(fixture.directory, { ...base, backendOrigin: "http://127.0.0.1:3001" });
+    const fake = fakeCredentialStore([], () => {
+      throw new Error("probe failed");
+    });
+    const outcome = await ensureHarnessCredentialProvisioned(filename, () => fake.store, {});
+    expect(outcome).toBe("provisioned");
+    expect(fake.provisions).toEqual([{ ownerId: "desktop-local", harnessId: "harness-a", noExpiry: true }]);
   });
 
   it("reports absent and invalid configs without provisioning", async () => {
