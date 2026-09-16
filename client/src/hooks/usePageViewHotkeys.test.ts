@@ -92,7 +92,12 @@ describe("usePageViewHotkeys", () => {
     });
 
     afterEach(() => {
-        // Clean up any event listeners
+        // Clean up any event listeners and restore an empty text selection
+        // so getSelection overrides do not leak between tests.
+        Object.defineProperty(window, "getSelection", {
+            configurable: true,
+            value: () => ({ toString: () => "" }),
+        });
     });
 
     describe("Escape key", () => {
@@ -233,7 +238,39 @@ describe("usePageViewHotkeys", () => {
             expect(mockClipboardWriteText).toHaveBeenCalledWith("1x Sol Ring (cmd) 235\n1x Island (lea) 1");
         });
 
-        it("should copy cards with default cardbacks (decklist parity)", async () => {
+        it("should defer to the native copy when text is selected (Ctrl+C)", () => {
+            Object.defineProperty(window, "getSelection", {
+                configurable: true,
+                value: () => ({ toString: () => "Sync failed." }),
+            });
+
+            renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+            const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, cancelable: true });
+            document.dispatchEvent(event);
+
+            // Native copy is not cancelled and the card copy is not triggered.
+            expect(event.defaultPrevented).toBe(false);
+            expect(mockClipboardWriteText).not.toHaveBeenCalled();
+        });
+
+        it("should defer to the native cut when text is selected (Ctrl+X)", () => {
+            Object.defineProperty(window, "getSelection", {
+                configurable: true,
+                value: () => ({ toString: () => "Sync failed." }),
+            });
+
+            renderHook(() => usePageViewHotkeys(["card-1", "card-2"], true));
+
+            const event = new KeyboardEvent("keydown", { key: "x", ctrlKey: true, cancelable: true });
+            document.dispatchEvent(event);
+
+            expect(event.defaultPrevented).toBe(false);
+            expect(mockClipboardWriteText).not.toHaveBeenCalled();
+            expect(mockUndoableDeleteCardsBatch).not.toHaveBeenCalled();
+        });
+
+        it("should show a toast when every selected card uses the default cardback", async () => {
             vi.mocked(db.cards.bulkGet).mockResolvedValueOnce([
                 { name: "Forest", set: "lea", number: "245", usesDefaultCardback: true },
             ]);
@@ -243,8 +280,10 @@ describe("usePageViewHotkeys", () => {
             const event = new KeyboardEvent("keydown", { key: "c", ctrlKey: true });
             document.dispatchEvent(event);
 
-            await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalled());
-            expect(mockClipboardWriteText).toHaveBeenCalledWith("1x Forest (lea) 245");
+            await waitFor(() => expect(mockShowErrorToast).toHaveBeenCalledWith(
+                "No cards to copy: selection has no custom cardback cards"
+            ));
+            expect(mockClipboardWriteText).not.toHaveBeenCalled();
         });
 
         it("should show an error toast when the clipboard write is rejected", async () => {

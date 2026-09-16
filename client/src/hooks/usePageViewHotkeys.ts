@@ -18,10 +18,14 @@ async function copySelectedCardNames(uuids: string[]): Promise<number> {
     try {
         // Fetch cards from database
         const cards = await db.cards.bulkGet(uuids);
-        const cardsToExport = cards.filter((c): c is NonNullable<typeof c> => c != null);
+        const validCards = cards.filter((c): c is NonNullable<typeof c> => c != null);
+
+        // Filter out default cardbacks (cards with usesDefaultCardback: true)
+        // But keep custom back cards (like Forest with Swamp on back)
+        const cardsToExport = validCards.filter(c => !c.usesDefaultCardback);
 
         if (cardsToExport.length === 0) {
-            useToastStore.getState().showErrorToast('No cards to copy');
+            useToastStore.getState().showErrorToast('No cards to copy: selection has no custom cardback cards');
             return 0;
         }
 
@@ -71,6 +75,16 @@ async function copySelectedCardNames(uuids: string[]): Promise<number> {
         return 0;
     }
 }
+/**
+ * True when the user has selected visible text (drag selection, triple
+ * click, etc.). Used to hand standard editing shortcuts back to the browser
+ * so text outside inputs (modals, error messages) can be copied.
+ */
+function hasTextSelection(): boolean {
+    const selection = window.getSelection();
+    return selection !== null && selection.toString().length > 0;
+}
+
 export function usePageViewHotkeys(allCardUuids: string[], active: boolean = true) {
     const uuidsRef = useRef(allCardUuids);
 
@@ -143,7 +157,12 @@ export function usePageViewHotkeys(allCardUuids: string[], active: boolean = tru
                         break;
                     }
                     case "c": {
-                        // Copy selected card names to clipboard
+                        // Copy selected card names to clipboard.
+                        // When the user has a text selection, defer to the
+                        // browser's native copy so text (e.g. modal error
+                        // messages) stays copyable instead of being
+                        // swallowed by this hotkey.
+                        if (hasTextSelection()) break;
                         e.preventDefault();
                         const { selectedCards: cardsToCopy } = useSelectionStore.getState();
                         if (cardsToCopy.size > 0) {
@@ -152,7 +171,9 @@ export function usePageViewHotkeys(allCardUuids: string[], active: boolean = tru
                         break;
                     }
                     case "x": {
-                        // Cut: Copy selected card names, then delete cards
+                        // Cut: Copy selected card names, then delete cards.
+                        // Defer to the native cut while text is selected.
+                        if (hasTextSelection()) break;
                         e.preventDefault();
                         const { selectedCards: cardsToCut, clearSelection: clearForCut } = useSelectionStore.getState();
                         if (cardsToCut.size > 0) {
