@@ -13,6 +13,11 @@ export function toProxied(url: string, apiBase: string) {
     if (!url) return url;
     if (url.startsWith("data:")) return url;
     if (url.startsWith("blob:")) return url;
+    // Relative internal API URLs should be anchored to apiBase
+    if (url.startsWith("/api/cards/images/")) {
+        return `${apiBase}${url}`;
+    }
+
     // Prevent double-proxying of internal API URLs
     if (url.includes("/api/cards/images/")) {
         return url;
@@ -22,6 +27,20 @@ export function toProxied(url: string, apiBase: string) {
     // unique identifier for MPC is the presence of "&size=" and absence of protocol/path
     if (url.includes("&size=") && !url.startsWith("http") && !url.startsWith("/")) {
         return `${apiBase}/api/cards/images/mpc?id=${url}`;
+    }
+
+    if (url.includes("drive.google.com/thumbnail")) {
+        try {
+            const parsed = new URL(url);
+            const id = parsed.searchParams.get("id");
+            const sz = parsed.searchParams.get("sz");
+            if (id) {
+                const size = (sz === "w800-h800" || sz === "w800" || sz === "large") ? "large" : "small";
+                return `${apiBase}/api/cards/images/mpc?id=${encodeURIComponent(id)}&size=${size}`;
+            }
+        } catch {
+            // ignore
+        }
     }
 
     return `${apiBase}/api/cards/images/proxy?url=${encodeURIComponent(url)}`;

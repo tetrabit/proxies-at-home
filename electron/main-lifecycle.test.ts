@@ -83,6 +83,7 @@ class BrowserWindowMock {
   webContents = {
     send: vi.fn(),
     openDevTools: vi.fn(),
+    toggleDevTools: vi.fn(),
     mainFrame: { url: "", frames: [] as object[] },
     isDestroyed: vi.fn(() => false),
     on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
@@ -94,6 +95,12 @@ class BrowserWindowMock {
       this.webContentsListeners.get(event)?.delete(listener);
     }),
   };
+
+  emitBeforeInputEvent(input: unknown): void {
+    for (const listener of this.webContentsListeners.get("before-input-event") ?? []) {
+      listener({}, input);
+    }
+  }
 
   emitConsoleMessage(details: unknown): void {
     for (const listener of this.webContentsListeners.get("console-message") ?? []) {
@@ -207,6 +214,7 @@ describe("electron main lifecycle", () => {
     );
     autoUpdaterMock.channel = undefined;
     microservice.start.mockResolvedValue(8181);
+    nativeThemeMock.themeSource = "system";
   });
 
   afterEach(() => {
@@ -247,8 +255,10 @@ describe("electron main lifecycle", () => {
     expect(windows[0].loadURL).toHaveBeenCalledWith(
       "http://localhost:5173?serverPort=3001"
     );
-    expect(windows[0].webContents.openDevTools).toHaveBeenCalledOnce();
-    expect(nativeThemeMock.themeSource).toBe("system");
+    expect(windows[0].webContents.openDevTools).not.toHaveBeenCalled();
+    windows[0].emitBeforeInputEvent({ type: "keyDown", key: "F12" });
+    expect(windows[0].webContents.toggleDevTools).toHaveBeenCalledOnce();
+    expect(nativeThemeMock.themeSource).toBe("dark");
     expect(menuMock.setApplicationMenu).toHaveBeenCalledWith(
       expect.objectContaining({ template: expect.any(Array) })
     );

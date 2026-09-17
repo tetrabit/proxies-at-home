@@ -115,7 +115,7 @@ describe("getCardImagesPaged", () => {
 
       const expectedUrl =
         "https://api.scryfall.com/cards/search?q=set%3Acmr%20number%3A332%20name%3A%22Sol%20Ring%22%20include%3Aextras%20unique%3Aprints%20lang%3Aen";
-      expect(mockedAxios.get).toHaveBeenCalledWith(expectedUrl);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expectedUrl, expect.anything());
     });
 
     it("should fall back to name-only query if set+number fails", async () => {
@@ -148,7 +148,7 @@ describe("getCardImagesPaged", () => {
       const cardInfo = { name: "Sol Ring" };
       await getImagesForCardInfo(cardInfo, "art", "de");
 
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("lang%3Ade"));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("lang%3Ade"), expect.anything());
     });
 
     it("should fall back to english if language not found", async () => {
@@ -195,7 +195,7 @@ describe("getCardImagesPaged", () => {
       await getImagesForCardInfo(cardInfo, "art", "de", false);
 
       expect(mockedAxios.get).toHaveBeenCalledTimes(1); // Only called for German
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("lang%3Ade"));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("lang%3Ade"), expect.anything());
     });
   });
 
@@ -273,13 +273,13 @@ describe("getCardImagesPaged", () => {
     it("should call with unique=art by default", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCard("Sol Ring");
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aart"));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aart"), expect.anything());
     }, 60000);
 
     it("should respect the unique parameter", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCard("Sol Ring", "prints");
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"), expect.anything());
     }, 60000);
   });
 
@@ -287,7 +287,7 @@ describe("getCardImagesPaged", () => {
     it("should call with unique=prints", async () => {
       mockedAxios.get.mockResolvedValue(mockScryfallResponse([singleFaceCard]));
       await getScryfallPngImagesForCardPrints("Sol Ring");
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining("unique%3Aprints"), expect.anything());
     }, 60000);
   });
 
@@ -341,7 +341,7 @@ describe("getCardImagesPaged", () => {
       await getImagesForCardInfo(cardInfo, "prints");
 
       const expectedUrlPart = "set%3Acmr%20name%3A%22Sol%20Ring%22";
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart), expect.anything());
     }, 60000);
 
     it("getCardDataForCardInfo should use Set + Number strategy", async () => {
@@ -350,7 +350,7 @@ describe("getCardImagesPaged", () => {
       await getCardDataForCardInfo(cardInfo);
 
       const expectedUrlPart = "set%3Acmr%20number%3A332";
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart), expect.anything());
     }, 60000);
 
     it("getCardDataForCardInfo should use Set + Name strategy", async () => {
@@ -359,7 +359,7 @@ describe("getCardImagesPaged", () => {
       await getCardDataForCardInfo(cardInfo);
 
       const expectedUrlPart = "set%3Acmr%20name%3A%22Sol%20Ring%22";
-      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(expectedUrlPart), expect.anything());
     });
 
     it("getCardDataForCardInfo should handle null cardInfo", async () => {
@@ -506,7 +506,8 @@ describe("getCardImagesPaged", () => {
             { name: "Island" },
             { id: "uuid-1" },
           ],
-        }
+        },
+        expect.anything()
       );
       expect(result.get("sol ring")).toBe(fetchedCard);
       expect(result.get("cmr:332")).toBe(fetchedCard);
@@ -530,7 +531,8 @@ describe("getCardImagesPaged", () => {
 
       expect(mockedAxios.post).toHaveBeenCalledWith(
         "https://api.scryfall.com/cards/collection",
-        { identifiers: [{ name: "Valki", set: "khm" }] }
+        { identifiers: [{ name: "Valki", set: "khm" }] },
+        expect.anything()
       );
       expect(result.get("valki")).toBe(fetchedCard);
       expect(result.get("tibalt")).toBe(fetchedCard);
@@ -556,12 +558,12 @@ describe("getCardImagesPaged", () => {
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
         "https://api.scryfall.com/cards/search",
-        {
+        expect.objectContaining({
           params: {
             q: '(name:"Goblin \\"Rabblemaster\\"") type:token include:extras',
             unique: "prints",
           },
-        }
+        })
       );
       expect(result.get("goblin")).toBe(firstToken);
       expect(result.get("id:first-token")).toBe(firstToken);
@@ -590,22 +592,22 @@ describe("getCardImagesPaged", () => {
       expect(mockedAxios.get).toHaveBeenNthCalledWith(
         1,
         "https://api.scryfall.com/cards/search",
-        {
+        expect.objectContaining({
           params: {
             q: '(name:"Goblin" OR name:"Soldier") type:token include:extras',
             unique: "prints",
           },
-        }
+        })
       );
       expect(mockedAxios.get).toHaveBeenNthCalledWith(
         2,
         "https://api.scryfall.com/cards/search",
-        {
+        expect.objectContaining({
           params: {
             q: '!"Goblin" type:token include:extras',
             unique: "prints",
           },
-        }
+        })
       );
       expect(result.get("goblin")).toBe(goblinToken);
       expect(result.get("id:goblin-id")).toBe(goblinToken);
@@ -635,7 +637,7 @@ describe("getCardImagesPaged", () => {
 
       const result = await batchFetchCards([{ name: "Sol Ring" }], "de");
 
-      expect(mockedAxios.get).toHaveBeenCalledWith("https://api.scryfall.com/cards/cmr/332/de");
+      expect(mockedAxios.get).toHaveBeenCalledWith("https://api.scryfall.com/cards/cmr/332/de", expect.anything());
       expect(result.get("Scryfall Batch")).toBeUndefined();
       expect(result.get("sonnenring")).toBe(localizedCard);
       expect(result.get("cmr:332")).toBe(localizedCard);
@@ -741,7 +743,7 @@ describe("getCardImagesPaged", () => {
       const result = await getCardsWithImagesForCardInfo({ name: "Direct Card", scryfallId: "direct-id" });
 
       expect(result).toEqual([card]);
-      expect(mockedAxios.get).toHaveBeenCalledWith("https://api.scryfall.com/cards/direct-id");
+      expect(mockedAxios.get).toHaveBeenCalledWith("https://api.scryfall.com/cards/direct-id", expect.anything());
     });
 
     it("falls through from failed direct id to exact print search", async () => {

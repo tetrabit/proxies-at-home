@@ -5,9 +5,13 @@ import {
   type MpcCalibrationDatasetRecord,
   type MpcCalibrationRunRecord,
 } from "@/db";
+import {
+  CALIBRATION_HARNESS_LIMITS,
+} from "../../../shared/calibrationHarness";
 import { markMpcPreferenceSyncDirty } from "./mpcPreferenceSync";
 import {
   createMpcCalibrationMutationCoordinator,
+  MpcCalibrationMutationError,
   type MpcCalibrationMutationScope,
 } from "./mpcCalibrationMutations";
 
@@ -134,6 +138,22 @@ export async function saveMpcCalibrationCaseWithAssets(
 ): Promise<MpcCalibrationCaseRecord> {
   const capturedInput = structuredClone(input);
   const capturedAssets = structuredClone(assets);
+  // Pre-calculate SHA-256 for assets serially outside of the Dexie transaction
+  for (const asset of capturedAssets) {
+    if (asset.blob.size > CALIBRATION_HARNESS_LIMITS.maxAssetBytes) {
+      throw new MpcCalibrationMutationError("local blob exceeds the per-asset limit");
+    }
+    const raw = asset as MpcCalibrationAssetRecord & { sha256?: string; byteLength?: number };
+    if (!raw.sha256 || raw.byteLength !== asset.blob.size) {
+      const buffer = await asset.blob.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      raw.sha256 = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0")
+      ).join("");
+      raw.byteLength = asset.blob.size;
+    }
+  }
+
   const timestamp = now();
   const record = await mpcCalibrationMutations.mutate(async () => {
     if (capturedAssets.some((asset) => asset.datasetId !== capturedInput.datasetId || asset.caseId !== capturedInput.id)) {
@@ -146,7 +166,9 @@ export async function saveMpcCalibrationCaseWithAssets(
       updatedAt: capturedInput.updatedAt ?? timestamp,
     };
     await db.mpcCalibrationCases.put(next);
-    if (capturedAssets.length > 0) await db.mpcCalibrationAssets.bulkPut(capturedAssets);
+    if (capturedAssets.length > 0) {
+      await db.mpcCalibrationAssets.bulkPut(capturedAssets);
+    }
     await db.mpcCalibrationDatasets.update(next.datasetId, { updatedAt: timestamp });
     return { value: next, changed: true };
   }, scope);
@@ -315,6 +337,11 @@ export async function saveMpcCalibrationAssets(
 ): Promise<void> {
   const capturedAssets = structuredClone(assets);
   if (capturedAssets.length === 0) return;
+  for (const asset of capturedAssets) {
+    if (asset.blob.size > CALIBRATION_HARNESS_LIMITS.maxAssetBytes) {
+      throw new MpcCalibrationMutationError("local blob exceeds the per-asset limit");
+    }
+  }
   await mpcCalibrationMutations.mutate(async () => {
     await db.mpcCalibrationAssets.bulkPut(capturedAssets);
     await db.mpcCalibrationDatasets.update(capturedAssets[0]!.datasetId, { updatedAt: now() });

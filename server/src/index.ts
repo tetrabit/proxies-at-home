@@ -129,6 +129,7 @@ export function createApplicationRuntime(options: StartServerOptions = {}): Appl
           connectSrc: ["'self'"],
         },
       },
+      crossOriginResourcePolicy: { policy: "cross-origin" },
       hsts: {
         maxAge: 31536000, // 1 year
         includeSubDomains: true,

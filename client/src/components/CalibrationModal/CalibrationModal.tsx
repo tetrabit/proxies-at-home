@@ -12,8 +12,10 @@ import {
 } from "@/db";
 import {
   searchMpcAutofill,
+  getMpcAutofillImageUrl,
   type MpcAutofillCard,
 } from "@/helpers/mpcAutofillApi";
+import { extractDriveId } from "@/helpers/mpc";
 import {
   createSsimCompare,
   FULL_CARD_NORMALIZED_SIZE,
@@ -27,14 +29,16 @@ import {
 } from "@/helpers/mpcPreferenceModel";
 import {
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-  harvestSourcePreferenceCandidates,
+  loadBootstrapSourceExamples,
   hydrateMpcPreferences,
 } from "@/helpers/mpcPreferenceBootstrap";
 import {
   buildMpcVisualPreferenceScoreMap,
 } from "@/helpers/mpcVisualPreference";
-import { getSharedMpcPreferenceContext } from "@/helpers/mpcPreferenceContextBuilder";
-import type { MpcPreferenceContext } from "@/helpers/mpcPreferenceContext";
+import {
+  getSharedMpcPreferenceContext,
+  type MpcPreferenceContext,
+} from "@/helpers/mpcPreferenceContextBuilder";
 import { captureMpcCalibrationCase } from "@/helpers/mpcCalibrationCapture";
 import {
   buildMpcCalibrationFixture,
@@ -254,6 +258,8 @@ async function ensureCalibrationDataset(
     targetCaseCount: MPC_CALIBRATION_TARGET_CASE_COUNT,
   }, scope);
 }
+
+const MAX_VISUAL_PREFERENCE_CANDIDATES = 30;
 
 export function CalibrationModal() {
   const open = useCalibrationModalStore((state) => state.open);
@@ -560,11 +566,7 @@ export function CalibrationModal() {
                 targetSources: ["Hathwellcrisping", "Chilli_Axe"],
               },
               loadExamples: () =>
-                harvestSourcePreferenceCandidates(
-                  BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                  async (name) => searchMpcAutofill(name, "CARD", true, {}),
-                  ["Hathwellcrisping", "Chilli_Axe"]
-                ),
+                loadBootstrapSourceExamples(["Hathwellcrisping", "Chilli_Axe"]),
             },
             provider: {
               version: "mpc-autofill-card-exact-v1",
@@ -620,6 +622,8 @@ export function CalibrationModal() {
           });
           setRecommendations(null);
           setRawPrefScores({});
+          setCandidateSearchInFlight(false);
+          setPhase((current) => (current === "loading" ? "idle" : current));
         }
 
         let preferenceContext: MpcPreferenceContext = {
@@ -645,14 +649,24 @@ export function CalibrationModal() {
         // Compute recommendations if candidates exist. The gallery is already
         // published and interactive; scores and top picks populate when this
         // settles without blocking candidate rendering or selection.
-        if (searchPromise && card && filtered.length > 0) {
+        if (card && filtered.length > 0) {
           let unseenScores: Record<string, number> = {};
 
           if (model) {
             const metadataScores = buildMpcPreferenceScoreMap(model, filtered);
 
+            const candidatesForVisual = [...filtered]
+              .sort((a, b) => {
+                const scoreDiff =
+                  (metadataScores[b.identifier] ?? 0) -
+                  (metadataScores[a.identifier] ?? 0);
+                if (scoreDiff !== 0) return scoreDiff;
+                return (b.dpi || 0) - (a.dpi || 0);
+              })
+              .slice(0, MAX_VISUAL_PREFERENCE_CANDIDATES);
+
             const visualScores = await buildMpcVisualPreferenceScoreMap(
-              filtered,
+              candidatesForVisual,
               preferenceContext.profiles,
               model,
               signal
@@ -674,10 +688,8 @@ export function CalibrationModal() {
             set: card.set,
             collectorNumber: card.number,
             sourceImageUrl: imageRecord?.sourceUrl || imageRecord?.imageUrls?.[0],
-            getMpcImageUrl: (identifier) => {
-              const c = filtered.find(f => f.identifier === identifier);
-              return c?.smallThumbnailUrl || c?.mediumThumbnailUrl || "";
-            },
+            getMpcImageUrl: (identifier) =>
+              getMpcAutofillImageUrl(identifier, "small"),
             ssimCompare: createSsimCompare(undefined, FULL_CARD_NORMALIZED_SIZE),
             unseenPreferenceScores: unseenScores,
             signal,
@@ -810,7 +822,7 @@ export function CalibrationModal() {
 
   const captureCase = useCallback(
     async (candidate: MpcAutofillCard) => {
-      if (!dataset || !card?.imageId || !captureState.imageRecord) return;
+      if (!dataset || !card) return;
       const publication = captureVisibleDatasetPublication(dataset.id);
       const choiceKey = buildCapturedChoiceKey({
         name: card.name,
@@ -830,7 +842,9 @@ export function CalibrationModal() {
       try {
         const scope = await captureMpcCalibrationMutationScope();
         const latestCases = await listMpcCalibrationCases(dataset.id);
-        if (!canPublishVisibleDataset(publication)) return;
+        if (!canPublishVisibleDataset(publication)) {
+          return;
+        }
         setCases(latestCases);
 
         if (choiceKey && toCapturedChoiceKeySet(latestCases).has(choiceKey)) {
@@ -865,7 +879,6 @@ export function CalibrationModal() {
           await refreshDataset(dataset.id);
         }
       } catch (error) {
-        console.error(error);
         setStatus(
           error instanceof Error ? error.message : "Failed to capture expected choice"
         );
@@ -913,7 +926,7 @@ export function CalibrationModal() {
   const exportFixture = useCallback(async () => {
     if (!dataset) return;
     const fixture = await buildMpcCalibrationFixture(dataset.id);
-    downloadMpcCalibrationFixture(fixture, dataset.name);
+    downloadMpcCalibrationFixture(fixture);
   }, [dataset]);
 
   const importFixture = useCallback(
@@ -1095,7 +1108,10 @@ export function CalibrationModal() {
                       id={`source-${card.uuid}`}
                       url={
                         captureState.imageRecord?.sourceUrl ||
-                        captureState.imageRecord?.imageUrls?.[0]
+                        captureState.imageRecord?.imageUrls?.[0] ||
+                        (card?.imageId && extractDriveId(card.imageId)
+                          ? getMpcAutofillImageUrl(card.imageId, "small")
+                          : "")
                       }
                     />
                   </div>
@@ -1137,10 +1153,14 @@ export function CalibrationModal() {
                       <div className="aspect-[63/88] overflow-hidden rounded-md bg-gray-100 dark:bg-gray-800 relative">
                         <CardImageSvg
                           id={`calibration-${candidate.identifier}`}
-                          url={
-                            candidate.smallThumbnailUrl ||
-                            candidate.mediumThumbnailUrl
-                          }
+                          url={getMpcAutofillImageUrl(
+                            candidate.identifier,
+                            "small"
+                          )}
+                          fallbackUrl={getMpcAutofillImageUrl(
+                            candidate.identifier,
+                            "large"
+                          )}
                           onLoad={() =>
                             markCandidateImageReady(candidate.identifier)
                           }
@@ -1215,7 +1235,7 @@ export function CalibrationModal() {
                           phase === "running" ||
                           captureState.candidateImageStates.get(
                             candidate.identifier
-                          ) !== "ready"
+                          ) === "failed"
                         }
                       >
                         {alreadyCaptured

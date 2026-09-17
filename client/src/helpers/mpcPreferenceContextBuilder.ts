@@ -5,6 +5,7 @@ import {
   type MpcPreferenceContextKeyInput,
   type MpcPreferenceContextVersion,
 } from "./mpcPreferenceContext";
+export type { MpcPreferenceContext };
 import {
   trainMpcPreferenceModel,
   type MpcPreferenceTrainingOptions,

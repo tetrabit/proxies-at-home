@@ -15,6 +15,7 @@ export interface MpcCalibrationCaseComparison {
   candidateIdentifier?: string;
   changed: boolean;
   expectedIdentifier?: string;
+  improvement?: "gain" | "loss" | "same";
 }
 
 export interface MpcCalibrationComparisonResult {
@@ -51,12 +52,22 @@ export async function compareMpcCalibrationAlgorithms(
       (item) => item.caseId === calibrationCase.id
     );
 
+    const baselineMatch = left?.predictedIdentifier === calibrationCase.expectedIdentifier;
+    const candidateMatch = right?.predictedIdentifier === calibrationCase.expectedIdentifier;
+    const improvement =
+      candidateMatch && !baselineMatch
+        ? ("gain" as const)
+        : !candidateMatch && baselineMatch
+          ? ("loss" as const)
+          : ("same" as const);
+
     return {
       caseId: calibrationCase.id,
       baselineIdentifier: left?.predictedIdentifier,
       candidateIdentifier: right?.predictedIdentifier,
       changed: left?.predictedIdentifier !== right?.predictedIdentifier,
       expectedIdentifier: calibrationCase.expectedIdentifier,
+      improvement,
     };
   });
 

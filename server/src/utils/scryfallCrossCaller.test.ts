@@ -204,7 +204,8 @@ describe("cross-caller Scryfall broker integration", () => {
 
     expect(mocks.axiosPost).toHaveBeenCalledWith(
       "https://api.scryfall.com/cards/collection",
-      { identifiers: [{ id: "token-direct-id" }] }
+      { identifiers: [{ id: "token-direct-id" }] },
+      expect.anything()
     );
     expect(mocks.axiosPost).toHaveBeenCalledTimes(1);
     expect(

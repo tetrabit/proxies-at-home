@@ -180,7 +180,8 @@ describe("cached token oracle resolution", () => {
     ]);
     expect(transport.collectionPost).toHaveBeenCalledWith(
       "https://api.scryfall.com/cards/collection",
-      { identifiers: [{ id: "linked-treasure-print" }] }
+      { identifiers: [{ id: "linked-treasure-print" }] },
+      expect.anything()
     );
     expect(transport.tokenIdentityGet).not.toHaveBeenCalled();
     const searchedUrl = transport.pagedSearchGet.mock.calls[0]?.[0] as string;

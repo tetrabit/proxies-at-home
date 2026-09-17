@@ -27,6 +27,7 @@ const {
   mockGetCalibrationPreferredIdentifier,
   mockGetCalibrationPreferenceProfile,
   mockHarvestSourcePreferenceCandidates,
+  mockLoadBootstrapSourceExamples,
   mockBuildSourceVisualProfiles,
   mockBuildVisualPreferenceScoreMap,
   mockGetSharedMpcPreferenceContext,
@@ -90,6 +91,7 @@ const {
     mockGetCalibrationPreferredIdentifier: vi.fn().mockResolvedValue(undefined),
     mockGetCalibrationPreferenceProfile: vi.fn().mockResolvedValue(undefined),
     mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+    mockLoadBootstrapSourceExamples: vi.fn().mockReturnValue([]),
     mockBuildSourceVisualProfiles: vi.fn().mockResolvedValue({}),
     mockBuildVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
     mockGetSharedMpcPreferenceContext: vi.fn().mockResolvedValue({
@@ -218,6 +220,7 @@ vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
   ensureBootstrapPreferenceDataset: vi.fn(async () => undefined),
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: ["Windborn Muse"],
   harvestSourcePreferenceCandidates: mockHarvestSourcePreferenceCandidates,
+  loadBootstrapSourceExamples: mockLoadBootstrapSourceExamples,
 }));
 
 vi.mock("@/helpers/mpcVisualPreference", () => ({
@@ -919,13 +922,21 @@ describe("MpcUpgradeModal", () => {
     const card = makeMpcCard();
     mockSearchMpcAutofill.mockResolvedValueOnce([card]);
     mockFilterByExactName.mockReturnValueOnce([card]);
-    mockRankCandidates.mockResolvedValueOnce({
-      fullProcess: [],
-      exactPrinting: [],
-      artMatch: [],
-      fullCard: [],
-      allMatches: [card],
-    });
+    mockRankCandidates
+      .mockResolvedValueOnce({
+        fullProcess: [],
+        exactPrinting: [],
+        artMatch: [],
+        fullCard: [],
+        allMatches: [card],
+      })
+      .mockResolvedValue({
+        fullProcess: [],
+        exactPrinting: [],
+        artMatch: [],
+        fullCard: [],
+        allMatches: [card],
+      });
     mockBuildLayerTabs.mockReturnValue(makeLayerTabs());
 
     render(<MpcUpgradeModal />);
@@ -941,7 +952,7 @@ describe("MpcUpgradeModal", () => {
     });
   });
 
-  it("passes the raw source image URL to rankCandidates for art-match scoring", async () => {
+  it("passes the raw source image URL to the visual refinement rankCandidates call for art-match scoring", async () => {
     mockModalState.open = true;
     mockModalState.card = TEST_CARD;
     mockModalState.cardUuid = TEST_CARD.uuid;
@@ -953,13 +964,40 @@ describe("MpcUpgradeModal", () => {
     mockDbImages.get.mockResolvedValueOnce({ sourceUrl: rawSourceUrl });
     mockSearchMpcAutofill.mockResolvedValueOnce([card]);
     mockFilterByExactName.mockReturnValueOnce([card]);
-    mockRankCandidates.mockResolvedValueOnce({
-      fullProcess: [],
-      exactPrinting: [],
-      artMatch: [],
-      fullCard: [],
-      allMatches: [card],
+    // Resolve the preference context with a real model so the background
+    // visual refinement actually reaches the image-based rank call.
+    mockGetSharedMpcPreferenceContext.mockResolvedValueOnce({
+      calibrationCases: [],
+      model: {
+        bias: 0,
+        sourceWeights: {},
+        tagWeights: {},
+        formatWeights: {
+          hasBracketSet: 0,
+          hasParenText: 0,
+          plainName: 0,
+          dpi: 0,
+        },
+        trainingCaseCount: 1,
+      },
+      profiles: {},
     });
+    mockBuildVisualPreferenceScoreMap.mockResolvedValueOnce({});
+    mockRankCandidates
+      .mockResolvedValueOnce({
+        fullProcess: [],
+        exactPrinting: [],
+        artMatch: [],
+        fullCard: [],
+        allMatches: [card],
+      })
+      .mockResolvedValue({
+        fullProcess: [],
+        exactPrinting: [],
+        artMatch: [],
+        fullCard: [],
+        allMatches: [card],
+      });
     mockBuildLayerTabs.mockReturnValue(makeLayerTabs());
 
     render(<MpcUpgradeModal />);
@@ -971,6 +1009,10 @@ describe("MpcUpgradeModal", () => {
         })
       );
     });
+    // The immediate baseline call must NOT trigger image downloads.
+    expect(mockRankCandidates.mock.calls[0]?.[0]).not.toHaveProperty(
+      "sourceImageUrl"
+    );
   });
 
   it("passes unseen visual preference scores to rankCandidates when no replay/profile exists", async () => {
@@ -1126,6 +1168,105 @@ describe("MpcUpgradeModal", () => {
         releasePreferenceContext();
       });
     }
+  });
+
+  it("publishes selectable candidates before the visual SSIM refinement resolves (no eternal spinner under rate limits)", async () => {
+    mockModalState.open = true;
+    mockModalState.card = TEST_CARD;
+    mockModalState.cardUuid = TEST_CARD.uuid;
+
+    const mpcCard = makeMpcCard({ identifier: "baseline-selectable" });
+    const baselineRanked = {
+      fullProcess: [makeRankedCandidate(mpcCard, "name_dpi_fallback", "name")],
+      exactPrinting: [],
+      artMatch: [],
+      fullCard: [makeRankedCandidate(mpcCard, "name_dpi_fallback", "name")],
+      allMatches: [makeRankedCandidate(mpcCard, "name_dpi_fallback", "name")],
+    };
+    // The visual refinement (call #2) never settles — simulating a
+    // rate-limited image host — yet the baseline must be selectable.
+    const neverResolvingRank = new Promise<never>(() => {});
+
+    mockSearchMpcAutofill.mockResolvedValueOnce([mpcCard]);
+    mockFilterByExactName.mockReturnValueOnce([mpcCard]);
+    mockListDefaultCalibrationCases.mockResolvedValueOnce([]);
+    // Let the shared preference context resolve (with a model) so the
+    // background refinement actually reaches the image-based rank call.
+    mockGetSharedMpcPreferenceContext.mockResolvedValueOnce({
+      calibrationCases: [],
+      model: {
+        bias: 0,
+        sourceWeights: {},
+        tagWeights: {},
+        formatWeights: {
+          hasBracketSet: 0,
+          hasParenText: 0,
+          plainName: 0,
+          dpi: 0,
+        },
+        trainingCaseCount: 0,
+      },
+      profiles: {},
+    });
+    mockBuildVisualPreferenceScoreMap.mockResolvedValueOnce({});
+    mockRankCandidates
+      .mockResolvedValueOnce(baselineRanked)
+      .mockReturnValueOnce(neverResolvingRank);
+    mockBuildLayerTabs.mockImplementation((recommendations) =>
+      makeLayerTabs({
+        fullProcess:
+          recommendations === baselineRanked
+            ? baselineRanked.fullProcess
+            : [],
+        fullCard:
+          recommendations === baselineRanked
+            ? baselineRanked.fullCard
+            : [],
+        allMatches:
+          recommendations === baselineRanked
+            ? baselineRanked.allMatches
+            : [],
+      })
+    );
+
+    render(<MpcUpgradeModal />);
+
+    // The selectable candidate grid appears immediately from the
+    // metadata-only baseline, without waiting for image downloads.
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("mpc-upgrade-candidate-id-baseline-selectable")
+      ).toBeTruthy();
+    });
+    expect(screen.getAllByTestId("mpc-upgrade-recommendation-card")).toHaveLength(
+      1
+    );
+
+    // The baseline ranking call must not request image downloads.
+    expect(mockRankCandidates.mock.calls[0]?.[0]).not.toHaveProperty(
+      "sourceImageUrl"
+    );
+    expect(mockRankCandidates.mock.calls[0]?.[0]).not.toHaveProperty(
+      "ssimCompare"
+    );
+    expect(mockRankCandidates.mock.calls[0]?.[0]).not.toHaveProperty(
+      "artMatchCompare"
+    );
+    expect(mockRankCandidates.mock.calls[0]?.[0]).not.toHaveProperty(
+      "getMpcImageUrl"
+    );
+
+    // The background visual refinement still starts (image-based), but it
+    // never blocks the already-published selectable grid.
+    await waitFor(() => {
+      expect(mockRankCandidates).toHaveBeenCalledTimes(2);
+    });
+    expect(mockRankCandidates.mock.calls[1]?.[0]).toHaveProperty(
+      "sourceImageUrl"
+    );
+    expect(
+      screen.getByTestId("mpc-upgrade-candidate-id-baseline-selectable")
+    ).toBeTruthy();
   });
 
   it("moves to the first non-empty tab when preference refinement empties the active tab", async () => {
@@ -1416,13 +1557,9 @@ describe("MpcUpgradeModal", () => {
         expectedIdentifier: "seed-abort-pick",
       },
     ]);
-    mockHarvestSourcePreferenceCandidates.mockImplementation(
-      async (_seedNames, search, _targetSources, signal) => {
-        await search("Seed card", signal);
-        await deferredHarvest;
-        return [];
-      }
-    );
+    mockLoadBootstrapSourceExamples.mockImplementation(() => {
+      return deferredHarvest.then(() => []);
+    });
     mockGetSharedMpcPreferenceContext.mockImplementation(async (input) => {
       await input.source.loadExamples();
       return {
@@ -1446,12 +1583,10 @@ describe("MpcUpgradeModal", () => {
     const view = render(<MpcUpgradeModal />);
 
     await waitFor(() => {
-      expect(mockSearchMpcAutofill).toHaveBeenLastCalledWith(
-        "Seed card",
-        "CARD",
-        true,
-        {}
-      );
+      expect(mockLoadBootstrapSourceExamples).toHaveBeenCalledWith([
+        "Hathwellcrisping",
+        "Chilli_Axe",
+      ]);
     });
 
     mockModalState.open = false;

@@ -103,6 +103,53 @@ async function sha256(blob: Blob): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+function trySerializeExistingAsset(
+  asset: MpcCalibrationAssetRecord
+): CalibrationHarnessAsset | null {
+  const { blob, sha256: existingSha256, byteLength: existingByteLength, ...metadata } =
+    asset as MpcCalibrationAssetRecord & {
+      sha256?: unknown;
+      byteLength?: unknown;
+    };
+
+  const mimeType = blob.type || asset.mimeType || "application/octet-stream";
+  const isValidExisting =
+    typeof existingSha256 === "string" &&
+    SHA256_PATTERN.test(existingSha256) &&
+    existingByteLength === blob.size;
+
+  if (!isValidExisting) return null;
+
+  return {
+    ...structuredClone(metadata),
+    mimeType,
+    sha256: existingSha256,
+    byteLength: blob.size,
+  } as CalibrationHarnessAsset;
+}
+
+async function serializeAssetSlow(
+  asset: MpcCalibrationAssetRecord
+): Promise<CalibrationHarnessAsset> {
+  const { blob, sha256: _ignoredSha256, byteLength: _ignoredByteLength, ...metadata } =
+    asset as MpcCalibrationAssetRecord & {
+      sha256?: unknown;
+      byteLength?: unknown;
+    };
+
+  const mimeType = blob.type || asset.mimeType || "application/octet-stream";
+  const sha256Digest = await sha256(blob);
+
+  return {
+    ...structuredClone(metadata),
+    mimeType,
+    sha256: sha256Digest,
+    byteLength: blob.size,
+  } as CalibrationHarnessAsset;
+}
+
 async function finalSnapshot(
   database: ProxxiedDexie,
   root: CalibrationHarnessSnapshot
@@ -115,13 +162,18 @@ async function finalSnapshot(
   ]);
   const serializedAssets: CalibrationHarnessAsset[] = [];
   for (const asset of assets) {
-    const serialized = await serializeAsset(asset);
-    await database.mpcCalibrationAssets.update(asset.id, {
-      mimeType: serialized.mimeType,
-      sha256: serialized.sha256,
-      byteLength: serialized.byteLength,
-    } as never);
-    serializedAssets.push(serialized);
+    const existing = trySerializeExistingAsset(asset);
+    if (existing !== null) {
+      serializedAssets.push(existing);
+    } else {
+      const serialized = await serializeAssetSlow(asset);
+      await database.mpcCalibrationAssets.update(asset.id, {
+        mimeType: serialized.mimeType,
+        sha256: serialized.sha256,
+        byteLength: serialized.byteLength,
+      } as never);
+      serializedAssets.push(serialized);
+    }
   }
   const snapshot = {
     ...structuredClone(root),
@@ -133,19 +185,6 @@ async function finalSnapshot(
   } as CalibrationHarnessSnapshot;
   validateCalibrationHarnessSnapshot(snapshot);
   return snapshot;
-}
-
-async function serializeAsset(asset: MpcCalibrationAssetRecord): Promise<CalibrationHarnessAsset> {
-  const { blob, sha256: _ignoredSha256, byteLength: _ignoredByteLength, ...metadata } = asset as MpcCalibrationAssetRecord & {
-    sha256?: unknown;
-    byteLength?: unknown;
-  };
-  return {
-    ...structuredClone(metadata),
-    mimeType: blob.type,
-    sha256: await sha256(blob),
-    byteLength: blob.size,
-  } as CalibrationHarnessAsset;
 }
 
 function bindingScope(binding: MpcCalibrationCacheBindingRecord): Extract<MpcCalibrationMutationScope, { kind: "bound" }> {

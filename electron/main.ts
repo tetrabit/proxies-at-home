@@ -480,9 +480,13 @@ function createWindow() {
         "pwa-512x512.png"
       );
 
+  // Force dark theme
+  nativeTheme.themeSource = "dark";
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    backgroundColor: "#111827",
     icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -496,8 +500,11 @@ function createWindow() {
     expectedRendererUrl: getExpectedRendererUrl,
   });
 
-  // Force system theme
-  nativeTheme.themeSource = "system";
+  mainWindow.webContents.on("before-input-event", (_event, input) => {
+    if (input.type === "keyDown" && (input.key === "F12" || input.code === "F12")) {
+      mainWindow?.webContents.toggleDevTools?.();
+    }
+  });
 
   if (desktopServiceReadiness === "ready") {
     loadTrustedRenderer();
@@ -626,7 +633,6 @@ function loadTrustedRenderer(): void {
   if (!app.isPackaged) {
     const url = `http://localhost:5173?serverPort=${serverPort}`;
     void mainWindow.loadURL(url);
-    mainWindow.webContents.openDevTools();
     return;
   }
 

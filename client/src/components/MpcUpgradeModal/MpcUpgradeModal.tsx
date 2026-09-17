@@ -24,10 +24,10 @@ import {
   MPC_CALIBRATION_DATASET_VERSION,
 } from "@/helpers/mpcCalibrationStorage";
 import { buildMpcPreferenceScoreMap } from "@/helpers/mpcPreferenceModel";
-import { hydrateMpcPreferences } from "@/helpers/mpcPreferenceBootstrap";
 import {
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-  harvestSourcePreferenceCandidates,
+  hydrateMpcPreferences,
+  loadBootstrapSourceExamples,
 } from "@/helpers/mpcPreferenceBootstrap";
 import {
   buildMpcVisualPreferenceScoreMap,
@@ -256,99 +256,121 @@ export function MpcUpgradeModal() {
           getMpcCalibrationPreferenceProfile(preferenceInput),
           listDefaultMpcCalibrationCases(),
         ]);
-      // A slow first-run preference build must not make the usable MPC matches
-      // look empty. Publish the deterministic metadata/image ranking first,
-      // then refine it only if the optional preference context becomes ready.
-      const ranked = await rankCandidates({
+      // A slow first-run preference build — or a rate-limited image host —
+      // must not make the usable MPC matches look empty or unselectable.
+      // Publish a metadata-only baseline ranking immediately (no image
+      // downloads, so it resolves even while Scryfall is throttling), then
+      // refine it in the background with the full visual SSIM ranking and/or
+      // the optional preference context once those become ready.
+      const baselineRanked = await rankCandidates({
         candidates: exactMatches,
         set,
         collectorNumber,
-        sourceImageUrl,
         signal,
-        ssimCompare,
-        artMatchCompare,
-        getMpcImageUrl: (id: string) => getMpcAutofillImageUrl(id, "small"),
         preferredIdentifier,
         preferenceProfile,
       });
       if (signal.aborted) return;
 
-      setRecommendations(ranked);
+      setRecommendations(baselineRanked);
       setPhase("ready");
 
-      const tabs = buildLayerTabs(ranked);
-      const firstNonEmpty = tabs.find((t) => t.count > 0);
+      const baselineTabs = buildLayerTabs(baselineRanked);
+      const firstNonEmpty = baselineTabs.find((t) => t.count > 0);
       if (firstNonEmpty) {
         setActiveTab(firstNonEmpty.key);
       }
 
+      // A stored preference (or replay profile) was already folded into the
+      // baseline ranking above, so there is nothing left to refine in the
+      // background. When no stored preference exists, build one in the
+      // background and refine the visible baseline with it — the selectable
+      // grid stays available the whole time; the refined order swaps in when
+      // it settles.
       if (preferredIdentifier || preferenceProfile) return;
 
       void (async () => {
         try {
-          const preferenceContext = await getSharedMpcPreferenceContext(
-            {
-              dataset: {
-                calibrationCases,
-                version: MPC_CALIBRATION_DATASET_VERSION,
-                content: {
-                  datasetName: "MPC Calibration Harness",
-                  selection: "default-calibration-datasets",
+          let unseenPreferenceScores: Record<string, number> | undefined;
+          try {
+            const preferenceContext = await getSharedMpcPreferenceContext(
+              {
+                dataset: {
+                  calibrationCases,
+                  version: MPC_CALIBRATION_DATASET_VERSION,
+                  content: {
+                    datasetName: "MPC Calibration Harness",
+                    selection: "default-calibration-datasets",
+                  },
+                },
+                source: {
+                  version: "bootstrap-preference-seeds-v1",
+                  content: {
+                    seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
+                    targetSources: ["Hathwellcrisping", "Chilli_Axe"],
+                  },
+                  loadExamples: () =>
+                    loadBootstrapSourceExamples([
+                      "Hathwellcrisping",
+                      "Chilli_Axe",
+                    ]),
+                },
+                provider: {
+                  version: "mpc-autofill-card-exact-v1",
+                  content: { cardType: "CARD", exactName: true },
+                },
+                algorithm: {
+                  version: "mpc-preference-model-visual-profile-v1",
+                  content: {
+                    metadataScore: "buildMpcPreferenceScoreMap",
+                    visualProfile: "buildMpcSourceVisualProfiles",
+                    visualScore: "buildMpcVisualPreferenceScoreMap",
+                  },
+                  trainingOptions: {
+                    emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
+                  },
                 },
               },
-              source: {
-                version: "bootstrap-preference-seeds-v1",
-                content: {
-                  seedCardNames: BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                  targetSources: ["Hathwellcrisping", "Chilli_Axe"],
-                },
-                loadExamples: () =>
-                  harvestSourcePreferenceCandidates(
-                    BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES,
-                    async (name) => searchMpcAutofill(name, "CARD", true, {}),
-                    ["Hathwellcrisping", "Chilli_Axe"]
-                  ),
-              },
-              provider: {
-                version: "mpc-autofill-card-exact-v1",
-                content: { cardType: "CARD", exactName: true },
-              },
-              algorithm: {
-                version: "mpc-preference-model-visual-profile-v1",
-                content: {
-                  metadataScore: "buildMpcPreferenceScoreMap",
-                  visualProfile: "buildMpcSourceVisualProfiles",
-                  visualScore: "buildMpcVisualPreferenceScoreMap",
-                },
-                trainingOptions: {
-                  emphasizedSources: ["Hathwellcrisping", "Chilli_Axe"],
-                },
-              },
-            },
-            signal
-          );
-          if (signal.aborted || !preferenceContext.model) return;
-
-          const metadataScores = buildMpcPreferenceScoreMap(
-            preferenceContext.model,
-            exactMatches
-          );
-          const visualScores = await buildMpcVisualPreferenceScoreMap(
-            exactMatches,
-            preferenceContext.profiles,
-            preferenceContext.model,
-            signal
-          );
+              signal
+            );
+            if (!signal.aborted && preferenceContext.model) {
+              const metadataScores = buildMpcPreferenceScoreMap(
+                preferenceContext.model,
+                exactMatches
+              );
+              const visualScores = await buildMpcVisualPreferenceScoreMap(
+                exactMatches,
+                preferenceContext.profiles,
+                preferenceContext.model,
+                signal
+              );
+              if (!signal.aborted) {
+                unseenPreferenceScores = Object.fromEntries(
+                  exactMatches.map((candidate) => [
+                    candidate.identifier,
+                    (metadataScores[candidate.identifier] ?? 0) +
+                      (visualScores[candidate.identifier] ?? 0),
+                  ])
+                );
+              }
+            }
+          } catch (preferenceErr) {
+            if (!signal.aborted) {
+              console.debug(
+                "[MpcUpgradeModal] preference model unavailable; keeping baseline ranking:",
+                preferenceErr
+              );
+            }
+          }
           if (signal.aborted) return;
-
-          const unseenPreferenceScores = Object.fromEntries(
-            exactMatches.map((candidate) => [
-              candidate.identifier,
-              (metadataScores[candidate.identifier] ?? 0) +
-                (visualScores[candidate.identifier] ?? 0),
-            ])
-          );
-          const preferenceRanked = await rankCandidates({
+          // Preserve the original call contract: only run the second
+          // (preference-refined) rank when a preference model actually
+          // resolved. When there is no stored preference and no built model
+          // (the common first-run case), the metadata baseline above is the
+          // final ranking — it already reflects stored-preference boosts via
+          // the `preferredIdentifier`/`preferenceProfile` arguments.
+          if (!unseenPreferenceScores) return;
+          const refinedRanked = await rankCandidates({
             candidates: exactMatches,
             set,
             collectorNumber,
@@ -356,8 +378,7 @@ export function MpcUpgradeModal() {
             signal,
             ssimCompare,
             artMatchCompare,
-            getMpcImageUrl: (id: string) =>
-              getMpcAutofillImageUrl(id, "small"),
+            getMpcImageUrl: (id: string) => getMpcAutofillImageUrl(id, "small"),
             preferredIdentifier,
             preferenceProfile,
             unseenPreferenceScores,
@@ -367,8 +388,8 @@ export function MpcUpgradeModal() {
             modalGenerationRef.current === sessionGeneration &&
             !applyingRef.current
           ) {
-            setRecommendations(preferenceRanked);
-            const tabs = buildLayerTabs(preferenceRanked);
+            setRecommendations(refinedRanked);
+            const tabs = buildLayerTabs(refinedRanked);
             setActiveTab((currentTab) => {
               const current = tabs.find((tab) => tab.key === currentTab);
               if (current?.count) return currentTab;
@@ -378,7 +399,7 @@ export function MpcUpgradeModal() {
         } catch (err) {
           if (!signal.aborted) {
             console.warn(
-              "[MpcUpgradeModal] preference refinement unavailable; keeping baseline ranking:",
+              "[MpcUpgradeModal] visual preference refinement unavailable; keeping baseline ranking:",
               err
             );
           }
@@ -727,7 +748,7 @@ function MpcCandidateCard({
   onClick,
 }: MpcCandidateCardProps) {
   const primaryUrl = getMpcAutofillImageUrl(card.identifier, "small");
-  const fallbackUrl = card.smallThumbnailUrl || "";
+  const fallbackUrl = getMpcAutofillImageUrl(card.identifier, "large");
 
   return (
     <div

@@ -47,7 +47,7 @@ function isValidScryfallQuery(url: URL): boolean {
     || /^\?[0-9]{1,20}$/.test(url.search);
 }
 
-function driveThumbnailIdentity(url: URL): DriveThumbnailIdentity | undefined {
+export function driveThumbnailIdentity(url: URL): DriveThumbnailIdentity | undefined {
   if (!hasAllowedOrigin(url, DRIVE_HOST) || url.pathname !== "/thumbnail") return undefined;
 
   const match = DRIVE_THUMBNAIL_QUERY.exec(url.search);

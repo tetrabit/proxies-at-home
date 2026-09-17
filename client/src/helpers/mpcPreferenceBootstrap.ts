@@ -12,7 +12,7 @@ import {
   MPC_CALIBRATION_DEFAULT_DATASET_NAME,
   type MpcCalibrationMutationScope,
 } from "./mpcCalibrationStorage";
-import type { MpcAutofillCard } from "./mpcAutofillApi";
+import { getMpcAutofillImageUrl, type MpcAutofillCard } from "./mpcAutofillApi";
 import {
   loadActivePreferenceOverrides,
   serializeCurrentPreferenceFixture,
@@ -226,7 +226,7 @@ export function buildBootstrapPreferenceDefaults(): MpcPreferenceFixture {
         rawName: candidate.rawName ?? candidate.name,
         imageUrl:
           candidate.imageUrl ??
-          `/api/cards/images/mpc?id=${candidate.identifier}&size=small`,
+          getMpcAutofillImageUrl(candidate.identifier, "small"),
       })),
       expectedIdentifier: calibrationCase.expectedIdentifier,
     })),
@@ -293,7 +293,7 @@ export function buildBootstrapPreferenceFixture(
         rawName: candidate.rawName ?? candidate.name,
         imageUrl:
           candidate.imageUrl ??
-          `/api/cards/images/mpc?id=${candidate.identifier}&size=small`,
+          getMpcAutofillImageUrl(candidate.identifier, "small"),
       })),
       expectedIdentifier: calibrationCase.expectedIdentifier,
       notes: calibrationCase.notes,
@@ -357,6 +357,48 @@ export async function ensureBootstrapPreferenceDataset(
   await hydrateMpcPreferences(undefined, scope);
 }
 
+export function loadBootstrapSourceExamples(
+  targetSources: string[] = BOOTSTRAP_PREFERENCE_SOURCES,
+  maxPerSource: number = 8
+): MpcHarvestedSourceExample[] {
+  const targetSet = new Set(targetSources);
+  const sourceCount = new Map<string, number>();
+  const examples: MpcHarvestedSourceExample[] = [];
+
+  for (const calibrationCase of (recoveredFixture as RecoveredFixture).cases) {
+    for (const sourceName of targetSources) {
+      const currentCount = sourceCount.get(sourceName) ?? 0;
+      if (currentCount >= maxPerSource) continue;
+
+      const matching = calibrationCase.candidates.filter(
+        (candidate) =>
+          targetSet.has(candidate.sourceName) &&
+          candidate.sourceName === sourceName
+      );
+      if (matching.length === 0) continue;
+
+      sourceCount.set(sourceName, currentCount + 1);
+      examples.push({
+        cardName: calibrationCase.name,
+        sourceName,
+        candidates: matching.map((candidate) => ({
+          identifier: candidate.identifier,
+          name: candidate.name,
+          rawName: candidate.rawName ?? candidate.name,
+          dpi: candidate.dpi,
+          tags: candidate.tags,
+          sourceName: candidate.sourceName,
+          imageUrl:
+            candidate.imageUrl ||
+            getMpcAutofillImageUrl(candidate.identifier, "small"),
+        })),
+      });
+    }
+  }
+
+  return examples;
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
@@ -406,7 +448,9 @@ export async function harvestSourcePreferenceCandidates(
               dpi: candidate.dpi,
               tags: candidate.tags,
               sourceName: candidate.sourceName,
-              imageUrl: candidate.smallThumbnailUrl || candidate.mediumThumbnailUrl,
+              imageUrl:
+                candidate.imageUrl ||
+                getMpcAutofillImageUrl(candidate.identifier, "small"),
             })),
           });
         }

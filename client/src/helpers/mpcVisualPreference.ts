@@ -67,6 +67,8 @@ function acquireMpcProfileDecodeSlot(
   });
 }
 
+export const MAX_VISUAL_PREFERENCE_CANDIDATES = 30;
+
 export async function buildMpcVisualPreferenceScoreMap(
   candidates: Pick<
     MpcCalibrationFrozenCandidate,
@@ -76,22 +78,56 @@ export async function buildMpcVisualPreferenceScoreMap(
   model: Pick<MpcPreferenceModel, "sourceWeights">,
   signal?: AbortSignal
 ): Promise<Record<string, number>> {
-  const results = await Promise.all(
-    candidates.map(async (candidate): Promise<[string, number] | null> => {
-      const imageUrl =
-        candidate.smallThumbnailUrl || candidate.mediumThumbnailUrl;
-      if (!imageUrl) return null;
+  const boundedCandidates = candidates.slice(
+    0,
+    MAX_VISUAL_PREFERENCE_CANDIDATES
+  );
+  const tasks = boundedCandidates.map((candidate, index) => ({
+    index,
+    candidate,
+    imageUrl: candidate.smallThumbnailUrl || candidate.mediumThumbnailUrl,
+  }));
 
-      const descriptor = await extractMpcImageDescriptor(imageUrl, signal);
-      if (!descriptor) return null;
+  if (signal?.aborted || tasks.length === 0) return {};
 
-      const score = scoreMpcVisualSourcePreference(
-        descriptor,
-        profiles,
-        model.sourceWeights
-      );
-      return [candidate.identifier, score];
-    })
+  const results: Array<[string, number] | null> = Array(tasks.length).fill(
+    null
+  );
+  let nextTaskIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    while (!signal?.aborted) {
+      const task = tasks[nextTaskIndex++];
+      if (!task) return;
+      if (!task.imageUrl) continue;
+
+      const release = await acquireMpcProfileDecodeSlot(signal);
+      if (!release || signal?.aborted) {
+        release?.();
+        return;
+      }
+
+      try {
+        const descriptor = await extractMpcImageDescriptor(task.imageUrl, signal);
+        if (!signal?.aborted && descriptor) {
+          const score = scoreMpcVisualSourcePreference(
+            descriptor,
+            profiles,
+            model.sourceWeights
+          );
+          results[task.index] = [task.candidate.identifier, score];
+        }
+      } finally {
+        release();
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_CONCURRENT_MPC_PROFILE_DECODES, tasks.length) },
+      runWorker
+    )
   );
 
   return Object.fromEntries(

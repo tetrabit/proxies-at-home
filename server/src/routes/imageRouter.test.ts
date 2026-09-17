@@ -605,17 +605,27 @@ describe("getWithRetry logic", () => {
             sendFileSpy.mockRestore();
         });
 
-        it("serves cached MPC images without fetching", async () => {
+        it("serves cached MPC images without fetching and sets detected image content-type", async () => {
             (fs.existsSync as unknown as Mock).mockReturnValue(true);
             const sendFileSpy = vi.spyOn(express.response, "sendFile").mockImplementation(function (this: Response) {
-                this.type("image/png").send("cached mpc image");
+                this.send("cached mpc image");
             });
 
             const res = await request(app).get("/images/mpc?id=cached-id&size=small");
             expect(res.status).toBe(200);
+            expect(res.header["content-type"]).toMatch(/image\/(jpeg|png|webp)/);
             expect(mockedAxios.get).not.toHaveBeenCalled();
             expect(routeMocks.touchImageCacheMetadata).toHaveBeenCalledWith('gdrive_cached-id_small');
             sendFileSpy.mockRestore();
+        });
+
+        it("detects image MIME type from binary headers or defaults safely", () => {
+            const detect = __imageRouterTestInternals.detectImageContentType;
+            expect(detect(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
+            expect(detect(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("image/png");
+            expect(detect(Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]))).toBe("image/webp");
+            expect(detect(Buffer.from("GIF89a"))).toBe("image/gif");
+            expect(detect(Buffer.from([0x00, 0x00, 0x00, 0x00]))).toBe("image/jpeg");
         });
 
         it("should return 502 if GDrive fails", async () => {

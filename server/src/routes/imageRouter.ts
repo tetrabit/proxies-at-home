@@ -10,7 +10,7 @@ import { getCardDataForCardInfo, batchFetchCards } from "../utils/getCardImagesP
 import { extractTokenParts } from "../utils/tokenUtils.js";
 import { fetchCardsForTokenLookup, resolveLatestTokenParts } from "../utils/tokenLookup.js";
 import { validateImportCardRequest } from "../utils/importRequestValidation.js";
-import { createProxyRedirectPolicy, validateMpcRequest, validateProxyTarget, type ProxyRedirectPolicy } from "./imageOriginPolicy.js";
+import { createProxyRedirectPolicy, driveThumbnailIdentity, validateMpcRequest, validateProxyTarget, type ProxyRedirectPolicy } from "./imageOriginPolicy.js";
 import { createPinnedHttpsAgent, type ResolveAll } from "./imageConnectionPolicy.js";
 import {
   fetchWithPolicyCheckedRedirects,
@@ -169,6 +169,9 @@ async function getWithRetry(
       throw new Error(`HTTP ${res.status}`);
     } catch (e) {
       if (e instanceof ImageRedirectPolicyError) throw e;
+      if (e instanceof Error && /^HTTP 4[0-9]{2}$/.test(e.message) && e.message !== "HTTP 408" && e.message !== "HTTP 429") {
+        throw e;
+      }
       lastErr = e;
       // Exponential backoff: 500ms, 1s (reduced from 1s, 2s, 4s...)
       const backoffMs = Math.min(500 * Math.pow(2, i), 2000);
@@ -191,6 +194,11 @@ let enrichLookupTimeoutMs = 20_000;
 // -------------------- cache helpers --------------------
 
 const imageRouter = express.Router();
+
+imageRouter.use((_req, res, next) => {
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  next();
+});
 
 const dataDirectory = path.resolve(process.env.SERVER_DATA_DIR ?? path.join(process.cwd(), "data"));
 const cacheDir = path.join(dataDirectory, "cached-images");
@@ -264,6 +272,41 @@ function cachePathFromUrl(originalUrl: string) {
     // ignore; keep .png
   }
   return path.join(cacheDir, `${hash}${ext}`);
+}
+
+export function detectImageContentType(buffer: Buffer): string {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return "image/png";
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (buffer.length >= 6 && buffer.toString("ascii", 0, 6).startsWith("GIF8")) {
+    return "image/gif";
+  }
+  return "image/jpeg";
+}
+
+function getCachedImageContentType(filePath: string): string {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(16);
+      fs.readSync(fd, buffer, 0, 16, 0);
+      return detectImageContentType(buffer);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "image/jpeg";
+  }
 }
 
 async function disposeReadable(value: unknown): Promise<void> {
@@ -361,13 +404,50 @@ function getOrStartProxyDownload(
   // subscriber. A disconnected subscriber must not abort other waiters.
   const sharedAbortController = new AbortController();
   const physicalDownload = imageFetchLimit(async () => {
-    const reservation = proxyDownloadAdmission.reserve(MAX_PROXY_RESPONSE_BYTES);
+    let reservation = proxyDownloadAdmission.reserve(MAX_PROXY_RESPONSE_BYTES);
     let responseReceived = false;
+
+    const candidateUrls: string[] = [originalUrl];
     try {
-      const response = await getWithRetry(originalUrl, {
-        responseType: "stream",
-        signal: sharedAbortController.signal,
-      }, 2, AX, redirectPolicy.admitRedirectTarget, undefined, redirectPolicy.allowsCrossOriginRedirect);
+      const parsed = new URL(originalUrl);
+      const identity = driveThumbnailIdentity(parsed);
+      if (identity) {
+        const mpcSize = identity.size === "w800-h800" ? "large" : "small";
+        candidateUrls.push(`https://img.mpcautofill.com/${identity.id}-${mpcSize}-google_drive`);
+      }
+    } catch {
+      // ignore
+    }
+
+    let response: AxiosResponse | undefined;
+    let lastDownloadError: unknown;
+    for (const url of candidateUrls) {
+      try {
+        const isCdn = url.startsWith("https://img.mpcautofill.com/");
+        response = await getWithRetry(
+          url,
+          {
+            responseType: "stream",
+            signal: sharedAbortController.signal,
+          },
+          isCdn ? 1 : 2,
+          isCdn ? AX_GDRIVE : AX,
+          isCdn ? () => url : redirectPolicy.admitRedirectTarget,
+          undefined,
+          isCdn ? () => false : redirectPolicy.allowsCrossOriginRedirect
+        );
+        break;
+      } catch (err) {
+        if (err instanceof ImageRedirectPolicyError) throw err;
+        lastDownloadError = err;
+      }
+    }
+    if (!response) {
+      if (!reservation.isCleanupPending()) reservation.release();
+      throw lastDownloadError;
+    }
+
+    try {
       responseReceived = true;
       return await streamImageResponseToFile(
         response,
@@ -796,6 +876,7 @@ imageRouter.get("/mpc", async (req: Request, res: Response) => {
   try {
     if (fs.existsSync(localPath)) {
       touchImageCacheMetadata(path.basename(localPath));
+      res.setHeader("Content-Type", getCachedImageContentType(localPath));
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
     }
@@ -1001,6 +1082,8 @@ export const __imageRouterTestInternals = {
   cachePathFromUrl,
   disposeReadable,
   streamImageResponseToFile,
+  detectImageContentType,
+  getCachedImageContentType,
   getWithRetry,
   writeInProgress,
   setEnrichLookupTimeoutForTests: (timeoutMs: number) => {

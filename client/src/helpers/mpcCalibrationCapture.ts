@@ -74,9 +74,10 @@ function freezeCandidate(
 }
 
 async function fetchAssetBlob(
-  url: string
+  url: string,
+  signal?: AbortSignal
 ): Promise<{ blob: Blob; mimeType: string }> {
-  const response = await fetch(toProxied(url));
+  const response = await fetch(toProxied(url), { signal });
   if (!response.ok) {
     throw new Error(`Failed to fetch calibration asset: ${response.status}`);
   }
@@ -102,10 +103,15 @@ async function tryAppendAsset(
     sourceUrl: string;
     createdAt: number;
     candidateIdentifier?: string;
-  }
+  },
+  timeoutMs = 5000
 ) {
   try {
-    const { blob, mimeType } = await fetchAssetBlob(input.sourceUrl);
+    const signal =
+      typeof AbortSignal.timeout === "function"
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined;
+    const { blob, mimeType } = await fetchAssetBlob(input.sourceUrl, signal);
     assets.push({
       id: crypto.randomUUID(),
       datasetId: input.datasetId,
@@ -172,16 +178,33 @@ export async function captureMpcCalibrationCase(
     });
   }
 
-  for (const candidate of candidates) {
-    await tryAppendAsset(assets, assetErrors, {
-      datasetId: input.datasetId,
-      caseId,
-      role: "candidate-small",
-      candidateIdentifier: candidate.identifier,
-      sourceUrl: candidate.imageUrl,
-      createdAt,
-    });
-  }
+  // Prioritize the expected choice asset so it is fetched first
+  const sortedCandidates = input.expectedIdentifier
+    ? [
+        ...candidates.filter((c) => c.identifier === input.expectedIdentifier),
+        ...candidates.filter((c) => c.identifier !== input.expectedIdentifier),
+      ]
+    : candidates;
+
+  const CONCURRENCY = 16;
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(sortedCandidates.length, CONCURRENCY) },
+    async () => {
+      while (nextIndex < sortedCandidates.length) {
+        const candidate = sortedCandidates[nextIndex++];
+        await tryAppendAsset(assets, assetErrors, {
+          datasetId: input.datasetId,
+          caseId,
+          role: "candidate-small",
+          candidateIdentifier: candidate.identifier,
+          sourceUrl: candidate.imageUrl,
+          createdAt,
+        });
+      }
+    }
+  );
+  await Promise.all(workers);
 
   return { caseRecord, assets, assetErrors };
 }

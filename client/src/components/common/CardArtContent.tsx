@@ -395,7 +395,7 @@ export function CardArtContent({
         const isSelected = highlightSelectedMpcId === card.identifier;
         // Use proxied URLs for consistent loading and caching
         const primaryUrl = getMpcAutofillImageUrl(card.identifier, 'small');
-        const fallbackUrl = card.smallThumbnailUrl || '';
+        const fallbackUrl = getMpcAutofillImageUrl(card.identifier, 'large');
 
         return (
             <div

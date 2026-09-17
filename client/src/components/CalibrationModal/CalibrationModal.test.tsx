@@ -29,6 +29,7 @@ const {
   mockTrainMpcPreferenceModel,
   mockBuildMpcPreferenceScoreMap,
   mockHarvestSourcePreferenceCandidates,
+  mockLoadBootstrapSourceExamples,
   mockHydrateMpcPreferences,
   mockBuildMpcSourceVisualProfiles,
   mockBuildMpcVisualPreferenceScoreMap,
@@ -80,6 +81,7 @@ const {
   mockTrainMpcPreferenceModel: vi.fn(() => null),
   mockBuildMpcPreferenceScoreMap: vi.fn(() => ({})),
   mockHarvestSourcePreferenceCandidates: vi.fn().mockResolvedValue([]),
+  mockLoadBootstrapSourceExamples: vi.fn().mockReturnValue([]),
   mockHydrateMpcPreferences: vi.fn().mockResolvedValue(undefined),
   mockBuildMpcSourceVisualProfiles: vi.fn().mockResolvedValue([]),
   mockBuildMpcVisualPreferenceScoreMap: vi.fn().mockResolvedValue({}),
@@ -139,6 +141,10 @@ vi.mock("@/db", () => ({
 
 vi.mock("@/helpers/mpcAutofillApi", () => ({
   searchMpcAutofill: mockSearchMpcAutofill,
+  getMpcAutofillImageUrl: vi.fn(
+    (id: string, size?: string) =>
+      `/api/cards/images/mpc?id=${id}&size=${size || "full"}`
+  ),
 }));
 
 vi.mock("@/helpers/mpcBulkUpgradeMatcher", () => ({
@@ -163,6 +169,7 @@ vi.mock("@/helpers/mpcPreferenceModel", () => ({
 vi.mock("@/helpers/mpcPreferenceBootstrap", () => ({
   BOOTSTRAP_PREFERENCE_SEED_CARD_NAMES: [],
   harvestSourcePreferenceCandidates: mockHarvestSourcePreferenceCandidates,
+  loadBootstrapSourceExamples: mockLoadBootstrapSourceExamples,
   hydrateMpcPreferences: mockHydrateMpcPreferences,
 }));
 
@@ -872,9 +879,10 @@ describe("CalibrationModal", () => {
     // this candidate's image is still loading and recommendations are pending.
     expect(card.getAttribute("data-image-state")).toBe("loading");
     expect(mockRankCandidates).toHaveBeenCalledTimes(1);
+    // The choice button is clickable immediately without waiting for recommendation ranking.
     expect(
       screen.getByRole("button", { name: /use as expected choice/i })
-    ).toHaveProperty("disabled", true);
+    ).toHaveProperty("disabled", false);
 
     // This candidate's image loads independently of the recommendation work.
     await act(async () => {
@@ -890,12 +898,12 @@ describe("CalibrationModal", () => {
         screen.getByRole("button", { name: /use as expected choice/i })
       ).toHaveProperty("disabled", false);
     });
-    // The button became enabled before the recommendation settled (rank never
+    // The button was enabled before the recommendation settled (rank never
     // resolves in this test), which is exactly the async behavior required.
     expect(mockRankCandidates).toHaveBeenCalledTimes(1);
   });
 
-  it("enables each ready candidate independently while other thumbnails are still loading", async () => {
+  it("allows candidates to be captured as expected choice as soon as published, even while other thumbnails are still loading", async () => {
     const makeCandidate = (suffix: string, name: string) => ({
       identifier: `cand-${suffix}`,
       name,
@@ -923,17 +931,19 @@ describe("CalibrationModal", () => {
 
     // Both candidates render as soon as the search resolves, each with its own
     // independent image state: cand-1 has already loaded, cand-2 is still
-    // loading. The ready candidate is clickable while the other is not.
+    // loading. Both candidates are clickable once published.
     const buttons = await screen.findAllByRole("button", {
       name: /use as expected choice/i,
     });
     expect(buttons).toHaveLength(2);
     expect(buttons[0]).toHaveProperty("disabled", false);
-    expect(buttons[1]).toHaveProperty("disabled", true);
+    expect(buttons[1]).toHaveProperty("disabled", false);
 
     const cardOne = screen.getByTestId("mpc-calibration-candidate-cand-1");
     const cardTwo = screen.getByTestId("mpc-calibration-candidate-cand-2");
-    expect(cardOne.getAttribute("data-image-state")).toBe("ready");
+    await waitFor(() => {
+      expect(cardOne.getAttribute("data-image-state")).toBe("ready");
+    });
     expect(cardTwo.getAttribute("data-image-state")).toBe("loading");
 
     fireEvent.click(buttons[0]);

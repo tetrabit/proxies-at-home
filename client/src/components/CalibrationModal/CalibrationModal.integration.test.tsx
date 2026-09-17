@@ -46,9 +46,13 @@ vi.mock("@/store/mpcCalibrationSync", () => ({
     selector({ status: "unpaired" }),
 }));
 
-vi.mock("@/helpers/mpcAutofillApi", () => ({
-  searchMpcAutofill: vi.fn().mockResolvedValue([]),
-}));
+vi.mock("@/helpers/mpcAutofillApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/helpers/mpcAutofillApi")>();
+  return {
+    ...actual,
+    searchMpcAutofill: vi.fn().mockResolvedValue([]),
+  };
+});
 
 vi.mock("@/helpers/mpcPreferenceContextBuilder", () => ({
   getSharedMpcPreferenceContext: vi.fn().mockResolvedValue({

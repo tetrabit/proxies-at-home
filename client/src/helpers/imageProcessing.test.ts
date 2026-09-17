@@ -157,6 +157,11 @@ describe('imageProcessing', () => {
             expect(toProxied('https://example.com/img.png?x=1&size=small', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/proxy?url=https%3A%2F%2Fexample.com%2Fimg.png%3Fx%3D1%26size%3Dsmall');
             expect(toProxied('/relative.png?x=1&size=small', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/proxy?url=%2Frelative.png%3Fx%3D1%26size%3Dsmall');
         });
+
+        it('should convert Google Drive thumbnail URLs directly to MPC image endpoint', () => {
+            expect(toProxied('https://drive.google.com/thumbnail?sz=w400-h400&id=Drive_123', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=Drive_123&size=small');
+            expect(toProxied('https://drive.google.com/thumbnail?id=Drive_123&sz=w800-h800', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=Drive_123&size=large');
+        });
     });
 
     describe('getBleedInPixels', () => {

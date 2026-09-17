@@ -27,6 +27,7 @@ vi.mock("electron", () => ({
     webContents = {
       send: vi.fn(),
       openDevTools: vi.fn(),
+      toggleDevTools: vi.fn(),
       mainFrame: { url: "", frames: [] as object[] },
       isDestroyed: vi.fn(() => false),
       on: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock("electron", () => ({
     on = vi.fn();
   },
   ipcMain: ipcMainMock,
-  nativeTheme: { themeSource: "system" },
+  nativeTheme: { themeSource: "dark" },
   dialog: { showErrorBox: vi.fn() },
   Menu: { buildFromTemplate: vi.fn(() => ({})), setApplicationMenu: vi.fn() },
   net: { fetch: vi.fn() },

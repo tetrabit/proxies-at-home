@@ -34,6 +34,7 @@ import {
   BOOTSTRAP_PREFERENCE_SOURCES,
   ensureBootstrapPreferenceDataset,
   harvestSourcePreferenceCandidates,
+  loadBootstrapSourceExamples,
   hydrateMpcPreferences,
   mergeMpcPreferenceFixtures,
 } from "./mpcPreferenceBootstrap";
@@ -946,6 +947,28 @@ describe("mpcPreferenceBootstrap", () => {
 
     await expect(harvesting).rejects.toThrow("seed search failed");
     expect(search).toHaveBeenCalledTimes(IMPORT_CONFIG.MPC_SEARCH_CHUNK_SIZE);
+  });
+
+  it("loads source examples directly from the fixture without network searches", () => {
+    const examples = loadBootstrapSourceExamples(["Hathwellcrisping", "Chilli_Axe"], 5);
+
+    expect(examples.length).toBeGreaterThan(0);
+    const hathwellExamples = examples.filter((e) => e.sourceName === "Hathwellcrisping");
+    const chilliExamples = examples.filter((e) => e.sourceName === "Chilli_Axe");
+    expect(hathwellExamples.length).toBeLessThanOrEqual(5);
+    expect(chilliExamples.length).toBeLessThanOrEqual(5);
+    expect(hathwellExamples.length).toBeGreaterThan(0);
+    expect(chilliExamples.length).toBeGreaterThan(0);
+
+    for (const example of examples) {
+      expect(example.cardName).toBeTruthy();
+      expect(["Hathwellcrisping", "Chilli_Axe"]).toContain(example.sourceName);
+      expect(example.candidates.length).toBeGreaterThan(0);
+      for (const candidate of example.candidates) {
+        expect(candidate.sourceName).toBe(example.sourceName);
+        expect(candidate.imageUrl).toBeTruthy();
+      }
+    }
   });
 
   it("preserves the legacy bootstrap helper as a compatibility wrapper", async () => {
