@@ -13,14 +13,27 @@ export function toProxied(url: string, apiBase: string) {
     if (!url) return url;
     if (url.startsWith("data:")) return url;
     if (url.startsWith("blob:")) return url;
+
     // Relative internal API URLs should be anchored to apiBase
     if (url.startsWith("/api/cards/images/")) {
         return `${apiBase}${url}`;
     }
+    if (url.startsWith("api/cards/images/")) {
+        return `${apiBase}/${url}`;
+    }
 
-    // Prevent double-proxying of internal API URLs
-    if (url.includes("/api/cards/images/")) {
-        return url;
+    // If url is an absolute HTTP/HTTPS URL that targets our internal API endpoints,
+    // re-anchor it to the current apiBase so that stale hosts/ports from previous
+    // sessions or exports are updated to the active backend server.
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+        try {
+            const parsed = new URL(url);
+            if (parsed.pathname.startsWith("/api/cards/images/")) {
+                return `${apiBase}${parsed.pathname}${parsed.search}${parsed.hash}`;
+            }
+        } catch {
+            // ignore URL parse error
+        }
     }
 
     // Fix for MPC IDs that were incorrectly saved as sourceUrl (containing query params only)
@@ -41,6 +54,11 @@ export function toProxied(url: string, apiBase: string) {
         } catch {
             // ignore
         }
+    }
+
+    // Bare MPC identifier (e.g. 15+ alphanumeric/dash/underscore chars)
+    if (!url.startsWith("http") && !url.startsWith("/") && /^[a-zA-Z0-9_-]{15,}$/.test(url)) {
+        return `${apiBase}/api/cards/images/mpc?id=${encodeURIComponent(url)}`;
     }
 
     return `${apiBase}/api/cards/images/proxy?url=${encodeURIComponent(url)}`;

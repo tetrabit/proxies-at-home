@@ -162,6 +162,19 @@ describe('imageProcessing', () => {
             expect(toProxied('https://drive.google.com/thumbnail?sz=w400-h400&id=Drive_123', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=Drive_123&size=small');
             expect(toProxied('https://drive.google.com/thumbnail?id=Drive_123&sz=w800-h800', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=Drive_123&size=large');
         });
+
+        it('should re-anchor stale internal API URLs from previous sessions to the active apiBase', () => {
+            const staleUrl = 'http://localhost:34129/api/cards/images/mpc?id=1KEDFr7aJbo5h5FM-TQYzZZeB-Bo3BdwR';
+            const activeApiBase = 'http://localhost:45678';
+            expect(toProxied(staleUrl, activeApiBase)).toBe('http://localhost:45678/api/cards/images/mpc?id=1KEDFr7aJbo5h5FM-TQYzZZeB-Bo3BdwR');
+
+            const staleProxyUrl = 'http://localhost:34129/api/cards/images/proxy?url=https%3A%2F%2Fcards.scryfall.io%2Ffoo.jpg';
+            expect(toProxied(staleProxyUrl, activeApiBase)).toBe('http://localhost:45678/api/cards/images/proxy?url=https%3A%2F%2Fcards.scryfall.io%2Ffoo.jpg');
+        });
+
+        it('should convert bare MPC identifiers to MPC endpoint', () => {
+            expect(toProxied('1KEDFr7aJbo5h5FM-TQYzZZeB-Bo3BdwR', 'http://localhost:3000')).toBe('http://localhost:3000/api/cards/images/mpc?id=1KEDFr7aJbo5h5FM-TQYzZZeB-Bo3BdwR');
+        });
     });
 
     describe('getBleedInPixels', () => {
