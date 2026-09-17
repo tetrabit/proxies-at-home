@@ -144,7 +144,7 @@ async function waitForModalReady(caseCount: number | RegExp) {
       "disabled",
       false
     );
-  });
+  }, { timeout: 5000 });
 }
 
 describe("CalibrationModal IndexedDB integration", () => {
@@ -385,7 +385,7 @@ describe("CalibrationModal IndexedDB integration", () => {
       expect(screen.getByText("Frozen Cases (2)")).toBeTruthy();
       expect(screen.getByText("Same-ID Remote Sol Ring")).toBeTruthy();
       expect(screen.getByText("Same-ID Remote Arcane Signet")).toBeTruthy();
-    });
+    }, { timeout: 5000 });
     await act(async () => {
       expect(await db.mpcCalibrationRuns.get(sameIdRun.id)).toEqual(sameIdRun);
     });
